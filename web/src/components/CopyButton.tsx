@@ -1,6 +1,7 @@
 import { useState, useCallback } from "preact/hooks";
 import { clipboardCopy } from "../utils/clipboard";
 import { useT } from "../i18n/context";
+import type { TranslationKey } from "../i18n/translations";
 
 interface CopyButtonProps {
   getText: () => string;
@@ -72,7 +73,7 @@ export function CopyButton({ getText, class: className, titleKey, variant = "ico
             ? "text-red-500"
             : "text-slate-400 dark:text-text-dim hover:text-primary"
       } ${className || ""}`}
-      title={titleKey ? t(titleKey as any) : undefined}
+      title={titleKey ? t(titleKey as TranslationKey) : undefined}
     >
       {state === "ok" ? SVG_CHECK : state === "fail" ? SVG_FAIL : SVG_COPY}
     </button>

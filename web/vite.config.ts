@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [preact()],
   build: {
     outDir: "../public",
-    emptyOutDir: false,
+    emptyOutDir: true,
   },
   server: {
     port: 5173,

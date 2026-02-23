@@ -1,6 +1,6 @@
 import { useCallback } from "preact/hooks";
-import { useT } from "../i18n/context";
-import { useI18n } from "../i18n/context";
+import { useT, useI18n } from "../i18n/context";
+import type { TranslationKey } from "../i18n/translations";
 import { formatNumber, formatResetTime } from "../utils/format";
 import type { Account } from "../hooks/use-accounts";
 
@@ -91,7 +91,7 @@ export function AccountCard({ account, index, onDelete }: AccountCardProps) {
         </div>
         <div class="flex items-center gap-2">
           <span class={`px-2.5 py-1 rounded-full ${statusCls} text-xs font-medium border`}>
-            {t(statusKey as any)}
+            {t(statusKey as TranslationKey)}
           </span>
           <button
             onClick={handleDelete}

@@ -394,6 +394,26 @@ export interface CliAuthJson {
 }
 
 /**
+ * Start an OAuth flow with callback server in one call.
+ * Combines createOAuthSession + startCallbackServer + account registration.
+ * Used by /auth/login, /auth/login-start, and /auth/accounts/login.
+ */
+export function startOAuthFlow(
+  originalHost: string,
+  returnTo: "login" | "dashboard",
+  pool: { addAccount(accessToken: string, refreshToken?: string): string },
+  scheduler: { scheduleOne(entryId: string, accessToken: string): void },
+): { authUrl: string; state: string } {
+  const { authUrl, state, port } = createOAuthSession(originalHost, returnTo);
+  startCallbackServer(port, (accessToken, refreshToken) => {
+    const entryId = pool.addAccount(accessToken, refreshToken);
+    scheduler.scheduleOne(entryId, accessToken);
+    console.log(`[Auth] OAuth via callback server — account ${entryId} added`);
+  });
+  return { authUrl, state };
+}
+
+/**
  * Read and parse the Codex CLI auth.json file.
  * Path: $CODEX_HOME/auth.json (default: ~/.codex/auth.json)
  */

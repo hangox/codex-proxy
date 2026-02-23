@@ -1,5 +1,6 @@
 import { useState, useCallback } from "preact/hooks";
 import { useT } from "../i18n/context";
+import type { TranslationKey } from "../i18n/translations";
 
 interface AddAccountProps {
   visible: boolean;
@@ -25,10 +26,10 @@ export function AddAccount({ visible, onSubmitRelay, addInfo, addError }: AddAcc
   return (
     <>
       {addInfo && (
-        <p class="text-sm text-primary">{t(addInfo as any)}</p>
+        <p class="text-sm text-primary">{t(addInfo as TranslationKey)}</p>
       )}
       {addError && (
-        <p class="text-sm text-red-500">{t(addError as any)}</p>
+        <p class="text-sm text-red-500">{t(addError as TranslationKey)}</p>
       )}
       {visible && (
         <section class="bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl p-5 shadow-sm transition-colors">

@@ -4,10 +4,9 @@ import type { RefreshScheduler } from "../auth/refresh-scheduler.js";
 import { validateManualToken } from "../auth/chatgpt-oauth.js";
 import { getConfig } from "../config.js";
 import {
-  createOAuthSession,
+  startOAuthFlow,
   consumeSession,
   exchangeCode,
-  startCallbackServer,
   requestDeviceCode,
   pollDeviceToken,
   importCliAuth,
@@ -38,16 +37,7 @@ export function createAuthRoutes(
   app.get("/auth/login", (c) => {
     const config = getConfig();
     const originalHost = c.req.header("host") || `localhost:${config.server.port}`;
-
-    const { authUrl, port } = createOAuthSession(originalHost, "login");
-
-    // Start temporary callback server for same-machine callback
-    startCallbackServer(port, (accessToken, refreshToken) => {
-      const entryId = pool.addAccount(accessToken, refreshToken);
-      scheduler.scheduleOne(entryId, accessToken);
-      console.log(`[Auth] OAuth via callback server — account ${entryId} added`);
-    });
-
+    const { authUrl } = startOAuthFlow(originalHost, "login", pool, scheduler);
     return c.redirect(authUrl);
   });
 
@@ -55,16 +45,7 @@ export function createAuthRoutes(
   app.post("/auth/login-start", (c) => {
     const config = getConfig();
     const originalHost = c.req.header("host") || `localhost:${config.server.port}`;
-
-    const { authUrl, state, port } = createOAuthSession(originalHost, "login");
-
-    // Start temporary callback server for same-machine callback
-    startCallbackServer(port, (accessToken, refreshToken) => {
-      const entryId = pool.addAccount(accessToken, refreshToken);
-      scheduler.scheduleOne(entryId, accessToken);
-      console.log(`[Auth] OAuth via callback server — account ${entryId} added`);
-    });
-
+    const { authUrl, state } = startOAuthFlow(originalHost, "login", pool, scheduler);
     return c.json({ authUrl, state });
   });
 

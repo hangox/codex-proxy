@@ -64,9 +64,10 @@ function parseAppcast(xml: string): {
 }
 
 function applyVersionUpdate(version: string, build: string): void {
-  mutateYaml(CONFIG_PATH, (data: any) => {
-    data.client.app_version = version;
-    data.client.build_number = build;
+  mutateYaml(CONFIG_PATH, (data) => {
+    const client = data.client as Record<string, unknown>;
+    client.app_version = version;
+    client.build_number = build;
   });
   mutateClientConfig({ app_version: version, build_number: build });
 }

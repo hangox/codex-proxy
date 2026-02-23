@@ -17,7 +17,7 @@ import { Hono } from "hono";
 import type { AccountPool } from "../auth/account-pool.js";
 import type { RefreshScheduler } from "../auth/refresh-scheduler.js";
 import { validateManualToken } from "../auth/chatgpt-oauth.js";
-import { createOAuthSession, startCallbackServer } from "../auth/oauth-pkce.js";
+import { startOAuthFlow } from "../auth/oauth-pkce.js";
 import { getConfig } from "../config.js";
 import { CodexApi } from "../proxy/codex-api.js";
 import type { CodexUsageResponse } from "../proxy/codex-api.js";
@@ -62,16 +62,7 @@ export function createAccountRoutes(
   app.get("/auth/accounts/login", (c) => {
     const config = getConfig();
     const originalHost = c.req.header("host") || `localhost:${config.server.port}`;
-
-    const { authUrl, port } = createOAuthSession(originalHost, "dashboard");
-
-    // Start temporary callback server for same-machine callback
-    startCallbackServer(port, (accessToken, refreshToken) => {
-      const entryId = pool.addAccount(accessToken, refreshToken);
-      scheduler.scheduleOne(entryId, accessToken);
-      console.log(`[Auth] OAuth via callback server — account ${entryId} added`);
-    });
-
+    const { authUrl } = startOAuthFlow(originalHost, "dashboard", pool, scheduler);
     return c.redirect(authUrl);
   });
 

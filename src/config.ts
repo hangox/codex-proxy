@@ -36,10 +36,6 @@ const ConfigSchema = z.object({
     port: z.number().min(1).max(65535).default(8080),
     proxy_api_key: z.string().nullable().default(null),
   }),
-  environment: z.object({
-    default_id: z.string().nullable().default(null),
-    default_branch: z.string().default("main"),
-  }),
   session: z.object({
     ttl_minutes: z.number().min(1).default(60),
     cleanup_interval_minutes: z.number().min(1).default(5),
@@ -50,14 +46,6 @@ const ConfigSchema = z.object({
     proxy_url: z.string().nullable().default(null),
     transport: z.enum(["auto", "curl-cli", "libcurl-ffi"]).default("auto"),
   }).default({}),
-  streaming: z.object({
-    status_as_content: z.boolean().default(false),
-    chunk_size: z.number().default(100),
-    chunk_delay_ms: z.number().default(10),
-    heartbeat_interval_s: z.number().default(15),
-    poll_interval_s: z.number().default(2),
-    timeout_s: z.number().default(300),
-  }),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

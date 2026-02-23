@@ -89,7 +89,21 @@ export function createChatRoutes(
     }
 
     // Parse request
-    const body = await c.req.json();
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      c.status(400);
+      return c.json({
+        error: {
+          message: "Malformed JSON request body",
+          type: "invalid_request_error",
+          param: null,
+          code: "invalid_json",
+        },
+      });
+    }
+
     const parsed = ChatCompletionRequestSchema.safeParse(body);
     if (!parsed.success) {
       c.status(400);

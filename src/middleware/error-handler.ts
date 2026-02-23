@@ -48,6 +48,18 @@ export async function errorHandler(c: Context, next: Next): Promise<void> {
     const status = (err as { status?: number }).status;
     const path = c.req.path;
 
+    // Malformed JSON request body should be treated as a client error.
+    if (err instanceof SyntaxError && message.toLowerCase().includes("json")) {
+      c.status(400);
+      return c.json(
+        makeOpenAIError(
+          "Malformed JSON request body",
+          "invalid_request_error",
+          "invalid_json",
+        ),
+      ) as never;
+    }
+
     // Anthropic Messages API errors
     if (path.startsWith("/v1/messages")) {
       if (status === 401) {

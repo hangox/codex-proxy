@@ -4,7 +4,6 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { AccountPool } from "../auth/account-pool.js";
 import { getConfig, getFingerprint } from "../config.js";
-import { getUpdateState } from "../update-checker.js";
 
 export function createWebRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -27,14 +26,11 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
 
   app.get("/health", async (c) => {
     const authenticated = accountPool.isAuthenticated();
-    const userInfo = accountPool.getUserInfo();
     const poolSummary = accountPool.getPoolSummary();
     return c.json({
       status: "ok",
       authenticated,
-      user: authenticated ? userInfo : null,
-      pool: poolSummary,
-      update: getUpdateState(),
+      pool: { total: poolSummary.total, active: poolSummary.active },
       timestamp: new Date().toISOString(),
     });
   });

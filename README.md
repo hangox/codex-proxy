@@ -154,6 +154,28 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 🔗 客户端接入 (Client Setup)
 
+### Claude Code
+
+在终端设置环境变量，即可让 Claude Code 通过 codex-proxy 使用 Codex 模型：
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_API_KEY=your-api-key
+export ANTHROPIC_MODEL=claude-opus-4-6     # Opus → gpt-5.3-codex（默认）
+# export ANTHROPIC_MODEL=claude-sonnet-4-6   # Sonnet → gpt-5.2-codex
+# export ANTHROPIC_MODEL=claude-haiku-4-5-20251001  # Haiku → gpt-5.1-codex-mini
+
+claude   # 启动 Claude Code
+```
+
+| Claude Code 模型 | 映射到 Codex 模型 |
+|------------------|------------------|
+| Opus (`claude-opus-4-6`) | `gpt-5.3-codex` |
+| Sonnet (`claude-sonnet-4-6`) | `gpt-5.2-codex` |
+| Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` |
+
+> 也可以在控制面板 (`http://localhost:8080`) 的 **Claude Code Quick Setup** 卡片中一键复制环境变量。
+
 ### Cursor
 
 Settings → Models → OpenAI API Base:

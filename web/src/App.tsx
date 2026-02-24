@@ -4,6 +4,7 @@ import { Header } from "./components/Header";
 import { AccountList } from "./components/AccountList";
 import { AddAccount } from "./components/AddAccount";
 import { ApiConfig } from "./components/ApiConfig";
+import { ClaudeCodeSetup } from "./components/ClaudeCodeSetup";
 import { CodeExamples } from "./components/CodeExamples";
 import { Footer } from "./components/Footer";
 import { useAccounts } from "./hooks/use-accounts";
@@ -35,6 +36,9 @@ function Dashboard() {
             models={status.models}
             selectedModel={status.selectedModel}
             onModelChange={status.setSelectedModel}
+          />
+          <ClaudeCodeSetup
+            apiKey={status.apiKey}
           />
           <CodeExamples
             baseUrl={status.baseUrl}

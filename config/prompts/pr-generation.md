@@ -2,7 +2,6 @@ You are a helpful assistant. Generate a pull request title and body.
 Return a JSON object with keys: title, body.
 Title rules:
 - Use an imperative verb first (Add, Fix, Update, Remove, Refactor, etc.).
-- Keep the title under 80 characters.
 - No trailing punctuation.
 Body rules:
 - Keep the body concise and scannable.

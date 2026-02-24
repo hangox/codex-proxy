@@ -1,47 +1,35 @@
 api:
-  base_url: "https://chatgpt.com/backend-api"
+  base_url: https://chatgpt.com/backend-api
   timeout_seconds: 60
-
 client:
-  originator: "Codex Desktop"
-  app_version: "26.217.1959"
-  build_number: "669"
-  platform: "darwin"
-  arch: "arm64"
-  chromium_version: "136"
-
+  originator: Codex Desktop
+  app_version: 26.224.1209
+  build_number: "697"
+  platform: darwin
+  arch: arm64
+  chromium_version: "137"
 model:
-  default: "gpt-5.3-codex"
-  default_reasoning_effort: "medium"
+  default: gpt-5.3-codex
+  default_reasoning_effort: medium
   suppress_desktop_directives: true
-
 auth:
   jwt_token: null
   chatgpt_oauth: true
   refresh_margin_seconds: 300
-  rotation_strategy: "least_used"
+  rotation_strategy: least_used
   rate_limit_backoff_seconds: 60
-  oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
-  oauth_auth_endpoint: "https://auth.openai.com/oauth/authorize"
-  oauth_token_endpoint: "https://auth.openai.com/oauth/token"
-
+  oauth_client_id: app_EMoamEEZ73f0CkXaXp7hrann
+  oauth_auth_endpoint: https://auth.openai.com/oauth/authorize
+  oauth_token_endpoint: https://auth.openai.com/oauth/token
 server:
   host: "::"
   port: 8080
-  proxy_api_key: "pwd"
-
+  proxy_api_key: pwd
 session:
   ttl_minutes: 60
   cleanup_interval_minutes: 5
-
 tls:
-  # Transport layer: "auto" | "curl-cli" | "libcurl-ffi"
-  # auto = Windows+DLL → libcurl-ffi, macOS/Linux → curl-cli
-  transport: "auto"
-  # curl binary path. "auto" = detect bin/curl-impersonate-chrome, fallback to system curl
-  curl_binary: "auto"
-  # Chrome profile for --impersonate flag (auto-detected when curl-impersonate supports it)
-  impersonate_profile: "chrome136"
-  # HTTP/SOCKS5 proxy for curl requests to chatgpt.com
-  # Example: "http://127.0.0.1:7890"  Also respects HTTPS_PROXY env var
+  transport: auto
+  curl_binary: auto
+  impersonate_profile: chrome137
   proxy_url: null

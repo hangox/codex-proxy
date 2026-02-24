@@ -32,4 +32,12 @@ RUN npm prune --omit=dev && npm install --no-save tsx
 
 VOLUME /app/data
 EXPOSE 8080
+
+# Ensure writable directories for non-root user
+RUN mkdir -p /app/data && chown -R node:node /app/data /app/config
+
+USER node
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fs http://localhost:8080/health || exit 1
+
 CMD ["node", "dist/index.js"]

@@ -2,6 +2,8 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import yaml from "js-yaml";
 import { z } from "zod";
+import { loadStaticModels } from "./models/model-store.js";
+import { triggerImmediateRefresh } from "./models/model-fetcher.js";
 
 const ConfigSchema = z.object({
   api: z.object({
@@ -17,7 +19,7 @@ const ConfigSchema = z.object({
     chromium_version: z.string().default("136"),
   }),
   model: z.object({
-    default: z.string().default("gpt-5.3-codex"),
+    default: z.string().default("gpt-5.2-codex"),
     default_reasoning_effort: z.string().default("medium"),
     suppress_desktop_directives: z.boolean().default(true),
   }),
@@ -148,9 +150,12 @@ export function reloadFingerprint(configDir?: string): FingerprintConfig {
   return _fingerprint;
 }
 
-/** Reload both config and fingerprint from disk. */
+/** Reload both config and fingerprint from disk, plus static models. */
 export function reloadAllConfigs(configDir?: string): void {
   reloadConfig(configDir);
   reloadFingerprint(configDir);
-  console.log("[Config] Hot-reloaded config and fingerprint from disk");
+  loadStaticModels(configDir);
+  console.log("[Config] Hot-reloaded config, fingerprint, and models from disk");
+  // Re-merge backend models so hot-reload doesn't wipe them for ~1h
+  triggerImmediateRefresh();
 }

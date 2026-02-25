@@ -8,6 +8,9 @@
 
 ### Added
 
+- 动态模型列表：后台从 Codex 后端自动获取模型目录，与静态 YAML 合并（`src/models/model-store.ts`、`src/models/model-fetcher.ts`）
+- `/debug/models` 诊断端点，展示模型来源（static/backend）与刷新状态
+- 完整 Codex 模型目录：GPT-5.3/5.2/5.1 全系列 base/high/mid/low/max/mini 变体（23 个静态模型）
 - OpenCode 平台支持（`opencode.json` 配置文件）
 - Vitest 测试框架（account-pool、codex-api、codex-event-extractor 单元测试）
 - request-id 中间件注入全局请求链路 ID
@@ -15,7 +18,22 @@
 
 ### Changed
 
+- 模型管理从纯静态 YAML 迁移至静态+动态混合架构（后端优先，YAML 兜底）
+- 默认模型改为 `gpt-5.2-codex`
+- Dashboard "Claude Code Quick Setup" 重命名为 "Anthropic SDK Setup"
 - `/health` 端点精简，仅返回 pool 摘要（total / active）
+
+### Fixed
+
+- `getModels()` 死代码：`allModels` 作用域修复，消除不可达分支
+- `reloadAllConfigs()` 异步 lazy import 改为同步直接导入，避免日志时序不准
+- 模型合并 reasoning efforts 判断逻辑从 `length > 1` 改为显式标志
+- `scheduleNext()` 添加 try/finally 防止异常中断刷新循环
+- 未认证启动时抑制无意义的 warn 日志
+- `getModelCatalog()` / `getModelAliases()` 返回浅拷贝，防止外部意外修改
+- `ClaudeCodeSetup.tsx` 文件名与导出名不一致，重命名为 `AnthropicSetup.tsx`
+- Dashboard 模型偏好从硬编码 `gpt-5.2-codex` 改为使用 `codex` 别名
+- 构建脚本 `vite build --root web` 兼容性问题，改用 `npm run build:web`
 
 ## [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

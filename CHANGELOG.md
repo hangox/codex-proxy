@@ -25,7 +25,7 @@
 
 ### Fixed
 
-- TLS 伪装 profile 自动回退：配置的 `impersonate_profile` 不被 curl-impersonate 支持时，自动降级到最近的可用 Chrome 版本（如 `chrome137` → `chrome136`）
+- TLS 伪装 profile 确定性解析：用已知 Chrome profile 列表（`KNOWN_CHROME_PROFILES`）替代不可靠的 runtime 检测，确保 `--impersonate` 目标始终有效（如 `chrome137` → `chrome136`）
 - FFI transport 硬编码 `"chrome136"` 改为使用统一解析的 profile（`getResolvedProfile()`）
 - `getModels()` 死代码：`allModels` 作用域修复，消除不可达分支
 - `reloadAllConfigs()` 异步 lazy import 改为同步直接导入，避免日志时序不准

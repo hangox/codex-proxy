@@ -19,6 +19,10 @@ function mapThinkingToEffort(
   thinking: AnthropicMessagesRequest["thinking"],
 ): string | undefined {
   if (!thinking || thinking.type === "disabled") return undefined;
+  if (thinking.type === "adaptive") {
+    // adaptive: use budget_tokens if provided, otherwise let Codex decide
+    return thinking.budget_tokens ? budgetToEffort(thinking.budget_tokens) : undefined;
+  }
   return budgetToEffort(thinking.budget_tokens);
 }
 

@@ -59,6 +59,11 @@ const AnthropicThinkingDisabledSchema = z.object({
   type: z.literal("disabled"),
 });
 
+const AnthropicThinkingAdaptiveSchema = z.object({
+  type: z.literal("adaptive"),
+  budget_tokens: z.number().int().positive().optional(),
+});
+
 export const AnthropicMessagesRequestSchema = z.object({
   model: z.string(),
   max_tokens: z.number().int().positive(),
@@ -77,7 +82,11 @@ export const AnthropicMessagesRequestSchema = z.object({
     })
     .optional(),
   thinking: z
-    .union([AnthropicThinkingEnabledSchema, AnthropicThinkingDisabledSchema])
+    .union([
+      AnthropicThinkingEnabledSchema,
+      AnthropicThinkingDisabledSchema,
+      AnthropicThinkingAdaptiveSchema,
+    ])
     .optional(),
   // Tool-related fields (accepted for compatibility, not forwarded to Codex)
   tools: z.array(z.object({

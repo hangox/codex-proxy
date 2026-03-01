@@ -203,6 +203,7 @@ export class AccountPool {
         request_count: 0,
         input_tokens: 0,
         output_tokens: 0,
+        empty_response_count: 0,
         last_used: null,
         rate_limit_until: null,
       },
@@ -212,6 +213,16 @@ export class AccountPool {
     this.accounts.set(id, entry);
     this.persistNow(); // Critical data — persist immediately
     return id;
+  }
+
+  /**
+   * Record an empty response for an account (HTTP 200 but zero text deltas).
+   */
+  recordEmptyResponse(entryId: string): void {
+    const entry = this.accounts.get(entryId);
+    if (!entry) return;
+    entry.usage.empty_response_count++;
+    this.schedulePersist();
   }
 
   removeAccount(id: string): boolean {
@@ -254,6 +265,7 @@ export class AccountPool {
       request_count: 0,
       input_tokens: 0,
       output_tokens: 0,
+      empty_response_count: 0,
       last_used: null,
       rate_limit_until: null,
       window_reset_at: entry.usage.window_reset_at ?? null,
@@ -279,6 +291,7 @@ export class AccountPool {
       entry.usage.request_count = 0;
       entry.usage.input_tokens = 0;
       entry.usage.output_tokens = 0;
+      entry.usage.empty_response_count = 0;
       entry.usage.last_used = null;
       entry.usage.rate_limit_until = null;
     }
@@ -466,6 +479,11 @@ export class AccountPool {
                 needsPersist = true;
               }
             }
+            // Backfill empty_response_count for old entries
+            if (entry.usage.empty_response_count == null) {
+              entry.usage.empty_response_count = 0;
+              needsPersist = true;
+            }
             this.accounts.set(entry.id, entry);
           }
         }
@@ -505,6 +523,7 @@ export class AccountPool {
           request_count: 0,
           input_tokens: 0,
           output_tokens: 0,
+          empty_response_count: 0,
           last_used: null,
           rate_limit_until: null,
         },

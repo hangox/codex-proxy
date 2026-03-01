@@ -34,7 +34,7 @@
 - Keep automation prompts self-sufficient because the user may have limited availability to answer questions. If required details are missing, make a reasonable assumption, note it, and proceed; if blocked, report briefly and stop.
 - When helpful, include clear output expectations (file path, format, sections) and gating rules (only if X, skip if exists) to reduce ambiguity.
 - Automations should always open an inbox item.
-  - Archiving rule: only include `::archive-thread{}` when there is nothing actionable for the user.
+  - Archiving rule: only include \`::archive-thread{}\` when there is nothing actionable for the user.
   - Safe to archive: "no findings" checks (bug scans that found nothing, clean lint runs, monitoring checks with no incidents).
   - Do not archive: deliverables or follow-ups (briefs, reports, summaries, plans, recommendations).
   - If you do archive, include the archive directive after the inbox item.

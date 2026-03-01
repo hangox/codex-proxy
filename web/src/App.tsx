@@ -39,7 +39,6 @@ function Dashboard() {
           />
           <AnthropicSetup
             apiKey={status.apiKey}
-            models={status.models}
             selectedModel={status.selectedModel}
           />
           <CodeExamples

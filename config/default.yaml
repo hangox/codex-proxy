@@ -3,8 +3,8 @@ api:
   timeout_seconds: 60
 client:
   originator: Codex Desktop
-  app_version: 26.227.1448
-  build_number: "747"
+  app_version: 26.228.1430
+  build_number: "760"
   platform: darwin
   arch: arm64
   chromium_version: "137"

@@ -1,24 +1,22 @@
-import { useState, useMemo, useCallback } from "preact/hooks";
+import { useMemo, useCallback } from "preact/hooks";
 import { useT } from "../i18n/context";
 import { CopyButton } from "./CopyButton";
 
 interface AnthropicSetupProps {
   apiKey: string;
-  models: string[];
   selectedModel: string;
 }
 
-export function AnthropicSetup({ apiKey, models, selectedModel }: AnthropicSetupProps) {
+export function AnthropicSetup({ apiKey, selectedModel }: AnthropicSetupProps) {
   const t = useT();
-  const [model, setModel] = useState(selectedModel);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:8080";
 
   const envLines = useMemo(() => ({
     ANTHROPIC_BASE_URL: origin,
     ANTHROPIC_API_KEY: apiKey,
-    ANTHROPIC_MODEL: model,
-  }), [origin, apiKey, model]);
+    ANTHROPIC_MODEL: selectedModel,
+  }), [origin, apiKey, selectedModel]);
 
   const allEnvText = useMemo(
     () => Object.entries(envLines).map(([k, v]) => `${k}=${v}`).join("\n"),
@@ -39,15 +37,6 @@ export function AnthropicSetup({ apiKey, models, selectedModel }: AnthropicSetup
           </svg>
           <h2 class="text-[0.95rem] font-bold">{t("anthropicSetup")}</h2>
         </div>
-        <select
-          class="px-3 py-1.5 text-xs font-mono rounded-lg bg-slate-100 dark:bg-bg-dark border border-gray-200 dark:border-border-dark text-slate-700 dark:text-text-main outline-none"
-          value={model}
-          onChange={(e) => setModel((e.target as HTMLSelectElement).value)}
-        >
-          {models.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
       </div>
 
       {/* Env vars */}

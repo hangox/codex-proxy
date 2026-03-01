@@ -71,8 +71,11 @@ export function startModelRefresh(
 
   // Initial fetch after short delay
   _refreshTimer = setTimeout(async () => {
-    await fetchModelsFromBackend(accountPool, cookieJar);
-    scheduleNext(accountPool, cookieJar);
+    try {
+      await fetchModelsFromBackend(accountPool, cookieJar);
+    } finally {
+      scheduleNext(accountPool, cookieJar);
+    }
   }, INITIAL_DELAY_MS);
 
   console.log("[ModelFetcher] Scheduled initial model fetch in 5s");

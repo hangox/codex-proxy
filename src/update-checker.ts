@@ -15,7 +15,7 @@ import { mutateYaml } from "./utils/yaml-mutate.js";
 const CONFIG_PATH = resolve(process.cwd(), "config/default.yaml");
 const STATE_PATH = resolve(process.cwd(), "data/update-state.json");
 const APPCAST_URL = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
-const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const POLL_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 
 export interface UpdateState {
   last_check: string;
@@ -77,6 +77,8 @@ function applyVersionUpdate(version: string, build: string): void {
  * Downloads new Codex.app, extracts fingerprint, and applies config updates.
  * Protected by a lock to prevent concurrent runs.
  */
+const UPDATE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
 function triggerFullUpdate(): void {
   if (_updateInProgress) {
     console.log("[UpdateChecker] Full update already in progress, skipping");
@@ -95,6 +97,12 @@ function triggerFullUpdate(): void {
     },
   );
 
+  // Kill the child if it hangs beyond the timeout
+  const killTimer = setTimeout(() => {
+    console.warn("[UpdateChecker] Full update timed out, killing child");
+    child.kill("SIGTERM");
+  }, UPDATE_TIMEOUT_MS);
+
   let output = "";
   child.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
@@ -104,6 +112,7 @@ function triggerFullUpdate(): void {
   });
 
   child.on("exit", (code) => {
+    clearTimeout(killTimer);
     _updateInProgress = false;
     if (code === 0) {
       console.log("[UpdateChecker] Full update completed. Reloading config...");
@@ -125,6 +134,7 @@ function triggerFullUpdate(): void {
   });
 
   child.on("error", (err) => {
+    clearTimeout(killTimer);
     _updateInProgress = false;
     console.error("[UpdateChecker] Failed to spawn full-update:", err.message);
   });

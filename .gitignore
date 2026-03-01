@@ -15,6 +15,7 @@ scripts/extract-fingerprint.ts
 scripts/full-update.ts
 scripts/apply-update.ts
 scripts/check-update.ts
+scripts/types.ts
 scripts/test-*.ts
 scripts/cron-update.sh
 config/extraction-patterns.yaml

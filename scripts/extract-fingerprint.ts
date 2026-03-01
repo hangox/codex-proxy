@@ -17,6 +17,7 @@ import { resolve, join } from "path";
 import { createHash } from "crypto";
 import { execSync } from "child_process";
 import yaml from "js-yaml";
+import type { ExtractedFingerprint } from "./types.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const OUTPUT_PATH = resolve(ROOT, "data/extracted-fingerprint.json");
@@ -34,29 +35,6 @@ interface ExtractionPatterns {
     end_pattern?: string;
     description: string;
   }>;
-}
-
-interface ExtractedFingerprint {
-  app_version: string;
-  build_number: string;
-  api_base_url: string | null;
-  originator: string | null;
-  models: string[];
-  wham_endpoints: string[];
-  user_agent_contains: string;
-  sparkle_feed_url: string | null;
-  prompts: {
-    desktop_context_hash: string | null;
-    desktop_context_path: string | null;
-    title_generation_hash: string | null;
-    title_generation_path: string | null;
-    pr_generation_hash: string | null;
-    pr_generation_path: string | null;
-    automation_response_hash: string | null;
-    automation_response_path: string | null;
-  };
-  extracted_at: string;
-  source_path: string;
 }
 
 function sha256(content: string): string {
@@ -123,6 +101,7 @@ function extractFromPackageJson(root: string): {
   version: string;
   buildNumber: string;
   sparkleFeedUrl: string | null;
+  electronVersion: string | null;
 } {
   const pkgPath = join(root, "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
@@ -131,6 +110,7 @@ function extractFromPackageJson(root: string): {
     version: pkg.version ?? "unknown",
     buildNumber: String(pkg.codexBuildNumber ?? "unknown"),
     sparkleFeedUrl: pkg.codexSparkleFeedUrl ?? null,
+    electronVersion: pkg.devDependencies?.electron ?? null,
   };
 }
 
@@ -373,9 +353,32 @@ async function main() {
 
   // Step A: package.json
   console.log("[extract] Reading package.json...");
-  const { version, buildNumber, sparkleFeedUrl } = extractFromPackageJson(asarRoot);
-  console.log(`  version: ${version}`);
-  console.log(`  build:   ${buildNumber}`);
+  const { version, buildNumber, sparkleFeedUrl, electronVersion } = extractFromPackageJson(asarRoot);
+  console.log(`  version:  ${version}`);
+  console.log(`  build:    ${buildNumber}`);
+  console.log(`  electron: ${electronVersion ?? "not found"}`);
+
+  // Resolve Chromium version from Electron version
+  let chromiumVersion: string | null = null;
+  if (electronVersion) {
+    const electronMajor = parseInt(electronVersion.replace(/^[^0-9]*/, ""), 10);
+    if (!isNaN(electronMajor)) {
+      try {
+        const { versions } = await import("electron-to-chromium");
+        const versionMap = versions as Record<string, string>;
+        // versions keys use "major.minor" format (e.g. "40.0"), try both
+        const chromium = versionMap[`${electronMajor}.0`] ?? versionMap[electronMajor.toString()];
+        if (chromium) {
+          chromiumVersion = chromium;
+          console.log(`  chromium: ${chromiumVersion} (from electron ${electronMajor})`);
+        } else {
+          console.warn(`[extract] No Chromium mapping for Electron ${electronMajor}`);
+        }
+      } catch {
+        console.warn("[extract] electron-to-chromium not available, skipping chromium resolution");
+      }
+    }
+  }
 
   // Step B: main.js (or main-XXXXX.js chunk)
   console.log("[extract] Loading main.js...");
@@ -455,6 +458,8 @@ async function main() {
   const fingerprint: ExtractedFingerprint = {
     app_version: version,
     build_number: buildNumber,
+    electron_version: electronVersion,
+    chromium_version: chromiumVersion,
     api_base_url: mainJsResults.apiBaseUrl,
     originator: mainJsResults.originator,
     models: mainJsResults.models,

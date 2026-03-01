@@ -33,6 +33,16 @@ export interface FunctionCallDone {
   arguments: string;
 }
 
+export class EmptyResponseError extends Error {
+  constructor(
+    public readonly responseId: string | null,
+    public readonly usage: UsageInfo | undefined,
+  ) {
+    super("Codex returned an empty response");
+    this.name = "EmptyResponseError";
+  }
+}
+
 export interface ExtractedEvent {
   typed: TypedCodexEvent;
   responseId?: string;

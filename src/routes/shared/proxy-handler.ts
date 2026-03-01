@@ -174,9 +174,11 @@ export async function handleProxyRequest(
           return c.json(result.response);
         } catch (collectErr) {
           if (collectErr instanceof EmptyResponseError && attempt <= MAX_EMPTY_RETRIES) {
+            const emptyEmail = accountPool.getEntry(currentEntryId)?.email ?? "?";
             console.warn(
-              `[${fmt.tag}] Account ${currentEntryId} | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), switching account...`,
+              `[${fmt.tag}] Account ${currentEntryId} (${emptyEmail}) | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), switching account...`,
             );
+            accountPool.recordEmptyResponse(currentEntryId);
             accountPool.release(currentEntryId, collectErr.usage);
 
             // Acquire a new account
@@ -210,9 +212,11 @@ export async function handleProxyRequest(
           // Not an empty response error, or retries exhausted
           accountPool.release(currentEntryId);
           if (collectErr instanceof EmptyResponseError) {
+            const exhaustedEmail = accountPool.getEntry(currentEntryId)?.email ?? "?";
             console.warn(
-              `[${fmt.tag}] Account ${currentEntryId} | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), all retries exhausted`,
+              `[${fmt.tag}] Account ${currentEntryId} (${exhaustedEmail}) | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), all retries exhausted`,
             );
+            accountPool.recordEmptyResponse(currentEntryId);
             c.status(502);
             return c.json(fmt.formatError(502, "Codex returned empty responses across all available accounts"));
           }

@@ -13,6 +13,7 @@ export interface AccountUsage {
   request_count: number;
   input_tokens: number;
   output_tokens: number;
+  empty_response_count: number;
   last_used: string | null;
   rate_limit_until: string | null;
   /** Tracks the current rate limit window end (Unix seconds). When window rolls over, counters reset. */

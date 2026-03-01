@@ -145,22 +145,29 @@ export async function handleProxyRequest(
         }
       });
     } else {
-      const result = await fmt.collectTranslator(
-        codexApi,
-        rawResponse,
-        req.model,
-      );
-      if (result.responseId) {
-        const taskId = `task-${randomUUID()}`;
-        sessionManager.storeSession(
-          taskId,
-          "turn-1",
-          req.sessionMessages,
+      try {
+        const result = await fmt.collectTranslator(
+          codexApi,
+          rawResponse,
+          req.model,
         );
-        sessionManager.updateResponseId(taskId, result.responseId);
+        if (result.responseId) {
+          const taskId = `task-${randomUUID()}`;
+          sessionManager.storeSession(
+            taskId,
+            "turn-1",
+            req.sessionMessages,
+          );
+          sessionManager.updateResponseId(taskId, result.responseId);
+        }
+        accountPool.release(entryId, result.usage);
+        return c.json(result.response);
+      } catch (collectErr) {
+        accountPool.release(entryId);
+        const msg = collectErr instanceof Error ? collectErr.message : "Unknown error";
+        c.status(502);
+        return c.json(fmt.formatError(502, msg));
       }
-      accountPool.release(entryId, result.usage);
-      return c.json(result.response);
     }
   } catch (err) {
     // 5. Error handling with format-specific responses

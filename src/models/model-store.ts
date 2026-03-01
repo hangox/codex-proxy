@@ -124,11 +124,21 @@ function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta 
  *   - Aliases are never touched (always from YAML)
  */
 export function applyBackendModels(backendModels: BackendModelEntry[]): void {
+  // Only keep models whose ID already exists in the static catalog.
+  // Backend data is used to supplement/update existing models, not to introduce new IDs.
+  // This prevents ChatGPT-only slugs (gpt-5-2, gpt-5-1, research, etc.) from
+  // entering the catalog and breaking resolveModelId() fallback logic.
+  const staticIds = new Set(_catalog.map((m) => m.id));
+  const filtered = backendModels.filter((raw) => {
+    const id = raw.slug ?? raw.id ?? raw.name ?? "";
+    return staticIds.has(id);
+  });
+
   const staticMap = new Map(_catalog.map((m) => [m.id, m]));
   const merged: CodexModelInfo[] = [];
   const seenIds = new Set<string>();
 
-  for (const raw of backendModels) {
+  for (const raw of filtered) {
     const normalized = normalizeBackendModel(raw);
     seenIds.add(normalized.id);
 
@@ -162,8 +172,9 @@ export function applyBackendModels(backendModels: BackendModelEntry[]): void {
 
   _catalog = merged;
   _lastFetchTime = new Date().toISOString();
+  const skipped = backendModels.length - filtered.length;
   console.log(
-    `[ModelStore] Merged ${backendModels.length} backend + ${merged.length - backendModels.length} static-only = ${merged.length} total models`,
+    `[ModelStore] Merged ${filtered.length} backend (${skipped} non-codex skipped) + ${merged.length - filtered.length} static-only = ${merged.length} total models`,
   );
 }
 

@@ -49,6 +49,8 @@ docker compose up -d
 
 数据持久化通过 volume 映射：`data/`（账号、Cookie）和 `config/`（配置文件）。
 
+> **跨容器访问提示**：如果其他 Docker 容器（如 OpenClaw、Cursor Server 等）需要连接 codex-proxy，建议使用宿主机的局域网 IP（如 `http://192.168.x.x:8080/v1`）而非 `host.docker.internal`，以避免 Docker DNS 解析问题。
+
 ### macOS / Linux
 
 ```bash
@@ -174,7 +176,7 @@ claude   # 启动 Claude Code
 | Sonnet (`claude-sonnet-4-6`) | `gpt-5.2-codex` |
 | Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` |
 
-> 也可以在控制面板 (`http://localhost:8080`) 的 **Claude Code Quick Setup** 卡片中一键复制环境变量。
+> 也可以在控制面板 (`http://localhost:8080`) 的 **Anthropic SDK Setup** 卡片中一键复制环境变量。
 
 ### Cursor
 

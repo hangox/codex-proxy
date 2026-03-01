@@ -58,6 +58,8 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+> **Cross-container access**: If other Docker containers (e.g., OpenClaw, Cursor Server) need to connect to codex-proxy, use the host's LAN IP (e.g., `http://192.168.x.x:8080/v1`) instead of `host.docker.internal` to avoid Docker DNS resolution issues.
+
 ## 🌟 Features
 
 ### 1. 🔌 Full Protocol Compatibility

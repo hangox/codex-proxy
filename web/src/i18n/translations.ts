@@ -52,6 +52,8 @@ export const translations = {
     networkError: "Network error: ",
     copied: "Copied!",
     copyFailed: "Failed",
+    refresh: "Refresh",
+    updatedAt: "Updated at",
     footer: "\u00a9 2025 Codex Proxy. All rights reserved.",
   },
   zh: {
@@ -109,6 +111,8 @@ export const translations = {
     networkError: "\u7f51\u7edc\u9519\u8bef\uff1a",
     copied: "\u5df2\u590d\u5236\uff01",
     copyFailed: "\u5931\u8d25",
+    refresh: "\u5237\u65b0",
+    updatedAt: "\u66f4\u65b0\u4e8e",
     footer:
       "\u00a9 2025 Codex Proxy\u3002\u4fdd\u7559\u6240\u6709\u6743\u5229\u3002",
   },

@@ -24,19 +24,24 @@ export interface Account {
 export function useAccounts() {
   const [list, setList] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [addVisible, setAddVisible] = useState(false);
   const [addInfo, setAddInfo] = useState("");
   const [addError, setAddError] = useState("");
 
   const loadAccounts = useCallback(async () => {
+    setRefreshing(true);
     try {
       const resp = await fetch("/auth/accounts?quota=true");
       const data = await resp.json();
       setList(data.accounts || []);
-    } catch (err) {
+      setLastUpdated(new Date());
+    } catch {
       setList([]);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -146,9 +151,12 @@ export function useAccounts() {
   return {
     list,
     loading,
+    refreshing,
+    lastUpdated,
     addVisible,
     addInfo,
     addError,
+    refresh: loadAccounts,
     startAdd,
     submitRelay,
     deleteAccount,

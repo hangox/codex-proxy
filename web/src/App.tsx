@@ -29,6 +29,9 @@ function Dashboard() {
             accounts={accounts.list}
             loading={accounts.loading}
             onDelete={accounts.deleteAccount}
+            onRefresh={accounts.refresh}
+            refreshing={accounts.refreshing}
+            lastUpdated={accounts.lastUpdated}
           />
           <ApiConfig
             baseUrl={status.baseUrl}

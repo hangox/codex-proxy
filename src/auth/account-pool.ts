@@ -286,14 +286,7 @@ export class AccountPool {
 
     const oldResetAt = entry.usage.window_reset_at;
     if (oldResetAt != null && oldResetAt !== newResetAt) {
-      // Window rolled over — reset local counters
-      console.log(`[AccountPool] Rate limit window rolled for ${entryId} (${entry.email ?? "?"}), resetting usage counters`);
-      entry.usage.request_count = 0;
-      entry.usage.input_tokens = 0;
-      entry.usage.output_tokens = 0;
-      entry.usage.empty_response_count = 0;
-      entry.usage.last_used = null;
-      entry.usage.rate_limit_until = null;
+      console.log(`[AccountPool] Rate limit window rolled for ${entryId} (${entry.email ?? "?"}), updating window timestamp`);
     }
     entry.usage.window_reset_at = newResetAt;
     this.schedulePersist();

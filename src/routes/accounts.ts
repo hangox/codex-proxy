@@ -32,6 +32,7 @@ function toQuota(usage: CodexUsageResponse): CodexQuota {
       limit_reached: usage.rate_limit.limit_reached,
       used_percent: usage.rate_limit.primary_window?.used_percent ?? null,
       reset_at: usage.rate_limit.primary_window?.reset_at ?? null,
+      limit_window_seconds: usage.rate_limit.primary_window?.limit_window_seconds ?? null,
     },
     code_review_rate_limit: usage.code_review_rate_limit
       ? {
@@ -88,7 +89,8 @@ export function createAccountRoutes(
           const usage = await api.getUsage();
           // Sync rate limit window — auto-reset local counters on window rollover
           const resetAt = usage.rate_limit.primary_window?.reset_at ?? null;
-          pool.syncRateLimitWindow(acct.id, resetAt);
+          const windowSec = usage.rate_limit.primary_window?.limit_window_seconds ?? null;
+          pool.syncRateLimitWindow(acct.id, resetAt, windowSec);
           // Re-read usage after potential reset
           const freshAcct = pool.getAccounts().find((a) => a.id === acct.id) ?? acct;
           return { ...freshAcct, quota: toQuota(usage) };

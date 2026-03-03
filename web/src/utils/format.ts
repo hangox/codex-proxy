@@ -4,6 +4,19 @@ export function formatNumber(n: number): string {
   return String(n);
 }
 
+export function formatWindowDuration(seconds: number, isZh: boolean): string {
+  if (seconds >= 86400) {
+    const days = Math.round(seconds / 86400);
+    return isZh ? `${days}天` : `${days}d`;
+  }
+  if (seconds >= 3600) {
+    const hours = Math.round(seconds / 3600);
+    return isZh ? `${hours}小时` : `${hours}h`;
+  }
+  const minutes = Math.round(seconds / 60);
+  return isZh ? `${minutes}分钟` : `${minutes}m`;
+}
+
 export function formatResetTime(unixSec: number, isZh: boolean): string {
   const d = new Date(unixSec * 1000);
   const now = new Date();

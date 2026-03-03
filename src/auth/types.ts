@@ -18,6 +18,16 @@ export interface AccountUsage {
   rate_limit_until: string | null;
   /** Tracks the current rate limit window end (Unix seconds). When window rolls over, counters reset. */
   window_reset_at?: number | null;
+  /** Per-window request count (resets when window expires). */
+  window_request_count?: number;
+  /** Per-window input tokens (resets when window expires). */
+  window_input_tokens?: number;
+  /** Per-window output tokens (resets when window expires). */
+  window_output_tokens?: number;
+  /** ISO timestamp of when window counters were last reset. */
+  window_counters_reset_at?: string | null;
+  /** Window duration in seconds, synced from backend, used for local window estimation. */
+  limit_window_seconds?: number | null;
 }
 
 export interface AccountEntry {
@@ -54,6 +64,7 @@ export interface CodexQuota {
     limit_reached: boolean;
     used_percent: number | null;
     reset_at: number | null;
+    limit_window_seconds: number | null;
   };
   code_review_rate_limit: {
     allowed: boolean;

@@ -128,6 +128,12 @@ export class AccountPool {
       entry.usage.input_tokens += usage.input_tokens ?? 0;
       entry.usage.output_tokens += usage.output_tokens ?? 0;
     }
+    // Increment window counters
+    entry.usage.window_request_count = (entry.usage.window_request_count ?? 0) + 1;
+    if (usage) {
+      entry.usage.window_input_tokens = (entry.usage.window_input_tokens ?? 0) + (usage.input_tokens ?? 0);
+      entry.usage.window_output_tokens = (entry.usage.window_output_tokens ?? 0) + (usage.output_tokens ?? 0);
+    }
     this.schedulePersist();
   }
 
@@ -156,6 +162,7 @@ export class AccountPool {
     if (options?.countRequest) {
       entry.usage.request_count++;
       entry.usage.last_used = new Date().toISOString();
+      entry.usage.window_request_count = (entry.usage.window_request_count ?? 0) + 1;
     }
 
     this.schedulePersist();
@@ -206,6 +213,11 @@ export class AccountPool {
         empty_response_count: 0,
         last_used: null,
         rate_limit_until: null,
+        window_request_count: 0,
+        window_input_tokens: 0,
+        window_output_tokens: 0,
+        window_counters_reset_at: null,
+        limit_window_seconds: null,
       },
       addedAt: new Date().toISOString(),
     };
@@ -269,6 +281,11 @@ export class AccountPool {
       last_used: null,
       rate_limit_until: null,
       window_reset_at: entry.usage.window_reset_at ?? null,
+      window_request_count: 0,
+      window_input_tokens: 0,
+      window_output_tokens: 0,
+      window_counters_reset_at: new Date().toISOString(),
+      limit_window_seconds: entry.usage.limit_window_seconds ?? null,
     };
     this.schedulePersist();
     return true;
@@ -279,16 +296,27 @@ export class AccountPool {
    * If so, auto-reset local usage counters to stay in sync.
    * Called after fetching quota from OpenAI API.
    */
-  syncRateLimitWindow(entryId: string, newResetAt: number | null): void {
+  syncRateLimitWindow(
+    entryId: string,
+    newResetAt: number | null,
+    limitWindowSeconds: number | null,
+  ): void {
     if (newResetAt == null) return;
     const entry = this.accounts.get(entryId);
     if (!entry) return;
 
     const oldResetAt = entry.usage.window_reset_at;
     if (oldResetAt != null && oldResetAt !== newResetAt) {
-      console.log(`[AccountPool] Rate limit window rolled for ${entryId} (${entry.email ?? "?"}), updating window timestamp`);
+      console.log(`[AccountPool] Rate limit window rolled for ${entryId} (${entry.email ?? "?"}), resetting window counters`);
+      entry.usage.window_request_count = 0;
+      entry.usage.window_input_tokens = 0;
+      entry.usage.window_output_tokens = 0;
+      entry.usage.window_counters_reset_at = new Date().toISOString();
     }
     entry.usage.window_reset_at = newResetAt;
+    if (limitWindowSeconds != null) {
+      entry.usage.limit_window_seconds = limitWindowSeconds;
+    }
     this.schedulePersist();
   }
 
@@ -399,6 +427,27 @@ export class AccountPool {
     if (entry.status === "active" && isTokenExpired(entry.token)) {
       entry.status = "expired";
     }
+
+    // Auto-reset window counters when window has expired
+    const windowResetAt = entry.usage.window_reset_at;
+    const nowSec = now.getTime() / 1000;
+    if (windowResetAt != null && nowSec >= windowResetAt) {
+      console.log(`[AccountPool] Window expired for ${entry.id} (${entry.email ?? "?"}), resetting window counters`);
+      entry.usage.window_request_count = 0;
+      entry.usage.window_input_tokens = 0;
+      entry.usage.window_output_tokens = 0;
+      entry.usage.window_counters_reset_at = now.toISOString();
+      // Jump to the correct current window (handles multi-window catch-up in one step)
+      const windowSec = entry.usage.limit_window_seconds;
+      if (windowSec && windowSec > 0) {
+        let nextReset = windowResetAt + windowSec;
+        while (nextReset <= nowSec) nextReset += windowSec;
+        entry.usage.window_reset_at = nextReset;
+      } else {
+        entry.usage.window_reset_at = null; // Wait for backend sync to correct
+      }
+      this.schedulePersist();
+    }
   }
 
   private toInfo(entry: AccountEntry): AccountInfo {
@@ -477,6 +526,15 @@ export class AccountPool {
               entry.usage.empty_response_count = 0;
               needsPersist = true;
             }
+            // Backfill window counter fields for old entries
+            if (entry.usage.window_request_count == null) {
+              entry.usage.window_request_count = 0;
+              entry.usage.window_input_tokens = 0;
+              entry.usage.window_output_tokens = 0;
+              entry.usage.window_counters_reset_at = null;
+              entry.usage.limit_window_seconds = null;
+              needsPersist = true;
+            }
             this.accounts.set(entry.id, entry);
           }
         }
@@ -519,6 +577,11 @@ export class AccountPool {
           empty_response_count: 0,
           last_used: null,
           rate_limit_until: null,
+          window_request_count: 0,
+          window_input_tokens: 0,
+          window_output_tokens: 0,
+          window_counters_reset_at: null,
+          limit_window_seconds: null,
         },
         addedAt: new Date().toISOString(),
       };

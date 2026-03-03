@@ -1,7 +1,7 @@
 import { useCallback } from "preact/hooks";
 import { useT, useI18n } from "../i18n/context";
 import type { TranslationKey } from "../i18n/translations";
-import { formatNumber, formatResetTime } from "../utils/format";
+import { formatNumber, formatResetTime, formatWindowDuration } from "../utils/format";
 import type { Account } from "../hooks/use-accounts";
 
 const avatarColors = [
@@ -50,7 +50,11 @@ export function AccountCard({ account, index, onDelete }: AccountCardProps) {
   const usage = account.usage || {};
   const requests = usage.request_count ?? 0;
   const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+  const winRequests = usage.window_request_count ?? 0;
+  const winTokens = (usage.window_input_tokens ?? 0) + (usage.window_output_tokens ?? 0);
   const plan = account.planType || t("freeTier");
+  const windowSec = account.quota?.rate_limit?.limit_window_seconds;
+  const windowDur = windowSec ? formatWindowDuration(windowSec, lang === "zh") : null;
 
   const [statusCls, statusKey] = statusStyles[account.status] || statusStyles.disabled;
 
@@ -86,7 +90,14 @@ export function AccountCard({ account, index, onDelete }: AccountCardProps) {
           </div>
           <div>
             <h3 class="text-[0.82rem] font-semibold leading-tight">{email}</h3>
-            <p class="text-xs text-slate-500 dark:text-text-dim">{plan}</p>
+            <p class="text-xs text-slate-500 dark:text-text-dim">
+              {plan}
+              {windowDur && (
+                <span class="ml-1.5 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-border-dark text-slate-500 dark:text-text-dim text-[0.65rem] font-medium">
+                  {windowDur}
+                </span>
+              )}
+            </p>
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -108,12 +119,16 @@ export function AccountCard({ account, index, onDelete }: AccountCardProps) {
       {/* Stats */}
       <div class="space-y-2">
         <div class="flex justify-between text-[0.78rem]">
-          <span class="text-slate-500 dark:text-text-dim">{t("totalRequests")}</span>
-          <span class="font-medium">{formatNumber(requests)}</span>
+          <span class="text-slate-500 dark:text-text-dim">{t("windowRequests")}</span>
+          <span class="font-medium">{formatNumber(winRequests)}</span>
         </div>
         <div class="flex justify-between text-[0.78rem]">
-          <span class="text-slate-500 dark:text-text-dim">{t("tokensUsed")}</span>
-          <span class="font-medium">{formatNumber(tokens)}</span>
+          <span class="text-slate-500 dark:text-text-dim">{t("windowTokens")}</span>
+          <span class="font-medium">{formatNumber(winTokens)}</span>
+        </div>
+        <div class="flex justify-between text-[0.68rem]">
+          <span class="text-slate-400 dark:text-text-dim/70">{t("totalAll")}</span>
+          <span class="text-slate-400 dark:text-text-dim/70">{formatNumber(requests)} req · {formatNumber(tokens)} tok</span>
         </div>
       </div>
 
@@ -142,6 +157,11 @@ export function AccountCard({ account, index, onDelete }: AccountCardProps) {
           {resetAt && (
             <p class="text-xs text-slate-400 dark:text-text-dim mt-1">
               {t("resetsAt")} {resetAt}
+              {windowDur && (
+                <span class="ml-1 text-slate-400 dark:text-text-dim/70">
+                  ({t("windowLabel")} {windowDur})
+                </span>
+              )}
             </p>
           )}
         </div>

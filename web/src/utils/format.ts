@@ -6,14 +6,14 @@ export function formatNumber(n: number): string {
 
 export function formatWindowDuration(seconds: number, isZh: boolean): string {
   if (seconds >= 86400) {
-    const days = Math.round(seconds / 86400);
+    const days = Math.floor(seconds / 86400);
     return isZh ? `${days}天` : `${days}d`;
   }
   if (seconds >= 3600) {
-    const hours = Math.round(seconds / 3600);
+    const hours = Math.floor(seconds / 3600);
     return isZh ? `${hours}小时` : `${hours}h`;
   }
-  const minutes = Math.round(seconds / 60);
+  const minutes = Math.floor(seconds / 60);
   return isZh ? `${minutes}分钟` : `${minutes}m`;
 }
 

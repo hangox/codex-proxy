@@ -430,16 +430,19 @@ export class AccountPool {
 
     // Auto-reset window counters when window has expired
     const windowResetAt = entry.usage.window_reset_at;
-    if (windowResetAt != null && now.getTime() / 1000 >= windowResetAt) {
+    const nowSec = now.getTime() / 1000;
+    if (windowResetAt != null && nowSec >= windowResetAt) {
       console.log(`[AccountPool] Window expired for ${entry.id} (${entry.email ?? "?"}), resetting window counters`);
       entry.usage.window_request_count = 0;
       entry.usage.window_input_tokens = 0;
       entry.usage.window_output_tokens = 0;
       entry.usage.window_counters_reset_at = now.toISOString();
-      // Estimate next window end using stored duration
+      // Jump to the correct current window (handles multi-window catch-up in one step)
       const windowSec = entry.usage.limit_window_seconds;
       if (windowSec && windowSec > 0) {
-        entry.usage.window_reset_at = windowResetAt + windowSec;
+        let nextReset = windowResetAt + windowSec;
+        while (nextReset <= nowSec) nextReset += windowSec;
+        entry.usage.window_reset_at = nextReset;
       } else {
         entry.usage.window_reset_at = null; // Wait for backend sync to correct
       }

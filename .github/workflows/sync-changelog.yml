@@ -1,0 +1,62 @@
+name: Sync CHANGELOG to README
+
+on:
+  push:
+    branches: [master]
+    paths: [CHANGELOG.md]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract recent changelog and update README
+        run: |
+          # Extract the first 3 version sections from CHANGELOG.md
+          # (everything between the first "## " heading and the 4th "## " heading)
+          python3 - <<'PYEOF'
+          import re, pathlib
+
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          readme = pathlib.Path("README.md").read_text(encoding="utf-8")
+
+          # Split changelog into version sections by "## " headings
+          # Skip the title lines before the first "## "
+          sections = re.split(r"(?=^## )", changelog, flags=re.MULTILINE)
+          # Filter to actual version sections (start with "## ")
+          versions = [s for s in sections if s.startswith("## ")]
+
+          # Take up to 3 most recent versions
+          recent = versions[:3]
+          if not recent:
+              print("No version sections found in CHANGELOG.md")
+              exit(0)
+
+          # Build the replacement content
+          content = "\n".join(s.rstrip() for s in recent)
+
+          # Replace between markers
+          pattern = r"(<!-- CHANGELOG:START -->).*?(<!-- CHANGELOG:END -->)"
+          replacement = f"<!-- CHANGELOG:START -->\n{content}\n<!-- CHANGELOG:END -->"
+          new_readme = re.sub(pattern, replacement, readme, flags=re.DOTALL)
+
+          if new_readme == readme:
+              print("README unchanged")
+              exit(0)
+
+          pathlib.Path("README.md").write_text(new_readme, encoding="utf-8")
+          print(f"Updated README with {len(recent)} changelog section(s)")
+          PYEOF
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet README.md && echo "No changes" && exit 0
+          git add README.md
+          git commit -m "docs: auto-sync changelog to README [skip ci]"
+          git push

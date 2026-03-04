@@ -316,6 +316,26 @@ server:
 - 本项目依赖 Codex Desktop 的公开接口，上游版本更新时会自动检测并更新指纹
 - `config/default.yaml` 中的注释在自动更新后会丢失（使用结构化 YAML 写入）
 
+## 📝 最近更新 (Recent Changes)
+
+> 完整更新日志请查看 [CHANGELOG.md](./CHANGELOG.md)
+
+### 最新
+
+- **图片输入支持** — OpenAI（`image_url`）、Anthropic（`image/base64`）、Gemini（`inlineData`）三种格式的图片内容透传到 Codex 后端
+- **每窗口用量计数器** — Dashboard 主显示当前窗口的请求数和 Token 用量，窗口过期自动归零
+- **空响应自动重试** — Codex 返回空响应时自动换号重试（最多 3 次）
+- **动态模型列表** — 后台自动从 Codex 后端获取模型目录，与静态 YAML 合并
+- **工具 schema 修复** — MCP 工具缺少 `properties` 字段时不再 400 报错
+
+### v0.8.0
+
+- 原生 function_call / tool_calls 支持（所有协议）
+
+### v0.7.0
+
+- `developer` 角色支持、数组格式 content、模型响应自动过滤 Codex Desktop 指令
+
 ## 📄 许可协议 (License)
 
 本项目采用 **非商业许可 (Non-Commercial)**：

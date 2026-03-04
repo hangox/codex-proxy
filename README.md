@@ -323,11 +323,11 @@ server:
 <!-- CHANGELOG:START -->
 ### [Unreleased]
 
+- Reasoning/Thinking 输出支持：始终向 Codex API 发送 `summary: "auto"` 以获取推理摘要事件；OpenAI 路由在客户端发送 `reasoning_effort` 时以 `reasoning_content` 输出；Anthropic 路由在客户端发送 `thinking.type: enabled/adaptive` 时以 thinking block 输出；未知 SSE 事件记录到 debug 日志以便发现新事件类型
 - 图片输入支持：OpenAI、Anthropic、Gemini 三种格式的图片内容现在可以正确透传到 Codex 后端（`input_image` + data URI），此前图片被静默丢弃
 - 每窗口使用量计数器：Dashboard 主显示当前窗口内的请求数和 Token 用量，累计总量降为次要灰色小字；窗口过期时自动归零（时间驱动，零 API 开销），后端同步作为双保险校正
 - 窗口时长显示：从后端同步 `limit_window_seconds`，AccountCard header 显示窗口时长 badge（如 `3h`），重置时间行追加窗口时长文字
 - Dashboard 账号列表新增手动刷新按钮：点击重新拉取额度数据，刷新中按钮旋转并禁用；独立 `refreshing` 状态确保刷新时列表不清空；标题行右侧显示"更新于 HH:MM:SS"时间戳（桌面端可见）
-- 空响应计数器：每个账号追踪 `empty_response_count`，通过 `GET /auth/accounts` 可查看，窗口重置时自动归零
 - ...（[查看全部更新](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24

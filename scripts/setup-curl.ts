@@ -50,10 +50,11 @@ function getPlatformInfo(version: string): PlatformInfo {
   }
 
   if (platform === "win32") {
-    // Windows: download libcurl-impersonate package (DLL named libcurl.dll)
+    // Windows: download libcurl-impersonate package
+    // v1.5+ renamed libcurl.dll → libcurl-impersonate.dll
     return {
       assetPattern: /libcurl-impersonate-.*\.x86_64-win32\.tar\.gz/,
-      binaryName: "libcurl.dll",
+      binaryName: "libcurl-impersonate.dll",
       destName: "libcurl.dll",
     };
   }

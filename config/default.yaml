@@ -3,11 +3,11 @@ api:
   timeout_seconds: 60
 client:
   originator: Codex Desktop
-  app_version: 26.228.1430
-  build_number: "760"
+  app_version: 26.303.1606
+  build_number: "806"
   platform: darwin
   arch: arm64
-  chromium_version: "137"
+  chromium_version: "144"
 model:
   default: gpt-5.2-codex
   default_reasoning_effort: medium
@@ -31,5 +31,5 @@ session:
 tls:
   transport: auto
   curl_binary: auto
-  impersonate_profile: chrome137
+  impersonate_profile: chrome144
   proxy_url: null

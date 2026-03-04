@@ -321,6 +321,25 @@ server:
 > 完整更新日志请查看 [CHANGELOG.md](./CHANGELOG.md)，以下内容由 CI 自动同步。
 
 <!-- CHANGELOG:START -->
+### [Unreleased]
+
+- 图片输入支持：OpenAI、Anthropic、Gemini 三种格式的图片内容现在可以正确透传到 Codex 后端（`input_image` + data URI），此前图片被静默丢弃
+- 每窗口使用量计数器：Dashboard 主显示当前窗口内的请求数和 Token 用量，累计总量降为次要灰色小字；窗口过期时自动归零（时间驱动，零 API 开销），后端同步作为双保险校正
+- 窗口时长显示：从后端同步 `limit_window_seconds`，AccountCard header 显示窗口时长 badge（如 `3h`），重置时间行追加窗口时长文字
+- Dashboard 账号列表新增手动刷新按钮：点击重新拉取额度数据，刷新中按钮旋转并禁用；独立 `refreshing` 状态确保刷新时列表不清空；标题行右侧显示"更新于 HH:MM:SS"时间戳（桌面端可见）
+- 空响应计数器：每个账号追踪 `empty_response_count`，通过 `GET /auth/accounts` 可查看，窗口重置时自动归零
+- ...（[查看全部更新](./CHANGELOG.md)）
+
+### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
+
+- 原生 function_call / tool_calls 支持（所有协议）
+
+### [v0.7.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.7.0) - 2026-02-22
+
+- `developer` 角色支持（OpenAI 协议）
+- 数组格式 content 支持
+- tool / function 消息兼容（所有协议）
+- 模型响应中自动过滤 Codex Desktop 指令
 <!-- CHANGELOG:END -->
 
 ## 📄 许可协议 (License)

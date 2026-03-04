@@ -208,7 +208,7 @@ export async function* streamCodexToAnthropic(
   yield formatSSE("message_delta", {
     type: "message_delta",
     delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn" },
-    usage: { output_tokens: outputTokens },
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
   });
 
   // 6. message_stop

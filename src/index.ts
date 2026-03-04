@@ -21,19 +21,25 @@ import { initTransport } from "./tls/transport.js";
 import { loadStaticModels } from "./models/model-store.js";
 import { startModelRefresh, stopModelRefresh } from "./models/model-fetcher.js";
 
-async function main() {
+export interface ServerHandle {
+  close: () => Promise<void>;
+  port: number;
+}
+
+export interface StartOptions {
+  host?: string;
+  port?: number;
+}
+
+/**
+ * Core startup logic shared by CLI and Electron entry points.
+ * Throws on config errors instead of calling process.exit().
+ */
+export async function startServer(options?: StartOptions): Promise<ServerHandle> {
   // Load configuration
   console.log("[Init] Loading configuration...");
-  let config: ReturnType<typeof loadConfig>;
-  try {
-    config = loadConfig();
-    loadFingerprint();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Init] Failed to load configuration: ${msg}`);
-    console.error("[Init] Make sure config/default.yaml and config/fingerprint.yaml exist and are valid YAML.");
-    process.exit(1);
-  }
+  const config = loadConfig();
+  loadFingerprint();
 
   // Load static model catalog (before transport/auth init)
   loadStaticModels();
@@ -75,8 +81,8 @@ async function main() {
   app.route("/", webRoutes);
 
   // Start server
-  const port = config.server.port;
-  const host = config.server.host;
+  const port = options?.port ?? config.server.port;
+  const host = options?.host ?? config.server.host;
 
   const poolSummary = accountPool.getPoolSummary();
   const displayHost = (host === "0.0.0.0" || host === "::") ? "localhost" : host;
@@ -114,9 +120,38 @@ async function main() {
     port,
   });
 
+  const close = (): Promise<void> => {
+    return new Promise((resolve) => {
+      server.close(() => {
+        stopUpdateChecker();
+        stopModelRefresh();
+        refreshScheduler.destroy();
+        sessionManager.destroy();
+        cookieJar.destroy();
+        accountPool.destroy();
+        resolve();
+      });
+    });
+  };
+
+  return { close, port };
+}
+
+// ── CLI entry point ──────────────────────────────────────────────────
+
+async function main() {
+  let handle: ServerHandle;
+  try {
+    handle = await startServer();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Init] Failed to start server: ${msg}`);
+    console.error("[Init] Make sure config/default.yaml and config/fingerprint.yaml exist and are valid YAML.");
+    process.exit(1);
+  }
+
   // P1-7: Graceful shutdown — stop accepting, drain, then cleanup
   let shutdownCalled = false;
-  const DRAIN_TIMEOUT_MS = 5_000;
   const shutdown = () => {
     if (shutdownCalled) return;
     shutdownCalled = true;
@@ -128,44 +163,27 @@ async function main() {
     }, 10_000);
     if (forceExit.unref) forceExit.unref();
 
-    // 1. Stop accepting new connections
-    server.close(() => {
-      console.log("[Shutdown] Server closed, cleaning up resources...");
-      cleanup();
-    });
-
-    // 2. Grace period for active streams, then force cleanup
-    setTimeout(() => {
-      console.log("[Shutdown] Drain timeout reached, cleaning up...");
-      cleanup();
-    }, DRAIN_TIMEOUT_MS);
-
-    let cleanupDone = false;
-    function cleanup() {
-      if (cleanupDone) return;
-      cleanupDone = true;
-      try {
-        stopUpdateChecker();
-        stopModelRefresh();
-        refreshScheduler.destroy();
-        sessionManager.destroy();
-        cookieJar.destroy();
-        accountPool.destroy();
-      } catch (err) {
-        console.error("[Shutdown] Error during cleanup:", err instanceof Error ? err.message : err);
-      }
+    handle.close().then(() => {
+      console.log("[Shutdown] Server closed, cleanup complete.");
       clearTimeout(forceExit);
       process.exit(0);
-    }
+    }).catch((err) => {
+      console.error("[Shutdown] Error during cleanup:", err instanceof Error ? err.message : err);
+      clearTimeout(forceExit);
+      process.exit(1);
+    });
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  // Trigger graceful shutdown instead of hard exit
-  process.kill(process.pid, "SIGTERM");
-  setTimeout(() => process.exit(1), 2000).unref();
-});
+// Only run CLI entry when executed directly (not imported by Electron)
+const isDirectRun = process.argv[1]?.includes("index");
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.kill(process.pid, "SIGTERM");
+    setTimeout(() => process.exit(1), 2000).unref();
+  });
+}

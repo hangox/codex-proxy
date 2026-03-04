@@ -1,5 +1,5 @@
-import { I18nProvider } from "./i18n/context";
-import { ThemeProvider } from "./theme/context";
+import { I18nProvider } from "../../shared/i18n/context";
+import { ThemeProvider } from "../../shared/theme/context";
 import { Header } from "./components/Header";
 import { AccountList } from "./components/AccountList";
 import { AddAccount } from "./components/AddAccount";
@@ -7,8 +7,8 @@ import { ApiConfig } from "./components/ApiConfig";
 import { AnthropicSetup } from "./components/AnthropicSetup";
 import { CodeExamples } from "./components/CodeExamples";
 import { Footer } from "./components/Footer";
-import { useAccounts } from "./hooks/use-accounts";
-import { useStatus } from "./hooks/use-status";
+import { useAccounts } from "../../shared/hooks/use-accounts";
+import { useStatus } from "../../shared/hooks/use-status";
 
 function Dashboard() {
   const accounts = useAccounts();

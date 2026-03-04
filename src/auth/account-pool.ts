@@ -13,6 +13,7 @@ import {
 import { resolve, dirname } from "path";
 import { randomBytes } from "crypto";
 import { getConfig } from "../config.js";
+import { getDataDir } from "../paths.js";
 import { jitter } from "../utils/jitter.js";
 import {
   decodeJwtPayload,
@@ -28,8 +29,12 @@ import type {
   AccountsFile,
 } from "./types.js";
 
-const ACCOUNTS_FILE = resolve(process.cwd(), "data", "accounts.json");
-const LEGACY_AUTH_FILE = resolve(process.cwd(), "data", "auth.json");
+function getAccountsFile(): string {
+  return resolve(getDataDir(), "accounts.json");
+}
+function getLegacyAuthFile(): string {
+  return resolve(getDataDir(), "auth.json");
+}
 
 // P1-4: Lock TTL — auto-release locks older than this
 const ACQUIRE_LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -484,12 +489,13 @@ export class AccountPool {
       this.persistTimer = null;
     }
     try {
-      const dir = dirname(ACCOUNTS_FILE);
+      const accountsFile = getAccountsFile();
+      const dir = dirname(accountsFile);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       const data: AccountsFile = { accounts: [...this.accounts.values()] };
-      const tmpFile = ACCOUNTS_FILE + ".tmp";
+      const tmpFile = accountsFile + ".tmp";
       writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf-8");
-      renameSync(tmpFile, ACCOUNTS_FILE);
+      renameSync(tmpFile, accountsFile);
     } catch (err) {
       console.error("[AccountPool] Failed to persist accounts:", err instanceof Error ? err.message : err);
     }
@@ -497,8 +503,9 @@ export class AccountPool {
 
   private loadPersisted(): void {
     try {
-      if (!existsSync(ACCOUNTS_FILE)) return;
-      const raw = readFileSync(ACCOUNTS_FILE, "utf-8");
+      const accountsFile = getAccountsFile();
+      if (!existsSync(accountsFile)) return;
+      const raw = readFileSync(accountsFile, "utf-8");
       const data = JSON.parse(raw) as AccountsFile;
       if (Array.isArray(data.accounts)) {
         let needsPersist = false;
@@ -547,10 +554,12 @@ export class AccountPool {
 
   private migrateFromLegacy(): void {
     try {
-      if (existsSync(ACCOUNTS_FILE)) return; // already migrated
-      if (!existsSync(LEGACY_AUTH_FILE)) return;
+      const accountsFile = getAccountsFile();
+      const legacyAuthFile = getLegacyAuthFile();
+      if (existsSync(accountsFile)) return; // already migrated
+      if (!existsSync(legacyAuthFile)) return;
 
-      const raw = readFileSync(LEGACY_AUTH_FILE, "utf-8");
+      const raw = readFileSync(legacyAuthFile, "utf-8");
       const data = JSON.parse(raw) as {
         token: string;
         proxyApiKey?: string | null;
@@ -589,13 +598,13 @@ export class AccountPool {
       this.accounts.set(id, entry);
 
       // Write new format
-      const dir = dirname(ACCOUNTS_FILE);
+      const dir = dirname(accountsFile);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       const accountsData: AccountsFile = { accounts: [entry] };
-      writeFileSync(ACCOUNTS_FILE, JSON.stringify(accountsData, null, 2), "utf-8");
+      writeFileSync(accountsFile, JSON.stringify(accountsData, null, 2), "utf-8");
 
       // Rename old file
-      renameSync(LEGACY_AUTH_FILE, LEGACY_AUTH_FILE + ".bak");
+      renameSync(legacyAuthFile, legacyAuthFile + ".bak");
       console.log("[AccountPool] Migrated from auth.json → accounts.json");
     } catch (err) {
       console.warn("[AccountPool] Migration failed:", err);

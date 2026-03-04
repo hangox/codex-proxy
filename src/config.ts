@@ -4,6 +4,7 @@ import yaml from "js-yaml";
 import { z } from "zod";
 import { loadStaticModels } from "./models/model-store.js";
 import { triggerImmediateRefresh } from "./models/model-fetcher.js";
+import { getConfigDir } from "./paths.js";
 
 const ConfigSchema = z.object({
   api: z.object({
@@ -99,7 +100,7 @@ let _fingerprint: FingerprintConfig | null = null;
 
 export function loadConfig(configDir?: string): AppConfig {
   if (_config) return _config;
-  const dir = configDir ?? resolve(process.cwd(), "config");
+  const dir = configDir ?? getConfigDir();
   const raw = loadYaml(resolve(dir, "default.yaml")) as Record<string, unknown>;
   applyEnvOverrides(raw);
   _config = ConfigSchema.parse(raw);
@@ -108,7 +109,7 @@ export function loadConfig(configDir?: string): AppConfig {
 
 export function loadFingerprint(configDir?: string): FingerprintConfig {
   if (_fingerprint) return _fingerprint;
-  const dir = configDir ?? resolve(process.cwd(), "config");
+  const dir = configDir ?? getConfigDir();
   const raw = loadYaml(resolve(dir, "fingerprint.yaml"));
   _fingerprint = FingerprintSchema.parse(raw);
   return _fingerprint;
@@ -132,7 +133,7 @@ export function mutateClientConfig(patch: Partial<AppConfig["client"]>): void {
 /** Reload config from disk (hot-reload after full-update).
  *  P1-5: Load to temp first, then swap atomically to avoid null window. */
 export function reloadConfig(configDir?: string): AppConfig {
-  const dir = configDir ?? resolve(process.cwd(), "config");
+  const dir = configDir ?? getConfigDir();
   const raw = loadYaml(resolve(dir, "default.yaml")) as Record<string, unknown>;
   applyEnvOverrides(raw);
   const fresh = ConfigSchema.parse(raw);
@@ -143,7 +144,7 @@ export function reloadConfig(configDir?: string): AppConfig {
 /** Reload fingerprint from disk (hot-reload after full-update).
  *  P1-5: Load to temp first, then swap atomically. */
 export function reloadFingerprint(configDir?: string): FingerprintConfig {
-  const dir = configDir ?? resolve(process.cwd(), "config");
+  const dir = configDir ?? getConfigDir();
   const raw = loadYaml(resolve(dir, "fingerprint.yaml"));
   const fresh = FingerprintSchema.parse(raw);
   _fingerprint = fresh;

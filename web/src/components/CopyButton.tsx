@@ -1,7 +1,7 @@
 import { useState, useCallback } from "preact/hooks";
-import { clipboardCopy } from "../utils/clipboard";
-import { useT } from "../i18n/context";
-import type { TranslationKey } from "../i18n/translations";
+import { clipboardCopy } from "../../../shared/utils/clipboard";
+import { useT } from "../../../shared/i18n/context";
+import type { TranslationKey } from "../../../shared/i18n/translations";
 
 interface CopyButtonProps {
   getText: () => string;

@@ -1,6 +1,6 @@
-import { useI18n, useT } from "../i18n/context";
+import { useI18n, useT } from "../../../shared/i18n/context";
 import { AccountCard } from "./AccountCard";
-import type { Account } from "../hooks/use-accounts";
+import type { Account } from "../../../shared/types";
 
 interface AccountListProps {
   accounts: Account[];

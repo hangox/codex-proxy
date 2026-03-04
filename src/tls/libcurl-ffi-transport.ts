@@ -13,6 +13,7 @@ import { existsSync } from "fs";
 import type { IKoffiLib, IKoffiCType, IKoffiRegisteredCallback, KoffiFunction } from "koffi";
 import type { TlsTransport, TlsTransportResponse } from "./transport.js";
 import { getProxyUrl, getResolvedProfile } from "./curl-binary.js";
+import { getBinDir } from "../paths.js";
 
 // ── libcurl constants ──────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ function asyncCall(fn: KoffiFunction, ...args: unknown[]): Promise<number> {
 // ── FFI initialization ─────────────────────────────────────────────
 
 function resolveLibPath(): string | null {
-  const binDir = resolve(process.cwd(), "bin");
+  const binDir = getBinDir();
   const candidates: string[] = [];
 
   if (process.platform === "win32") {
@@ -106,7 +107,7 @@ function resolveLibPath(): string | null {
 }
 
 function resolveCaPath(): string | null {
-  const candidate = resolve(process.cwd(), "bin", "cacert.pem");
+  const candidate = resolve(getBinDir(), "cacert.pem");
   return existsSync(candidate) ? candidate : null;
 }
 

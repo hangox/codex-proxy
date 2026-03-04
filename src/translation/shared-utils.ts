@@ -7,6 +7,7 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { getConfig } from "../config.js";
+import { getConfigDir } from "../paths.js";
 
 let cachedDesktopContext: string | null = null;
 
@@ -18,7 +19,7 @@ export function getDesktopContext(): string {
   if (cachedDesktopContext !== null) return cachedDesktopContext;
   try {
     cachedDesktopContext = readFileSync(
-      resolve(process.cwd(), "config/prompts/desktop-context.md"),
+      resolve(getConfigDir(), "prompts/desktop-context.md"),
       "utf-8",
     );
   } catch {

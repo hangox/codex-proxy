@@ -1,5 +1,8 @@
 node_modules/
 dist/
+dist-electron/
+release/
+public-desktop/
 data/
 public/
 docs/

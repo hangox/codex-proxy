@@ -4,14 +4,16 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { AccountPool } from "../auth/account-pool.js";
 import { getConfig, getFingerprint } from "../config.js";
+import { getPublicDir, getDesktopPublicDir, getConfigDir, getDataDir } from "../paths.js";
 
 export function createWebRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
 
-  const publicDir = resolve(process.cwd(), "public");
+  const publicDir = getPublicDir();
+  const desktopPublicDir = getDesktopPublicDir();
 
-  // Serve Vite build assets
-  app.use("/assets/*", serveStatic({ root: "./public" }));
+  // Serve Vite build assets (web)
+  app.use("/assets/*", serveStatic({ root: publicDir }));
 
   app.get("/", (c) => {
     try {
@@ -21,6 +23,25 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Web] Failed to read HTML file: ${msg}`);
       return c.html("<h1>Codex Proxy</h1><p>UI files not found. Run 'npm/pnpm/bun run build:web' first. The API is still available at /v1/chat/completions</p>");
+    }
+  });
+
+  // Desktop UI — served at /desktop for Electron
+  // Vite builds with base: "/desktop/" so request paths are /desktop/assets/...
+  // but files live at public-desktop/assets/..., so strip the /desktop prefix
+  app.use("/desktop/assets/*", serveStatic({
+    root: desktopPublicDir,
+    rewriteRequestPath: (path) => path.replace(/^\/desktop/, ""),
+  }));
+
+  app.get("/desktop", (c) => {
+    try {
+      const html = readFileSync(resolve(desktopPublicDir, "index.html"), "utf-8");
+      return c.html(html);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Web] Failed to read desktop HTML: ${msg}`);
+      return c.html("<h1>Codex Proxy</h1><p>Desktop UI files not found. Run 'npm run build:desktop' first.</p>");
     }
   });
 
@@ -53,7 +74,7 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
       .replace("{platform}", config.client.platform)
       .replace("{arch}", config.client.arch);
 
-    const promptsDir = resolve(process.cwd(), "config/prompts");
+    const promptsDir = resolve(getConfigDir(), "prompts");
     const prompts: Record<string, boolean> = {
       "desktop-context.md": existsSync(resolve(promptsDir, "desktop-context.md")),
       "title-generation.md": existsSync(resolve(promptsDir, "title-generation.md")),
@@ -63,7 +84,7 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
 
     // Check for update state
     let updateState = null;
-    const statePath = resolve(process.cwd(), "data/update-state.json");
+    const statePath = resolve(getDataDir(), "update-state.json");
     if (existsSync(statePath)) {
       try {
         updateState = JSON.parse(readFileSync(statePath, "utf-8"));

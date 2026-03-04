@@ -18,8 +18,11 @@ import {
   mkdirSync,
 } from "fs";
 import { resolve, dirname } from "path";
+import { getDataDir } from "../paths.js";
 
-const COOKIE_FILE = resolve(process.cwd(), "data", "cookies.json");
+function getCookieFile(): string {
+  return resolve(getDataDir(), "cookies.json");
+}
 
 interface StoredCookie {
   value: string;
@@ -209,7 +212,8 @@ export class CookieJar {
       this.persistTimer = null;
     }
     try {
-      const dir = dirname(COOKIE_FILE);
+      const cookieFile = getCookieFile();
+      const dir = dirname(cookieFile);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       // Persist v2 format with expiry info
@@ -220,9 +224,9 @@ export class CookieJar {
           data.accounts[acct][k] = { value: c.value, expires: c.expires };
         }
       }
-      const tmpFile = COOKIE_FILE + ".tmp";
+      const tmpFile = cookieFile + ".tmp";
       writeFileSync(tmpFile, JSON.stringify(data, null, 2), "utf-8");
-      renameSync(tmpFile, COOKIE_FILE);
+      renameSync(tmpFile, cookieFile);
     } catch (err) {
       console.warn("[CookieJar] Failed to persist:", err instanceof Error ? err.message : err);
     }
@@ -230,8 +234,9 @@ export class CookieJar {
 
   private load(): void {
     try {
-      if (!existsSync(COOKIE_FILE)) return;
-      const raw = readFileSync(COOKIE_FILE, "utf-8");
+      const cookieFile = getCookieFile();
+      if (!existsSync(cookieFile)) return;
+      const raw = readFileSync(cookieFile, "utf-8");
       const data = JSON.parse(raw);
 
       if (data && data._version === 2 && data.accounts) {

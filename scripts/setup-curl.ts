@@ -127,11 +127,16 @@ function downloadAndExtract(url: string, info: PlatformInfo): void {
   execSync(`curl -L -o "${archivePath}" "${url}"`, { stdio: "inherit" });
 
   console.log(`[setup] Extracting...`);
-  // Windows: tar interprets D: as remote host; --force-local + forward slashes fix this
   if (process.platform === "win32") {
+    // Windows bsdtar (default on CI) handles D: paths fine without --force-local
+    // GNU tar (e.g. Git Bash) needs --force-local; try without first, fallback with
     const tarArchive = archivePath.replaceAll("\\", "/");
     const tarDest = tmpDir.replaceAll("\\", "/");
-    execSync(`tar xzf "${tarArchive}" --force-local -C "${tarDest}"`, { stdio: "inherit" });
+    try {
+      execSync(`tar xzf "${tarArchive}" -C "${tarDest}"`, { stdio: "inherit" });
+    } catch {
+      execSync(`tar xzf "${tarArchive}" --force-local -C "${tarDest}"`, { stdio: "inherit" });
+    }
   } else {
     execSync(`tar xzf "${archivePath}" -C "${tmpDir}"`, { stdio: "inherit" });
   }

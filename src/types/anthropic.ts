@@ -33,11 +33,25 @@ const AnthropicToolResultContentSchema = z.object({
   is_error: z.boolean().optional(),
 });
 
+// Extended thinking content blocks (sent back in conversation history)
+const AnthropicThinkingContentSchema = z.object({
+  type: z.literal("thinking"),
+  thinking: z.string(),
+  signature: z.string().optional(),
+});
+
+const AnthropicRedactedThinkingContentSchema = z.object({
+  type: z.literal("redacted_thinking"),
+  data: z.string(),
+});
+
 const AnthropicContentBlockSchema = z.discriminatedUnion("type", [
   AnthropicTextContentSchema,
   AnthropicImageContentSchema,
   AnthropicToolUseContentSchema,
   AnthropicToolResultContentSchema,
+  AnthropicThinkingContentSchema,
+  AnthropicRedactedThinkingContentSchema,
 ]);
 
 const AnthropicContentSchema = z.union([

@@ -13,7 +13,7 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
   const desktopPublicDir = getDesktopPublicDir();
 
   // Serve Vite build assets (web)
-  app.use("/assets/*", serveStatic({ root: "./public" }));
+  app.use("/assets/*", serveStatic({ root: publicDir }));
 
   app.get("/", (c) => {
     try {
@@ -27,7 +27,12 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
   });
 
   // Desktop UI — served at /desktop for Electron
-  app.use("/desktop/assets/*", serveStatic({ root: "./public-desktop" }));
+  // Vite builds with base: "/desktop/" so request paths are /desktop/assets/...
+  // but files live at public-desktop/assets/..., so strip the /desktop prefix
+  app.use("/desktop/assets/*", serveStatic({
+    root: desktopPublicDir,
+    rewriteRequestPath: (path) => path.replace(/^\/desktop/, ""),
+  }));
 
   app.get("/desktop", (c) => {
     try {

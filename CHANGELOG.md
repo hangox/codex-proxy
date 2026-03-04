@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows Electron 安装后无法启动：`app.on("ready")` 中 `setPaths` 导入等步骤无 try-catch，失败时静默退出无任何报错 — 现在包裹全局 try-catch + 错误对话框
+- NSIS 安装无向导：`oneClick: true` 改为 `oneClick: false` + 允许选择安装目录
+- 桌面端 UI 静态资源路径错误：`serveStatic` 使用硬编码相对路径 `"./public"`，Electron 打包后 `process.cwd()` 不是应用目录导致 404 — 改为绝对路径；`/desktop/assets/*` 路由增加 `rewriteRequestPath` 去除 `/desktop` 前缀
+- Tray 图标路径在打包模式下可能找不到：改用 `app.getAppPath()` 定位 asar 内的图标，并将 `electron/assets/` 加入打包文件列表
+- macOS 无法退出应用：窗口关闭处理器无条件 `preventDefault()` 导致 Dock/菜单栏的 Quit 被拦截 — 添加 `isQuitting` 标志 + `before-quit` 事件处理
+- 退出时服务器关闭可能永久挂起：Tray Quit 添加 5 秒超时强制退出（与 CLI 的 10s 对齐）
+- macOS 签名：移除 `identity: null` 和 `CSC_IDENTITY_AUTO_DISCOVERY=false`（它们会完全跳过签名导致"应用已损坏"），改为依赖 electron-builder 默认 ad-hoc 签名（`codesign -s -`），用户右键→打开即可运行
+
 ### Added
 
 - 桌面端 UI 独立重设计：`desktop/` 目录包含全新原生风格组件，macOS 和 Windows 通过 CSS 变量（`platform-mac` / `platform-win`）呈现各自系统风格（圆角、阴影、暗色配色），与 web 端 UI 完全独立
@@ -44,7 +54,7 @@
 
 - Anthropic 路由 `thinking`/`redacted_thinking` content block 验证失败：Claude Code `/compact` 发送含 extended thinking 的对话历史时触发 400 Zod 错误，现已添加到 schema
 - Anthropic 路由上下文 token 始终显示 0%：`message_delta` 事件缺少 `input_tokens`，Claude Code 无法计算上下文占比，现在从 `response.completed` 提取后一并返回
-- 工具 schema 缺少 `properties` 字段导致 400 错误：MCP 工具发送 `{"type":"object"}` 无 `properties` 时，Codex 后端拒绝请求；现在所有格式转换器（OpenAI/Anthropic/Gemini）统一注入 `properties: {}`（感谢 @lookvincent 发现此问题，PR #22）
+- 工具 schema 缺少 `properties` 字段导致 400 错误：MCP 工具发送 `{"type":"object"}` 无 `properties` 时，Codex 后端拒绝请求；现在所有格式转换器（OpenAI/Anthropic/Gemini）统一注入 `properties: {}`（PR #22）
 - 额度窗口刷新后 Dashboard 仍显示累计 Token：本地计数器从未按窗口重置，现在 `refreshStatus()` 每次 acquire/getAccounts 时检查 `window_reset_at`，过期自动归零窗口计数器
 - 空响应重试循环中账号双重释放：外层 catch 使用原始 `entryId` 而非当前活跃账号，导致换号重试失败时 double-release（`proxy-handler.ts`）
 - `apply-update.ts` 模型比较不再误报删除：静态提取只含 2 个硬编码模型，与 YAML 的 24 个比较会产生 22 个假删除，现在只报新增

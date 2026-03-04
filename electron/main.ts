@@ -5,7 +5,7 @@
  * Loads the backend ESM modules from asarUnpack (real filesystem paths).
  */
 
-import { app, BrowserWindow, Tray, Menu, shell, nativeImage } from "electron";
+import { app, BrowserWindow, Tray, Menu, shell, nativeImage, dialog } from "electron";
 import { resolve, join } from "path";
 import { pathToFileURL } from "url";
 import { existsSync, mkdirSync } from "fs";
@@ -15,6 +15,7 @@ const IS_MAC = process.platform === "darwin";
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let serverHandle: { close: () => Promise<void>; port: number } | null = null;
+let isQuitting = false;
 
 // Single instance lock
 const gotLock = app.requestSingleInstanceLock();
@@ -93,49 +94,51 @@ function setupAppMenu(): void {
 app.on("ready", async () => {
   setupAppMenu();
 
-  // 1. Determine paths — must happen before importing backend
-  const userData = app.getPath("userData");
-  const dataDir = resolve(userData, "data");
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-
-  const appRoot = app.getAppPath();
-  const distRoot = app.isPackaged
-    ? resolve(process.resourcesPath, "app.asar.unpacked")
-    : appRoot;
-
-  const binDir = app.isPackaged
-    ? resolve(process.resourcesPath, "bin")
-    : resolve(appRoot, "bin");
-
-  // 2. Set paths before any backend import
-  const pathsUrl = pathToFileURL(resolve(distRoot, "dist", "paths.js")).href;
-  const { setPaths } = await import(pathsUrl);
-  setPaths({
-    configDir: resolve(distRoot, "config"),
-    dataDir,
-    binDir,
-    publicDir: resolve(distRoot, "public"),
-    desktopPublicDir: resolve(distRoot, "public-desktop"),
-  });
-
-  // 3. Start the proxy server
   try {
+    // 1. Determine paths — must happen before importing backend
+    const userData = app.getPath("userData");
+    const dataDir = resolve(userData, "data");
+    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+
+    const appRoot = app.getAppPath();
+    const distRoot = app.isPackaged
+      ? resolve(process.resourcesPath, "app.asar.unpacked")
+      : appRoot;
+
+    const binDir = app.isPackaged
+      ? resolve(process.resourcesPath, "bin")
+      : resolve(appRoot, "bin");
+
+    // 2. Set paths before any backend import
+    const pathsUrl = pathToFileURL(resolve(distRoot, "dist", "paths.js")).href;
+    const { setPaths } = await import(pathsUrl);
+    setPaths({
+      configDir: resolve(distRoot, "config"),
+      dataDir,
+      binDir,
+      publicDir: resolve(distRoot, "public"),
+      desktopPublicDir: resolve(distRoot, "public-desktop"),
+    });
+
+    // 3. Start the proxy server
     const indexUrl = pathToFileURL(resolve(distRoot, "dist", "index.js")).href;
     const { startServer } = await import(indexUrl);
     serverHandle = await startServer();
     console.log(`[Electron] Server started on port ${serverHandle.port}`);
+
+    // 4. System tray
+    createTray();
+
+    // 5. Main window
+    createWindow();
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Electron] Failed to start server: ${msg}`);
+    console.error("[Electron] Startup failed:", err);
+    dialog.showErrorBox(
+      "Codex Proxy - Startup Error",
+      `Failed to start:\n\n${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+    );
     app.quit();
-    return;
   }
-
-  // 4. System tray
-  createTray();
-
-  // 5. Main window
-  createWindow();
 });
 
 // ── Window ───────────────────────────────────────────────────────────
@@ -183,10 +186,12 @@ function createWindow(): void {
     mainWindow?.show();
   });
 
-  // Close → hide to tray instead of quitting
+  // Close → hide to tray instead of quitting (unless app is quitting)
   mainWindow.on("close", (e) => {
-    e.preventDefault();
-    mainWindow?.hide();
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
   });
 
   // Open external links in the default browser
@@ -203,7 +208,11 @@ function createWindow(): void {
 // ── Tray ─────────────────────────────────────────────────────────────
 
 function createTray(): void {
-  const iconPath = join(__dirname, "..", "electron", "assets", "icon.png");
+  // In packaged mode: icon is inside asar at {app.asar}/electron/assets/icon.png
+  // In dev mode: relative to dist-electron/ → ../electron/assets/icon.png
+  const iconPath = app.isPackaged
+    ? join(app.getAppPath(), "electron", "assets", "icon.png")
+    : join(__dirname, "..", "electron", "assets", "icon.png");
   let icon = existsSync(iconPath)
     ? nativeImage.createFromPath(iconPath)
     : nativeImage.createEmpty();
@@ -231,12 +240,21 @@ function createTray(): void {
     {
       label: "Quit",
       click: () => {
-        mainWindow?.removeAllListeners("close");
-        mainWindow?.close();
-        mainWindow = null;
+        isQuitting = true;
 
         if (serverHandle) {
-          serverHandle.close().then(() => app.quit()).catch(() => app.quit());
+          const forceQuit = setTimeout(() => {
+            console.error("[Electron] Server close timeout, forcing exit");
+            app.exit(0);
+          }, 5000);
+
+          serverHandle.close()
+            .then(() => { clearTimeout(forceQuit); app.quit(); })
+            .catch((err) => {
+              console.error("[Electron] Server close error:", err);
+              clearTimeout(forceQuit);
+              app.quit();
+            });
         } else {
           app.quit();
         }
@@ -251,6 +269,11 @@ function createTray(): void {
 // macOS: re-create window when dock icon is clicked
 app.on("activate", () => {
   createWindow();
+});
+
+// Allow quit from macOS dock/menu bar and system shutdown
+app.on("before-quit", () => {
+  isQuitting = true;
 });
 
 // Prevent app from quitting when all windows are closed (tray keeps it alive)

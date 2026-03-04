@@ -61,13 +61,18 @@ function getPlatformInfo(version: string): PlatformInfo {
   throw new Error(`Unsupported platform: ${platform}-${arch}`);
 }
 
+function githubHeaders(): Record<string, string> {
+  const h: Record<string, string> = { "Accept": "application/vnd.github+json" };
+  const token = process.env.GITHUB_TOKEN;
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
 /** Fetch the latest release tag from GitHub. */
 async function getLatestVersion(): Promise<string> {
   const apiUrl = `https://api.github.com/repos/${REPO}/releases/latest`;
   console.log(`[setup] Checking latest release...`);
-  const resp = await fetch(apiUrl, {
-    headers: { "Accept": "application/vnd.github+json" },
-  });
+  const resp = await fetch(apiUrl, { headers: githubHeaders() });
   if (!resp.ok) {
     console.warn(`[setup] Could not fetch latest release (${resp.status}), using fallback ${FALLBACK_VERSION}`);
     return FALLBACK_VERSION;
@@ -80,7 +85,7 @@ async function getDownloadUrl(info: PlatformInfo, version: string): Promise<stri
   const apiUrl = `https://api.github.com/repos/${REPO}/releases/tags/${version}`;
   console.log(`[setup] Fetching release info from ${apiUrl}`);
 
-  const resp = await fetch(apiUrl);
+  const resp = await fetch(apiUrl, { headers: githubHeaders() });
   if (!resp.ok) {
     throw new Error(`GitHub API returned ${resp.status}: ${await resp.text()}`);
   }

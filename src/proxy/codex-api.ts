@@ -36,8 +36,13 @@ export interface CodexResponsesRequest {
   previous_response_id?: string | null;
 }
 
+/** Structured content part for multimodal Codex input. */
+export type CodexContentPart =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string };
+
 export type CodexInputItem =
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | CodexContentPart[] }
   | { role: "assistant"; content: string }
   | { role: "system"; content: string }
   | { type: "function_call"; id?: string; call_id: string; name: string; arguments: string }

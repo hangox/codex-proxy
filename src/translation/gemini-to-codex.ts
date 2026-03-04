@@ -10,6 +10,7 @@ import type {
 import type {
   CodexResponsesRequest,
   CodexInputItem,
+  CodexContentPart,
 } from "../proxy/codex-api.js";
 import { resolveModelId, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
@@ -27,6 +28,30 @@ function extractTextFromParts(parts: GeminiPart[]): string {
 }
 
 /**
+ * Build multimodal content (text + images) from Gemini parts.
+ * Returns plain string if text-only, or CodexContentPart[] if images present.
+ */
+function extractMultimodalFromParts(
+  parts: GeminiPart[],
+): string | CodexContentPart[] {
+  const hasImage = parts.some((p) => p.inlineData);
+  if (!hasImage) return extractTextFromParts(parts);
+
+  const codexParts: CodexContentPart[] = [];
+  for (const p of parts) {
+    if (!p.thought && p.text) {
+      codexParts.push({ type: "input_text", text: p.text });
+    } else if (p.inlineData) {
+      codexParts.push({
+        type: "input_image",
+        image_url: `data:${p.inlineData.mimeType};base64,${p.inlineData.data}`,
+      });
+    }
+  }
+  return codexParts.length > 0 ? codexParts : "";
+}
+
+/**
  * Convert Gemini content parts into native Codex input items.
  */
 function partsToInputItems(
@@ -36,10 +61,17 @@ function partsToInputItems(
   const items: CodexInputItem[] = [];
   const hasFunctionParts = parts.some((p) => p.functionCall || p.functionResponse);
 
-  // Collect text content
-  const text = extractTextFromParts(parts);
-  if (text || !hasFunctionParts) {
-    items.push({ role, content: text });
+  // Build content — multimodal for user, text-only for assistant
+  if (role === "user") {
+    const content = extractMultimodalFromParts(parts);
+    if (content || !hasFunctionParts) {
+      items.push({ role: "user", content: content || "" });
+    }
+  } else {
+    const text = extractTextFromParts(parts);
+    if (text || !hasFunctionParts) {
+      items.push({ role: "assistant", content: text });
+    }
   }
 
   // Track call_ids by function name to correlate functionCall → functionResponse

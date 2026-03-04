@@ -8,6 +8,11 @@ import { z } from "zod";
 const GeminiPartSchema = z.object({
   text: z.string().optional(),
   thought: z.boolean().optional(),
+  // Inline image data
+  inlineData: z.object({
+    mimeType: z.string(),
+    data: z.string(),
+  }).optional(),
   // Function calling fields (accepted for compatibility, not forwarded to Codex)
   functionCall: z.object({
     name: z.string(),
@@ -74,9 +79,15 @@ export interface GeminiFunctionResponse {
   response?: Record<string, unknown>;
 }
 
+export interface GeminiInlineData {
+  mimeType: string;
+  data: string;
+}
+
 export interface GeminiPart {
   text?: string;
   thought?: boolean;
+  inlineData?: GeminiInlineData;
   functionCall?: GeminiFunctionCall;
   functionResponse?: GeminiFunctionResponse;
 }

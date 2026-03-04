@@ -6,6 +6,7 @@ import type { ChatCompletionRequest, ChatMessage } from "../types/openai.js";
 import type {
   CodexResponsesRequest,
   CodexInputItem,
+  CodexContentPart,
 } from "../proxy/codex-api.js";
 import { resolveModelId, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
@@ -24,6 +25,47 @@ function extractText(content: ChatMessage["content"]): string {
     .filter((p) => p.type === "text" && p.text)
     .map((p) => p.text!)
     .join("\n");
+}
+
+/**
+ * Extract content from a message, preserving images as structured content parts.
+ * Returns a plain string if text-only, or CodexContentPart[] if images are present.
+ */
+function extractContent(
+  content: ChatMessage["content"],
+): string | CodexContentPart[] {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+
+  const hasImage = content.some((p) => p.type === "image_url");
+  if (!hasImage) {
+    // Text-only: return plain string (preserves existing behavior)
+    return content
+      .filter((p) => p.type === "text" && p.text)
+      .map((p) => p.text!)
+      .join("\n");
+  }
+
+  // Multimodal: convert to Codex content parts
+  const parts: CodexContentPart[] = [];
+  for (const p of content) {
+    if (p.type === "text" && p.text) {
+      parts.push({ type: "input_text", text: p.text });
+    } else if (p.type === "image_url") {
+      // OpenAI format: image_url: { url: "data:..." } or image_url: "string"
+      const imageUrl = p.image_url as
+        | string
+        | { url: string; detail?: string }
+        | undefined;
+      if (!imageUrl) continue;
+      const url = typeof imageUrl === "string" ? imageUrl : imageUrl.url;
+      if (url) {
+        parts.push({ type: "input_image", image_url: url });
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts : "";
 }
 
 
@@ -95,7 +137,7 @@ export function translateToCodexRequest(
         output: extractText(msg.content),
       });
     } else {
-      input.push({ role: "user", content: extractText(msg.content) });
+      input.push({ role: "user", content: extractContent(msg.content) });
     }
   }
 

@@ -109,9 +109,11 @@ app.on("ready", async () => {
       ? resolve(process.resourcesPath, "bin")
       : resolve(appRoot, "bin");
 
-    // 2. Set paths before any backend import
-    const pathsUrl = pathToFileURL(resolve(distRoot, "dist", "paths.js")).href;
-    const { setPaths } = await import(pathsUrl);
+    // 2. Import the bundled backend server (single ESM file, no node_modules needed)
+    const serverUrl = pathToFileURL(resolve(appRoot, "dist-electron", "server.mjs")).href;
+    const { setPaths, startServer } = await import(serverUrl);
+
+    // 3. Set paths before starting the server
     setPaths({
       configDir: resolve(distRoot, "config"),
       dataDir,
@@ -120,9 +122,7 @@ app.on("ready", async () => {
       desktopPublicDir: resolve(distRoot, "public-desktop"),
     });
 
-    // 3. Start the proxy server
-    const indexUrl = pathToFileURL(resolve(distRoot, "dist", "index.js")).href;
-    const { startServer } = await import(indexUrl);
+    // 4. Start the proxy server
     serverHandle = await startServer();
     console.log(`[Electron] Server started on port ${serverHandle.port}`);
 

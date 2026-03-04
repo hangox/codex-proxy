@@ -6,24 +6,18 @@ directories:
 
 files:
   - dist-electron/**/*
-  - dist/**/*
+  - config/**/*
   - public/**/*
   - public-desktop/**/*
-  - config/**/*
   - electron/assets/**/*
-  - node_modules/**/*
   - package.json
-  - "!node_modules/@electron/**"
-  - "!node_modules/electron/**"
-  - "!node_modules/electron-builder/**"
-  - "!node_modules/esbuild/**"
+  # No node_modules or dist/ needed — backend is bundled into dist-electron/server.mjs
 
-# ESM backend files unpacked from asar (avoids ESM+asar compatibility issues)
+# Static assets unpacked from asar (filesystem access at runtime)
 asarUnpack:
-  - "dist/**/*"
+  - "config/**/*"
   - "public/**/*"
   - "public-desktop/**/*"
-  - "config/**/*"
   - "**/*.node"
 
 # curl-impersonate binaries as extra resources (outside asar)

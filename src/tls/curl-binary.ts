@@ -15,6 +15,7 @@ import { execFileSync } from "child_process";
 import { createConnection } from "net";
 import { resolve } from "path";
 import { getConfig } from "../config.js";
+import { getBinDir } from "../paths.js";
 
 const IS_WIN = process.platform === "win32";
 const BINARY_NAME = IS_WIN ? "curl-impersonate.exe" : "curl-impersonate";
@@ -88,7 +89,7 @@ export function resolveCurlBinary(): string {
   }
 
   // Auto-detect: look for curl-impersonate in bin/
-  const binPath = resolve(process.cwd(), "bin", BINARY_NAME);
+  const binPath = resolve(getBinDir(), BINARY_NAME);
   if (existsSync(binPath)) {
     _resolved = binPath;
     _isImpersonate = true;

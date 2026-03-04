@@ -1,0 +1,58 @@
+appId: com.codex-proxy.app
+productName: Codex Proxy
+
+directories:
+  output: release
+
+files:
+  - dist-electron/**/*
+  - dist/**/*
+  - public/**/*
+  - public-desktop/**/*
+  - config/**/*
+  - node_modules/**/*
+  - package.json
+  - "!node_modules/@electron/**"
+  - "!node_modules/electron/**"
+  - "!node_modules/electron-builder/**"
+  - "!node_modules/esbuild/**"
+
+# ESM backend files unpacked from asar (avoids ESM+asar compatibility issues)
+asarUnpack:
+  - "dist/**/*"
+  - "public/**/*"
+  - "public-desktop/**/*"
+  - "config/**/*"
+  - "**/*.node"
+
+# curl-impersonate binaries as extra resources (outside asar)
+extraResources:
+  - from: bin/
+    to: bin/
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: electron/assets/icon.png
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: true
+  perMachine: false
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  icon: electron/assets/icon.png
+  category: public.app-category.developer-tools
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  icon: electron/assets/icon.png
+  category: Development

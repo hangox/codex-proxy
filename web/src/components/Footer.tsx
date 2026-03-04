@@ -1,4 +1,4 @@
-import { useT } from "../i18n/context";
+import { useT } from "../../../shared/i18n/context";
 
 export function Footer() {
   const t = useT();

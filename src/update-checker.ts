@@ -11,9 +11,14 @@ import { mutateClientConfig, reloadAllConfigs } from "./config.js";
 import { jitterInt } from "./utils/jitter.js";
 import { curlFetchGet } from "./tls/curl-fetch.js";
 import { mutateYaml } from "./utils/yaml-mutate.js";
+import { getConfigDir, getDataDir, isEmbedded } from "./paths.js";
 
-const CONFIG_PATH = resolve(process.cwd(), "config/default.yaml");
-const STATE_PATH = resolve(process.cwd(), "data/update-state.json");
+function getConfigPath(): string {
+  return resolve(getConfigDir(), "default.yaml");
+}
+function getStatePath(): string {
+  return resolve(getDataDir(), "update-state.json");
+}
 const APPCAST_URL = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
 const POLL_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 
@@ -32,7 +37,7 @@ let _pollTimer: ReturnType<typeof setTimeout> | null = null;
 let _updateInProgress = false;
 
 function loadCurrentConfig(): { app_version: string; build_number: string } {
-  const raw = yaml.load(readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown>;
+  const raw = yaml.load(readFileSync(getConfigPath(), "utf-8")) as Record<string, unknown>;
   const client = raw.client as Record<string, string>;
   return {
     app_version: client.app_version,
@@ -64,7 +69,7 @@ function parseAppcast(xml: string): {
 }
 
 function applyVersionUpdate(version: string, build: string): void {
-  mutateYaml(CONFIG_PATH, (data) => {
+  mutateYaml(getConfigPath(), (data) => {
     const client = data.client as Record<string, unknown>;
     client.app_version = version;
     client.build_number = build;
@@ -84,6 +89,13 @@ function triggerFullUpdate(): void {
     console.log("[UpdateChecker] Full update already in progress, skipping");
     return;
   }
+
+  // Skip fork-based update in embedded (Electron) mode — no tsx/scripts available
+  if (isEmbedded()) {
+    console.log("[UpdateChecker] Embedded mode — skipping full-update pipeline");
+    return;
+  }
+
   _updateInProgress = true;
   console.log("[UpdateChecker] Triggering full-update pipeline...");
 
@@ -166,8 +178,8 @@ export async function checkForUpdate(): Promise<UpdateState> {
 
   // Persist state
   try {
-    mkdirSync(resolve(process.cwd(), "data"), { recursive: true });
-    writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+    mkdirSync(getDataDir(), { recursive: true });
+    writeFileSync(getStatePath(), JSON.stringify(state, null, 2));
   } catch {
     // best-effort persistence
   }

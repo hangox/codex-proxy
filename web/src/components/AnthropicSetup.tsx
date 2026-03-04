@@ -1,5 +1,5 @@
 import { useMemo, useCallback } from "preact/hooks";
-import { useT } from "../i18n/context";
+import { useT } from "../../../shared/i18n/context";
 import { CopyButton } from "./CopyButton";
 
 interface AnthropicSetupProps {

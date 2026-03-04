@@ -1,6 +1,6 @@
 import { useState, useCallback } from "preact/hooks";
-import { useT } from "../i18n/context";
-import type { TranslationKey } from "../i18n/translations";
+import { useT } from "../../../shared/i18n/context";
+import type { TranslationKey } from "../../../shared/i18n/translations";
 
 interface AddAccountProps {
   visible: boolean;

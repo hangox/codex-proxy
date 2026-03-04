@@ -8,6 +8,14 @@
 
 ### Added
 
+- 桌面端 UI 独立重设计：`desktop/` 目录包含全新原生风格组件，macOS 和 Windows 通过 CSS 变量（`platform-mac` / `platform-win`）呈现各自系统风格（圆角、阴影、暗色配色），与 web 端 UI 完全独立
+- 共享逻辑层 `shared/`：hooks（use-accounts、use-status）、i18n、theme、utils、types 从 web 端抽取为共享模块，web 和 desktop 零重复代码
+- `/desktop` 路由：Hono 后端新增桌面 UI 静态服务路由，Electron 加载 `/desktop` 而非 `/`，浏览器访问 `/` 仍为 web 端
+- Electron 桌面应用：下载安装即用，无需 Node.js 环境；系统托盘常驻，窗口加载 Dashboard，OAuth 链接自动在默认浏览器打开
+- 路径抽象层（`src/paths.ts`）：集中管理 config/data/bin/public 路径，CLI 模式默认 `process.cwd()`，Electron 模式通过 `setPaths()` 重定向到用户数据目录
+- `startServer()` 导出：`src/index.ts` 提取核心启动逻辑为可复用函数，CLI 和 Electron 共用，返回 `{ close, port }` handle
+- esbuild 构建链：Electron 主进程打包为单个 CJS 文件（`dist-electron/main.cjs`），规避 ESM+asar 兼容问题
+- electron-builder 打包配置：支持 Windows (NSIS)、macOS (DMG)、Linux (AppImage)
 - 图片输入支持：OpenAI、Anthropic、Gemini 三种格式的图片内容现在可以正确透传到 Codex 后端（`input_image` + data URI），此前图片被静默丢弃
 - 每窗口使用量计数器：Dashboard 主显示当前窗口内的请求数和 Token 用量，累计总量降为次要灰色小字；窗口过期时自动归零（时间驱动，零 API 开销），后端同步作为双保险校正
 - 窗口时长显示：从后端同步 `limit_window_seconds`，AccountCard header 显示窗口时长 badge（如 `3h`），重置时间行追加窗口时长文字

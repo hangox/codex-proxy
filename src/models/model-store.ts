@@ -13,6 +13,7 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import yaml from "js-yaml";
 import { getConfig } from "../config.js";
+import { getConfigDir } from "../paths.js";
 
 export interface CodexModelInfo {
   id: string;
@@ -46,7 +47,7 @@ let _lastFetchTime: string | null = null;
  * Called at startup and on hot-reload.
  */
 export function loadStaticModels(configDir?: string): void {
-  const dir = configDir ?? resolve(process.cwd(), "config");
+  const dir = configDir ?? getConfigDir();
   const configPath = resolve(dir, "models.yaml");
   const raw = yaml.load(readFileSync(configPath, "utf-8")) as ModelsConfig;
 

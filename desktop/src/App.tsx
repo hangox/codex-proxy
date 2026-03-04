@@ -1,0 +1,67 @@
+import { I18nProvider } from "../../shared/i18n/context";
+import { ThemeProvider } from "../../shared/theme/context";
+import { Header } from "./components/Header";
+import { AccountList } from "./components/AccountList";
+import { AddAccount } from "./components/AddAccount";
+import { ApiConfig } from "./components/ApiConfig";
+import { AnthropicSetup } from "./components/AnthropicSetup";
+import { CodeExamples } from "./components/CodeExamples";
+import { Footer } from "./components/Footer";
+import { useAccounts } from "../../shared/hooks/use-accounts";
+import { useStatus } from "../../shared/hooks/use-status";
+
+function Dashboard() {
+  const accounts = useAccounts();
+  const status = useStatus(accounts.list.length);
+
+  return (
+    <>
+      <Header onAddAccount={accounts.startAdd} />
+      <main class="flex-grow px-8 lg:px-10 py-8 flex justify-center">
+        <div class="flex flex-col w-full max-w-[860px] gap-7">
+          <AddAccount
+            visible={accounts.addVisible}
+            onSubmitRelay={accounts.submitRelay}
+            addInfo={accounts.addInfo}
+            addError={accounts.addError}
+          />
+          <AccountList
+            accounts={accounts.list}
+            loading={accounts.loading}
+            onDelete={accounts.deleteAccount}
+            onRefresh={accounts.refresh}
+            refreshing={accounts.refreshing}
+            lastUpdated={accounts.lastUpdated}
+          />
+          <ApiConfig
+            baseUrl={status.baseUrl}
+            apiKey={status.apiKey}
+            models={status.models}
+            selectedModel={status.selectedModel}
+            onModelChange={status.setSelectedModel}
+          />
+          <AnthropicSetup
+            apiKey={status.apiKey}
+            selectedModel={status.selectedModel}
+          />
+          <CodeExamples
+            baseUrl={status.baseUrl}
+            apiKey={status.apiKey}
+            model={status.selectedModel}
+          />
+        </div>
+      </main>
+      <Footer />
+    </>
+  );
+}
+
+export function App() {
+  return (
+    <I18nProvider>
+      <ThemeProvider>
+        <Dashboard />
+      </ThemeProvider>
+    </I18nProvider>
+  );
+}

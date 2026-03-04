@@ -1,5 +1,5 @@
-import { useI18n } from "../i18n/context";
-import { useTheme } from "../theme/context";
+import { useI18n } from "../../../shared/i18n/context";
+import { useTheme } from "../../../shared/theme/context";
 
 const SVG_MOON = (
   <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">

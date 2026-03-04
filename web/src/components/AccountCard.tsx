@@ -1,8 +1,8 @@
 import { useCallback } from "preact/hooks";
-import { useT, useI18n } from "../i18n/context";
-import type { TranslationKey } from "../i18n/translations";
-import { formatNumber, formatResetTime, formatWindowDuration } from "../utils/format";
-import type { Account } from "../hooks/use-accounts";
+import { useT, useI18n } from "../../../shared/i18n/context";
+import type { TranslationKey } from "../../../shared/i18n/translations";
+import { formatNumber, formatResetTime, formatWindowDuration } from "../../../shared/utils/format";
+import type { Account } from "../../../shared/types";
 
 const avatarColors = [
   ["bg-purple-100 dark:bg-[#2a1a3f]", "text-purple-600 dark:text-purple-400"],

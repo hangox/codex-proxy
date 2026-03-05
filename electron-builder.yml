@@ -11,7 +11,8 @@ files:
   - public-desktop/**/*
   - electron/assets/**/*
   - package.json
-  # No node_modules or dist/ needed — backend is bundled into dist-electron/server.mjs
+  - "!node_modules"
+  - "!dist"
 
 # Static assets unpacked from asar (filesystem access at runtime)
 asarUnpack:

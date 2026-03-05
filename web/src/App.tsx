@@ -39,6 +39,9 @@ function Dashboard() {
             models={status.models}
             selectedModel={status.selectedModel}
             onModelChange={status.setSelectedModel}
+            modelFamilies={status.modelFamilies}
+            selectedEffort={status.selectedEffort}
+            onEffortChange={status.setSelectedEffort}
           />
           <AnthropicSetup
             apiKey={status.apiKey}
@@ -48,6 +51,7 @@ function Dashboard() {
             baseUrl={status.baseUrl}
             apiKey={status.apiKey}
             model={status.selectedModel}
+            reasoningEffort={status.selectedEffort}
           />
         </div>
       </main>

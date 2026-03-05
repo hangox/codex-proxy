@@ -47,6 +47,12 @@ export function createModelRoutes(): Hono {
     return c.json(response);
   });
 
+  // Full catalog with reasoning efforts (for dashboard UI)
+  // Must be before :modelId to avoid being matched as a model ID
+  app.get("/v1/models/catalog", (c) => {
+    return c.json(getModelCatalog());
+  });
+
   app.get("/v1/models/:modelId", (c) => {
     const modelId = c.req.param("modelId");
     const catalog = getModelCatalog();

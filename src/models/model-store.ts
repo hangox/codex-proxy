@@ -115,9 +115,11 @@ function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta 
   };
 }
 
-/** Check if a model ID is a Codex model (gpt-X.Y-codex or gpt-X.Y-codex-tier). */
-function isCodexModelId(id: string): boolean {
-  return /^gpt-\d+(\.\d+)?-codex/.test(id);
+/** Check if a model ID is Codex-compatible (gpt-X.Y-codex-* or bare gpt-X.Y). */
+function isCodexCompatibleId(id: string): boolean {
+  if (/^gpt-\d+(\.\d+)?-codex/.test(id)) return true;
+  if (/^gpt-\d+(\.\d+)?$/.test(id)) return true;
+  return false;
 }
 
 /**
@@ -137,7 +139,7 @@ export function applyBackendModels(backendModels: BackendModelEntry[]): void {
   const staticIds = new Set(_catalog.map((m) => m.id));
   const filtered = backendModels.filter((raw) => {
     const id = raw.slug ?? raw.id ?? raw.name ?? "";
-    return staticIds.has(id) || isCodexModelId(id);
+    return staticIds.has(id) || isCodexCompatibleId(id);
   });
 
   const staticMap = new Map(_catalog.map((m) => [m.id, m]));

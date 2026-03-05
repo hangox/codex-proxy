@@ -6,42 +6,15 @@
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-03-05
+
 ### Fixed
 
-- Windows Electron 安装后无法启动：`app.on("ready")` 中 `setPaths` 导入等步骤无 try-catch，失败时静默退出无任何报错 — 现在包裹全局 try-catch + 错误对话框
-- NSIS 安装无向导：`oneClick: true` 改为 `oneClick: false` + 允许选择安装目录
-- 桌面端 UI 静态资源路径错误：`serveStatic` 使用硬编码相对路径 `"./public"`，Electron 打包后 `process.cwd()` 不是应用目录导致 404 — 改为绝对路径；`/desktop/assets/*` 路由增加 `rewriteRequestPath` 去除 `/desktop` 前缀
-- Tray 图标路径在打包模式下可能找不到：改用 `app.getAppPath()` 定位 asar 内的图标，并将 `electron/assets/` 加入打包文件列表
-- macOS 无法退出应用：窗口关闭处理器无条件 `preventDefault()` 导致 Dock/菜单栏的 Quit 被拦截 — 添加 `isQuitting` 标志 + `before-quit` 事件处理
-- 退出时服务器关闭可能永久挂起：Tray Quit 添加 5 秒超时强制退出（与 CLI 的 10s 对齐）
-- macOS 签名：移除 `identity: null` 和 `CSC_IDENTITY_AUTO_DISCOVERY=false`（它们会完全跳过签名导致"应用已损坏"），改为依赖 electron-builder 默认 ad-hoc 签名（`codesign -s -`），用户右键→打开即可运行
+- macOS Electron 打开后 404：electron-builder 遵循 `.gitignore` 排除了 `dist-electron/server.mjs`，添加 `.ebignore` 覆盖打包过滤规则
+- asar 包含多余的 `node_modules/` 和 `dist/`，现已排除
+- GitHub Release 自动追加 Contributors 列表，设置 `generate_release_notes: false`
 
-### Added
-
-- 桌面端 UI 独立重设计：`desktop/` 目录包含全新原生风格组件，macOS 和 Windows 通过 CSS 变量（`platform-mac` / `platform-win`）呈现各自系统风格（圆角、阴影、暗色配色），与 web 端 UI 完全独立
-- 共享逻辑层 `shared/`：hooks（use-accounts、use-status）、i18n、theme、utils、types 从 web 端抽取为共享模块，web 和 desktop 零重复代码
-- `/desktop` 路由：Hono 后端新增桌面 UI 静态服务路由，Electron 加载 `/desktop` 而非 `/`，浏览器访问 `/` 仍为 web 端
-- Electron 桌面应用：下载安装即用，无需 Node.js 环境；系统托盘常驻，窗口加载 Dashboard，OAuth 链接自动在默认浏览器打开
-- 路径抽象层（`src/paths.ts`）：集中管理 config/data/bin/public 路径，CLI 模式默认 `process.cwd()`，Electron 模式通过 `setPaths()` 重定向到用户数据目录
-- `startServer()` 导出：`src/index.ts` 提取核心启动逻辑为可复用函数，CLI 和 Electron 共用，返回 `{ close, port }` handle
-- esbuild 构建链：Electron 主进程打包为单个 CJS 文件（`dist-electron/main.cjs`），规避 ESM+asar 兼容问题
-- electron-builder 打包配置：支持 Windows (NSIS)、macOS (DMG)、Linux (AppImage)
-- Reasoning/Thinking 输出支持：始终向 Codex API 发送 `summary: "auto"` 以获取推理摘要事件；OpenAI 路由在客户端发送 `reasoning_effort` 时以 `reasoning_content` 输出；Anthropic 路由在客户端发送 `thinking.type: enabled/adaptive` 时以 thinking block 输出；未知 SSE 事件记录到 debug 日志以便发现新事件类型
-- 图片输入支持：OpenAI、Anthropic、Gemini 三种格式的图片内容现在可以正确透传到 Codex 后端（`input_image` + data URI），此前图片被静默丢弃
-- 每窗口使用量计数器：Dashboard 主显示当前窗口内的请求数和 Token 用量，累计总量降为次要灰色小字；窗口过期时自动归零（时间驱动，零 API 开销），后端同步作为双保险校正
-- 窗口时长显示：从后端同步 `limit_window_seconds`，AccountCard header 显示窗口时长 badge（如 `3h`），重置时间行追加窗口时长文字
-- Dashboard 账号列表新增手动刷新按钮：点击重新拉取额度数据，刷新中按钮旋转并禁用；独立 `refreshing` 状态确保刷新时列表不清空；标题行右侧显示"更新于 HH:MM:SS"时间戳（桌面端可见）
-- 空响应计数器：每个账号追踪 `empty_response_count`，通过 `GET /auth/accounts` 可查看，窗口重置时自动归零
-- 空响应日志增强：日志中显示账号邮箱（`Account xxxx (email) | Empty response`），便于定位问题账号
-- 空响应检测 + 自动换号重试：Codex API 返回 HTTP 200 但无内容时，非流式自动切换账号重试（最多 3 次），流式注入错误提示文本
-- 自动提取 Chromium 版本：`extract-fingerprint.ts` 从 `package.json` 读取 Electron 版本，通过 `electron-to-chromium` 映射为 Chromium 大版本，`apply-update.ts` 自动更新 `chromium_version` 和 TLS impersonate profile
-- 动态模型列表：后台从 Codex 后端自动获取模型目录，与静态 YAML 合并（`src/models/model-store.ts`、`src/models/model-fetcher.ts`）
-- `/debug/models` 诊断端点，展示模型来源（static/backend）与刷新状态
-- 完整 Codex 模型目录：GPT-5.3/5.2/5.1 全系列 base/high/mid/low/max/mini 变体（23 个静态模型）
-- OpenCode 平台支持（`opencode.json` 配置文件）
-- Vitest 测试框架（account-pool、codex-api、codex-event-extractor 单元测试）
-- request-id 中间件注入全局请求链路 ID
-- Dockerfile 安全加固（非 root 用户运行、HEALTHCHECK 探针）
+## [1.0.2] - 2026-03-04
 
 ### Changed
 
@@ -53,32 +26,37 @@
 
 ### Fixed
 
-- Anthropic 路由 `thinking`/`redacted_thinking` content block 验证失败：Claude Code `/compact` 发送含 extended thinking 的对话历史时触发 400 Zod 错误，现已添加到 schema
-- Anthropic 路由上下文 token 始终显示 0%：`message_delta` 事件缺少 `input_tokens`，Claude Code 无法计算上下文占比，现在从 `response.completed` 提取后一并返回
-- 工具 schema 缺少 `properties` 字段导致 400 错误：MCP 工具发送 `{"type":"object"}` 无 `properties` 时，Codex 后端拒绝请求；现在所有格式转换器（OpenAI/Anthropic/Gemini）统一注入 `properties: {}`（PR #22）
-- 额度窗口刷新后 Dashboard 仍显示累计 Token：本地计数器从未按窗口重置，现在 `refreshStatus()` 每次 acquire/getAccounts 时检查 `window_reset_at`，过期自动归零窗口计数器
-- 空响应重试循环中账号双重释放：外层 catch 使用原始 `entryId` 而非当前活跃账号，导致换号重试失败时 double-release（`proxy-handler.ts`）
-- `apply-update.ts` 模型比较不再误报删除：静态提取只含 2 个硬编码模型，与 YAML 的 24 个比较会产生 22 个假删除，现在只报新增
-- `update-checker.ts` 子进程超时保护：`fork()` 添加 5 分钟 kill timer，防止挂起导致 `_updateInProgress` 永久锁定
-- `model-fetcher.ts` 初始定时器添加 try/finally，防止异常中断刷新循环
-- `apply-update.ts` 移除 `any` 类型（`mutateYaml` 回调参数）
-- `ExtractedFingerprint` 接口统一：提取到 `scripts/types.ts` 共享，`extract-fingerprint.ts` 和 `apply-update.ts` 共用
-- 强化提示词注入防护：`SUPPRESS_PROMPT` 从弱 "ignore" 措辞改为声明式覆盖（"NOT applicable"、"standard OpenAI API model"），解决 mini 模型仍泄露 Codex Desktop 身份的问题
-- 非流式请求错误处理：`collectTranslator` 抛出 generic Error 时返回 502 JSON 而非 500 HTML（`proxy-handler.ts`）
-- `desktop-context.md` 提取损坏修复：`extractPrompts()` 的 end marker 从 `` `; `` 改为 `` `[,;)] `` 正则，防止压缩 JS 代码注入 instructions 导致 tool_calls 失效（#13）
-- 清除 `config/prompts/desktop-context.md` 中第 71 行起被污染的 ~7KB JS 垃圾代码
-- TLS 伪装 profile 确定性解析：用已知 Chrome profile 列表（`KNOWN_CHROME_PROFILES`）替代不可靠的 runtime 检测，确保 `--impersonate` 目标始终有效（如 `chrome137` → `chrome136`）
-- FFI transport 硬编码 `"chrome136"` 改为使用统一解析的 profile（`getResolvedProfile()`）
-- `getModels()` 死代码：`allModels` 作用域修复，消除不可达分支
-- `reloadAllConfigs()` 异步 lazy import 改为同步直接导入，避免日志时序不准
-- 模型合并 reasoning efforts 判断逻辑从 `length > 1` 改为显式标志
-- `scheduleNext()` 添加 try/finally 防止异常中断刷新循环
-- 未认证启动时抑制无意义的 warn 日志
-- `getModelCatalog()` / `getModelAliases()` 返回浅拷贝，防止外部意外修改
-- `ClaudeCodeSetup.tsx` 文件名与导出名不一致，重命名为 `AnthropicSetup.tsx`
-- Dashboard 模型偏好从硬编码 `gpt-5.2-codex` 改为使用 `codex` 别名
+- Anthropic 路由 `thinking`/`redacted_thinking` content block 验证失败：Claude Code `/compact` 发送含 extended thinking 的对话历史时触发 400 Zod 错误
+- Anthropic 路由上下文 token 始终显示 0%：`message_delta` 事件缺少 `input_tokens`
+- 工具 schema 缺少 `properties` 字段导致 400 错误（PR #22）
+- 额度窗口刷新后 Dashboard 仍显示累计 Token
+- 空响应重试循环中账号双重释放
+- 强化提示词注入防护
 - 构建脚本 `vite build --root web` 兼容性问题，改用 `npm run build:web`
-- Docker 容器内代理自动检测失败：`detectLocalProxy()` 现在同时探测 `127.0.0.1`（裸机）和 `host.docker.internal`（Docker 容器→宿主机），零配置即生效
+- Docker 容器内代理自动检测失败：`detectLocalProxy()` 同时探测 `127.0.0.1` 和 `host.docker.internal`
+
+## [1.0.1] - 2026-03-04
+
+### Fixed
+
+- Windows Electron 安装后无法启动：添加全局 try-catch + 错误对话框
+- NSIS 安装无向导：改为 `oneClick: false` + 允许选择安装目录
+- 桌面端 UI 静态资源路径错误：改为绝对路径
+- macOS 无法退出应用：添加 `isQuitting` 标志 + `before-quit` 事件处理
+- macOS 签名：依赖 electron-builder 默认 ad-hoc 签名
+
+## [1.0.0] - 2026-03-04
+
+### Added
+
+- Electron 桌面应用：下载安装即用，无需 Node.js 环境
+- 桌面端 UI 独立重设计（macOS / Windows 原生风格）
+- Reasoning/Thinking 输出支持（OpenAI + Anthropic 路由）
+- 图片输入支持（OpenAI / Anthropic / Gemini 透传）
+- 每窗口使用量计数器 + 窗口时长显示
+- 空响应检测 + 自动换号重试
+- 动态模型列表（后端自动获取 + 静态 YAML 合并）
+- 完整 Codex 模型目录（23 个静态模型）
 
 ## [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

@@ -84,10 +84,25 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        run: |
+          # Extract section matching the tag version (e.g., v1.0.3 → [1.0.3])
+          ver="${GITHUB_REF_NAME#v}"
+          notes=$(awk -v ver="$ver" '
+            /^## \['"$ver"'\]/{flag=1; next}
+            /^## \[/{flag=0}
+            flag
+          ' CHANGELOG.md | sed '/^$/N;/^\n$/d')
+          if [ -z "$notes" ]; then
+            notes="Release ${GITHUB_REF_NAME}"
+          fi
+          echo "$notes" > release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body: "See [CHANGELOG](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for details."
+          body_path: release-notes.md
           draft: false
           prerelease: false
           generate_release_notes: false

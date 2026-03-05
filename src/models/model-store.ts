@@ -115,6 +115,11 @@ function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta 
   };
 }
 
+/** Check if a model ID is a Codex model (gpt-X.Y-codex or gpt-X.Y-codex-tier). */
+function isCodexModelId(id: string): boolean {
+  return /^gpt-\d+(\.\d+)?-codex/.test(id);
+}
+
 /**
  * Merge backend models into the catalog.
  *
@@ -122,17 +127,17 @@ function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta 
  *   - Backend models overwrite static models with the same ID
  *     (but YAML fields fill in missing backend fields)
  *   - Static-only models are preserved (YAML may know about models the backend doesn't list)
+ *   - New Codex models from backend are auto-admitted (prevents missing new releases)
  *   - Aliases are never touched (always from YAML)
  */
 export function applyBackendModels(backendModels: BackendModelEntry[]): void {
-  // Only keep models whose ID already exists in the static catalog.
-  // Backend data is used to supplement/update existing models, not to introduce new IDs.
-  // This prevents ChatGPT-only slugs (gpt-5-2, gpt-5-1, research, etc.) from
-  // entering the catalog and breaking resolveModelId() fallback logic.
+  // Keep models that either exist in static catalog OR are Codex models.
+  // This prevents ChatGPT-only slugs (gpt-5-2, research, etc.) from
+  // entering the catalog, while auto-admitting new Codex releases.
   const staticIds = new Set(_catalog.map((m) => m.id));
   const filtered = backendModels.filter((raw) => {
     const id = raw.slug ?? raw.id ?? raw.name ?? "";
-    return staticIds.has(id);
+    return staticIds.has(id) || isCodexModelId(id);
   });
 
   const staticMap = new Map(_catalog.map((m) => [m.id, m]));

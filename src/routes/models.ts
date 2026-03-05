@@ -78,6 +78,11 @@ export function createModelRoutes(): Hono {
     });
   });
 
+  // Full catalog with reasoning efforts (for dashboard UI)
+  app.get("/v1/models/catalog", (c) => {
+    return c.json(getModelCatalog());
+  });
+
   // Extended endpoint: model details with reasoning efforts
   app.get("/v1/models/:modelId/info", (c) => {
     const modelId = c.req.param("modelId");

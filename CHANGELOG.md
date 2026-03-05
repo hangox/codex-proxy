@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-03-05
+
+### Fixed
+
+- 移除后端已不支持的 `previous_response_id` 参数（发送会导致 HTTP 400）
+- 清理已废弃的 `SessionManager`（仅服务于 `previous_response_id`，多轮对话通过完整消息历史实现）
+
 ## [1.0.3] - 2026-03-05
 
 ### Fixed

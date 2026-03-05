@@ -1,6 +1,7 @@
 import { useT } from "../../../shared/i18n/context";
 import { CopyButton } from "./CopyButton";
 import { useCallback } from "preact/hooks";
+import type { ModelFamily } from "../../../shared/hooks/use-status";
 
 interface ApiConfigProps {
   baseUrl: string;
@@ -8,13 +9,49 @@ interface ApiConfigProps {
   models: string[];
   selectedModel: string;
   onModelChange: (model: string) => void;
+  modelFamilies: ModelFamily[];
+  selectedEffort: string;
+  onEffortChange: (effort: string) => void;
 }
 
-export function ApiConfig({ baseUrl, apiKey, models, selectedModel, onModelChange }: ApiConfigProps) {
+const EFFORT_LABELS: Record<string, string> = {
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+};
+
+export function ApiConfig({
+  baseUrl,
+  apiKey,
+  models,
+  selectedModel,
+  onModelChange,
+  modelFamilies,
+  selectedEffort,
+  onEffortChange,
+}: ApiConfigProps) {
   const t = useT();
 
   const getBaseUrl = useCallback(() => baseUrl, [baseUrl]);
   const getApiKey = useCallback(() => apiKey, [apiKey]);
+
+  const handleFamilySelect = useCallback(
+    (family: ModelFamily) => {
+      onModelChange(family.id);
+      const supportedEfforts = family.efforts.map((e) => e.reasoningEffort);
+      if (!supportedEfforts.includes(selectedEffort)) {
+        onEffortChange(family.defaultEffort);
+      }
+    },
+    [onModelChange, onEffortChange, selectedEffort],
+  );
+
+  const currentFamily = modelFamilies.find((f) => f.id === selectedModel);
+  const currentEfforts = currentFamily?.efforts ?? [];
+  const showMatrix = modelFamilies.length > 0;
 
   return (
     <div class="card p-6">
@@ -42,25 +79,67 @@ export function ApiConfig({ baseUrl, apiKey, models, selectedModel, onModelChang
           </div>
         </div>
 
-        {/* Default Model */}
+        {/* Model selector — matrix or flat fallback */}
         <div class="space-y-1.5">
           <label class="text-xs font-semibold" style="color: var(--text-primary);">{t("defaultModel")}</label>
-          <div class="relative">
-            <select
-              class="input-field w-full appearance-none pl-3 pr-10 py-2.5 text-[0.78rem] font-medium cursor-pointer"
-              value={selectedModel}
-              onChange={(e) => onModelChange((e.target as HTMLSelectElement).value)}
-            >
-              {models.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2" style="color: var(--text-secondary);">
-              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-              </svg>
+          {showMatrix ? (
+            <div class="rounded-lg overflow-hidden" style="border: 1px solid var(--border);">
+              {/* Model family list */}
+              <div class="max-h-[200px] overflow-y-auto">
+                {modelFamilies.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => handleFamilySelect(f)}
+                    class="w-full text-left px-3 py-2 text-[0.78rem] font-medium transition-colors duration-150"
+                    style={{
+                      borderBottom: "1px solid var(--border)",
+                      background: selectedModel === f.id ? "var(--accent-bg)" : "transparent",
+                      color: selectedModel === f.id ? "var(--accent)" : "var(--text-primary)",
+                    }}
+                  >
+                    {f.displayName}
+                  </button>
+                ))}
+              </div>
+              {/* Reasoning effort buttons */}
+              {currentEfforts.length > 1 && (
+                <div class="flex gap-1.5 p-2 flex-wrap" style="border-top: 1px solid var(--border); background: var(--bg-input);">
+                  {currentEfforts.map((e) => (
+                    <button
+                      key={e.reasoningEffort}
+                      onClick={() => onEffortChange(e.reasoningEffort)}
+                      title={e.description}
+                      class="px-2.5 py-1 text-[0.7rem] font-semibold rounded transition-all duration-150"
+                      style={
+                        selectedEffort === e.reasoningEffort
+                          ? { background: "var(--accent)", color: "#fff" }
+                          : { background: "var(--bg-card)", color: "var(--text-secondary)", border: "1px solid var(--border)" }
+                      }
+                    >
+                      {EFFORT_LABELS[e.reasoningEffort] ?? e.reasoningEffort}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
+          ) : (
+            <div class="relative">
+              <select
+                class="input-field w-full appearance-none pl-3 pr-10 py-2.5 text-[0.78rem] font-medium cursor-pointer"
+                value={selectedModel}
+                onChange={(e) => onModelChange((e.target as HTMLSelectElement).value)}
+              >
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2" style="color: var(--text-secondary);">
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* API Key */}

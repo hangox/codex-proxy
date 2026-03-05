@@ -21,8 +21,18 @@ function buildExamples(
   baseUrl: string,
   apiKey: string,
   model: string,
-  origin: string
+  origin: string,
+  reasoningEffort: string
 ): Record<string, string> {
+  const effortLine = reasoningEffort && reasoningEffort !== "medium"
+    ? `\n    reasoning_effort="${reasoningEffort}",`
+    : "";
+  const effortJson = reasoningEffort && reasoningEffort !== "medium"
+    ? `,\n    "reasoning_effort": "${reasoningEffort}"`
+    : "";
+  const effortJs = reasoningEffort && reasoningEffort !== "medium"
+    ? `\n    reasoning_effort: "${reasoningEffort}",`
+    : "";
   return {
     "openai-python": `from openai import OpenAI
 
@@ -33,7 +43,7 @@ client = OpenAI(
 
 response = client.chat.completions.create(
     model="${model}",
-    messages=[{"role": "user", "content": "Hello"}],
+    messages=[{"role": "user", "content": "Hello"}],${effortLine}
 )
 print(response.choices[0].message.content)`,
 
@@ -42,7 +52,7 @@ print(response.choices[0].message.content)`,
   -H "Authorization: Bearer ${apiKey}" \\
   -d '{
     "model": "${model}",
-    "messages": [{"role": "user", "content": "Hello"}]
+    "messages": [{"role": "user", "content": "Hello"}]${effortJson}
   }'`,
 
     "openai-node": `import OpenAI from "openai";
@@ -54,7 +64,7 @@ const client = new OpenAI({
 
 const stream = await client.chat.completions.create({
     model: "${model}",
-    messages: [{ role: "user", content: "Hello" }],
+    messages: [{ role: "user", content: "Hello" }],${effortJs}
     stream: true,
 });
 for await (const chunk of stream) {
@@ -137,17 +147,18 @@ interface CodeExamplesProps {
   baseUrl: string;
   apiKey: string;
   model: string;
+  reasoningEffort: string;
 }
 
-export function CodeExamples({ baseUrl, apiKey, model }: CodeExamplesProps) {
+export function CodeExamples({ baseUrl, apiKey, model, reasoningEffort }: CodeExamplesProps) {
   const t = useT();
   const [protocol, setProtocol] = useState<Protocol>("openai");
   const [codeLang, setCodeLang] = useState<CodeLang>("python");
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const examples = useMemo(
-    () => buildExamples(baseUrl, apiKey, model, origin),
-    [baseUrl, apiKey, model, origin]
+    () => buildExamples(baseUrl, apiKey, model, origin, reasoningEffort),
+    [baseUrl, apiKey, model, origin, reasoningEffort]
   );
 
   const currentCode = examples[`${protocol}-${codeLang}`] || "Loading...";

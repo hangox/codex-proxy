@@ -84,21 +84,10 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Extract release notes from CHANGELOG
-        id: changelog
-        run: |
-          # Extract [Unreleased] section from CHANGELOG.md
-          notes=$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md | sed '/^$/N;/^\n$/d')
-          if [ -z "$notes" ]; then
-            notes="Release ${GITHUB_REF_NAME}"
-          fi
-          # Write to file for gh-release
-          echo "$notes" > release-notes.md
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: release-notes.md
+          body: "See [CHANGELOG](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for details."
           draft: false
           prerelease: false
           generate_release_notes: false

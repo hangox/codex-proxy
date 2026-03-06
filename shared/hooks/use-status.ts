@@ -44,8 +44,8 @@ function isTierVariant(id: string): boolean {
 export function useStatus(accountCount: number) {
   const [baseUrl, setBaseUrl] = useState("Loading...");
   const [apiKey, setApiKey] = useState("Loading...");
-  const [models, setModels] = useState<string[]>(["codex"]);
-  const [selectedModel, setSelectedModel] = useState("codex");
+  const [models, setModels] = useState<string[]>(["gpt-5.4"]);
+  const [selectedModel, setSelectedModel] = useState("gpt-5.4");
   const [modelCatalog, setModelCatalog] = useState<CatalogModel[]>([]);
   const [selectedEffort, setSelectedEffort] = useState("medium");
 
@@ -62,11 +62,11 @@ export function useStatus(accountCount: number) {
       const ids: string[] = data.data.map((m: { id: string }) => m.id);
       if (ids.length > 0) {
         setModels(ids);
-        const preferred = ids.find((n) => n === "codex");
+        const preferred = ids.find((n) => n === "gpt-5.4");
         if (preferred) setSelectedModel(preferred);
       }
     } catch {
-      setModels(["codex"]);
+      setModels(["gpt-5.4"]);
     }
   }, []);
 

@@ -8,6 +8,8 @@
     <img src="https://img.shields.io/badge/Runtime-Node.js_18+-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js">
     <img src="https://img.shields.io/badge/Language-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
     <img src="https://img.shields.io/badge/Framework-Hono-E36002?style=flat-square" alt="Hono">
+    <img src="https://img.shields.io/badge/Docker-Supported-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Desktop-Win%20%7C%20Mac%20%7C%20Linux-8A2BE2?style=flat-square&logo=electron&logoColor=white" alt="Desktop">
     <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
   </p>
 
@@ -34,21 +36,55 @@ Just a ChatGPT account and this proxy — your own personal AI coding assistant 
 
 ## 🚀 Quick Start
 
+### Desktop App (Easiest)
+
+Download the installer from [GitHub Releases](https://github.com/icebear0828/codex-proxy/releases) — no setup required:
+
+| Platform | Installer |
+|----------|-----------|
+| Windows | `Codex Proxy Setup x.x.x.exe` |
+| macOS | `Codex Proxy-x.x.x.dmg` |
+| Linux | `Codex Proxy-x.x.x.AppImage` |
+
+Open the app and log in with your ChatGPT account. The desktop app listens on `127.0.0.1:8080` (local access only).
+
+### CLI / Server Deployment
+
 ```bash
-# 1. Clone the repo
 git clone https://github.com/icebear0828/codex-proxy.git
 cd codex-proxy
+```
 
-# 2. Install dependencies
-npm install
+#### Docker (Recommended)
 
-# 3. Start the proxy (dev mode with hot reload)
-npm run dev
+```bash
+docker compose up -d
+# Open http://localhost:8080 to log in
+```
 
-# 4. Open the dashboard and log in with your ChatGPT account
-#    http://localhost:8080
+#### macOS / Linux
 
-# 5. Test a request
+```bash
+npm install                # Install backend deps + auto-download curl-impersonate
+cd web && npm install && cd ..   # Install frontend deps
+npm run dev                # Dev mode (hot reload)
+# Or: npm run build && npm start  # Production mode
+```
+
+#### Windows
+
+```bash
+npm install                # Install backend deps
+cd web && npm install && cd ..   # Install frontend deps
+npm run dev                # Dev mode (hot reload)
+```
+
+> On Windows, curl-impersonate is not available. The proxy falls back to system curl. For full TLS impersonation, use Docker or WSL.
+
+### Verify
+
+```bash
+# Open http://localhost:8080, log in with your ChatGPT account, then:
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -58,12 +94,12 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-> **Cross-container access**: If other Docker containers (e.g., OpenClaw, Cursor Server) need to connect to codex-proxy, use the host's LAN IP (e.g., `http://192.168.x.x:8080/v1`) instead of `host.docker.internal` to avoid Docker DNS resolution issues.
+> **Cross-container access**: If other Docker containers need to connect to codex-proxy, use the host's LAN IP (e.g., `http://192.168.x.x:8080/v1`) instead of `host.docker.internal`.
 
 ## 🌟 Features
 
 ### 1. 🔌 Full Protocol Compatibility
-- Complete `/v1/chat/completions` and `/v1/models` endpoint support
+- Compatible with `/v1/chat/completions` (OpenAI), `/v1/messages` (Anthropic), and Gemini formats
 - SSE streaming output, works with all OpenAI SDKs and clients
 - Automatic bidirectional translation between Chat Completions and Codex Responses API
 
@@ -123,14 +159,40 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 📦 Available Models
 
-| Model ID | Alias | Description |
-|----------|-------|-------------|
-| `gpt-5.2-codex` | `codex` | Latest agentic coding model (default) |
-| `gpt-5.1-codex-mini` | `codex-mini` | Lightweight, fast coding model |
+| Model ID | Alias | Reasoning Efforts | Description |
+|----------|-------|-------------------|-------------|
+| `gpt-5.4` | `codex` | minimal / low / medium / high | Latest flagship coding model (default) |
+| `gpt-5.3-codex` | — | low / medium / high | Previous-gen flagship agentic coding model |
+| `gpt-5.3-codex-spark` | — | minimal / low | Ultra-lightweight coding model |
+| `gpt-5.2-codex` | — | low / medium / high | Agentic coding model |
+| `gpt-5.1-codex-max` | `codex-max` | low / medium / high | Deep reasoning coding model |
+| `gpt-5.1-codex-mini` | `codex-mini` | low / medium / high | Lightweight, fast coding model |
 
-> Models are automatically synced when new Codex Desktop versions are released.
+> Models are automatically synced when new Codex Desktop versions are released. The backend also dynamically fetches the latest model catalog.
 
 ## 🔗 Client Setup
+
+### Claude Code
+
+Set environment variables to route Claude Code through codex-proxy:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_API_KEY=your-api-key
+export ANTHROPIC_MODEL=claude-opus-4-6     # Opus → gpt-5.4 (default)
+# export ANTHROPIC_MODEL=claude-sonnet-4-6   # Sonnet → gpt-5.3-codex
+# export ANTHROPIC_MODEL=claude-haiku-4-5-20251001  # Haiku → gpt-5.1-codex-mini
+
+claude   # Launch Claude Code
+```
+
+| Claude Code Model | Maps to Codex Model |
+|-------------------|---------------------|
+| Opus (`claude-opus-4-6`) | `gpt-5.4` |
+| Sonnet (`claude-sonnet-4-6`) | `gpt-5.3-codex` |
+| Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` |
+
+> You can also copy environment variables from the **Anthropic SDK Setup** card in the dashboard (`http://localhost:8080`).
 
 ### Cursor
 

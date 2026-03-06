@@ -1,6 +1,6 @@
 import { useT } from "../../../shared/i18n/context";
 import { CopyButton } from "./CopyButton";
-import { useCallback } from "preact/hooks";
+import { useCallback, useState, useEffect, useRef } from "preact/hooks";
 import type { ModelFamily } from "../../../shared/hooks/use-status";
 
 interface ApiConfigProps {
@@ -38,10 +38,26 @@ export function ApiConfig({
   const getBaseUrl = useCallback(() => baseUrl, [baseUrl]);
   const getApiKey = useCallback(() => apiKey, [apiKey]);
 
+  const [open, setOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
   // When a family is selected, update model + snap effort to default if current effort is unsupported
   const handleFamilySelect = useCallback(
     (family: ModelFamily) => {
       onModelChange(family.id);
+      setOpen(false);
       const supportedEfforts = family.efforts.map((e) => e.reasoningEffort);
       if (!supportedEfforts.includes(selectedEffort)) {
         onEffortChange(family.defaultEffort);
@@ -85,26 +101,40 @@ export function ApiConfig({
         <div class="space-y-1.5">
           <label class="text-xs font-semibold text-slate-700 dark:text-text-main">{t("defaultModel")}</label>
           {showMatrix ? (
-            <div class="border border-gray-200 dark:border-border-dark rounded-lg overflow-hidden">
-              {/* Model family list */}
-              <div class="max-h-[200px] overflow-y-auto">
-                {modelFamilies.map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => handleFamilySelect(f)}
-                    class={`w-full text-left px-3 py-2 text-[0.78rem] font-medium border-b border-gray-100 dark:border-border-dark last:border-b-0 transition-colors ${
-                      selectedModel === f.id
-                        ? "bg-primary/10 text-primary dark:bg-primary/20"
-                        : "text-slate-700 dark:text-text-main hover:bg-slate-50 dark:hover:bg-[#21262d]"
-                    }`}
-                  >
-                    {f.displayName}
-                  </button>
-                ))}
-              </div>
-              {/* Reasoning effort buttons for selected family */}
+            <div ref={dropdownRef} class="relative">
+              {/* Trigger button */}
+              <button
+                onClick={() => setOpen(!open)}
+                class="w-full flex items-center justify-between px-3 py-2.5 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] text-slate-700 dark:text-text-main font-medium focus:ring-1 focus:ring-primary focus:border-primary outline-none cursor-pointer transition-colors"
+              >
+                <span>{currentFamily?.displayName ?? selectedModel}</span>
+                <svg class={`size-[18px] text-slate-500 dark:text-text-dim transition-transform ${open ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+              {/* Dropdown list */}
+              {open && (
+                <div class="absolute z-10 mt-1 w-full border border-gray-200 dark:border-border-dark rounded-lg overflow-hidden bg-white dark:bg-card-dark shadow-lg">
+                  <div class="max-h-[200px] overflow-y-auto">
+                    {modelFamilies.map((f) => (
+                      <button
+                        key={f.id}
+                        onClick={() => handleFamilySelect(f)}
+                        class={`w-full text-left px-3 py-2 text-[0.78rem] font-medium border-b border-gray-100 dark:border-border-dark last:border-b-0 transition-colors ${
+                          selectedModel === f.id
+                            ? "bg-primary/10 text-primary dark:bg-primary/20"
+                            : "text-slate-700 dark:text-text-main hover:bg-slate-50 dark:hover:bg-[#21262d]"
+                        }`}
+                      >
+                        {f.displayName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Reasoning effort buttons — always visible */}
               {currentEfforts.length > 1 && (
-                <div class="flex gap-1.5 p-2 bg-slate-50 dark:bg-bg-dark/50 border-t border-gray-200 dark:border-border-dark flex-wrap">
+                <div class="flex gap-1.5 mt-2 flex-wrap">
                   {currentEfforts.map((e) => (
                     <button
                       key={e.reasoningEffort}

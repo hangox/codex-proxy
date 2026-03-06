@@ -9,6 +9,7 @@
     <img src="https://img.shields.io/badge/Language-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript">
     <img src="https://img.shields.io/badge/Framework-Hono-E36002?style=flat-square" alt="Hono">
     <img src="https://img.shields.io/badge/Docker-Supported-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/Desktop-Win%20%7C%20Mac%20%7C%20Linux-8A2BE2?style=flat-square&logo=electron&logoColor=white" alt="Desktop">
     <img src="https://img.shields.io/badge/License-Non--Commercial-red?style=flat-square" alt="License">
   </p>
 
@@ -34,6 +35,20 @@
 只需一个 ChatGPT 账号，配合本代理即可在本地搭建一个专属的 AI 编程助手网关。
 
 ## 🚀 快速开始 (Quick Start)
+
+### 桌面应用（最简单）
+
+从 [GitHub Releases](https://github.com/icebear0828/codex-proxy/releases) 下载安装包，开箱即用：
+
+| 平台 | 安装包 |
+|------|--------|
+| Windows | `Codex Proxy Setup x.x.x.exe` |
+| macOS | `Codex Proxy-x.x.x.dmg` |
+| Linux | `Codex Proxy-x.x.x.AppImage` |
+
+安装后打开应用，使用 ChatGPT 账号登录即可。桌面端默认监听 `127.0.0.1:8080`，仅本机访问。
+
+### CLI / 服务器部署
 
 ```bash
 git clone https://github.com/icebear0828/codex-proxy.git
@@ -144,15 +159,16 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 📦 可用模型 (Available Models)
 
-| 模型 ID | 别名 | 说明 |
-|---------|------|------|
-| `gpt-5.3-codex` | `codex` | 最新旗舰 agentic 编程模型（默认） |
-| `gpt-5.2-codex` | — | 上一代 agentic 编程模型 |
-| `gpt-5.1-codex-max` | `codex-max` | 深度推理编程模型 |
-| `gpt-5.2` | — | 通用旗舰模型 |
-| `gpt-5.1-codex-mini` | `codex-mini` | 轻量快速编程模型 |
+| 模型 ID | 别名 | 推理等级 | 说明 |
+|---------|------|---------|------|
+| `gpt-5.4` | `codex` | minimal / low / medium / high | 最新旗舰编程模型（默认） |
+| `gpt-5.3-codex` | — | low / medium / high | 上一代旗舰 agentic 编程模型 |
+| `gpt-5.3-codex-spark` | — | minimal / low | 超轻量编程模型 |
+| `gpt-5.2-codex` | — | low / medium / high | agentic 编程模型 |
+| `gpt-5.1-codex-max` | `codex-max` | low / medium / high | 深度推理编程模型 |
+| `gpt-5.1-codex-mini` | `codex-mini` | low / medium / high | 轻量快速编程模型 |
 
-> 模型列表会随 Codex Desktop 版本更新自动同步。
+> 模型列表会随 Codex Desktop 版本更新自动同步。后端也会动态获取最新模型目录。
 
 ## 🔗 客户端接入 (Client Setup)
 
@@ -163,8 +179,8 @@ curl http://localhost:8080/v1/chat/completions \
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8080
 export ANTHROPIC_API_KEY=your-api-key
-export ANTHROPIC_MODEL=claude-opus-4-6     # Opus → gpt-5.3-codex（默认）
-# export ANTHROPIC_MODEL=claude-sonnet-4-6   # Sonnet → gpt-5.2-codex
+export ANTHROPIC_MODEL=claude-opus-4-6     # Opus → gpt-5.4（默认）
+# export ANTHROPIC_MODEL=claude-sonnet-4-6   # Sonnet → gpt-5.3-codex
 # export ANTHROPIC_MODEL=claude-haiku-4-5-20251001  # Haiku → gpt-5.1-codex-mini
 
 claude   # 启动 Claude Code
@@ -172,8 +188,8 @@ claude   # 启动 Claude Code
 
 | Claude Code 模型 | 映射到 Codex 模型 |
 |------------------|------------------|
-| Opus (`claude-opus-4-6`) | `gpt-5.3-codex` |
-| Sonnet (`claude-sonnet-4-6`) | `gpt-5.2-codex` |
+| Opus (`claude-opus-4-6`) | `gpt-5.4` |
+| Sonnet (`claude-sonnet-4-6`) | `gpt-5.3-codex` |
 | Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` |
 
 > 也可以在控制面板 (`http://localhost:8080`) 的 **Anthropic SDK Setup** 卡片中一键复制环境变量。

@@ -128,6 +128,10 @@ export function useAccounts() {
     [loadAccounts]
   );
 
+  const patchLocal = useCallback((accountId: string, patch: Partial<Account>) => {
+    setList((prev) => prev.map((a) => a.id === accountId ? { ...a, ...patch } : a));
+  }, []);
+
   return {
     list,
     loading,
@@ -137,6 +141,7 @@ export function useAccounts() {
     addInfo,
     addError,
     refresh: loadAccounts,
+    patchLocal,
     startAdd,
     submitRelay,
     deleteAccount,

@@ -3,6 +3,8 @@ import { useT } from "../../../shared/i18n/context";
 import type { TranslationKey } from "../../../shared/i18n/translations";
 import type { ProxiesState } from "../../../shared/hooks/use-proxies";
 
+const PROTOCOLS = ["http", "https", "socks5", "socks5h"] as const;
+
 const statusStyles: Record<string, [string, TranslationKey]> = {
   active: [
     "bg-green-100 text-green-700 border-green-200 dark:bg-[#11281d] dark:text-primary dark:border-[#1a442e]",
@@ -18,6 +20,8 @@ const statusStyles: Record<string, [string, TranslationKey]> = {
   ],
 };
 
+const inputCls = "px-3 py-2 text-sm border border-gray-200 dark:border-border-dark rounded-lg bg-transparent focus:outline-none focus:ring-1 focus:ring-primary";
+
 interface ProxyPoolProps {
   proxies: ProxiesState;
 }
@@ -26,26 +30,46 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
   const t = useT();
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
-  const [newUrl, setNewUrl] = useState("");
+  const [newProtocol, setNewProtocol] = useState("http");
+  const [newHost, setNewHost] = useState("");
+  const [newPort, setNewPort] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [addError, setAddError] = useState("");
   const [checking, setChecking] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
 
+  const resetForm = useCallback(() => {
+    setNewName("");
+    setNewProtocol("http");
+    setNewHost("");
+    setNewPort("");
+    setNewUsername("");
+    setNewPassword("");
+    setAddError("");
+  }, []);
+
   const handleAdd = useCallback(async () => {
     setAddError("");
-    if (!newUrl.trim()) {
-      setAddError("URL is required");
+    if (!newHost.trim()) {
+      setAddError(t("proxyHost") + " is required");
       return;
     }
-    const err = await proxies.addProxy(newName || newUrl, newUrl);
+    const err = await proxies.addProxy({
+      name: newName,
+      protocol: newProtocol,
+      host: newHost,
+      port: newPort,
+      username: newUsername,
+      password: newPassword,
+    });
     if (err) {
       setAddError(err);
     } else {
-      setNewName("");
-      setNewUrl("");
+      resetForm();
       setShowAdd(false);
     }
-  }, [newName, newUrl, proxies]);
+  }, [newName, newProtocol, newHost, newPort, newUsername, newPassword, proxies, resetForm, t]);
 
   const handleCheck = useCallback(
     async (id: string) => {
@@ -102,31 +126,69 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
       {/* Add form */}
       {showAdd && (
         <div class="bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl p-4 mb-4">
-          <div class="flex flex-col sm:flex-row gap-3">
+          <div class="grid grid-cols-[auto_1fr_auto] sm:grid-cols-[auto_1fr_80px] gap-2 items-center">
+            {/* Row 1: Protocol + Host + Port */}
+            <select
+              value={newProtocol}
+              onChange={(e) => setNewProtocol((e.target as HTMLSelectElement).value)}
+              class={`${inputCls} w-[110px]`}
+            >
+              {PROTOCOLS.map((p) => (
+                <option key={p} value={p}>{p}://</option>
+              ))}
+            </select>
             <input
               type="text"
-              placeholder={t("proxyName")}
+              placeholder={t("proxyHost")}
+              value={newHost}
+              onInput={(e) => setNewHost((e.target as HTMLInputElement).value)}
+              class={`${inputCls} font-mono`}
+            />
+            <input
+              type="text"
+              placeholder={t("proxyPort")}
+              value={newPort}
+              onInput={(e) => setNewPort((e.target as HTMLInputElement).value)}
+              class={`${inputCls} font-mono`}
+            />
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
+            {/* Row 2: Name + Username + Password */}
+            <input
+              type="text"
+              placeholder={`${t("proxyName")} (${t("proxyOptional")})`}
               value={newName}
               onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
-              class="flex-1 px-3 py-2 text-sm border border-gray-200 dark:border-border-dark rounded-lg bg-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+              class={inputCls}
             />
             <input
               type="text"
-              placeholder="http://host:port or socks5://host:port"
-              value={newUrl}
-              onInput={(e) => setNewUrl((e.target as HTMLInputElement).value)}
-              class="flex-[2] px-3 py-2 text-sm border border-gray-200 dark:border-border-dark rounded-lg bg-transparent focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+              placeholder={`${t("proxyUsername")} (${t("proxyOptional")})`}
+              value={newUsername}
+              onInput={(e) => setNewUsername((e.target as HTMLInputElement).value)}
+              class={inputCls}
             />
-            <button
-              onClick={handleAdd}
-              class="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors whitespace-nowrap"
-            >
-              {t("addProxy")}
-            </button>
+            <input
+              type="password"
+              placeholder={`${t("proxyPassword")} (${t("proxyOptional")})`}
+              value={newPassword}
+              onInput={(e) => setNewPassword((e.target as HTMLInputElement).value)}
+              class={`${inputCls} col-span-2 sm:col-span-1`}
+            />
           </div>
-          {addError && (
-            <p class="text-xs text-red-500 mt-2">{addError}</p>
-          )}
+          <div class="flex items-center justify-between mt-3">
+            {addError && (
+              <p class="text-xs text-red-500">{addError}</p>
+            )}
+            <div class="ml-auto">
+              <button
+                onClick={handleAdd}
+                class="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors whitespace-nowrap"
+              >
+                {t("addProxy")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

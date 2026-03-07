@@ -29,14 +29,28 @@ export function createProxyRoutes(proxyPool: ProxyPool): Hono {
     });
   });
 
-  // Add proxy
+  // Add proxy — accepts { name, url } OR { name, protocol, host, port, username?, password? }
   app.post("/api/proxies", async (c) => {
-    const body = await c.req.json<{ name?: string; url?: string }>();
-    const url = body.url?.trim();
+    const body = await c.req.json<{
+      name?: string;
+      url?: string;
+      protocol?: string;
+      host?: string;
+      port?: string | number;
+      username?: string;
+      password?: string;
+    }>();
+
+    let url = body.url?.trim();
+
+    // Compose URL from separate fields if raw url not provided
+    if (!url && body.host) {
+      url = composeProxyUrl(body.protocol, body.host, body.port, body.username, body.password);
+    }
 
     if (!url) {
       c.status(400);
-      return c.json({ error: "url is required" });
+      return c.json({ error: "url or host is required" });
     }
 
     // URL validation + scheme check
@@ -173,4 +187,24 @@ export function createProxyRoutes(proxyPool: ProxyPool): Hono {
   });
 
   return app;
+}
+
+/** Compose a proxy URL from separate fields. */
+function composeProxyUrl(
+  protocol: string | undefined,
+  host: string,
+  port: string | number | undefined,
+  username: string | undefined,
+  password: string | undefined,
+): string {
+  const scheme = protocol || "http";
+  const trimmedHost = host.trim();
+  let auth = "";
+  if (username) {
+    auth = password
+      ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`
+      : `${encodeURIComponent(username)}@`;
+  }
+  const portSuffix = port ? `:${port}` : "";
+  return `${scheme}://${auth}${trimmedHost}${portSuffix}`;
 }

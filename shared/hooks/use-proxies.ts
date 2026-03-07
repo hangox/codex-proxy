@@ -1,13 +1,22 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 import type { ProxyEntry, ProxyAssignment } from "../types";
 
+export interface AddProxyFields {
+  name: string;
+  protocol: string;
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+}
+
 export interface ProxiesState {
   proxies: ProxyEntry[];
   assignments: ProxyAssignment[];
   healthCheckIntervalMinutes: number;
   loading: boolean;
   refresh: () => Promise<void>;
-  addProxy: (name: string, url: string) => Promise<string | null>;
+  addProxy: (fields: AddProxyFields) => Promise<string | null>;
   removeProxy: (id: string) => Promise<string | null>;
   checkProxy: (id: string) => Promise<void>;
   checkAll: () => Promise<void>;
@@ -43,12 +52,19 @@ export function useProxies(): ProxiesState {
   }, [refresh]);
 
   const addProxy = useCallback(
-    async (name: string, url: string): Promise<string | null> => {
+    async (fields: AddProxyFields): Promise<string | null> => {
       try {
         const resp = await fetch("/api/proxies", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, url }),
+          body: JSON.stringify({
+            name: fields.name,
+            protocol: fields.protocol,
+            host: fields.host,
+            port: fields.port,
+            username: fields.username,
+            password: fields.password,
+          }),
         });
         const data = await resp.json();
         if (!resp.ok) return data.error || "Failed to add proxy";

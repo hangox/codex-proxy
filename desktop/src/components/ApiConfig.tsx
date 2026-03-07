@@ -12,6 +12,8 @@ interface ApiConfigProps {
   modelFamilies: ModelFamily[];
   selectedEffort: string;
   onEffortChange: (effort: string) => void;
+  selectedSpeed: string | null;
+  onSpeedChange: (speed: string | null) => void;
 }
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -32,6 +34,8 @@ export function ApiConfig({
   modelFamilies,
   selectedEffort,
   onEffortChange,
+  selectedSpeed,
+  onSpeedChange,
 }: ApiConfigProps) {
   const t = useT();
 
@@ -121,6 +125,32 @@ export function ApiConfig({
                   ))}
                 </div>
               )}
+              {/* Speed toggle — Standard / Fast */}
+              <div class="flex items-center gap-1.5 p-2" style="border-top: 1px solid var(--border); background: var(--bg-input);">
+                <span class="text-[0.68rem] font-medium mr-1" style="color: var(--text-secondary);">{t("speed")}</span>
+                <button
+                  onClick={() => onSpeedChange(null)}
+                  class="px-2.5 py-1 text-[0.7rem] font-semibold rounded transition-all duration-150"
+                  style={
+                    selectedSpeed === null
+                      ? { background: "var(--accent)", color: "#fff" }
+                      : { background: "var(--bg-card)", color: "var(--text-secondary)", border: "1px solid var(--border)" }
+                  }
+                >
+                  {t("speedStandard")}
+                </button>
+                <button
+                  onClick={() => onSpeedChange("fast")}
+                  class="px-2.5 py-1 text-[0.7rem] font-semibold rounded transition-all duration-150"
+                  style={
+                    selectedSpeed === "fast"
+                      ? { background: "var(--accent)", color: "#fff" }
+                      : { background: "var(--bg-card)", color: "var(--text-secondary)", border: "1px solid var(--border)" }
+                  }
+                >
+                  {t("speedFast")}
+                </button>
+              </div>
             </div>
           ) : (
             <div class="relative">

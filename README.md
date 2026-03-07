@@ -175,6 +175,9 @@ curl http://localhost:8080/v1/chat/completions \
 | `gpt-5.1-codex-max` | `codex-max` | low / medium / high | 深度推理编程模型 |
 | `gpt-5.1-codex-mini` | `codex-mini` | low / medium / high | 轻量快速编程模型 |
 
+> **模型名后缀**：在任意模型名后追加 `-fast` 启用 Fast 模式，追加 `-high`/`-low` 等切换推理等级。
+> 例如：`gpt-5.4-fast`、`gpt-5.4-high-fast`、`codex-fast`。
+>
 > 模型列表会随 Codex Desktop 版本更新自动同步。后端也会动态获取最新模型目录。
 
 ## 🔗 客户端接入 (Client Setup)
@@ -186,18 +189,22 @@ curl http://localhost:8080/v1/chat/completions \
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8080
 export ANTHROPIC_API_KEY=your-api-key
-export ANTHROPIC_MODEL=claude-opus-4-6     # Opus → gpt-5.4（默认）
-# export ANTHROPIC_MODEL=claude-sonnet-4-6   # Sonnet → gpt-5.3-codex
+# 默认 Opus 4.6 → gpt-5.4，无需设置 ANTHROPIC_MODEL
+# 如需切换模型或启用后缀：
+# export ANTHROPIC_MODEL=codex-fast              # → gpt-5.4 + Fast 模式
+# export ANTHROPIC_MODEL=gpt-5.4-high            # → gpt-5.4 + high 推理
+# export ANTHROPIC_MODEL=gpt-5.4-high-fast       # → gpt-5.4 + high + Fast
+# export ANTHROPIC_MODEL=claude-sonnet-4-6       # Sonnet → gpt-5.3-codex
 # export ANTHROPIC_MODEL=claude-haiku-4-5-20251001  # Haiku → gpt-5.1-codex-mini
 
 claude   # 启动 Claude Code
 ```
 
-| Claude Code 模型 | 映射到 Codex 模型 |
-|------------------|------------------|
-| Opus (`claude-opus-4-6`) | `gpt-5.4` |
-| Sonnet (`claude-sonnet-4-6`) | `gpt-5.3-codex` |
-| Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` |
+| Claude Code 模型 | 映射到 Codex 模型 | 说明 |
+|------------------|------------------|------|
+| Opus (默认) | `gpt-5.4` | 无需设置 `ANTHROPIC_MODEL` |
+| Sonnet (`claude-sonnet-4-6`) | `gpt-5.3-codex` | |
+| Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` | |
 
 > 也可以在控制面板 (`http://localhost:8080`) 的 **Anthropic SDK Setup** 卡片中一键复制环境变量。
 
@@ -278,7 +285,7 @@ for await (const chunk of stream) {
 | `server` | `host`, `port`, `proxy_api_key` | 服务监听地址与 API 密钥（见下方说明） |
 | `api` | `base_url`, `timeout_seconds` | 上游 API 地址与请求超时 |
 | `client` | `app_version`, `build_number`, `chromium_version` | 模拟的 Codex Desktop 版本与 Chromium 版本 |
-| `model` | `default`, `default_reasoning_effort` | 默认模型与推理强度 |
+| `model` | `default`, `default_reasoning_effort`, `default_service_tier` | 默认模型、推理强度与速度模式 |
 | `auth` | `rotation_strategy`, `rate_limit_backoff_seconds` | 轮换策略与限流退避 |
 | `tls` | `curl_binary`, `impersonate_profile`, `proxy_url` | TLS 伪装与代理配置 |
 
@@ -357,11 +364,11 @@ server:
 <!-- CHANGELOG:START -->
 ### [Unreleased]
 
+- 模型名后缀系统：通过模型名嵌入推理等级和速度模式（如 `gpt-5.4-high-fast`），CLI 工具（Claude Code、opencode 等）无需额外参数即可控制推理强度和 Fast 模式
+- `service_tier` 支持：接受 API 请求体中的 `service_tier` 字段（"fast" / "flex"），或通过 `-fast` 模型名后缀自动设置
+- Dashboard Speed 切换：模型选择器下方新增 Standard / Fast 速度切换按钮
+- 代理分配管理页面（`#/proxy-settings`）：双栏矩阵式布局，批量管理数百账号的代理分配
 - 代理池功能：支持为不同账号配置不同的上游代理，实现 IP 多样化和风险隔离
-- Dashboard GitHub Star 徽章：Header 新增醒目的 ⭐ Star 按钮（amber 药丸样式），点击跳转 GitHub 仓库页面，方便用户收藏和获取更新
-- Dashboard 检查更新功能：Footer 显示 Proxy 版本+commit 和 Codex Desktop 指纹版本，提供"检查更新"按钮同时检查两种更新
-- `GET /admin/update-status` 端点：返回 proxy 和 codex 两种更新的当前状态
-- `POST /admin/check-update` 端点：同时触发 proxy 自检 + codex 指纹检查，自动应用可用更新
 - ...（[查看全部更新](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24

@@ -14,6 +14,18 @@
 
 ### Added
 
+- 模型名后缀系统：通过模型名嵌入推理等级和速度模式（如 `gpt-5.4-high-fast`），CLI 工具（Claude Code、opencode 等）无需额外参数即可控制推理强度和 Fast 模式
+- `service_tier` 支持：接受 API 请求体中的 `service_tier` 字段（"fast" / "flex"），或通过 `-fast` 模型名后缀自动设置
+- Dashboard Speed 切换：模型选择器下方新增 Standard / Fast 速度切换按钮
+
+- 代理分配管理页面（`#/proxy-settings`）：双栏矩阵式布局，批量管理数百账号的代理分配
+  - 左栏代理组列表：按 Global/Direct/Auto/各代理分组显示计数徽章，点击筛选
+  - 右栏账号表格：搜索、状态筛选、分页（50条/页）、Shift+点击连续多选、每行独立代理下拉
+  - 批量操作栏：批量设为指定代理、均匀分配到所有活跃代理（round-robin）、按规则分配
+  - 导入导出：导出 JSON 分配文件、导入后预览 diff 再确认应用
+  - Hash 路由零依赖切换，Header 导航链接（Dashboard ↔ 代理分配）
+  - 后端新增 6 个批量 API：assignments 列表/批量分配/规则分配/导出/导入预览/应用导入
+
 - 代理池功能：支持为不同账号配置不同的上游代理，实现 IP 多样化和风险隔离
   - 代理 CRUD：添加、删除、启用、禁用代理（HTTP/HTTPS/SOCKS5）
   - 四种分配模式：Global Default（全局代理）、Direct（直连）、Auto（Round-Robin 轮转）、指定代理

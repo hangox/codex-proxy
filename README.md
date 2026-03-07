@@ -357,11 +357,11 @@ server:
 <!-- CHANGELOG:START -->
 ### [Unreleased]
 
+- 代理分配管理页面（`#/proxy-settings`）：双栏矩阵式布局，批量管理数百账号的代理分配
 - 代理池功能：支持为不同账号配置不同的上游代理，实现 IP 多样化和风险隔离
 - Dashboard GitHub Star 徽章：Header 新增醒目的 ⭐ Star 按钮（amber 药丸样式），点击跳转 GitHub 仓库页面，方便用户收藏和获取更新
 - Dashboard 检查更新功能：Footer 显示 Proxy 版本+commit 和 Codex Desktop 指纹版本，提供"检查更新"按钮同时检查两种更新
 - `GET /admin/update-status` 端点：返回 proxy 和 codex 两种更新的当前状态
-- `POST /admin/check-update` 端点：同时触发 proxy 自检 + codex 指纹检查，自动应用可用更新
 - ...（[查看全部更新](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24

@@ -78,11 +78,18 @@ export class ProxyPool {
   // ── CRUD ──────────────────────────────────────────────────────────
 
   add(name: string, url: string): string {
+    const trimmedUrl = url.trim();
+    // Reject duplicate URLs
+    for (const existing of this.proxies.values()) {
+      if (existing.url === trimmedUrl) {
+        return existing.id;
+      }
+    }
     const id = randomHex(8);
     const entry: ProxyEntry = {
       id,
       name: name.trim(),
-      url: url.trim(),
+      url: trimmedUrl,
       status: "active",
       health: null,
       addedAt: new Date().toISOString(),
@@ -119,6 +126,11 @@ export class ProxyPool {
 
   getAll(): ProxyEntry[] {
     return Array.from(this.proxies.values());
+  }
+
+  /** Returns all proxies with credentials masked in URLs. */
+  getAllMasked(): ProxyEntry[] {
+    return this.getAll().map((p) => ({ ...p, url: maskProxyUrl(p.url) }));
   }
 
   getById(id: string): ProxyEntry | undefined {
@@ -285,17 +297,17 @@ export class ProxyPool {
   }
 
   async healthCheckAll(): Promise<void> {
-    const ids = Array.from(this.proxies.keys());
-    if (ids.length === 0) return;
+    const targets = Array.from(this.proxies.values()).filter(
+      (p) => p.status !== "disabled",
+    );
+    if (targets.length === 0) return;
 
-    console.log(`[ProxyPool] Health checking ${ids.length} proxies...`);
-    await Promise.allSettled(ids.map((id) => this.healthCheck(id)));
+    console.log(`[ProxyPool] Health checking ${targets.length} proxies...`);
+    await Promise.allSettled(targets.map((p) => this.healthCheck(p.id)));
 
-    const active = Array.from(this.proxies.values()).filter(
-      (p) => p.status === "active",
-    ).length;
+    const active = targets.filter((p) => p.status === "active").length;
     console.log(
-      `[ProxyPool] Health check complete: ${active}/${ids.length} active`,
+      `[ProxyPool] Health check complete: ${active}/${targets.length} active`,
     );
   }
 
@@ -437,6 +449,16 @@ export class ProxyPool {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+function maskProxyUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.password) u.password = "***";
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 
 function randomHex(bytes: number): string {
   const arr = new Uint8Array(bytes);

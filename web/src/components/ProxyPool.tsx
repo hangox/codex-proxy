@@ -18,18 +18,6 @@ const statusStyles: Record<string, [string, TranslationKey]> = {
   ],
 };
 
-function maskUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    if (u.password) {
-      u.password = "***";
-    }
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
-
 interface ProxyPoolProps {
   proxies: ProxiesState;
 }
@@ -177,7 +165,7 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
                         </span>
                       </div>
                       <p class="text-xs text-slate-400 dark:text-text-dim font-mono truncate mt-0.5">
-                        {maskUrl(proxy.url)}
+                        {proxy.url}
                       </p>
                     </div>
                   </div>

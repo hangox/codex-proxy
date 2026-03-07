@@ -82,24 +82,36 @@ export function useProxies(): ProxiesState {
 
   const checkProxy = useCallback(
     async (id: string) => {
-      await fetch(`/api/proxies/${encodeURIComponent(id)}/check`, {
-        method: "POST",
-      });
+      try {
+        await fetch(`/api/proxies/${encodeURIComponent(id)}/check`, {
+          method: "POST",
+        });
+      } catch {
+        // network error — refresh will show stale state
+      }
       await refresh();
     },
     [refresh],
   );
 
   const checkAll = useCallback(async () => {
-    await fetch("/api/proxies/check-all", { method: "POST" });
+    try {
+      await fetch("/api/proxies/check-all", { method: "POST" });
+    } catch {
+      // network error
+    }
     await refresh();
   }, [refresh]);
 
   const enableProxy = useCallback(
     async (id: string) => {
-      await fetch(`/api/proxies/${encodeURIComponent(id)}/enable`, {
-        method: "POST",
-      });
+      try {
+        await fetch(`/api/proxies/${encodeURIComponent(id)}/enable`, {
+          method: "POST",
+        });
+      } catch {
+        // network error
+      }
       await refresh();
     },
     [refresh],
@@ -107,9 +119,13 @@ export function useProxies(): ProxiesState {
 
   const disableProxy = useCallback(
     async (id: string) => {
-      await fetch(`/api/proxies/${encodeURIComponent(id)}/disable`, {
-        method: "POST",
-      });
+      try {
+        await fetch(`/api/proxies/${encodeURIComponent(id)}/disable`, {
+          method: "POST",
+        });
+      } catch {
+        // network error
+      }
       await refresh();
     },
     [refresh],
@@ -117,11 +133,15 @@ export function useProxies(): ProxiesState {
 
   const assignProxy = useCallback(
     async (accountId: string, proxyId: string) => {
-      await fetch("/api/proxies/assign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, proxyId }),
-      });
+      try {
+        await fetch("/api/proxies/assign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accountId, proxyId }),
+        });
+      } catch {
+        // network error
+      }
       await refresh();
     },
     [refresh],
@@ -129,9 +149,13 @@ export function useProxies(): ProxiesState {
 
   const unassignProxy = useCallback(
     async (accountId: string) => {
-      await fetch(`/api/proxies/assign/${encodeURIComponent(accountId)}`, {
-        method: "DELETE",
-      });
+      try {
+        await fetch(`/api/proxies/assign/${encodeURIComponent(accountId)}`, {
+          method: "DELETE",
+        });
+      } catch {
+        // network error
+      }
       await refresh();
     },
     [refresh],
@@ -139,11 +163,15 @@ export function useProxies(): ProxiesState {
 
   const setIntervalMinutes = useCallback(
     async (minutes: number) => {
-      await fetch("/api/proxies/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ healthCheckIntervalMinutes: minutes }),
-      });
+      try {
+        await fetch("/api/proxies/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ healthCheckIntervalMinutes: minutes }),
+        });
+      } catch {
+        // network error
+      }
       await refresh();
     },
     [refresh],

@@ -20,10 +20,10 @@ import type { ProxyPool } from "../proxy/proxy-pool.js";
 export function createProxyRoutes(proxyPool: ProxyPool): Hono {
   const app = new Hono();
 
-  // List all proxies + assignments
+  // List all proxies + assignments (credentials masked)
   app.get("/api/proxies", (c) => {
     return c.json({
-      proxies: proxyPool.getAll(),
+      proxies: proxyPool.getAllMasked(),
       assignments: proxyPool.getAllAssignments(),
       healthCheckIntervalMinutes: proxyPool.getHealthIntervalMinutes(),
     });
@@ -39,9 +39,14 @@ export function createProxyRoutes(proxyPool: ProxyPool): Hono {
       return c.json({ error: "url is required" });
     }
 
-    // Basic URL validation
+    // URL validation + scheme check
     try {
-      new URL(url);
+      const parsed = new URL(url);
+      const allowed = ["http:", "https:", "socks5:", "socks5h:"];
+      if (!allowed.includes(parsed.protocol)) {
+        c.status(400);
+        return c.json({ error: `Unsupported protocol "${parsed.protocol}". Use http, https, socks5, or socks5h.` });
+      }
     } catch {
       c.status(400);
       return c.json({ error: "Invalid proxy URL format" });
@@ -114,12 +119,12 @@ export function createProxyRoutes(proxyPool: ProxyPool): Hono {
     return c.json({ success: true, proxy: proxyPool.getById(id) });
   });
 
-  // Health check all — must be before /:id routes
+  // Health check all (no route conflict — different path structure from /:id/*)
   app.post("/api/proxies/check-all", async (c) => {
     await proxyPool.healthCheckAll();
     return c.json({
       success: true,
-      proxies: proxyPool.getAll(),
+      proxies: proxyPool.getAllMasked(),
     });
   });
 

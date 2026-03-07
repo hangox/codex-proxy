@@ -62,8 +62,8 @@ function Dashboard() {
   const update = useUpdateMessage();
 
   const handleProxyChange = async (accountId: string, proxyId: string) => {
+    accounts.patchLocal(accountId, { proxyId });
     await proxies.assignProxy(accountId, proxyId);
-    accounts.refresh();
   };
 
   return (

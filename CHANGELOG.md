@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 流式 SSE 请求不再设置 `--max-time` 墙钟超时，修复思考链（reasoning/thinking）在 60 秒处中断的问题；连接保护由 header 超时 + AbortSignal 提供，非流式请求（models、usage）超时不受影响
+
 ### Added
 
 - 代理池功能：支持为不同账号配置不同的上游代理，实现 IP 多样化和风险隔离

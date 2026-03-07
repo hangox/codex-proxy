@@ -247,11 +247,10 @@ export class CodexApi {
     );
     headers["Accept"] = "text/event-stream";
 
-    const timeout = config.api.timeout_seconds;
-
+    // No wall-clock timeout for streaming SSE — header timeout + AbortSignal provide protection
     let transportRes;
     try {
-      transportRes = await transport.post(url, headers, JSON.stringify(request), signal, timeout, this.proxyUrl);
+      transportRes = await transport.post(url, headers, JSON.stringify(request), signal, undefined, this.proxyUrl);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new CodexApiError(0, msg);

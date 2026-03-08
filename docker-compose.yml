@@ -14,3 +14,4 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      - PORT=8080

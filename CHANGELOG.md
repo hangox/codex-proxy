@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Dockerfile HEALTHCHECK 端口改为 `${PORT:-8080}`，修复自定义 PORT 时健康检查永远失败导致容器重启循环的问题 (#40)
+- Docker 端口修复：锁定容器内 `PORT=8080`（`environment` 覆盖 `env_file`），HEALTHCHECK 固定检查 8080，`.env` 的 PORT 仅控制宿主机暴露端口，修复自定义 PORT 时健康检查失败和端口映射不匹配的问题 (#40)
 - Docker Compose 暴露 OAuth 回调端口 1455，修复容器内登录时 "Operation timed out" 的问题
 - README Docker 快速开始补充 `cp .env.example .env` 步骤，修复新用户因缺少 `.env` 文件导致 `docker compose up -d` 启动失败的问题 (#38)
 - 识别 `response.output_item.done`、`response.incomplete`、`response.queued` Codex SSE 事件，消除 "Unknown event" 日志噪音

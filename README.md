@@ -58,6 +58,7 @@ cd codex-proxy
 ### Docker（推荐，所有平台通用）
 
 ```bash
+cp .env.example .env       # 创建环境变量文件（可编辑配置）
 docker compose up -d
 # 打开 http://localhost:8080 登录
 ```

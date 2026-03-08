@@ -8,9 +8,13 @@
 
 ### Fixed
 
+- README Docker 快速开始补充 `cp .env.example .env` 步骤，修复新用户因缺少 `.env` 文件导致 `docker compose up -d` 启动失败的问题 (#38)
+- 识别 `response.output_item.done`、`response.incomplete`、`response.queued` Codex SSE 事件，消除 "Unknown event" 日志噪音
 - 流式 SSE 请求不再设置 `--max-time` 墙钟超时，修复思考链（reasoning/thinking）在 60 秒处中断的问题；连接保护由 header 超时 + AbortSignal 提供，非流式请求（models、usage）超时不受影响
 
 ### Added
+
+- `/v1/responses` 端点：Codex Responses API 直通，无格式转换，支持原始 SSE 事件流和多账号负载均衡
 
 - 模型名后缀系统：通过模型名嵌入推理等级和速度模式（如 `gpt-5.4-high-fast`），CLI 工具（Claude Code、opencode 等）无需额外参数即可控制推理强度和 Fast 模式
 - `service_tier` 支持：接受 API 请求体中的 `service_tier` 字段（"fast" / "flex"），或通过 `-fast` 模型名后缀自动设置

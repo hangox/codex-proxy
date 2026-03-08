@@ -125,6 +125,21 @@ export async function* iterateCodexEvents(
         break;
       }
 
+      case "response.output_item.done":
+        // Completion marker — tool call data already delivered via delta/done events
+        break;
+
+      case "response.incomplete":
+        // Response was truncated/incomplete
+        if (typed.response.id) extracted.responseId = typed.response.id;
+        if (typed.response.usage) extracted.usage = typed.response.usage;
+        break;
+
+      case "response.queued":
+        // Response is queued for processing
+        if (typed.response.id) extracted.responseId = typed.response.id;
+        break;
+
       case "response.completed":
         if (typed.response.id) extracted.responseId = typed.response.id;
         if (typed.response.usage) extracted.usage = typed.response.usage;

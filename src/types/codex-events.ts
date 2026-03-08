@@ -82,6 +82,29 @@ export interface CodexFunctionCallArgsDoneEvent {
   name: string;
 }
 
+export interface CodexOutputItemDoneEvent {
+  type: "response.output_item.done";
+  outputIndex: number;
+  item: {
+    type: string;
+    id?: string;
+    call_id?: string;
+    name?: string;
+    arguments?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface CodexIncompleteEvent {
+  type: "response.incomplete";
+  response: CodexResponseData;
+}
+
+export interface CodexQueuedEvent {
+  type: "response.queued";
+  response: CodexResponseData;
+}
+
 export interface CodexErrorEvent {
   type: "error";
   error: { type: string; code: string; message: string };
@@ -107,6 +130,9 @@ export type TypedCodexEvent =
   | CodexReasoningSummaryDoneEvent
   | CodexCompletedEvent
   | CodexOutputItemAddedEvent
+  | CodexOutputItemDoneEvent
+  | CodexIncompleteEvent
+  | CodexQueuedEvent
   | CodexFunctionCallArgsDeltaEvent
   | CodexFunctionCallArgsDoneEvent
   | CodexErrorEvent
@@ -275,6 +301,34 @@ export function parseCodexEvent(evt: CodexSSEEvent): TypedCodexEvent {
         };
       }
       return { type: "unknown", raw: data };
+    }
+    case "response.output_item.done": {
+      if (isRecord(data) && isRecord(data.item)) {
+        return {
+          type: "response.output_item.done",
+          outputIndex: typeof data.output_index === "number" ? data.output_index : 0,
+          item: {
+            type: typeof data.item.type === "string" ? data.item.type : "unknown",
+            ...(typeof data.item.id === "string" ? { id: data.item.id } : {}),
+            ...(typeof data.item.call_id === "string" ? { call_id: data.item.call_id } : {}),
+            ...(typeof data.item.name === "string" ? { name: data.item.name } : {}),
+            ...(typeof data.item.arguments === "string" ? { arguments: data.item.arguments } : {}),
+          },
+        };
+      }
+      return { type: "unknown", raw: data };
+    }
+    case "response.incomplete": {
+      const resp = parseResponseData(data);
+      return resp
+        ? { type: "response.incomplete", response: resp }
+        : { type: "unknown", raw: data };
+    }
+    case "response.queued": {
+      const resp = parseResponseData(data);
+      return resp
+        ? { type: "response.queued", response: resp }
+        : { type: "unknown", raw: data };
     }
     default:
       return { type: "unknown", raw: data };

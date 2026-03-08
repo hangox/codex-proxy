@@ -13,10 +13,11 @@ models:
     description: Latest Codex flagship model
     isDefault: true
     supportedReasoningEfforts:
-      - { reasoningEffort: minimal, description: "Minimal reasoning" }
-      - { reasoningEffort: low,     description: "Fastest responses" }
-      - { reasoningEffort: medium,  description: "Balanced speed and quality" }
-      - { reasoningEffort: high,    description: "Deepest reasoning" }
+      - { reasoningEffort: none,   description: "No reasoning" }
+      - { reasoningEffort: low,    description: "Fastest responses" }
+      - { reasoningEffort: medium, description: "Balanced speed and quality" }
+      - { reasoningEffort: high,   description: "Deepest reasoning" }
+      - { reasoningEffort: xhigh,  description: "Extended deep reasoning" }
     defaultReasoningEffort: medium
     inputModalities: [text, image]
     supportsPersonality: true

@@ -248,11 +248,18 @@ export class CodexApi {
       buildHeadersWithContentType(this.token, this.accountId),
     );
     headers["Accept"] = "text/event-stream";
+    // Codex Desktop sends this beta header to enable newer API features
+    headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
+
+    // Strip service_tier from body — Codex backend doesn't accept it as a body field.
+    // Desktop app handles Fast mode internally (lighter reasoning), not via the API.
+    const { service_tier: _st, ...bodyWithoutServiceTier } = request;
+    const body = JSON.stringify(bodyWithoutServiceTier);
 
     // No wall-clock timeout for streaming SSE — header timeout + AbortSignal provide protection
     let transportRes;
     try {
-      transportRes = await transport.post(url, headers, JSON.stringify(request), signal, undefined, this.proxyUrl);
+      transportRes = await transport.post(url, headers, body, signal, undefined, this.proxyUrl);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new CodexApiError(0, msg);

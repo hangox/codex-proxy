@@ -1,0 +1,64 @@
+name: Sync master → electron
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge master into electron
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout electron
+          git merge origin/master --no-edit || {
+            # Conflict — abort and create issue
+            git merge --abort
+            echo "CONFLICT=true" >> "$GITHUB_ENV"
+          }
+
+      - name: Push if merged successfully
+        if: env.CONFLICT != 'true'
+        run: git push origin electron
+
+      - name: Create issue on conflict
+        if: env.CONFLICT == 'true'
+        run: |
+          # Check for existing open issue to avoid duplicates
+          EXISTING=$(gh issue list --label "sync-conflict" --state open --limit 1 --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already open, skipping"
+            exit 0
+          fi
+          gh issue create \
+            --title "electron 分支合并冲突需手动解决" \
+            --label "sync-conflict" \
+            --body "$(cat <<'EOF'
+          \`master\` → \`electron\` 自动合并失败，需要手动解决冲突。
+
+          ```bash
+          git checkout electron
+          git merge master
+          # 解决冲突（通常是 CHANGELOG.md）
+          git add .
+          git commit
+          git push origin electron
+          ```
+
+          触发 commit: ${{ github.sha }}
+          EOF
+          )"
+        env:
+          GH_TOKEN: ${{ github.token }}

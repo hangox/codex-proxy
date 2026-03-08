@@ -5,6 +5,7 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "${PORT:-8080}:8080"
+      - "1455:1455"
     volumes:
       - ./data:/app/data
       - ./config:/app/config
@@ -13,3 +14,4 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      - PORT=8080

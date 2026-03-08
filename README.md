@@ -367,7 +367,7 @@ server:
 
 - `/v1/responses` 端点：Codex Responses API 直通，无格式转换，支持原始 SSE 事件流和多账号负载均衡
 - 模型名后缀系统：通过模型名嵌入推理等级和速度模式（如 `gpt-5.4-high-fast`），CLI 工具（Claude Code、opencode 等）无需额外参数即可控制推理强度和 Fast 模式
-- `service_tier` 支持：接受 API 请求体中的 `service_tier` 字段（"fast" / "flex"），或通过 `-fast` 模型名后缀自动设置
+- `service_tier` 后缀解析：通过 `-fast`/`-flex` 模型名后缀解析，保留在 proxy 层元数据中（Codex 后端不接受 `service_tier` 请求体字段，Desktop 在 app-server 层处理）
 - Dashboard Speed 切换：模型选择器下方新增 Standard / Fast 速度切换按钮
 - 代理分配管理页面（`#/proxy-settings`）：双栏矩阵式布局，批量管理数百账号的代理分配
 - ...（[查看全部更新](./CHANGELOG.md)）

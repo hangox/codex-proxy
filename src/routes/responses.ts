@@ -218,6 +218,8 @@ export function createResponsesRoutes(
     const modelInfo = getModelInfo(modelId);
 
     // Build CodexResponsesRequest
+    // Codex API only supports streaming — stream/store are always true/false.
+    // When client sends stream:false, the proxy collects SSE events and returns assembled JSON.
     const codexRequest: CodexResponsesRequest = {
       model: modelId,
       instructions: body.instructions,

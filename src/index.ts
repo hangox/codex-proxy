@@ -17,6 +17,7 @@ import { createWebRoutes } from "./routes/web.js";
 import { CookieJar } from "./proxy/cookie-jar.js";
 import { ProxyPool } from "./proxy/proxy-pool.js";
 import { createProxyRoutes } from "./routes/proxies.js";
+import { createResponsesRoutes } from "./routes/responses.js";
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker.js";
 import { initProxy } from "./tls/curl-binary.js";
 import { initTransport } from "./tls/transport.js";
@@ -72,6 +73,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const chatRoutes = createChatRoutes(accountPool, cookieJar, proxyPool);
   const messagesRoutes = createMessagesRoutes(accountPool, cookieJar, proxyPool);
   const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool);
+  const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool);
   const proxyRoutes = createProxyRoutes(proxyPool, accountPool);
   const webRoutes = createWebRoutes(accountPool);
 
@@ -80,6 +82,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.route("/", chatRoutes);
   app.route("/", messagesRoutes);
   app.route("/", geminiRoutes);
+  app.route("/", responsesRoutes);
   app.route("/", proxyRoutes);
   app.route("/", createModelRoutes());
   app.route("/", webRoutes);

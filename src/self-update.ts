@@ -80,23 +80,31 @@ export function getProxyInfo(): ProxyInfo {
   let version: string | null = null;
   let commit: string | null = null;
 
-  // Try git tag first (meaningful for versioned releases)
+  // Collect version from both sources, pick the higher one
+  let tagVersion: string | null = null;
+  let pkgVersion: string | null = null;
+
   try {
     const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", "HEAD"], {
       cwd: process.cwd(),
       encoding: "utf-8",
       timeout: 5000,
     }).trim();
-    if (tag) version = tag.startsWith("v") ? tag.slice(1) : tag;
+    if (tag) tagVersion = tag.startsWith("v") ? tag.slice(1) : tag;
   } catch { /* no reachable tag */ }
 
-  // Fall back to package.json (skip "1.0.0" placeholder on master)
-  if (!version) {
-    try {
-      const pkg = JSON.parse(readFileSync(resolve(getRootDir(), "package.json"), "utf-8")) as { version?: string };
-      const v = pkg.version;
-      if (v && v !== "1.0.0") version = v;
-    } catch { /* ignore */ }
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(getRootDir(), "package.json"), "utf-8")) as { version?: string };
+    const v = pkg.version;
+    if (v && v !== "1.0.0") pkgVersion = v;
+  } catch { /* ignore */ }
+
+  // Pick whichever is higher (tag on electron branch may be unreachable from master)
+  if (tagVersion && pkgVersion) {
+    version = pkgVersion.localeCompare(tagVersion, undefined, { numeric: true }) > 0
+      ? pkgVersion : tagVersion;
+  } else {
+    version = tagVersion ?? pkgVersion;
   }
 
   try {

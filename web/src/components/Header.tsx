@@ -1,3 +1,4 @@
+import { useState } from "preact/hooks";
 import { useI18n } from "../../../shared/i18n/context";
 import { useTheme } from "../../../shared/theme/context";
 
@@ -13,6 +14,15 @@ const SVG_SUN = (
   </svg>
 );
 
+export interface ProxyUpdateInfo {
+  mode: "git" | "docker" | "electron";
+  updateAvailable: boolean;
+  commits: { hash: string; message: string }[];
+  release: { version: string; body: string; url: string } | null;
+  onApply: () => void;
+  applying: boolean;
+}
+
 interface HeaderProps {
   onAddAccount: () => void;
   onCheckUpdate: () => void;
@@ -20,12 +30,15 @@ interface HeaderProps {
   updateStatusMsg: string | null;
   updateStatusColor: string;
   version: string | null;
+  commit?: string | null;
   isProxySettings?: boolean;
+  proxyUpdate?: ProxyUpdateInfo | null;
 }
 
-export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg, updateStatusColor, version, isProxySettings }: HeaderProps) {
+export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg, updateStatusColor, version, commit, isProxySettings, proxyUpdate }: HeaderProps) {
   const { lang, toggleLang, t } = useI18n();
   const { isDark, toggle: toggleTheme } = useTheme();
+  const [showChangelog, setShowChangelog] = useState(false);
 
   return (
     <header class="sticky top-0 z-50 w-full bg-white dark:bg-card-dark border-b border-gray-200 dark:border-border-dark shadow-sm transition-colors">
@@ -55,7 +68,7 @@ export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg,
             )}
           </div>
           {/* Actions */}
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2">
             <div class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20">
               <span class="relative flex h-2.5 w-2.5">
                 <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
@@ -68,13 +81,16 @@ export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg,
               {version && (
                 <span class="text-[0.65rem] font-mono text-primary/70">v{version}</span>
               )}
+              {commit && (
+                <span class="text-[0.6rem] font-mono text-primary/40">{commit.slice(0, 7)}</span>
+              )}
             </div>
             {/* Star on GitHub */}
             <a
               href="https://github.com/icebear0828/codex-proxy"
               target="_blank"
               rel="noopener noreferrer"
-              class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-700/30 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+              class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-900/20 dark:border-amber-700/30 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
             >
               <svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
@@ -85,7 +101,7 @@ export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg,
             <button
               onClick={onCheckUpdate}
               disabled={checking}
-              class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <svg class={`size-3.5 ${checking ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M20.985 4.356v4.992" />
@@ -98,7 +114,7 @@ export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg,
             {updateStatusMsg && !checking && (
               <button
                 onClick={onCheckUpdate}
-                class={`hidden sm:inline text-xs font-medium ${updateStatusColor} hover:underline`}
+                class={`hidden md:inline text-xs font-medium ${updateStatusColor} hover:underline`}
               >
                 {updateStatusMsg}
               </button>
@@ -124,7 +140,7 @@ export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg,
               <>
                 <a
                   href="#/proxy-settings"
-                  class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+                  class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
                 >
                   <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
@@ -148,6 +164,76 @@ export function Header({ onAddAccount, onCheckUpdate, checking, updateStatusMsg,
           </div>
         </div>
       </div>
+      {/* Expandable update panel */}
+      {proxyUpdate && proxyUpdate.updateAvailable && (
+        <div class="border-t border-amber-200 dark:border-amber-700/30 bg-amber-50/80 dark:bg-amber-900/10">
+          <div class="px-4 md:px-8 lg:px-40 flex justify-center">
+            <div class="w-full max-w-[960px] py-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-medium text-amber-700 dark:text-amber-400">
+                  {proxyUpdate.mode === "git"
+                    ? `${proxyUpdate.commits.length} ${t("commits")} ${t("proxyBehind")}`
+                    : `${t("newVersion")} v${proxyUpdate.release?.version}`}
+                </span>
+                <button
+                  onClick={() => setShowChangelog(!showChangelog)}
+                  class="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
+                >
+                  {showChangelog ? t("hideChanges") : t("viewChanges")}
+                </button>
+              </div>
+              {showChangelog && (
+                <div class="mt-2">
+                  {proxyUpdate.mode === "git" ? (
+                    <>
+                      <ul class="space-y-0.5 text-xs text-slate-600 dark:text-text-dim max-h-48 overflow-y-auto">
+                        {proxyUpdate.commits.map((c) => (
+                          <li key={c.hash} class="flex gap-2">
+                            <code class="text-primary/70 shrink-0">{c.hash}</code>
+                            <span>{c.message}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <button
+                        onClick={proxyUpdate.onApply}
+                        disabled={proxyUpdate.applying}
+                        class="mt-2 px-3 py-1.5 text-xs font-semibold bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                      >
+                        {proxyUpdate.applying ? t("applyingUpdate") : t("updateNow")}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {proxyUpdate.release && (
+                        <pre class="text-xs text-slate-600 dark:text-text-dim whitespace-pre-wrap max-h-48 overflow-y-auto mb-2">
+                          {proxyUpdate.release.body}
+                        </pre>
+                      )}
+                      {proxyUpdate.mode === "docker" ? (
+                        <div class="flex items-center gap-2">
+                          <span class="text-xs text-slate-500 dark:text-text-dim">{t("dockerUpdateCmd")}</span>
+                          <code class="text-xs bg-slate-100 dark:bg-bg-dark px-2 py-0.5 rounded font-mono select-all">
+                            docker compose up -d --build
+                          </code>
+                        </div>
+                      ) : (
+                        <a
+                          href={proxyUpdate.release?.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
+                        >
+                          {t("downloadUpdate")}
+                        </a>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

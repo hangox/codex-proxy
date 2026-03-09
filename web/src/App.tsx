@@ -30,11 +30,8 @@ function useUpdateMessage() {
     if (r.proxy?.error) {
       parts.push(`Proxy: ${r.proxy.error}`);
       color = "text-red-500";
-    } else if (r.proxy?.update_applied) {
-      parts.push(t("updateApplied"));
-      color = "text-blue-500";
-    } else if (r.proxy && r.proxy.commits_behind > 0) {
-      parts.push(`Proxy: ${r.proxy.commits_behind} ${t("commits")} ${t("proxyBehind")}`);
+    } else if (r.proxy?.update_available) {
+      parts.push(t("updateAvailable"));
       color = "text-amber-500";
     }
 
@@ -54,7 +51,18 @@ function useUpdateMessage() {
     color = "text-red-500";
   }
 
-  return { ...update, msg, color };
+  const proxyUpdate = update.status?.proxy.update_available
+    ? {
+        mode: update.status.proxy.mode,
+        updateAvailable: true as const,
+        commits: update.status.proxy.commits,
+        release: update.status.proxy.release,
+        onApply: update.applyUpdate,
+        applying: update.applying,
+      }
+    : null;
+
+  return { ...update, msg, color, proxyUpdate };
 }
 
 function Dashboard() {
@@ -77,6 +85,8 @@ function Dashboard() {
         updateStatusMsg={update.msg}
         updateStatusColor={update.color}
         version={update.status?.proxy.version ?? null}
+        commit={update.status?.proxy.commit ?? null}
+        proxyUpdate={update.proxyUpdate}
       />
       <main class="flex-grow px-4 md:px-8 lg:px-40 py-8 flex justify-center">
         <div class="flex flex-col w-full max-w-[960px] gap-6">
@@ -164,7 +174,9 @@ function ProxySettingsPage() {
         updateStatusMsg={update.msg}
         updateStatusColor={update.color}
         version={update.status?.proxy.version ?? null}
+        commit={update.status?.proxy.commit ?? null}
         isProxySettings
+        proxyUpdate={update.proxyUpdate}
       />
       <ProxySettings />
     </>

@@ -216,7 +216,9 @@ export async function checkProxySelfUpdate(): Promise<ProxySelfUpdateResult> {
   // Docker or Electron — GitHub Releases API
   const release = await checkGitHubRelease();
   const currentVersion = getProxyInfo().version;
-  const updateAvailable = release !== null && release.version !== currentVersion;
+  const updateAvailable = release !== null
+    && release.version !== currentVersion
+    && release.version.localeCompare(currentVersion, undefined, { numeric: true }) > 0;
 
   const result: ProxySelfUpdateResult = {
     commitsBehind: 0, currentCommit: null, latestCommit: null,
@@ -276,12 +278,14 @@ async function runCheck(): Promise<void> {
 /** Start periodic proxy update checking (initial check after 10s, then every 6h). */
 export function startProxyUpdateChecker(): void {
   _initialTimer = setTimeout(() => {
-    runCheck();
+    void runCheck();
   }, INITIAL_DELAY_MS);
+  _initialTimer.unref();
 
   _checkTimer = setInterval(() => {
-    runCheck();
+    void runCheck();
   }, CHECK_INTERVAL_MS);
+  _checkTimer.unref();
 }
 
 /** Stop periodic proxy update checking. */

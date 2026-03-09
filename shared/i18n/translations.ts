@@ -153,6 +153,10 @@ export const translations = {
     updateRestarting: "Restarting server...",
     restartFailed: "Server not responding. Please restart manually.",
     close: "Close",
+    settings: "Settings",
+    apiKeyLabel: "API Key",
+    apiKeySaved: "Saved",
+    apiKeyClear: "Clear key (disable auth)",
   },
   zh: {
     serverOnline: "\u670d\u52a1\u8fd0\u884c\u4e2d",
@@ -311,6 +315,10 @@ export const translations = {
     updateRestarting: "\u6b63\u5728\u91cd\u542f\u670d\u52a1...",
     restartFailed: "\u670d\u52a1\u5668\u672a\u54cd\u5e94\uff0c\u8bf7\u624b\u52a8\u91cd\u542f\u3002",
     close: "\u5173\u95ed",
+    settings: "\u8bbe\u7f6e",
+    apiKeyLabel: "API \u5bc6\u94a5",
+    apiKeySaved: "\u5df2\u4fdd\u5b58",
+    apiKeyClear: "\u6e05\u9664\u5bc6\u94a5\uff08\u5173\u95ed\u9274\u6743\uff09",
   },
 } as const;
 

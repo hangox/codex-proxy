@@ -3,10 +3,11 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { AccountPool } from "../auth/account-pool.js";
-import { getConfig, getFingerprint } from "../config.js";
+import { getConfig, getFingerprint, reloadAllConfigs } from "../config.js";
 import { getPublicDir, getDesktopPublicDir, getConfigDir, getDataDir, isEmbedded } from "../paths.js";
 import { getUpdateState, checkForUpdate, isUpdateInProgress } from "../update-checker.js";
 import { getProxyInfo, canSelfUpdate, checkProxySelfUpdate, applyProxySelfUpdate, isProxyUpdateInProgress, getCachedProxyUpdateResult, getDeployMode } from "../self-update.js";
+import { mutateYaml } from "../utils/yaml-mutate.js";
 
 export function createWebRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -228,6 +229,40 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
     }
     const result = await applyProxySelfUpdate();
     return c.json(result);
+  });
+
+  // --- Settings endpoints ---
+
+  app.get("/admin/settings", (c) => {
+    const config = getConfig();
+    return c.json({ proxy_api_key: config.server.proxy_api_key });
+  });
+
+  app.post("/admin/settings", async (c) => {
+    const config = getConfig();
+    const currentKey = config.server.proxy_api_key;
+
+    // Auth: if a key is currently set, require Bearer token matching it
+    if (currentKey) {
+      const authHeader = c.req.header("Authorization") ?? "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      if (token !== currentKey) {
+        c.status(401);
+        return c.json({ error: "Invalid current API key" });
+      }
+    }
+
+    const body = await c.req.json() as { proxy_api_key?: string | null };
+    const newKey = body.proxy_api_key === undefined ? currentKey : (body.proxy_api_key || null);
+
+    const configPath = resolve(getConfigDir(), "default.yaml");
+    mutateYaml(configPath, (data) => {
+      const server = data.server as Record<string, unknown>;
+      server.proxy_api_key = newKey;
+    });
+    reloadAllConfigs();
+
+    return c.json({ success: true, proxy_api_key: newKey });
   });
 
   return app;

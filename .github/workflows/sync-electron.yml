@@ -5,6 +5,10 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: sync-electron
+  cancel-in-progress: true
+
 permissions:
   contents: write
   issues: write
@@ -29,9 +33,65 @@ jobs:
             echo "CONFLICT=true" >> "$GITHUB_ENV"
           }
 
-      - name: Push if merged successfully
+      - name: Auto bump + tag if new commits
         if: env.CONFLICT != 'true'
-        run: git push origin electron
+        run: |
+          # Find last version tag
+          LAST_TAG=$(git describe --tags --abbrev=0 --match "v*" 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous tag found, skipping auto-bump"
+            echo "BUMP=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Check for new non-merge commits since last tag
+          NEW_COMMITS=$(git log "${LAST_TAG}..HEAD" --no-merges --oneline | wc -l)
+          if [ "$NEW_COMMITS" -eq 0 ]; then
+            echo "No new non-merge commits since $LAST_TAG, skipping bump"
+            echo "BUMP=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "Found $NEW_COMMITS new commit(s) since $LAST_TAG"
+
+          # Parse current version and bump patch
+          CURRENT="${LAST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
+
+          # Check tag doesn't already exist (concurrent protection)
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists, skipping"
+            echo "BUMP=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Bump version in package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.version = '${NEW_VERSION}';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          git add package.json
+          git commit -m "chore: bump version to ${NEW_VERSION}"
+          git tag -a "$NEW_TAG" -m "Release ${NEW_TAG}"
+
+          echo "BUMP=true" >> "$GITHUB_ENV"
+          echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
+          echo "Bumped to $NEW_VERSION, tagged $NEW_TAG"
+
+      - name: Push electron branch (with tags if bumped)
+        if: env.CONFLICT != 'true'
+        run: |
+          if [ "$BUMP" = "true" ]; then
+            git push origin electron --follow-tags
+          else
+            git push origin electron
+          fi
 
       - name: Create issue on conflict
         if: env.CONFLICT == 'true'

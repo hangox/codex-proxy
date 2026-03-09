@@ -19,6 +19,7 @@ import { ProxyPool } from "./proxy/proxy-pool.js";
 import { createProxyRoutes } from "./routes/proxies.js";
 import { createResponsesRoutes } from "./routes/responses.js";
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker.js";
+import { startProxyUpdateChecker, stopProxyUpdateChecker } from "./self-update.js";
 import { initProxy } from "./tls/curl-binary.js";
 import { initTransport } from "./tls/transport.js";
 import { loadStaticModels } from "./models/model-store.js";
@@ -117,6 +118,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
 
   // Start background update checker
   startUpdateChecker();
+  startProxyUpdateChecker();
 
   // Start background model refresh (requires auth to be ready)
   startModelRefresh(accountPool, cookieJar, proxyPool);
@@ -134,6 +136,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     return new Promise((resolve) => {
       server.close(() => {
         stopUpdateChecker();
+        stopProxyUpdateChecker();
         stopModelRefresh();
         refreshScheduler.destroy();
         proxyPool.destroy();

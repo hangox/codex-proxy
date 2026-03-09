@@ -5,7 +5,11 @@ export interface UpdateStatus {
     version: string;
     commit: string | null;
     can_self_update: boolean;
+    mode: "git" | "docker" | "electron";
     commits_behind: number | null;
+    commits: { hash: string; message: string }[];
+    release: { version: string; body: string; url: string } | null;
+    update_available: boolean;
     update_in_progress: boolean;
   };
   codex: {
@@ -24,7 +28,10 @@ export interface CheckResult {
     commits_behind: number;
     current_commit: string | null;
     latest_commit: string | null;
-    update_applied?: boolean;
+    commits: { hash: string; message: string }[];
+    release: { version: string; body: string; url: string } | null;
+    update_available: boolean;
+    mode: "git" | "docker" | "electron";
     error?: string;
   };
   codex?: {
@@ -43,12 +50,13 @@ export function useUpdateStatus() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const resp = await fetch("/admin/update-status");
       if (resp.ok) {
-        setStatus(await resp.json());
+        setStatus(await resp.json() as UpdateStatus);
       }
     } catch { /* ignore */ }
   }, []);
@@ -61,12 +69,11 @@ export function useUpdateStatus() {
     setResult(null);
     try {
       const resp = await fetch("/admin/check-update", { method: "POST" });
-      const data: CheckResult = await resp.json();
+      const data = await resp.json() as CheckResult;
       if (!resp.ok) {
         setError("Check failed");
       } else {
         setResult(data);
-        // Refresh status after check
         await load();
       }
     } catch (err) {
@@ -76,5 +83,23 @@ export function useUpdateStatus() {
     }
   }, [load]);
 
-  return { status, checking, result, error, checkForUpdate };
+  const applyUpdate = useCallback(async () => {
+    setApplying(true);
+    setError(null);
+    try {
+      const resp = await fetch("/admin/apply-update", { method: "POST" });
+      const data = await resp.json() as { started: boolean; error?: string };
+      if (!resp.ok || !data.started) {
+        setError(data.error ?? "Apply failed");
+      } else {
+        await load();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setApplying(false);
+    }
+  }, [load]);
+
+  return { status, checking, result, error, checkForUpdate, applyUpdate, applying };
 }

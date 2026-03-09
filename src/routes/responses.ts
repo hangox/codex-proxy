@@ -12,7 +12,7 @@ import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import type { CodexResponsesRequest, CodexInputItem, CodexApi } from "../proxy/codex-api.js";
 import { getConfig } from "../config.js";
-import { parseModelName, resolveModelId, getModelInfo } from "../models/model-store.js";
+import { parseModelName, resolveModelId, getModelInfo, buildDisplayModelName } from "../models/model-store.js";
 import { EmptyResponseError } from "../translation/codex-event-extractor.js";
 import {
   handleProxyRequest,
@@ -215,6 +215,7 @@ export function createResponsesRoutes(
     const rawModel = typeof body.model === "string" ? body.model : "codex";
     const parsed = parseModelName(rawModel);
     const modelId = resolveModelId(parsed.modelId);
+    const displayModel = buildDisplayModelName(parsed);
     const modelInfo = getModelInfo(modelId);
 
     // Build CodexResponsesRequest
@@ -269,7 +270,7 @@ export function createResponsesRoutes(
       cookieJar,
       {
         codexRequest,
-        model: modelId,
+        model: displayModel,
         isStreaming: clientWantsStream,
       },
       PASSTHROUGH_FORMAT,

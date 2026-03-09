@@ -83,13 +83,29 @@ jobs:
 
           echo "BUMP=true" >> "$GITHUB_ENV"
           echo "NEW_TAG=$NEW_TAG" >> "$GITHUB_ENV"
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
           echo "Bumped to $NEW_VERSION, tagged $NEW_TAG"
 
-      - name: Push electron branch (with tags if bumped)
+      - name: Sync version to master
+        if: env.BUMP == 'true'
+        run: |
+          git checkout master
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.version = process.env.NEW_VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          git add package.json
+          git commit -m "chore: sync version to ${NEW_VERSION} [skip ci]"
+          git checkout electron
+
+      - name: Push electron + master + tags
         if: env.CONFLICT != 'true'
         run: |
           if [ "$BUMP" = "true" ]; then
             git push origin electron --follow-tags
+            git push origin master
           else
             git push origin electron
           fi

@@ -195,7 +195,7 @@ export interface ParsedModelName {
 }
 
 const SERVICE_TIER_SUFFIXES = new Set(["fast", "flex"]);
-const EFFORT_SUFFIXES = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+const EFFORT_SUFFIXES = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
 /**
  * Parse a model name that may contain embedded suffixes for service_tier and reasoning_effort.
@@ -241,6 +241,14 @@ export function parseModelName(input: string): ParsedModelName {
   // 3. Resolve remaining as model
   const modelId = resolveModelId(remaining);
   return { modelId, serviceTier, reasoningEffort };
+}
+
+/** Reconstruct display model name: resolved modelId + any parsed suffixes. */
+export function buildDisplayModelName(parsed: ParsedModelName): string {
+  let name = parsed.modelId;
+  if (parsed.reasoningEffort) name += `-${parsed.reasoningEffort}`;
+  if (parsed.serviceTier) name += `-${parsed.serviceTier}`;
+  return name;
 }
 
 // ── Getters ────────────────────────────────────────────────────────

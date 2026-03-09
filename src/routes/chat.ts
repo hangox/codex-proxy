@@ -9,6 +9,7 @@ import {
   collectCodexResponse,
 } from "../translation/codex-to-openai.js";
 import { getConfig } from "../config.js";
+import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
 import {
   handleProxyRequest,
   type FormatAdapter,
@@ -122,6 +123,7 @@ export function createChatRoutes(
     const req = parsed.data;
 
     const codexRequest = translateToCodexRequest(req);
+    const displayModel = buildDisplayModelName(parseModelName(req.model));
     const wantReasoning = !!req.reasoning_effort;
 
     return handleProxyRequest(
@@ -130,7 +132,7 @@ export function createChatRoutes(
       cookieJar,
       {
         codexRequest,
-        model: codexRequest.model,
+        model: displayModel,
         isStreaming: req.stream,
       },
       makeOpenAIFormat(wantReasoning),

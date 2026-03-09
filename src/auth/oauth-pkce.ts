@@ -9,7 +9,8 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
 import { getConfig } from "../config.js";
-import { curlFetchPost } from "../tls/curl-fetch.js";
+import { curlFetchPost, type CurlFetchResponse } from "../tls/curl-fetch.js";
+import { withDirectFallback, isCloudflareChallengeResponse } from "../tls/direct-fallback.js";
 
 export interface PKCEChallenge {
   codeVerifier: string;
@@ -40,6 +41,8 @@ interface PendingSession {
   source: "login" | "dashboard";
   createdAt: number;
 }
+
+const isCfResponse = (r: CurlFetchResponse) => isCloudflareChallengeResponse(r.status, r.body);
 
 /** In-memory store for pending OAuth sessions, keyed by `state`. */
 const pendingSessions = new Map<string, PendingSession>();
@@ -121,10 +124,14 @@ export async function exchangeCode(
     code_verifier: codeVerifier,
   });
 
-  const resp = await curlFetchPost(
-    config.auth.oauth_token_endpoint,
-    "application/x-www-form-urlencoded",
-    body.toString(),
+  const resp = await withDirectFallback(
+    (proxyUrl) => curlFetchPost(
+      config.auth.oauth_token_endpoint,
+      "application/x-www-form-urlencoded",
+      body.toString(),
+      { proxyUrl },
+    ),
+    { tag: "OAuth/exchangeCode", shouldFallback: isCfResponse },
   );
 
   if (!resp.ok) {
@@ -148,10 +155,14 @@ export async function refreshAccessToken(
     refresh_token: refreshToken,
   });
 
-  const resp = await curlFetchPost(
-    config.auth.oauth_token_endpoint,
-    "application/x-www-form-urlencoded",
-    body.toString(),
+  const resp = await withDirectFallback(
+    (proxyUrl) => curlFetchPost(
+      config.auth.oauth_token_endpoint,
+      "application/x-www-form-urlencoded",
+      body.toString(),
+      { proxyUrl },
+    ),
+    { tag: "OAuth/refresh", shouldFallback: isCfResponse },
   );
 
   if (!resp.ok) {
@@ -342,10 +353,14 @@ export async function requestDeviceCode(): Promise<DeviceCodeResponse> {
     scope: "openid profile email offline_access",
   });
 
-  const resp = await curlFetchPost(
-    "https://auth.openai.com/oauth/device/code",
-    "application/x-www-form-urlencoded",
-    body.toString(),
+  const resp = await withDirectFallback(
+    (proxyUrl) => curlFetchPost(
+      "https://auth.openai.com/oauth/device/code",
+      "application/x-www-form-urlencoded",
+      body.toString(),
+      { proxyUrl },
+    ),
+    { tag: "OAuth/deviceCode", shouldFallback: isCfResponse },
   );
 
   if (!resp.ok) {
@@ -368,10 +383,14 @@ export async function pollDeviceToken(deviceCode: string): Promise<TokenResponse
     client_id: config.auth.oauth_client_id,
   });
 
-  const resp = await curlFetchPost(
-    config.auth.oauth_token_endpoint,
-    "application/x-www-form-urlencoded",
-    body.toString(),
+  const resp = await withDirectFallback(
+    (proxyUrl) => curlFetchPost(
+      config.auth.oauth_token_endpoint,
+      "application/x-www-form-urlencoded",
+      body.toString(),
+      { proxyUrl },
+    ),
+    { tag: "OAuth/pollDevice", shouldFallback: isCfResponse },
   );
 
   if (!resp.ok) {

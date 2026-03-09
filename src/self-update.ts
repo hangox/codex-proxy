@@ -39,7 +39,7 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const INITIAL_DELAY_MS = 10_000; // 10 seconds after startup
 
 export interface ProxyInfo {
-  version: string;
+  version: string | null;
   commit: string | null;
 }
 
@@ -75,15 +75,30 @@ let _checkTimer: ReturnType<typeof setInterval> | null = null;
 let _initialTimer: ReturnType<typeof setTimeout> | null = null;
 let _checking = false;
 
-/** Read proxy version from package.json + current git commit hash. */
+/** Read proxy version from git tag / package.json + current git commit hash. */
 export function getProxyInfo(): ProxyInfo {
-  let version = "unknown";
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(getRootDir(), "package.json"), "utf-8")) as { version?: string };
-    version = pkg.version ?? "unknown";
-  } catch { /* ignore */ }
-
+  let version: string | null = null;
   let commit: string | null = null;
+
+  // Try git tag first (meaningful for versioned releases)
+  try {
+    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0", "HEAD"], {
+      cwd: process.cwd(),
+      encoding: "utf-8",
+      timeout: 5000,
+    }).trim();
+    if (tag) version = tag.startsWith("v") ? tag.slice(1) : tag;
+  } catch { /* no reachable tag */ }
+
+  // Fall back to package.json (skip "1.0.0" placeholder on master)
+  if (!version) {
+    try {
+      const pkg = JSON.parse(readFileSync(resolve(getRootDir(), "package.json"), "utf-8")) as { version?: string };
+      const v = pkg.version;
+      if (v && v !== "1.0.0") version = v;
+    } catch { /* ignore */ }
+  }
+
   try {
     const out = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
       cwd: process.cwd(),
@@ -236,7 +251,7 @@ export async function checkProxySelfUpdate(): Promise<ProxySelfUpdateResult> {
 
   // Docker or Electron — GitHub Releases API
   const release = await checkGitHubRelease();
-  const currentVersion = getProxyInfo().version;
+  const currentVersion = getProxyInfo().version ?? "0.0.0";
   const updateAvailable = release !== null
     && release.version !== currentVersion
     && release.version.localeCompare(currentVersion, undefined, { numeric: true }) > 0;

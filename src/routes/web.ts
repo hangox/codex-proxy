@@ -6,7 +6,7 @@ import type { AccountPool } from "../auth/account-pool.js";
 import { getConfig, getFingerprint } from "../config.js";
 import { getPublicDir, getDesktopPublicDir, getConfigDir, getDataDir, isEmbedded } from "../paths.js";
 import { getUpdateState, checkForUpdate, isUpdateInProgress } from "../update-checker.js";
-import { getProxyInfo, canSelfUpdate, checkProxySelfUpdate, applyProxySelfUpdate, isProxyUpdateInProgress } from "../self-update.js";
+import { getProxyInfo, canSelfUpdate, checkProxySelfUpdate, applyProxySelfUpdate, isProxyUpdateInProgress, getCachedProxyUpdateResult, getDeployMode } from "../self-update.js";
 
 export function createWebRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -127,13 +127,18 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
   app.get("/admin/update-status", (c) => {
     const proxyInfo = getProxyInfo();
     const codexState = getUpdateState();
+    const cached = getCachedProxyUpdateResult();
 
     return c.json({
       proxy: {
         version: proxyInfo.version,
         commit: proxyInfo.commit,
         can_self_update: canSelfUpdate(),
-        commits_behind: null as number | null,
+        mode: getDeployMode(),
+        commits_behind: cached?.commitsBehind ?? null,
+        commits: cached?.commits ?? [],
+        release: cached?.release ? { version: cached.release.version, body: cached.release.body, url: cached.release.url } : null,
+        update_available: cached?.updateAvailable ?? false,
         update_in_progress: isProxyUpdateInProgress(),
       },
       codex: {
@@ -150,34 +155,42 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
 
   app.post("/admin/check-update", async (c) => {
     const results: {
-      proxy?: { commits_behind: number; current_commit: string | null; latest_commit: string | null; update_applied?: boolean; error?: string };
+      proxy?: {
+        commits_behind: number;
+        current_commit: string | null;
+        latest_commit: string | null;
+        commits: Array<{ hash: string; message: string }>;
+        release: { version: string; body: string; url: string } | null;
+        update_available: boolean;
+        mode: string;
+        error?: string;
+      };
       codex?: { update_available: boolean; current_version: string; latest_version: string | null; version_changed?: boolean; error?: string };
     } = {};
 
-    // 1. Proxy self-update check
-    if (canSelfUpdate()) {
-      try {
-        const proxyResult = await checkProxySelfUpdate();
-        results.proxy = {
-          commits_behind: proxyResult.commitsBehind,
-          current_commit: proxyResult.currentCommit,
-          latest_commit: proxyResult.latestCommit,
-        };
-
-        // Auto-apply if behind
-        if (proxyResult.commitsBehind > 0 && !isProxyUpdateInProgress()) {
-          const applyResult = await applyProxySelfUpdate();
-          results.proxy.update_applied = applyResult.started;
-          if (applyResult.error) results.proxy.error = applyResult.error;
-        }
-      } catch (err) {
-        results.proxy = {
-          commits_behind: 0,
-          current_commit: null,
-          latest_commit: null,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
+    // 1. Proxy update check (all modes)
+    try {
+      const proxyResult = await checkProxySelfUpdate();
+      results.proxy = {
+        commits_behind: proxyResult.commitsBehind,
+        current_commit: proxyResult.currentCommit,
+        latest_commit: proxyResult.latestCommit,
+        commits: proxyResult.commits,
+        release: proxyResult.release ? { version: proxyResult.release.version, body: proxyResult.release.body, url: proxyResult.release.url } : null,
+        update_available: proxyResult.updateAvailable,
+        mode: proxyResult.mode,
+      };
+    } catch (err) {
+      results.proxy = {
+        commits_behind: 0,
+        current_commit: null,
+        latest_commit: null,
+        commits: [],
+        release: null,
+        update_available: false,
+        mode: getDeployMode(),
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
 
     // 2. Codex fingerprint check
@@ -206,6 +219,15 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
       proxy_update_in_progress: isProxyUpdateInProgress(),
       codex_update_in_progress: isUpdateInProgress(),
     });
+  });
+
+  app.post("/admin/apply-update", async (c) => {
+    if (!canSelfUpdate()) {
+      c.status(400);
+      return c.json({ started: false, error: "Self-update not available in this deploy mode" });
+    }
+    const result = await applyProxySelfUpdate();
+    return c.json(result);
   });
 
   return app;

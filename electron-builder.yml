@@ -12,6 +12,7 @@ files:
   - electron/assets/**/*
   - package.json
   - "!node_modules"
+  - node_modules/koffi/**
   - "!dist"
 
 # Static assets unpacked from asar (filesystem access at runtime)
@@ -19,6 +20,7 @@ asarUnpack:
   - "config/**/*"
   - "public/**/*"
   - "public-desktop/**/*"
+  - "node_modules/koffi/**"
   - "**/*.node"
 
 # curl-impersonate binaries as extra resources (outside asar)

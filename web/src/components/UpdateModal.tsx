@@ -58,9 +58,9 @@ export function UpdateModal({
       ref={dialogRef}
       onClick={handleBackdropClick}
       onCancel={handleCancel}
-      class="backdrop:bg-black/50 bg-transparent p-0 m-auto max-w-lg w-full open:flex"
+      class="backdrop:bg-black/50 bg-transparent p-0 m-0 max-w-none max-h-none inset-0 open:flex open:items-center open:justify-center"
     >
-      <div class="w-full bg-white dark:bg-card-dark rounded-xl shadow-2xl border border-gray-200 dark:border-border-dark overflow-hidden">
+      <div class="w-full max-w-lg bg-white dark:bg-card-dark rounded-xl shadow-2xl border border-gray-200 dark:border-border-dark overflow-hidden">
         {/* Header */}
         <div class="px-5 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
           <h2 class="text-base font-bold text-slate-800 dark:text-text-main">

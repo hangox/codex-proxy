@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- 混合 plan 账号路由失败：free 和 team/plus 账号混用时，请求 plan 受限模型（如 `gpt-5.4`）可能 fallback 到不兼容的 free 账号导致 400 错误，现在严格按 plan 过滤，无匹配账号时返回明确错误而非降级 (#54)
 - `cached_tokens` / `reasoning_tokens` 透传：从 Codex API 响应的 `input_tokens_details` 和 `output_tokens_details` 中提取，传递到 OpenAI（`prompt_tokens_details`）、Anthropic（`cache_read_input_tokens`）、Gemini（`cachedContentTokenCount`）三种格式，覆盖流式和非流式模式 (#55, #58)
 - Dashboard 模型选择器使用后端 catalog 的 `isDefault` 字段，替代硬编码 `gpt-5.4`
 - Docker 端口修复：锁定容器内 `PORT=8080`（`environment` 覆盖 `env_file`），HEALTHCHECK 固定检查 8080，`.env` 的 PORT 仅控制宿主机暴露端口，修复自定义 PORT 时健康检查失败和端口映射不匹配的问题 (#40)

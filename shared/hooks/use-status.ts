@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useMemo } from "preact/hooks";
 export interface CatalogModel {
   id: string;
   displayName: string;
+  isDefault: boolean;
   supportedReasoningEfforts: { reasoningEffort: string; description: string }[];
   defaultReasoningEffort: string;
 }
@@ -44,8 +45,8 @@ function isTierVariant(id: string): boolean {
 export function useStatus(accountCount: number) {
   const [baseUrl, setBaseUrl] = useState("Loading...");
   const [apiKey, setApiKey] = useState("Loading...");
-  const [models, setModels] = useState<string[]>(["gpt-5.4"]);
-  const [selectedModel, setSelectedModel] = useState("gpt-5.4");
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
   const [modelCatalog, setModelCatalog] = useState<CatalogModel[]>([]);
   const [selectedEffort, setSelectedEffort] = useState("medium");
   const [selectedSpeed, setSelectedSpeed] = useState<string | null>(null);
@@ -63,11 +64,11 @@ export function useStatus(accountCount: number) {
       const ids: string[] = data.data.map((m: { id: string }) => m.id);
       if (ids.length > 0) {
         setModels(ids);
-        const preferred = ids.find((n) => n === "gpt-5.4");
-        if (preferred) setSelectedModel(preferred);
+        const defaultModel = catalogData.find((m) => m.isDefault)?.id ?? ids[0] ?? "";
+        setSelectedModel(defaultModel);
       }
     } catch {
-      setModels(["gpt-5.4"]);
+      setModels([]);
     }
   }, []);
 

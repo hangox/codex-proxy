@@ -146,8 +146,10 @@ export class CodexApi {
     const baseUrl = config.api.base_url;
 
     // Endpoints to probe (most specific first)
+    // /codex/models now requires ?client_version= query parameter
+    const clientVersion = config.client.app_version;
     const endpoints = [
-      `${baseUrl}/codex/models`,
+      `${baseUrl}/codex/models?client_version=${clientVersion}`,
       `${baseUrl}/models`,
       `${baseUrl}/sentinel/chat-requirements`,
     ];

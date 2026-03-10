@@ -69,14 +69,25 @@ export interface BackendModelEntry {
   description?: string;
   is_default?: boolean;
   default_reasoning_effort?: string;
+  default_reasoning_level?: string;
   supported_reasoning_efforts?: Array<{
     reasoning_effort?: string;
     reasoningEffort?: string;
+    effort?: string;
+    description?: string;
+  }>;
+  supported_reasoning_levels?: Array<{
+    effort?: string;
     description?: string;
   }>;
   input_modalities?: string[];
   supports_personality?: boolean;
   upgrade?: string | null;
+  prefer_websockets?: boolean;
+  context_window?: number;
+  available_in_plans?: string[];
+  priority?: number;
+  visibility?: string;
 }
 
 /** Intermediate type with explicit efforts flag for merge logic. */
@@ -90,13 +101,21 @@ interface NormalizedModelWithMeta extends CodexModelInfo {
 function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta {
   const id = raw.slug ?? raw.id ?? raw.name ?? "unknown";
 
-  const hasExplicitEfforts = Array.isArray(raw.supported_reasoning_efforts) && raw.supported_reasoning_efforts.length > 0;
+  // Accept both old (supported_reasoning_efforts) and new (supported_reasoning_levels) field names
+  const rawEfforts = raw.supported_reasoning_efforts ?? [];
+  const rawLevels = raw.supported_reasoning_levels ?? [];
+  const hasExplicitEfforts = rawEfforts.length > 0 || rawLevels.length > 0;
 
-  // Normalize reasoning efforts — accept both snake_case and camelCase
-  const efforts = (raw.supported_reasoning_efforts ?? []).map((e) => ({
-    reasoningEffort: e.reasoningEffort ?? e.reasoning_effort ?? "medium",
-    description: e.description ?? "",
-  }));
+  // Normalize reasoning efforts — accept effort, reasoning_effort, reasoningEffort keys
+  const efforts = rawEfforts.length > 0
+    ? rawEfforts.map((e) => ({
+        reasoningEffort: e.reasoningEffort ?? e.reasoning_effort ?? e.effort ?? "medium",
+        description: e.description ?? "",
+      }))
+    : rawLevels.map((e) => ({
+        reasoningEffort: e.effort ?? "medium",
+        description: e.description ?? "",
+      }));
 
   return {
     id,
@@ -106,7 +125,7 @@ function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta 
     supportedReasoningEfforts: efforts.length > 0
       ? efforts
       : [{ reasoningEffort: "medium", description: "Default" }],
-    defaultReasoningEffort: raw.default_reasoning_effort ?? "medium",
+    defaultReasoningEffort: raw.default_reasoning_effort ?? raw.default_reasoning_level ?? "medium",
     inputModalities: raw.input_modalities ?? ["text"],
     supportsPersonality: raw.supports_personality ?? false,
     upgrade: raw.upgrade ?? null,
@@ -115,10 +134,11 @@ function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta 
   };
 }
 
-/** Check if a model ID is Codex-compatible (gpt-X.Y-codex-* or bare gpt-X.Y). */
+/** Check if a model ID is Codex-compatible (gpt-X.Y-codex-*, bare gpt-X.Y, or gpt-oss-*). */
 function isCodexCompatibleId(id: string): boolean {
   if (/^gpt-\d+(\.\d+)?-codex/.test(id)) return true;
   if (/^gpt-\d+(\.\d+)?$/.test(id)) return true;
+  if (/^gpt-oss-/.test(id)) return true;
   return false;
 }
 

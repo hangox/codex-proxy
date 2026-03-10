@@ -169,17 +169,23 @@ curl http://localhost:8080/v1/chat/completions \
 
 | Model ID | Alias | Reasoning Efforts | Description |
 |----------|-------|-------------------|-------------|
-| `gpt-5.4` | `codex` | minimal / low / medium / high | Latest flagship coding model (default) |
-| `gpt-5.3-codex` | — | low / medium / high | Previous-gen flagship agentic coding model |
-| `gpt-5.3-codex-spark` | — | minimal / low | Ultra-lightweight coding model |
-| `gpt-5.2-codex` | — | low / medium / high | Agentic coding model |
-| `gpt-5.1-codex-max` | `codex-max` | low / medium / high | Deep reasoning coding model |
-| `gpt-5.1-codex-mini` | `codex-mini` | low / medium / high | Lightweight, fast coding model |
+| `gpt-5.2-codex` | `codex` | low / medium / high / xhigh | Frontier agentic coding model (default) |
+| `gpt-5.2` | — | low / medium / high / xhigh | Professional work & long-running agents |
+| `gpt-5.1-codex-max` | — | low / medium / high / xhigh | Extended context / deepest reasoning |
+| `gpt-5.1-codex` | — | low / medium / high | GPT-5.1 coding model |
+| `gpt-5.1` | — | low / medium / high | General-purpose GPT-5.1 |
+| `gpt-5-codex` | — | low / medium / high | GPT-5 coding model |
+| `gpt-5` | — | minimal / low / medium / high | General-purpose GPT-5 |
+| `gpt-oss-120b` | — | low / medium / high | Open-source 120B model |
+| `gpt-oss-20b` | — | low / medium / high | Open-source 20B model |
+| `gpt-5.1-codex-mini` | — | medium / high | Lightweight, fast coding model |
+| `gpt-5-codex-mini` | — | medium / high | Lightweight coding model |
 
 > **Model name suffixes**: Append `-fast` to any model name to enable Fast mode, or `-high`/`-low` etc. to change reasoning effort.
-> Examples: `gpt-5.4-fast`, `gpt-5.4-high-fast`, `codex-fast`.
+> Examples: `codex-fast`, `gpt-5.2-codex-high-fast`.
 >
-> Models are automatically synced when new Codex Desktop versions are released. The backend also dynamically fetches the latest model catalog.
+> **Note**: `gpt-5.4` and `gpt-5.3-codex` families have been removed for free/plus accounts. Only business accounts retain access.
+> Models are dynamically fetched from the backend and will automatically sync the latest available catalog.
 
 ## 🔗 Client Setup
 
@@ -190,22 +196,19 @@ Set environment variables to route Claude Code through codex-proxy:
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8080
 export ANTHROPIC_API_KEY=your-api-key
-# Default Opus 4.6 → gpt-5.4, no need to set ANTHROPIC_MODEL
+# Default model is gpt-5.2-codex (codex alias), no need to set ANTHROPIC_MODEL
 # To switch models or use suffixes:
-# export ANTHROPIC_MODEL=codex-fast              # → gpt-5.4 + Fast mode
-# export ANTHROPIC_MODEL=gpt-5.4-high            # → gpt-5.4 + high reasoning
-# export ANTHROPIC_MODEL=gpt-5.4-high-fast       # → gpt-5.4 + high + Fast
-# export ANTHROPIC_MODEL=claude-sonnet-4-6       # Sonnet → gpt-5.3-codex
-# export ANTHROPIC_MODEL=claude-haiku-4-5-20251001  # Haiku → gpt-5.1-codex-mini
+# export ANTHROPIC_MODEL=codex-fast              # → gpt-5.2-codex + Fast mode
+# export ANTHROPIC_MODEL=codex-high              # → gpt-5.2-codex + high reasoning
+# export ANTHROPIC_MODEL=codex-high-fast         # → gpt-5.2-codex + high + Fast
+# export ANTHROPIC_MODEL=gpt-5.2                 # → General-purpose GPT-5.2
+# export ANTHROPIC_MODEL=gpt-5.1-codex-mini      # → Lightweight, fast model
 
 claude   # Launch Claude Code
 ```
 
-| Claude Code Model | Maps to Codex Model | Notes |
-|-------------------|---------------------|-------|
-| Opus (default) | `gpt-5.4` | No need to set `ANTHROPIC_MODEL` |
-| Sonnet (`claude-sonnet-4-6`) | `gpt-5.3-codex` | |
-| Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` | |
+> All Claude Code model names (Opus / Sonnet / Haiku) map to the configured default model (`gpt-5.2-codex`).
+> To use a specific model, set the `ANTHROPIC_MODEL` environment variable to a Codex model name.
 
 > You can also copy environment variables from the **Anthropic SDK Setup** card in the dashboard (`http://localhost:8080`).
 

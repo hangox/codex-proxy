@@ -9,9 +9,18 @@
 ### Added
 
 - 更新弹窗 + 自动重启：点击"有可用更新"弹出 Modal 显示 changelog，一键更新后服务器自动重启、前端自动刷新，零人工干预（git 模式 spawn 新进程、Docker/Electron 显示对应操作指引）
+- Model-aware 多计划账号路由：不同 plan（free/plus/business）的账号自动路由到各自支持的模型，business 账号可继续使用 gpt-5.4 等高端模型 (#57)
+
+### Changed
+
+- 模型目录大幅更新：后端移除 free/plus 账号的 `gpt-5.4`、`gpt-5.3-codex` 全系列，新旗舰模型为 `gpt-5.2-codex`（`codex` 别名指向此模型）
+- 新增模型：`gpt-5.2`、`gpt-5.1-codex`、`gpt-5.1`、`gpt-5-codex`、`gpt-5`、`gpt-oss-120b`、`gpt-oss-20b`、`gpt-5-codex-mini`
+- 模型目录从 23 个静态模型精简为 11 个（匹配后端实际返回）
 
 ### Fixed
 
+- `cached_tokens` / `reasoning_tokens` 透传：从 Codex API 响应的 `input_tokens_details` 和 `output_tokens_details` 中提取，传递到 OpenAI（`prompt_tokens_details`）、Anthropic（`cache_read_input_tokens`）、Gemini（`cachedContentTokenCount`）三种格式，覆盖流式和非流式模式 (#55, #58)
+- Dashboard 模型选择器使用后端 catalog 的 `isDefault` 字段，替代硬编码 `gpt-5.4`
 - Docker 端口修复：锁定容器内 `PORT=8080`（`environment` 覆盖 `env_file`），HEALTHCHECK 固定检查 8080，`.env` 的 PORT 仅控制宿主机暴露端口，修复自定义 PORT 时健康检查失败和端口映射不匹配的问题 (#40)
 - Docker Compose 暴露 OAuth 回调端口 1455，修复容器内登录时 "Operation timed out" 的问题
 - README Docker 快速开始补充 `cp .env.example .env` 步骤，修复新用户因缺少 `.env` 文件导致 `docker compose up -d` 启动失败的问题 (#38)

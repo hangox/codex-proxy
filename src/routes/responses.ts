@@ -261,6 +261,28 @@ export function createResponsesRoutes(
       codexRequest.tool_choice = body.tool_choice as CodexResponsesRequest["tool_choice"];
     }
 
+    // Pass through text format (JSON mode / structured outputs) as-is
+    if (
+      isRecord(body.text) &&
+      isRecord(body.text.format) &&
+      typeof body.text.format.type === "string"
+    ) {
+      codexRequest.text = {
+        format: {
+          type: body.text.format.type as "text" | "json_object" | "json_schema",
+          ...(typeof body.text.format.name === "string"
+            ? { name: body.text.format.name }
+            : {}),
+          ...(isRecord(body.text.format.schema)
+            ? { schema: body.text.format.schema as Record<string, unknown> }
+            : {}),
+          ...(typeof body.text.format.strict === "boolean"
+            ? { strict: body.text.format.strict }
+            : {}),
+        },
+      };
+    }
+
     // Client can request non-streaming (collect mode), but upstream is always stream
     const clientWantsStream = body.stream !== false;
 

@@ -103,6 +103,7 @@ curl http://localhost:8080/v1/chat/completions \
 - Compatible with `/v1/chat/completions` (OpenAI), `/v1/messages` (Anthropic), and Gemini formats
 - SSE streaming output, works with all OpenAI SDKs and clients
 - Automatic bidirectional translation between Chat Completions and Codex Responses API
+- **Structured Outputs** — supports `response_format` (OpenAI `json_object` / `json_schema`) and Gemini `responseMimeType` for enforcing JSON output without prompt engineering
 
 ### 2. 🔐 Account Management & Smart Rotation
 - **OAuth PKCE login** — one-click browser auth, no manual token copying

@@ -169,17 +169,23 @@ curl http://localhost:8080/v1/chat/completions \
 
 | 模型 ID | 别名 | 推理等级 | 说明 |
 |---------|------|---------|------|
-| `gpt-5.4` | `codex` | minimal / low / medium / high | 最新旗舰编程模型（默认） |
-| `gpt-5.3-codex` | — | low / medium / high | 上一代旗舰 agentic 编程模型 |
-| `gpt-5.3-codex-spark` | — | minimal / low | 超轻量编程模型 |
-| `gpt-5.2-codex` | — | low / medium / high | agentic 编程模型 |
-| `gpt-5.1-codex-max` | `codex-max` | low / medium / high | 深度推理编程模型 |
-| `gpt-5.1-codex-mini` | `codex-mini` | low / medium / high | 轻量快速编程模型 |
+| `gpt-5.2-codex` | `codex` | low / medium / high / xhigh | 前沿 agentic 编程模型（默认） |
+| `gpt-5.2` | — | low / medium / high / xhigh | 专业工作 + 长时间代理 |
+| `gpt-5.1-codex-max` | — | low / medium / high / xhigh | 扩展上下文 / 深度推理 |
+| `gpt-5.1-codex` | — | low / medium / high | GPT-5.1 编程模型 |
+| `gpt-5.1` | — | low / medium / high | 通用 GPT-5.1 |
+| `gpt-5-codex` | — | low / medium / high | GPT-5 编程模型 |
+| `gpt-5` | — | minimal / low / medium / high | 通用 GPT-5 |
+| `gpt-oss-120b` | — | low / medium / high | 开源 120B 模型 |
+| `gpt-oss-20b` | — | low / medium / high | 开源 20B 模型 |
+| `gpt-5.1-codex-mini` | — | medium / high | 轻量快速编程模型 |
+| `gpt-5-codex-mini` | — | medium / high | 轻量编程模型 |
 
 > **模型名后缀**：在任意模型名后追加 `-fast` 启用 Fast 模式，追加 `-high`/`-low` 等切换推理等级。
-> 例如：`gpt-5.4-fast`、`gpt-5.4-high-fast`、`codex-fast`。
+> 例如：`codex-fast`、`gpt-5.2-codex-high-fast`。
 >
-> 模型列表会随 Codex Desktop 版本更新自动同步。后端也会动态获取最新模型目录。
+> **注意**：`gpt-5.4`、`gpt-5.3-codex` 系列已从 free/plus 账号移除，仅 business 账号可用。
+> 模型列表由后端动态获取，会自动同步最新可用模型。
 
 ## 🔗 客户端接入 (Client Setup)
 
@@ -190,22 +196,19 @@ curl http://localhost:8080/v1/chat/completions \
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8080
 export ANTHROPIC_API_KEY=your-api-key
-# 默认 Opus 4.6 → gpt-5.4，无需设置 ANTHROPIC_MODEL
+# 默认使用 gpt-5.2-codex（codex 别名），无需设置 ANTHROPIC_MODEL
 # 如需切换模型或启用后缀：
-# export ANTHROPIC_MODEL=codex-fast              # → gpt-5.4 + Fast 模式
-# export ANTHROPIC_MODEL=gpt-5.4-high            # → gpt-5.4 + high 推理
-# export ANTHROPIC_MODEL=gpt-5.4-high-fast       # → gpt-5.4 + high + Fast
-# export ANTHROPIC_MODEL=claude-sonnet-4-6       # Sonnet → gpt-5.3-codex
-# export ANTHROPIC_MODEL=claude-haiku-4-5-20251001  # Haiku → gpt-5.1-codex-mini
+# export ANTHROPIC_MODEL=codex-fast              # → gpt-5.2-codex + Fast 模式
+# export ANTHROPIC_MODEL=codex-high              # → gpt-5.2-codex + high 推理
+# export ANTHROPIC_MODEL=codex-high-fast         # → gpt-5.2-codex + high + Fast
+# export ANTHROPIC_MODEL=gpt-5.2                 # → 通用 GPT-5.2
+# export ANTHROPIC_MODEL=gpt-5.1-codex-mini      # → 轻量快速模型
 
 claude   # 启动 Claude Code
 ```
 
-| Claude Code 模型 | 映射到 Codex 模型 | 说明 |
-|------------------|------------------|------|
-| Opus (默认) | `gpt-5.4` | 无需设置 `ANTHROPIC_MODEL` |
-| Sonnet (`claude-sonnet-4-6`) | `gpt-5.3-codex` | |
-| Haiku (`claude-haiku-4-5-20251001`) | `gpt-5.1-codex-mini` | |
+> 所有 Claude Code 模型名（Opus / Sonnet / Haiku）均映射到配置的默认模型（`gpt-5.2-codex`）。
+> 如需指定具体模型，通过 `ANTHROPIC_MODEL` 环境变量设置 Codex 模型名即可。
 
 > 也可以在控制面板 (`http://localhost:8080`) 的 **Anthropic SDK Setup** 卡片中一键复制环境变量。
 

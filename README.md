@@ -184,7 +184,7 @@ curl http://localhost:8080/v1/chat/completions \
 > **模型名后缀**：在任意模型名后追加 `-fast` 启用 Fast 模式，追加 `-high`/`-low` 等切换推理等级。
 > 例如：`codex-fast`、`gpt-5.2-codex-high-fast`。
 >
-> **注意**：`gpt-5.4`、`gpt-5.3-codex` 系列已从 free/plus 账号移除，仅 business 账号可用。
+> **注意**：`gpt-5.4`、`gpt-5.3-codex` 系列已从 free 账号移除，plus 及以上账号仍可使用。
 > 模型列表由后端动态获取，会自动同步最新可用模型。
 
 ## 🔗 客户端接入 (Client Setup)

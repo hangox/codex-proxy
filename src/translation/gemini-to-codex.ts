@@ -232,5 +232,25 @@ export function translateGeminiToCodexRequest(
     request.service_tier = serviceTier;
   }
 
+  // Response format: translate responseMimeType + responseSchema → text.format
+  const mimeType = req.generationConfig?.responseMimeType;
+  if (mimeType === "application/json") {
+    const schema = req.generationConfig?.responseSchema;
+    if (schema && Object.keys(schema).length > 0) {
+      // Codex strict mode requires additionalProperties: false at root level
+      const strictSchema = { additionalProperties: false, ...schema };
+      request.text = {
+        format: {
+          type: "json_schema",
+          name: "gemini_schema",
+          schema: strictSchema,
+          strict: true,
+        },
+      };
+    } else {
+      request.text = { format: { type: "json_object" } };
+    }
+  }
+
   return request;
 }

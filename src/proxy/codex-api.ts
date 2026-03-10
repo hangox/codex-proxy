@@ -34,6 +34,15 @@ export interface CodexResponsesRequest {
   tools?: unknown[];
   /** Optional: tool choice strategy */
   tool_choice?: string | { type: string; name: string };
+  /** Optional: text output format (JSON mode / structured outputs) */
+  text?: {
+    format: {
+      type: "text" | "json_object" | "json_schema";
+      name?: string;
+      schema?: Record<string, unknown>;
+      strict?: boolean;
+    };
+  };
 }
 
 /** Structured content part for multimodal Codex input. */

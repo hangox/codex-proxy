@@ -60,6 +60,15 @@ export const ChatCompletionRequestSchema = z.object({
     z.object({ type: z.literal("function"), function: z.object({ name: z.string() }) }),
   ]).optional(),
   parallel_tool_calls: z.boolean().optional(),
+  // Structured output format (JSON mode / JSON Schema)
+  response_format: z.object({
+    type: z.enum(["text", "json_object", "json_schema"]),
+    json_schema: z.object({
+      name: z.string(),
+      schema: z.record(z.unknown()),
+      strict: z.boolean().optional(),
+    }).optional(),
+  }).optional(),
   // Legacy function format (accepted for compatibility, not forwarded to Codex)
   functions: z.array(z.object({
     name: z.string(),

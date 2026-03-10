@@ -107,6 +107,7 @@ curl http://localhost:8080/v1/chat/completions \
 - 完全兼容 `/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）和 Gemini 格式
 - 支持 SSE 流式输出，可直接对接所有 OpenAI SDK 和客户端
 - 自动完成 Chat Completions ↔ Codex Responses API 双向协议转换
+- **Structured Outputs** — 支持 `response_format`（OpenAI `json_object` / `json_schema`）和 Gemini `responseMimeType`，强制 JSON 结构化输出无需提示词
 
 ### 2. 🔐 账号管理与智能轮换 (Auth & Multi-Account)
 - **OAuth PKCE 登录** — 浏览器一键授权，无需手动复制 Token

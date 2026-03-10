@@ -192,5 +192,26 @@ export function translateToCodexRequest(
     request.service_tier = serviceTier;
   }
 
+  // Response format: translate response_format → text.format
+  if (req.response_format && req.response_format.type !== "text") {
+    if (req.response_format.type === "json_object") {
+      request.text = { format: { type: "json_object" } };
+    } else if (
+      req.response_format.type === "json_schema" &&
+      req.response_format.json_schema
+    ) {
+      request.text = {
+        format: {
+          type: "json_schema",
+          name: req.response_format.json_schema.name,
+          schema: req.response_format.json_schema.schema,
+          ...(req.response_format.json_schema.strict !== undefined
+            ? { strict: req.response_format.json_schema.strict }
+            : {}),
+        },
+      };
+    }
+  }
+
   return request;
 }

@@ -40,6 +40,8 @@ const GeminiGenerationConfigSchema = z.object({
   maxOutputTokens: z.number().optional(),
   stopSequences: z.array(z.string()).optional(),
   thinkingConfig: GeminiThinkingConfigSchema.optional(),
+  responseMimeType: z.string().optional(),
+  responseSchema: z.record(z.unknown()).optional(),
 });
 
 export const GeminiGenerateContentRequestSchema = z.object({

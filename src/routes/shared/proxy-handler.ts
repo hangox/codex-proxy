@@ -207,8 +207,12 @@ export async function handleProxyRequest(
               return c.json(fmt.formatError(502, "Codex returned empty responses across all available accounts"));
             }
             const msg = collectErr instanceof Error ? collectErr.message : "Unknown error";
-            c.status(502);
-            return c.json(fmt.formatError(502, msg));
+            // Extract upstream status from error message (e.g. "HTTP/1.1 400 Bad Request")
+            const statusMatch = msg.match(/HTTP\/[\d.]+ (\d{3})/);
+            const upstreamStatus = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+            const code = (upstreamStatus >= 400 && upstreamStatus < 600 ? upstreamStatus : 502) as StatusCode;
+            c.status(code);
+            return c.json(fmt.formatError(code, msg));
           }
         }
       }

@@ -20,6 +20,12 @@
 
 ### Fixed
 
+- JSON Schema `additionalProperties` 递归注入：`injectAdditionalProperties()` 递归注入 `additionalProperties: false` 到 JSON Schema 所有 object 节点，覆盖 `properties`、`patternProperties`、`$defs`/`definitions`、`items`、`prefixItems`、组合器（`oneOf`/`anyOf`/`allOf`）、条件（`if`/`then`/`else`），含循环检测；三个端点（OpenAI/Gemini/Responses passthrough）统一调用 (#64)
+- CONNECT tunnel header 解析：循环跳过中间 header block（CONNECT 200、100 Continue），修复代理模式下 tunnel 的 `HTTP/1.1 200` 被当作真实状态码导致上游 4xx 错误被掩盖为 502 的问题 (#64)
+- 上游 HTTP 状态码透传：非流式 collect 路径从错误消息提取真实 HTTP 状态码，不再硬编码 502；提取 `toErrorStatus()` 辅助函数统一 4 处 StatusCode 转换 (#64)
+- Dashboard 中英文切换按钮宽度跳变：`StableText` 的 `reference` 从英文硬编码改为 `t()` 动态取值，按钮宽度跟随当前语言自适应
+- Dashboard "指纹更新中..." 按钮竖排显示：更新状态按钮添加 `whitespace-nowrap`，防止 CJK 字符逐字换行
+- CI 版本跳号（v1.0.28 → v1.0.30）：`sync-electron.yml` 的 `cancel-in-progress` 改为 `false`，避免 workflow 被取消后 tag 已推送但版本号未同步回 master；合并两次 `git push` 为一次减少部分推送窗口
 - 混合 plan 账号路由失败：free 和 team/plus 账号混用时，请求 plan 受限模型（如 `gpt-5.4`）可能 fallback 到不兼容的 free 账号导致 400 错误，现在严格按 plan 过滤，无匹配账号时返回明确错误而非降级 (#54)
 - `cached_tokens` / `reasoning_tokens` 透传：从 Codex API 响应的 `input_tokens_details` 和 `output_tokens_details` 中提取，传递到 OpenAI（`prompt_tokens_details`）、Anthropic（`cache_read_input_tokens`）、Gemini（`cachedContentTokenCount`）三种格式，覆盖流式和非流式模式 (#55, #58)
 - Dashboard 模型选择器使用后端 catalog 的 `isDefault` 字段，替代硬编码 `gpt-5.4`

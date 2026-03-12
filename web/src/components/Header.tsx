@@ -74,7 +74,7 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
                 <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
                 <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary" />
               </span>
-              <StableText reference="Server Online" class="text-xs font-semibold text-primary">{t("serverOnline")}</StableText>
+              <StableText reference={t("serverOnline")} class="text-xs font-semibold text-primary">{t("serverOnline")}</StableText>
               {version && (
                 <span class="text-[0.65rem] font-mono text-primary/70 whitespace-nowrap">v{version}</span>
               )}
@@ -92,7 +92,7 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
               <svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
               </svg>
-              <StableText reference="Star" class="text-xs font-semibold">{t("starOnGithub")}</StableText>
+              <StableText reference={t("starOnGithub")} class="text-xs font-semibold">{t("starOnGithub")}</StableText>
             </a>
             {/* Check for Updates */}
             <button
@@ -103,13 +103,13 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
               <svg class={`size-3.5 ${checking ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M20.985 4.356v4.992" />
               </svg>
-              <StableText reference="Check for Updates" class="text-xs font-semibold">{checking ? t("checkingUpdates") : t("checkForUpdates")}</StableText>
+              <StableText reference={t("checkForUpdates")} class="text-xs font-semibold">{checking ? t("checkingUpdates") : t("checkForUpdates")}</StableText>
             </button>
             {/* Update status message */}
             {updateStatusMsg && !checking && (
               <button
                 onClick={hasUpdate && onOpenUpdateModal ? onOpenUpdateModal : onCheckUpdate}
-                class={`hidden lg:inline text-xs font-medium ${updateStatusColor} hover:underline`}
+                class={`hidden lg:inline whitespace-nowrap text-xs font-medium ${updateStatusColor} hover:underline`}
               >
                 {updateStatusMsg}
               </button>
@@ -140,7 +140,7 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
                   <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
                   </svg>
-                  <StableText reference="Proxy Assignment" class="text-xs font-semibold">{t("proxySettings")}</StableText>
+                  <StableText reference={t("proxySettings")} class="text-xs font-semibold">{t("proxySettings")}</StableText>
                 </a>
                 <button
                   onClick={onAddAccount}
@@ -149,7 +149,7 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
                   <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                   </svg>
-                  <StableText reference="Add Account">{t("addAccount")}</StableText>
+                  <StableText reference={t("addAccount")}>{t("addAccount")}</StableText>
                 </button>
               </>
             )}

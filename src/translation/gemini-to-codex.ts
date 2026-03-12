@@ -14,7 +14,7 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions, budgetToEffort } from "./shared-utils.js";
+import { buildInstructions, budgetToEffort, injectAdditionalProperties } from "./shared-utils.js";
 import { geminiToolsToCodex, geminiToolConfigToCodex } from "./tool-format.js";
 
 /**
@@ -237,8 +237,8 @@ export function translateGeminiToCodexRequest(
   if (mimeType === "application/json") {
     const schema = req.generationConfig?.responseSchema;
     if (schema && Object.keys(schema).length > 0) {
-      // Codex strict mode requires additionalProperties: false at root level
-      const strictSchema = { additionalProperties: false, ...schema };
+      // Codex strict mode requires additionalProperties: false on every object
+      const strictSchema = injectAdditionalProperties(schema as Record<string, unknown>);
       request.text = {
         format: {
           type: "json_schema",

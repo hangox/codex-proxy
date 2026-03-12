@@ -10,7 +10,7 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions } from "./shared-utils.js";
+import { buildInstructions, injectAdditionalProperties } from "./shared-utils.js";
 import {
   openAIToolsToCodex,
   openAIToolChoiceToCodex,
@@ -204,7 +204,9 @@ export function translateToCodexRequest(
         format: {
           type: "json_schema",
           name: req.response_format.json_schema.name,
-          schema: req.response_format.json_schema.schema,
+          schema: injectAdditionalProperties(
+            req.response_format.json_schema.schema as Record<string, unknown>,
+          ),
           ...(req.response_format.json_schema.strict !== undefined
             ? { strict: req.response_format.json_schema.strict }
             : {}),

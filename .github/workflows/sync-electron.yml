@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: sync-electron
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   actions: write
@@ -104,8 +104,7 @@ jobs:
         if: env.CONFLICT != 'true'
         run: |
           if [ "$BUMP" = "true" ]; then
-            git push origin electron --follow-tags
-            git push origin master
+            git push origin electron master --follow-tags
           else
             git push origin electron
           fi

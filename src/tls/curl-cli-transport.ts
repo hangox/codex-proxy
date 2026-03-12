@@ -101,30 +101,42 @@ export class CurlCliTransport implements TlsTransport {
 
         // Accumulate until we find \r\n\r\n header separator
         headerBuf = Buffer.concat([headerBuf, chunk]);
-        const separatorIdx = headerBuf.indexOf("\r\n\r\n");
-        if (separatorIdx === -1) return;
 
-        headersParsed = true;
-        clearTimeout(headerTimer);
-        const headerBlock = headerBuf.subarray(0, separatorIdx).toString("utf-8");
-        const remaining = headerBuf.subarray(separatorIdx + 4);
+        // Loop to skip intermediate header blocks (CONNECT tunnel 200, 100 Continue, etc.)
+        while (!headersParsed) {
+          const separatorIdx = headerBuf.indexOf("\r\n\r\n");
+          if (separatorIdx === -1) return; // wait for more data
 
-        const { status, headers: parsedHeaders, setCookieHeaders } = parseHeaderDump(headerBlock);
+          const headerBlock = headerBuf.subarray(0, separatorIdx).toString("utf-8");
+          const remainder = headerBuf.subarray(separatorIdx + 4);
 
-        if (remaining.length > 0) {
-          bodyController?.enqueue(new Uint8Array(remaining));
+          const parsed = parseHeaderDump(headerBlock);
+
+          // Skip intermediate responses: CONNECT tunnel, 1xx informational
+          if (parsed.status < 200 || isConnectResponse(headerBlock)) {
+            headerBuf = remainder;
+            continue;
+          }
+
+          // Real response found
+          headersParsed = true;
+          clearTimeout(headerTimer);
+
+          if (remainder.length > 0) {
+            bodyController?.enqueue(new Uint8Array(remainder));
+          }
+
+          if (signal) {
+            signal.removeEventListener("abort", onAbort);
+          }
+
+          resolve({
+            status: parsed.status,
+            headers: parsed.headers,
+            body: bodyStream,
+            setCookieHeaders: parsed.setCookieHeaders,
+          });
         }
-
-        if (signal) {
-          signal.removeEventListener("abort", onAbort);
-        }
-
-        resolve({
-          status,
-          headers: parsedHeaders,
-          body: bodyStream,
-          setCookieHeaders,
-        });
       });
 
       let stderrBuf = "";
@@ -283,4 +295,10 @@ function parseHeaderDump(headerBlock: string): {
   }
 
   return { status, headers, setCookieHeaders };
+}
+
+/** Detect CONNECT tunnel responses (e.g. "HTTP/1.1 200 Connection established"). */
+function isConnectResponse(headerBlock: string): boolean {
+  const firstLine = headerBlock.split("\r\n")[0] ?? "";
+  return /connection\s+established/i.test(firstLine);
 }

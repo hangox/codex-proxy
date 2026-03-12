@@ -54,6 +54,11 @@ export interface FormatAdapter {
  *
  * Handles: acquire, session lookup, retry, stream/collect, release, error formatting.
  */
+/** Clamp an HTTP status to a valid error StatusCode, defaulting to 502 for non-error codes. */
+function toErrorStatus(status: number): StatusCode {
+  return (status >= 400 && status < 600 ? status : 502) as StatusCode;
+}
+
 /** Check if a CodexApiError indicates the model is not supported on the account's plan. */
 function isModelNotSupportedError(err: CodexApiError): boolean {
   // Only 4xx client errors (exclude 429 rate-limit)
@@ -186,7 +191,7 @@ export async function handleProxyRequest(
               } catch (retryErr) {
                 accountPool.release(currentEntryId);
                 if (retryErr instanceof CodexApiError) {
-                  const code = (retryErr.status >= 400 && retryErr.status < 600 ? retryErr.status : 502) as StatusCode;
+                  const code = toErrorStatus(retryErr.status);
                   c.status(code);
                   return c.json(fmt.formatError(code, retryErr.message));
                 }
@@ -207,8 +212,12 @@ export async function handleProxyRequest(
               return c.json(fmt.formatError(502, "Codex returned empty responses across all available accounts"));
             }
             const msg = collectErr instanceof Error ? collectErr.message : "Unknown error";
-            c.status(502);
-            return c.json(fmt.formatError(502, msg));
+            // Extract upstream status from error message (e.g. "HTTP/1.1 400 Bad Request")
+            const statusMatch = msg.match(/HTTP\/[\d.]+ (\d{3})/);
+            const upstreamStatus = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+            const code = toErrorStatus(upstreamStatus);
+            c.status(code);
+            return c.json(fmt.formatError(code, msg));
           }
         }
       }
@@ -237,7 +246,7 @@ export async function handleProxyRequest(
             continue; // re-enter model retry loop
           }
           // No other account available — return error (already released above)
-          const code = (err.status >= 400 && err.status < 600 ? err.status : 502) as StatusCode;
+          const code = toErrorStatus(err.status);
           c.status(code);
           return c.json(fmt.formatError(code, err.message));
         }

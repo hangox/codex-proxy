@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 
+export interface AccountQuotaWindow {
+  used_percent?: number | null;
+  limit_reached?: boolean;
+  reset_at?: number | null;
+  limit_window_seconds?: number | null;
+}
+
 export interface AccountQuota {
-  rate_limit?: {
-    used_percent?: number | null;
-    limit_reached?: boolean;
-    reset_at?: number | null;
-    limit_window_seconds?: number | null;
-  };
+  rate_limit?: AccountQuotaWindow;
+  /** Secondary rate limit window (e.g. weekly cap). */
+  secondary_rate_limit?: AccountQuotaWindow | null;
 }
 
 export interface Account {

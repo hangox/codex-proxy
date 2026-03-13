@@ -36,62 +36,124 @@
 
 ## 🚀 快速开始 (Quick Start)
 
-### 桌面应用（最简单）
+> **前置条件**：你需要一个 ChatGPT 账号（免费账号即可）。如果还没有，先去 [chat.openai.com](https://chat.openai.com) 注册一个。
 
-从 [GitHub Releases](https://github.com/icebear0828/codex-proxy/releases) 下载安装包，开箱即用：
+---
 
-| 平台 | 安装包 |
-|------|--------|
-| Windows | `Codex Proxy Setup x.x.x.exe` |
-| macOS | `Codex Proxy-x.x.x.dmg` |
-| Linux | `Codex Proxy-x.x.x.AppImage` |
+### 方式一：桌面应用（推荐新手，最简单）
 
-安装后打开应用，使用 ChatGPT 账号登录即可。桌面端默认监听 `127.0.0.1:8080`，仅本机访问。
+像安装 QQ、微信一样，下载 → 安装 → 打开就能用。
 
-### CLI / 服务器部署
+**第 1 步：下载安装包**
+
+打开 👉 [下载页面](https://github.com/icebear0828/codex-proxy/releases)，找到最新版本，根据你的电脑系统下载对应文件：
+
+| 你的电脑系统 | 下载哪个文件 | 怎么判断系统 |
+|-------------|-------------|-------------|
+| Windows | `Codex Proxy Setup x.x.x.exe` | 大部分人用的就是 Windows |
+| macOS（苹果电脑） | `Codex Proxy-x.x.x.dmg` | 带苹果 logo 的笔记本/台式机 |
+| Linux | `Codex Proxy-x.x.x.AppImage` | 你如果用 Linux 你肯定知道 |
+
+**第 2 步：安装**
+
+- **Windows**：双击下载的 `.exe` 文件，一路点"下一步"直到安装完成
+- **macOS**：双击 `.dmg` 文件，把图标拖到 Applications 文件夹里
+
+**第 3 步：打开并登录**
+
+1. 打开刚装好的「Codex Proxy」应用
+2. 点击页面上的登录按钮，用你的 ChatGPT 账号登录
+3. 登录成功后，代理服务就已经在运行了
+
+**第 4 步：验证是否成功**
+
+打开浏览器，在地址栏输入 `http://localhost:8080`，如果能看到控制面板页面，说明一切正常。
+
+> 桌面端默认只允许本机访问（`127.0.0.1:8080`），你电脑上的 AI 客户端可以直接连。
+
+---
+
+### 方式二：Docker 部署（推荐服务器 / 进阶用户）
+
+Docker 就像一个"打包好的盒子"，不需要你自己装各种依赖，一条命令就能跑起来。
+
+**前置条件**：电脑上已安装 Docker。如果没有，先去 [docker.com](https://www.docker.com/products/docker-desktop/) 下载安装 Docker Desktop。
+
+**第 1 步：下载项目代码**
+
+打开终端（Windows 搜索"cmd"或"PowerShell"；macOS 搜索"终端"），输入：
 
 ```bash
 git clone https://github.com/icebear0828/codex-proxy.git
 cd codex-proxy
 ```
 
-### Docker（推荐，所有平台通用）
+> 如果提示 `git` 不是命令，需要先安装 Git：去 [git-scm.com](https://git-scm.com/) 下载安装。
+
+**第 2 步：创建配置文件并启动**
 
 ```bash
-cp .env.example .env       # 创建环境变量文件（可编辑配置）
-docker compose up -d
-# 打开 http://localhost:8080 登录
+cp .env.example .env       # 复制一份配置模板
+docker compose up -d        # 启动服务（后台运行）
 ```
 
-数据持久化通过 volume 映射：`data/`（账号、Cookie）和 `config/`（配置文件）。
+**第 3 步：登录**
 
-> **跨容器访问提示**：如果其他 Docker 容器（如 OpenClaw、Cursor Server 等）需要连接 codex-proxy，建议使用宿主机的局域网 IP（如 `http://192.168.x.x:8080/v1`）而非 `host.docker.internal`，以避免 Docker DNS 解析问题。
+打开浏览器，访问 `http://localhost:8080`，用 ChatGPT 账号登录。
 
-### macOS / Linux
+> 你的账号数据会保存在项目的 `data/` 文件夹里，重启不会丢失。
+>
+> **其他 Docker 容器要连本服务？** 用你电脑的局域网 IP（如 `http://192.168.x.x:8080/v1`），不要用 `localhost`。
+
+---
+
+### 方式三：源码运行（开发者 / 想改代码的用户）
+
+直接从源代码启动，适合想自己修改或调试的人。
+
+**前置条件**：已安装 [Node.js](https://nodejs.org/) 18 或更高版本。安装时一路默认选项即可。
+
+**第 1 步：下载项目代码**
 
 ```bash
-npm install                # 安装后端依赖 + 自动下载 curl-impersonate
-cd web && npm install && cd ..   # 安装前端依赖
-npm run dev                # 开发模式（热重载）
-# 或：npm run build && npm start  # 生产模式
+git clone https://github.com/icebear0828/codex-proxy.git
+cd codex-proxy
 ```
 
-> 也支持 `pnpm` 或 `bun`，将上方 `npm` 替换即可。
-
-### Windows
+**第 2 步：安装依赖**
 
 ```bash
-npm install                # 安装后端依赖
-cd web && npm install && cd ..   # 安装前端依赖
-npm run dev                # 开发模式（热重载）
+npm install                        # 安装后端依赖
+cd web && npm install && cd ..     # 安装前端依赖
 ```
 
-> Windows 下 curl-impersonate 暂不可用，自动降级为系统 curl（无 Chrome TLS 伪装）。建议搭配本地代理使用，或通过 Docker / WSL 部署以获得完整 TLS 伪装能力。
+> macOS / Linux 会自动下载 curl-impersonate（用于 Chrome TLS 伪装）。
+> Windows 下不可用，会自动降级为系统 curl，建议搭配本地代理或改用 Docker。
 
-### 验证
+**第 3 步：启动服务**
 
 ```bash
-# 打开 http://localhost:8080 使用 ChatGPT 账号登录，然后：
+npm run dev          # 开发模式（改了代码自动重启，适合调试）
+```
+
+或者，如果你要正式使用：
+
+```bash
+npm run build        # 先编译
+npm start            # 再启动（性能更好）
+```
+
+**第 4 步：登录**
+
+打开浏览器，访问 `http://localhost:8080`，用 ChatGPT 账号登录。
+
+---
+
+### ✅ 验证服务是否正常
+
+登录成功后，打开终端，复制粘贴以下命令并回车：
+
+```bash
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -100,6 +162,8 @@ curl http://localhost:8080/v1/chat/completions \
     "stream": true
   }'
 ```
+
+如果看到一串 AI 回复的文字流出来，恭喜你，部署成功！接下来可以去 [客户端接入](#-客户端接入-client-setup) 章节，把它连到你常用的 AI 工具上。
 
 ## 🌟 核心功能 (Features)
 

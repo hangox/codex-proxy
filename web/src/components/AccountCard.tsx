@@ -66,7 +66,7 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange }
     if (err) alert(err);
   }, [account.id, onDelete, t]);
 
-  // Quota
+  // Quota — primary window
   const q = account.quota;
   const rl = q?.rate_limit;
   const pct = rl?.used_percent != null ? Math.round(rl.used_percent) : null;
@@ -81,6 +81,23 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange }
           ? "text-amber-600 dark:text-amber-500"
           : "text-primary";
   const resetAt = rl?.reset_at ? formatResetTime(rl.reset_at, lang === "zh") : null;
+
+  // Quota — secondary window (e.g. weekly)
+  const srl = q?.secondary_rate_limit;
+  const sPct = srl?.used_percent != null ? Math.round(srl.used_percent) : null;
+  const sBarColor =
+    sPct == null ? "bg-indigo-500" : sPct >= 90 ? "bg-red-500" : sPct >= 60 ? "bg-amber-500" : "bg-indigo-500";
+  const sPctColor =
+    sPct == null
+      ? "text-indigo-500"
+      : sPct >= 90
+        ? "text-red-500"
+        : sPct >= 60
+          ? "text-amber-600 dark:text-amber-500"
+          : "text-indigo-500";
+  const sResetAt = srl?.reset_at ? formatResetTime(srl.reset_at, lang === "zh") : null;
+  const sWindowSec = srl?.limit_window_seconds;
+  const sWindowDur = sWindowSec ? formatWindowDuration(sWindowSec, lang === "zh") : null;
 
   return (
     <div class="bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl p-4 shadow-sm hover:shadow-md transition-all hover:border-primary/30 dark:hover:border-primary/50">
@@ -158,37 +175,77 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange }
         </div>
       )}
 
-      {/* Quota bar */}
-      {rl && (
-        <div class="pt-3 mt-3 border-t border-slate-100 dark:border-border-dark">
-          <div class="flex justify-between text-[0.78rem] mb-1.5">
-            <span class="text-slate-500 dark:text-text-dim">{t("rateLimit")}</span>
-            {rl.limit_reached ? (
-              <span class="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs font-medium">
-                {t("limitReached")}
-              </span>
-            ) : pct != null ? (
-              <span class={`font-medium ${pctColor}`}>
-                {pct}% {t("used")}
-              </span>
-            ) : (
-              <span class="font-medium text-primary">{t("ok")}</span>
-            )}
-          </div>
-          {pct != null && (
-            <div class="w-full bg-slate-100 dark:bg-border-dark rounded-full h-2 overflow-hidden">
-              <div class={`${barColor} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
+      {/* Quota bars */}
+      {(rl || srl) && (
+        <div class="pt-3 mt-3 border-t border-slate-100 dark:border-border-dark space-y-3">
+          {/* Primary window */}
+          {rl && (
+            <div>
+              <div class="flex justify-between text-[0.78rem] mb-1.5">
+                <span class="text-slate-500 dark:text-text-dim">
+                  {t("rateLimit")}
+                  {windowDur && (
+                    <span class="ml-1 text-slate-400 dark:text-text-dim/70 text-[0.65rem]">({windowDur})</span>
+                  )}
+                </span>
+                {rl.limit_reached ? (
+                  <span class="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs font-medium">
+                    {t("limitReached")}
+                  </span>
+                ) : pct != null ? (
+                  <span class={`font-medium ${pctColor}`}>
+                    {pct}% {t("used")}
+                  </span>
+                ) : (
+                  <span class="font-medium text-primary">{t("ok")}</span>
+                )}
+              </div>
+              {pct != null && (
+                <div class="w-full bg-slate-100 dark:bg-border-dark rounded-full h-2 overflow-hidden">
+                  <div class={`${barColor} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
+                </div>
+              )}
+              {resetAt && (
+                <p class="text-xs text-slate-400 dark:text-text-dim mt-1">
+                  {t("resetsAt")} {resetAt}
+                </p>
+              )}
             </div>
           )}
-          {resetAt && (
-            <p class="text-xs text-slate-400 dark:text-text-dim mt-1">
-              {t("resetsAt")} {resetAt}
-              {windowDur && (
-                <span class="ml-1 text-slate-400 dark:text-text-dim/70">
-                  ({t("windowLabel")} {windowDur})
+
+          {/* Secondary window (e.g. weekly) */}
+          {srl && (
+            <div>
+              <div class="flex justify-between text-[0.78rem] mb-1.5">
+                <span class="text-slate-500 dark:text-text-dim">
+                  {t("secondaryRateLimit")}
+                  {sWindowDur && (
+                    <span class="ml-1 text-slate-400 dark:text-text-dim/70 text-[0.65rem]">({sWindowDur})</span>
+                  )}
                 </span>
+                {srl.limit_reached ? (
+                  <span class="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs font-medium">
+                    {t("limitReached")}
+                  </span>
+                ) : sPct != null ? (
+                  <span class={`font-medium ${sPctColor}`}>
+                    {sPct}% {t("used")}
+                  </span>
+                ) : (
+                  <span class="font-medium text-indigo-500">{t("ok")}</span>
+                )}
+              </div>
+              {sPct != null && (
+                <div class="w-full bg-slate-100 dark:bg-border-dark rounded-full h-2 overflow-hidden">
+                  <div class={`${sBarColor} h-2 rounded-full transition-all`} style={{ width: `${sPct}%` }} />
+                </div>
               )}
-            </p>
+              {sResetAt && (
+                <p class="text-xs text-slate-400 dark:text-text-dim mt-1">
+                  {t("resetsAt")} {sResetAt}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}

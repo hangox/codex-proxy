@@ -56,16 +56,24 @@ export interface AccountInfo {
   quota?: CodexQuota;
 }
 
+/** A single rate limit window (primary or secondary). */
+export interface CodexQuotaWindow {
+  used_percent: number | null;
+  reset_at: number | null;
+  limit_window_seconds: number | null;
+}
+
 /** Official Codex quota from /backend-api/codex/usage */
 export interface CodexQuota {
   plan_type: string;
-  rate_limit: {
+  rate_limit: CodexQuotaWindow & {
     allowed: boolean;
     limit_reached: boolean;
-    used_percent: number | null;
-    reset_at: number | null;
-    limit_window_seconds: number | null;
   };
+  /** Secondary rate limit window (e.g. weekly cap). Null when backend doesn't report one. */
+  secondary_rate_limit: CodexQuotaWindow & {
+    limit_reached: boolean;
+  } | null;
   code_review_rate_limit: {
     allowed: boolean;
     limit_reached: boolean;

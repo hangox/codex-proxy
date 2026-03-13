@@ -26,6 +26,7 @@ import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 
 function toQuota(usage: CodexUsageResponse): CodexQuota {
+  const sw = usage.rate_limit.secondary_window;
   return {
     plan_type: usage.plan_type,
     rate_limit: {
@@ -35,6 +36,14 @@ function toQuota(usage: CodexUsageResponse): CodexQuota {
       reset_at: usage.rate_limit.primary_window?.reset_at ?? null,
       limit_window_seconds: usage.rate_limit.primary_window?.limit_window_seconds ?? null,
     },
+    secondary_rate_limit: sw
+      ? {
+          limit_reached: usage.rate_limit.limit_reached,
+          used_percent: sw.used_percent ?? null,
+          reset_at: sw.reset_at ?? null,
+          limit_window_seconds: sw.limit_window_seconds ?? null,
+        }
+      : null,
     code_review_rate_limit: usage.code_review_rate_limit
       ? {
           allowed: usage.code_review_rate_limit.allowed,

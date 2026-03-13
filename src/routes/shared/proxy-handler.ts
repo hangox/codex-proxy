@@ -300,9 +300,7 @@ export async function handleProxyRequest(
           return c.json(fmt.format429(err.message));
         }
         accountPool.release(activeEntryId);
-        const code = (
-          err.status >= 400 && err.status < 600 ? err.status : 502
-        ) as StatusCode;
+        const code = toErrorStatus(err.status);
         c.status(code);
         return c.json(fmt.formatError(code, err.message));
       }

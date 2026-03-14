@@ -132,6 +132,10 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     port,
   });
 
+  // Resolve actual port (may differ from requested when port=0)
+  const addr = server.address();
+  const actualPort = (addr && typeof addr === "object") ? addr.port : port;
+
   const close = (): Promise<void> => {
     return new Promise((resolve) => {
       server.close(() => {
@@ -150,7 +154,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   // Register close handler so self-update can attempt graceful shutdown before restart
   setCloseHandler(close);
 
-  return { close, port };
+  return { close, port: actualPort };
 }
 
 // ── CLI entry point ──────────────────────────────────────────────────

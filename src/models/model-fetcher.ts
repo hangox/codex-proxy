@@ -89,7 +89,7 @@ export function startModelRefresh(
     }
   }, INITIAL_DELAY_MS);
 
-  console.log("[ModelFetcher] Scheduled initial model fetch in 5s");
+  console.log("[ModelFetcher] Scheduled initial model fetch in 1s");
 }
 
 function scheduleNext(

@@ -39,8 +39,10 @@ interface ModelsConfig {
 let _catalog: CodexModelInfo[] = [];
 let _aliases: Record<string, string> = {};
 let _lastFetchTime: string | null = null;
-/** modelId → Set<planType> — tracks which plans can access each model */
-let _modelPlanMap: Map<string, Set<string>> = new Map();
+/** planType → Set<modelId> — write path: bulk replace per plan */
+let _planModelMap: Map<string, Set<string>> = new Map();
+/** modelId → Set<planType> — read path: O(1) lookup for routing */
+let _modelPlanIndex: Map<string, Set<string>> = new Map();
 
 // ── Static loading ─────────────────────────────────────────────────
 
@@ -55,7 +57,8 @@ export function loadStaticModels(configDir?: string): void {
 
   _catalog = (raw.models ?? []).map((m) => ({ ...m, source: "static" as const }));
   _aliases = raw.aliases ?? {};
-  _modelPlanMap = new Map(); // Reset plan map on reload
+  _planModelMap = new Map(); // Reset plan maps on reload
+  _modelPlanIndex = new Map();
   console.log(`[ModelStore] Loaded ${_catalog.length} static models, ${Object.keys(_aliases).length} aliases`);
 }
 
@@ -214,30 +217,34 @@ export function applyBackendModels(backendModels: BackendModelEntry[]): void {
  * Clears old records for this planType, applies merge, then records plan→model mappings.
  */
 export function applyBackendModelsForPlan(planType: string, backendModels: BackendModelEntry[]): void {
-  // Clear old planType records
-  for (const [modelId, plans] of _modelPlanMap) {
-    plans.delete(planType);
-    if (plans.size === 0) _modelPlanMap.delete(modelId);
-  }
-
   // Merge into catalog (existing logic)
   applyBackendModels(backendModels);
 
-  // Record which models this plan can access (only admitted models)
-  const staticIds = new Set(_catalog.map((m) => m.id));
+  // Build new model set for this plan and replace atomically
+  const admittedIds = new Set<string>();
+  const catalogIds = new Set(_catalog.map((m) => m.id));
   for (const raw of backendModels) {
     const id = raw.slug ?? raw.id ?? raw.name ?? "";
-    if (staticIds.has(id) || isCodexCompatibleId(id)) {
-      let plans = _modelPlanMap.get(id);
+    if (catalogIds.has(id) || isCodexCompatibleId(id)) {
+      admittedIds.add(id);
+    }
+  }
+  _planModelMap.set(planType, admittedIds);
+
+  // Rebuild reverse index from scratch (plan types are few, this is cheap)
+  _modelPlanIndex = new Map();
+  for (const [plan, modelIds] of _planModelMap) {
+    for (const id of modelIds) {
+      let plans = _modelPlanIndex.get(id);
       if (!plans) {
         plans = new Set();
-        _modelPlanMap.set(id, plans);
+        _modelPlanIndex.set(id, plans);
       }
-      plans.add(planType);
+      plans.add(plan);
     }
   }
 
-  console.log(`[ModelStore] Plan "${planType}" has ${backendModels.length} backend models, ${_modelPlanMap.size} models tracked across plans`);
+  console.log(`[ModelStore] Plan "${planType}": ${admittedIds.size} admitted models, ${_planModelMap.size} plans tracked`);
 }
 
 /**
@@ -245,7 +252,7 @@ export function applyBackendModelsForPlan(planType: string, backendModels: Backe
  * Empty array means unknown (static-only or not yet fetched).
  */
 export function getModelPlanTypes(modelId: string): string[] {
-  return [...(_modelPlanMap.get(modelId) ?? [])];
+  return [...(_modelPlanIndex.get(modelId) ?? [])];
 }
 
 // ── Model name suffix parsing ───────────────────────────────────────
@@ -360,8 +367,8 @@ export function getModelStoreDebug(): {
 } {
   const backendCount = _catalog.filter((m) => m.source === "backend").length;
   const planMap: Record<string, string[]> = {};
-  for (const [modelId, plans] of _modelPlanMap) {
-    planMap[modelId] = [...plans];
+  for (const [planType, modelIds] of _planModelMap) {
+    planMap[planType] = [...modelIds];
   }
   return {
     totalModels: _catalog.length,

@@ -19,38 +19,46 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
   const publicDir = getPublicDir();
   const desktopPublicDir = getDesktopPublicDir();
 
+  const desktopIndexPath = resolve(desktopPublicDir, "index.html");
+  const webIndexPath = resolve(publicDir, "index.html");
+  const hasDesktopUI = existsSync(desktopIndexPath);
+  const hasWebUI = existsSync(webIndexPath);
+
+  console.log(`[Web] publicDir: ${publicDir} (exists: ${hasWebUI})`);
+  console.log(`[Web] desktopPublicDir: ${desktopPublicDir} (exists: ${hasDesktopUI})`);
+
   // Serve Vite build assets (web)
   app.use("/assets/*", serveStatic({ root: publicDir }));
 
   app.get("/", (c) => {
     try {
-      const html = readFileSync(resolve(publicDir, "index.html"), "utf-8");
+      const html = readFileSync(webIndexPath, "utf-8");
       return c.html(html);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Web] Failed to read HTML file: ${msg}`);
-      return c.html("<h1>Codex Proxy</h1><p>UI files not found. Run 'npm/pnpm/bun run build:web' first. The API is still available at /v1/chat/completions</p>");
+      return c.html("<h1>Codex Proxy</h1><p>UI files not found. Run 'npm run build:web' first. The API is still available at /v1/chat/completions</p>");
     }
   });
 
   // Desktop UI — served at /desktop for Electron
-  // Vite builds with base: "/desktop/" so request paths are /desktop/assets/...
-  // but files live at public-desktop/assets/..., so strip the /desktop prefix
-  app.use("/desktop/assets/*", serveStatic({
-    root: desktopPublicDir,
-    rewriteRequestPath: (path) => path.replace(/^\/desktop/, ""),
-  }));
+  if (hasDesktopUI) {
+    app.use("/desktop/assets/*", serveStatic({
+      root: desktopPublicDir,
+      rewriteRequestPath: (path) => path.replace(/^\/desktop/, ""),
+    }));
 
-  app.get("/desktop", (c) => {
-    try {
-      const html = readFileSync(resolve(desktopPublicDir, "index.html"), "utf-8");
+    app.get("/desktop", (c) => {
+      const html = readFileSync(desktopIndexPath, "utf-8");
       return c.html(html);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Web] Failed to read desktop HTML: ${msg}`);
-      return c.html("<h1>Codex Proxy</h1><p>Desktop UI files not found. Run 'npm run build:desktop' first.</p>");
-    }
-  });
+    });
+  } else {
+    // Fallback: redirect /desktop to web UI so the app is still usable
+    app.get("/desktop", (c) => {
+      console.warn(`[Web] Desktop UI not found at ${desktopIndexPath}, falling back to web UI`);
+      return c.redirect("/");
+    });
+  }
 
   app.get("/health", async (c) => {
     const authenticated = accountPool.isAuthenticated();

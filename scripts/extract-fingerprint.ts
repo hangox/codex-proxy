@@ -123,7 +123,6 @@ function extractFromMainJs(
 ): {
   apiBaseUrl: string | null;
   originator: string | null;
-  models: string[];
   whamEndpoints: string[];
   userAgentContains: string;
 } {
@@ -157,17 +156,6 @@ function extractFromMainJs(
     throw new Error("Failed to extract critical field: originator");
   }
 
-  // Models — deduplicate, use capture group if specified
-  const models: Set<string> = new Set();
-  const modelPattern = patterns.models;
-  if (modelPattern?.pattern) {
-    const re = new RegExp(modelPattern.pattern, "g");
-    const groupIdx = modelPattern.group ?? 0;
-    for (const m of content.matchAll(re)) {
-      models.add(m[groupIdx] ?? m[0]);
-    }
-  }
-
   // WHAM endpoints — deduplicate, use capture group if specified
   const endpoints: Set<string> = new Set();
   const epPattern = patterns.wham_endpoints;
@@ -182,7 +170,6 @@ function extractFromMainJs(
   return {
     apiBaseUrl,
     originator,
-    models: [...models].sort(),
     whamEndpoints: [...endpoints].sort(),
     userAgentContains: "Codex Desktop/",
   };
@@ -440,7 +427,6 @@ async function main() {
   let mainJsResults = {
     apiBaseUrl: null as string | null,
     originator: null as string | null,
-    models: [] as string[],
     whamEndpoints: [] as string[],
     userAgentContains: "Codex Desktop/",
   };
@@ -484,21 +470,10 @@ async function main() {
         const m = mainJs.match(new RegExp(apiPattern.pattern));
         if (m) mainJsResults.apiBaseUrl = m[0];
       }
-      const modelPattern = patterns.main_js.models;
-      if (modelPattern?.pattern) {
-        const re = new RegExp(modelPattern.pattern, "g");
-        const groupIdx = modelPattern.group ?? 0;
-        const modelSet = new Set<string>();
-        for (const m of mainJs.matchAll(re)) {
-          modelSet.add(m[groupIdx] ?? m[0]);
-        }
-        mainJsResults.models = [...modelSet].sort();
-      }
     }
 
     console.log(`  API base URL:  ${mainJsResults.apiBaseUrl}`);
     console.log(`  originator:    ${mainJsResults.originator}`);
-    console.log(`  models:        ${mainJsResults.models.join(", ")}`);
     console.log(`  WHAM endpoints: ${mainJsResults.whamEndpoints.length} found`);
 
     // Extract system prompts
@@ -508,31 +483,6 @@ async function main() {
     console.log(`  title-generation:    ${promptResults.titleGeneration ? "found" : "NOT FOUND"}`);
     console.log(`  pr-generation:       ${promptResults.prGeneration ? "found" : "NOT FOUND"}`);
     console.log(`  automation-response: ${promptResults.automationResponse ? "found" : "NOT FOUND"}`);
-  }
-
-  // Scan webview assets for additional model IDs
-  const webviewAssetsDir = join(asarRoot, "webview/assets");
-  if (existsSync(webviewAssetsDir)) {
-    console.log("[extract] Scanning webview assets for additional models...");
-    const modelPattern = patterns.main_js.models;
-    if (modelPattern?.pattern) {
-      const webviewFiles = readdirSync(webviewAssetsDir).filter((f) => f.endsWith(".js"));
-      const webviewModels = new Set<string>();
-      for (const file of webviewFiles) {
-        const content = readFileSync(join(webviewAssetsDir, file), "utf-8");
-        const re = new RegExp(modelPattern.pattern, "g");
-        const groupIdx = modelPattern.group ?? 0;
-        for (const m of content.matchAll(re)) {
-          webviewModels.add(m[groupIdx] ?? m[0]);
-        }
-      }
-      const existingModels = new Set(mainJsResults.models);
-      const newFromWebview = [...webviewModels].filter((m) => !existingModels.has(m));
-      if (newFromWebview.length > 0) {
-        console.log(`[extract] Webview: ${newFromWebview.length} additional models: ${newFromWebview.join(", ")}`);
-        mainJsResults.models = [...mainJsResults.models, ...newFromWebview].sort();
-      }
-    }
   }
 
   // Save extracted prompts
@@ -549,7 +499,6 @@ async function main() {
     chromium_version: chromiumVersion,
     api_base_url: mainJsResults.apiBaseUrl,
     originator: mainJsResults.originator,
-    models: mainJsResults.models,
     wham_endpoints: mainJsResults.whamEndpoints,
     user_agent_contains: mainJsResults.userAgentContains,
     sparkle_feed_url: sparkleFeedUrl,

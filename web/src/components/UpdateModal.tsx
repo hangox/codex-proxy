@@ -179,12 +179,17 @@ export function UpdateModal({
                 {applying ? t("applyingUpdate") : t("updateNow")}
               </button>
             ) : mode === "docker" ? (
-              <button
-                onClick={() => { navigator.clipboard.writeText("docker compose pull && docker compose up -d"); }}
-                class="px-4 py-2 text-xs font-semibold bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
-              >
-                {t("copy")} docker compose pull && docker compose up -d
-              </button>
+              <div class="flex flex-col items-end gap-1.5">
+                <button
+                  onClick={() => { navigator.clipboard.writeText("docker compose pull && docker compose up -d"); }}
+                  class="px-4 py-2 text-xs font-semibold bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+                >
+                  {t("copy")} docker compose pull && docker compose up -d
+                </button>
+                <span class="text-[10px] text-slate-400 dark:text-text-dim">
+                  {t("dockerAutoUpdateHint")}
+                </span>
+              </div>
             ) : (
               <span class="text-xs text-slate-500 dark:text-text-dim italic">
                 {t("electronUpdateHint")}

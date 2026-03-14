@@ -311,6 +311,8 @@ export async function applyProxySelfUpdate(): Promise<{ started: boolean; restar
 
   try {
     console.log("[SelfUpdate] Pulling latest code...");
+    // Discard local modifications (e.g. package-lock.json drift) that would block git pull
+    await execFileAsync("git", ["checkout", "--", "."], { cwd, timeout: 10000 }).catch(() => {});
     await execFileAsync("git", ["pull", "origin", "master"], { cwd, timeout: 60000 });
 
     console.log("[SelfUpdate] Installing dependencies...");

@@ -160,6 +160,7 @@ function Dashboard() {
           applying={update.applying}
           restarting={update.restarting}
           restartFailed={update.restartFailed}
+          updateSteps={update.updateSteps}
         />
       )}
     </>

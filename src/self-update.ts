@@ -6,7 +6,7 @@
  */
 
 import { execFile, execFileSync, spawn } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { promisify } from "util";
 import { getRootDir, isEmbedded } from "./paths.js";
@@ -27,35 +27,43 @@ export function setCloseHandler(handler: () => Promise<void>): void {
 function hardRestart(cwd: string): void {
   const nodeExe = process.argv[0];
   const serverArgs = process.argv.slice(1);
+  const port = getPort();
 
-  // Inline script: wait for the port to be free, then start the real server
-  const helperScript = `
-    const net = require("net");
-    const { spawn } = require("child_process");
-    const args = ${JSON.stringify(serverArgs)};
-    const cwd = ${JSON.stringify(cwd)};
-    let attempts = 0;
-    function tryStart() {
-      attempts++;
-      const s = net.createServer();
-      s.once("error", () => {
-        if (attempts >= 20) process.exit(1);
-        setTimeout(tryStart, 500);
-      });
-      s.once("listening", () => {
-        s.close(() => {
-          spawn(${JSON.stringify(nodeExe)}, args, { detached: true, stdio: "ignore", cwd }).unref();
-          process.exit(0);
-        });
-      });
-      s.listen(${getPort()});
-    }
-    tryStart();
-  `;
+  // Write a temporary CJS helper script that waits for the port to be free, then starts the server
+  const helperPath = resolve(cwd, ".restart-helper.cjs");
+  const helperContent = [
+    `const net = require("net");`,
+    `const { spawn, execSync } = require("child_process");`,
+    `const fs = require("fs");`,
+    `const nodeExe = ${JSON.stringify(nodeExe)};`,
+    `const args = ${JSON.stringify(serverArgs)};`,
+    `const cwd = ${JSON.stringify(cwd)};`,
+    `const port = ${port};`,
+    `let attempts = 0;`,
+    `function tryStart() {`,
+    `  attempts++;`,
+    `  const s = net.createServer();`,
+    `  s.once("error", () => {`,
+    `    if (attempts >= 20) { cleanup(); process.exit(1); }`,
+    `    setTimeout(tryStart, 500);`,
+    `  });`,
+    `  s.once("listening", () => {`,
+    `    s.close(() => {`,
+    `      spawn(nodeExe, args, { detached: true, stdio: "ignore", cwd }).unref();`,
+    `      cleanup();`,
+    `      process.exit(0);`,
+    `    });`,
+    `  });`,
+    `  s.listen(port);`,
+    `}`,
+    `function cleanup() { try { fs.unlinkSync(${JSON.stringify(helperPath)}); } catch {} }`,
+    `tryStart();`,
+  ].join("\n");
 
   const doRestart = () => {
-    console.log("[SelfUpdate] Spawning restart helper and exiting...");
-    spawn(nodeExe, ["-e", helperScript], {
+    console.log("[SelfUpdate] Writing restart helper and exiting...");
+    writeFileSync(helperPath, helperContent, "utf-8");
+    spawn(nodeExe, [helperPath], {
       detached: true,
       stdio: "ignore",
       cwd,

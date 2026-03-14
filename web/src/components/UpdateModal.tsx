@@ -1,5 +1,14 @@
 import { useEffect, useRef } from "preact/hooks";
 import { useI18n } from "../../../shared/i18n/context";
+import type { UpdateStep } from "../../../shared/hooks/use-update-status";
+import type { TranslationKey } from "../../../shared/i18n/translations";
+
+const STEP_LABELS: Record<string, TranslationKey> = {
+  pull: "updatePulling",
+  install: "updateInstalling",
+  build: "updateBuilding",
+  restart: "updateRestarting",
+};
 
 interface UpdateModalProps {
   open: boolean;
@@ -11,6 +20,7 @@ interface UpdateModalProps {
   applying: boolean;
   restarting: boolean;
   restartFailed: boolean;
+  updateSteps?: UpdateStep[];
 }
 
 export function UpdateModal({
@@ -23,6 +33,7 @@ export function UpdateModal({
   applying,
   restarting,
   restartFailed,
+  updateSteps = [],
 }: UpdateModalProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -80,7 +91,31 @@ export function UpdateModal({
 
         {/* Body */}
         <div class="px-5 py-4">
-          {restarting ? (
+          {(applying || restarting) && updateSteps.length > 0 ? (
+            <div class="space-y-2 py-2">
+              {updateSteps.map((s) => (
+                <div key={s.step} class="flex items-center gap-3 text-sm">
+                  {s.status === "done" ? (
+                    <svg class="size-5 text-primary shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
+                  ) : s.status === "error" ? (
+                    <svg class="size-5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  ) : (
+                    <svg class="size-5 animate-spin text-primary shrink-0" viewBox="0 0 24 24" fill="none">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  <span class={s.status === "done" ? "text-slate-500 dark:text-text-dim" : "text-slate-700 dark:text-text-main font-medium"}>
+                    {t(STEP_LABELS[s.step] ?? ("updateBuilding" as TranslationKey))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : restarting ? (
             <div class="flex flex-col items-center gap-3 py-6">
               <svg class="size-8 animate-spin text-primary" viewBox="0 0 24 24" fill="none">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />

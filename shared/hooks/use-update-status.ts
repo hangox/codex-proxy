@@ -46,7 +46,13 @@ export interface CheckResult {
 }
 
 const RESTART_POLL_INTERVAL = 2000;
-const RESTART_TIMEOUT = 30000;
+const RESTART_TIMEOUT = 120000;
+
+export interface UpdateStep {
+  step: string;
+  status: "running" | "done" | "error";
+  detail?: string;
+}
 
 export function useUpdateStatus() {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
@@ -56,6 +62,7 @@ export function useUpdateStatus() {
   const [applying, setApplying] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [restartFailed, setRestartFailed] = useState(false);
+  const [updateSteps, setUpdateSteps] = useState<UpdateStep[]>([]);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -138,26 +145,83 @@ export function useUpdateStatus() {
   const applyUpdate = useCallback(async () => {
     setApplying(true);
     setError(null);
+    setUpdateSteps([]);
     try {
       const resp = await fetch("/admin/apply-update", { method: "POST" });
-      const data = await resp.json() as { started: boolean; restarting?: boolean; error?: string };
-      if (!resp.ok || !data.started) {
-        setError(data.error ?? "Apply failed");
+      if (!resp.ok) {
+        const text = await resp.text();
+        try {
+          const data = JSON.parse(text) as { error?: string };
+          setError(data.error ?? "Apply failed");
+        } catch {
+          setError(text || "Apply failed");
+        }
         setApplying(false);
-      } else if (data.restarting) {
-        // Server will restart — start polling for it to come back
+        return;
+      }
+
+      // Parse SSE stream
+      const reader = resp.body?.getReader();
+      if (!reader) {
+        setError("No response body");
         setApplying(false);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let shouldRestart = false;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE lines
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            if (data.step && data.status) {
+              setUpdateSteps((prev) => {
+                const existing = prev.findIndex((s) => s.step === data.step);
+                const entry: UpdateStep = {
+                  step: data.step as string,
+                  status: data.status as UpdateStep["status"],
+                  detail: data.detail as string | undefined,
+                };
+                if (existing >= 0) {
+                  const next = [...prev];
+                  next[existing] = entry;
+                  return next;
+                }
+                return [...prev, entry];
+              });
+            }
+            if (data.done) {
+              shouldRestart = !!(data.restarting);
+              if (!data.started) {
+                setError((data.error as string) ?? "Apply failed");
+              }
+            }
+          } catch { /* skip malformed SSE */ }
+        }
+      }
+
+      setApplying(false);
+      if (shouldRestart) {
         startRestartPolling();
-      } else {
-        // Update succeeded but no auto-restart
-        setApplying(false);
+      } else if (!error) {
         await load();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+      // Connection lost during update — server may be restarting
       setApplying(false);
+      startRestartPolling();
     }
-  }, [load, startRestartPolling]);
+  }, [load, startRestartPolling, error]);
 
-  return { status, checking, result, error, checkForUpdate, applyUpdate, applying, restarting, restartFailed };
+  return { status, checking, result, error, checkForUpdate, applyUpdate, applying, restarting, restartFailed, updateSteps };
 }

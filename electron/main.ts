@@ -131,8 +131,13 @@ app.on("ready", async () => {
       desktopPublicDir: resolve(distRoot, "public-desktop"),
     });
 
-    // 4. Start the proxy server
-    serverHandle = await startServer({ host: "127.0.0.1" });
+    // 4. Start the proxy server (try configured port first, fall back to random if occupied)
+    try {
+      serverHandle = await startServer({ host: "127.0.0.1" });
+    } catch {
+      console.warn("[Electron] Default port in use, using random port");
+      serverHandle = await startServer({ host: "127.0.0.1", port: 0 });
+    }
     console.log(`[Electron] Server started on port ${serverHandle.port}`);
 
     // 4. System tray
@@ -188,7 +193,7 @@ function createWindow(): void {
   });
 
   const port = serverHandle?.port ?? 8080;
-  mainWindow.loadURL(`http://localhost:${port}/desktop`);
+  mainWindow.loadURL(`http://127.0.0.1:${port}/desktop`);
 
   // Mark <html> with platform class so frontend CSS can adapt
   mainWindow.webContents.on("did-finish-load", () => {

@@ -48,4 +48,5 @@ Response MUST end with a remark-directive block.
 - Waiting on user decision:
   - \`::inbox-item{title="Choose API shape for filters" summary="Two options drafted; pick A vs B"}\`
 - Status update with next step:
-  - \`::inbox-item{title="PR comments addressed" summary="Ready for re-review; focus on auth edge case"}\
+  - \`::inbox-item{title="PR comments addressed" summary="Ready for re-review; focus on auth edge case"}\`
+`;

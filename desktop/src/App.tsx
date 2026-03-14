@@ -8,6 +8,7 @@ import { ProxyPool } from "./components/ProxyPool";
 import { ApiConfig } from "./components/ApiConfig";
 import { AnthropicSetup } from "./components/AnthropicSetup";
 import { CodeExamples } from "./components/CodeExamples";
+import { TestConnection } from "./components/TestConnection";
 import { Footer } from "./components/Footer";
 import { ProxySettings } from "./pages/ProxySettings";
 import { useAccounts } from "../../shared/hooks/use-accounts";
@@ -132,6 +133,7 @@ function Dashboard() {
             reasoningEffort={status.selectedEffort}
             serviceTier={status.selectedSpeed}
           />
+          <TestConnection />
         </div>
       </main>
       <Footer updateStatus={update.status} />

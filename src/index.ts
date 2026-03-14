@@ -135,7 +135,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
 
   const close = (): Promise<void> => {
     return new Promise((resolve) => {
-      server.close(() => {
+      const cleanup = () => {
         stopUpdateChecker();
         stopProxyUpdateChecker();
         stopModelRefresh();
@@ -144,6 +144,16 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
         cookieJar.destroy();
         accountPool.destroy();
         resolve();
+      };
+      // Force-close after 3s if active connections prevent graceful shutdown
+      const forceTimer = setTimeout(() => {
+        console.warn("[Server] Graceful close timed out (3s), forcing shutdown...");
+        cleanup();
+      }, 3000);
+      forceTimer.unref();
+      server.close(() => {
+        clearTimeout(forceTimer);
+        cleanup();
       });
     });
   };

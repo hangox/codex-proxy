@@ -290,7 +290,7 @@ export function createWebRoutes(accountPool: AccountPool): Hono {
         error: "Self-update not available in this deploy mode",
         mode,
         hint: mode === "docker"
-          ? "Run: docker compose pull && docker compose up -d"
+          ? "Run: docker compose pull && docker compose up -d (or enable Watchtower for automatic updates)"
           : mode === "electron"
             ? "Updates are handled automatically by the desktop app. Check the system tray for update notifications, or restart the app to trigger a check."
             : "Git is not available in this environment",

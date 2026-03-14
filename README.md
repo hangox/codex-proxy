@@ -449,6 +449,7 @@ server:
 <!-- CHANGELOG:START -->
 ### [Unreleased]
 
+- 双窗口配额显示：Dashboard 账号卡片同时展示主窗口（小时限制）和次窗口（周限制）的用量百分比、进度条和重置时间，后端 `secondary_window` 不再被忽略
 - 更新弹窗 + 自动重启：点击"有可用更新"弹出 Modal 显示 changelog，一键更新后服务器自动重启、前端自动刷新，零人工干预（git 模式 spawn 新进程、Docker/Electron 显示对应操作指引）
 - Model-aware 多计划账号路由：不同 plan（free/plus/business）的账号自动路由到各自支持的模型，business 账号可继续使用 gpt-5.4 等高端模型 (#57)
 - Structured Outputs 支持：`/v1/chat/completions` 支持 `response_format`（`json_object` / `json_schema`），Gemini 端点支持 `responseMimeType` + `responseSchema`，自动翻译为 Codex Responses API 的 `text.format`；`/v1/responses` 直通 `text` 字段

@@ -14,6 +14,7 @@
  */
 
 import { Hono } from "hono";
+import { z } from "zod";
 import type { AccountPool } from "../auth/account-pool.js";
 import type { RefreshScheduler } from "../auth/refresh-scheduler.js";
 import { validateManualToken } from "../auth/chatgpt-oauth.js";
@@ -24,6 +25,13 @@ import type { CodexUsageResponse } from "../proxy/codex-api.js";
 import type { CodexQuota, AccountInfo } from "../auth/types.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
+
+const BulkImportSchema = z.object({
+  accounts: z.array(z.object({
+    token: z.string().min(1),
+    refreshToken: z.string().nullable().optional(),
+  })).min(1),
+});
 
 function toQuota(usage: CodexUsageResponse): CodexQuota {
   const sw = usage.rate_limit.secondary_window;
@@ -77,6 +85,62 @@ export function createAccountRoutes(
     const originalHost = c.req.header("host") || `localhost:${config.server.port}`;
     const { authUrl } = startOAuthFlow(originalHost, "dashboard", pool, scheduler);
     return c.redirect(authUrl);
+  });
+
+  // Export accounts (with tokens) for backup/migration
+  // ?ids=id1,id2 for selective export; omit for all
+  app.get("/auth/accounts/export", (c) => {
+    let entries = pool.getAllEntries();
+    const idsParam = c.req.query("ids");
+    if (idsParam) {
+      const idSet = new Set(idsParam.split(",").filter(Boolean));
+      entries = entries.filter((e) => idSet.has(e.id));
+    }
+    return c.json({ accounts: entries });
+  });
+
+  // Bulk import accounts from tokens
+  app.post("/auth/accounts/import", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      c.status(400);
+      return c.json({ error: "Malformed JSON request body" });
+    }
+
+    const parsed = BulkImportSchema.safeParse(body);
+    if (!parsed.success) {
+      c.status(400);
+      return c.json({ error: "Invalid request", details: parsed.error.issues });
+    }
+
+    let added = 0;
+    let updated = 0;
+    let failed = 0;
+    const errors: string[] = [];
+    const existingIds = new Set(pool.getAccounts().map((a) => a.id));
+
+    for (const entry of parsed.data.accounts) {
+      const validation = validateManualToken(entry.token);
+      if (!validation.valid) {
+        failed++;
+        errors.push(validation.error ?? "Invalid token");
+        continue;
+      }
+
+      const entryId = pool.addAccount(entry.token, entry.refreshToken ?? null);
+      scheduler.scheduleOne(entryId, entry.token);
+
+      if (existingIds.has(entryId)) {
+        updated++;
+      } else {
+        added++;
+        existingIds.add(entryId);
+      }
+    }
+
+    return c.json({ success: true, added, updated, failed, errors });
   });
 
   // List all accounts (with optional ?quota=true)

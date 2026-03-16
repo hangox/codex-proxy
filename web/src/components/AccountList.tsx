@@ -1,5 +1,7 @@
+import { useState, useCallback } from "preact/hooks";
 import { useI18n, useT } from "../../../shared/i18n/context";
 import { AccountCard } from "./AccountCard";
+import { AccountImportExport } from "./AccountImportExport";
 import type { Account, ProxyEntry } from "../../../shared/types";
 
 interface AccountListProps {
@@ -11,11 +13,30 @@ interface AccountListProps {
   lastUpdated: Date | null;
   proxies?: ProxyEntry[];
   onProxyChange?: (accountId: string, proxyId: string) => void;
+  onExport?: (selectedIds?: string[]) => Promise<void>;
+  onImport?: (file: File) => Promise<{ success: boolean; added: number; updated: number; failed: number; errors: string[] }>;
 }
 
-export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing, lastUpdated, proxies, onProxyChange }: AccountListProps) {
+export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing, lastUpdated, proxies, onProxyChange, onExport, onImport }: AccountListProps) {
   const t = useT();
   const { lang } = useI18n();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === accounts.length) return new Set();
+      return new Set(accounts.map((a) => a.id));
+    });
+  }, [accounts]);
 
   const updatedAtText = lastUpdated
     ? lastUpdated.toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
@@ -33,6 +54,24 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
             <span class="text-[0.75rem] text-slate-400 dark:text-text-dim hidden sm:inline">
               {t("updatedAt")} {updatedAtText}
             </span>
+          )}
+          {onExport && onImport && (
+            <AccountImportExport onExport={onExport} onImport={onImport} selectedIds={selectedIds} />
+          )}
+          {accounts.length > 0 && (
+            <button
+              onClick={toggleSelectAll}
+              title={selectedIds.size === accounts.length ? t("deselectAll") : t("selectAll")}
+              class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
+            >
+              <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                {selectedIds.size === accounts.length ? (
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                ) : (
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                )}
+              </svg>
+            </button>
           )}
           <button
             onClick={onRefresh}
@@ -63,7 +102,7 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           </div>
         ) : (
           accounts.map((acct, i) => (
-            <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} />
+            <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} />
           ))
         )}
       </div>

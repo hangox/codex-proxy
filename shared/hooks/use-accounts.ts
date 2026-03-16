@@ -155,6 +155,61 @@ export function useAccounts() {
     setList((prev) => prev.map((a) => a.id === accountId ? { ...a, ...patch } : a));
   }, []);
 
+  const exportAccounts = useCallback(async (selectedIds?: string[]) => {
+    const params = selectedIds && selectedIds.length > 0
+      ? `?ids=${selectedIds.join(",")}`
+      : "";
+    const resp = await fetch(`/auth/accounts/export${params}`);
+    const data = await resp.json() as { accounts: Array<{ id: string }> };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `accounts-export-${date}.json`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const importAccounts = useCallback(async (file: File): Promise<{
+    success: boolean;
+    added: number;
+    updated: number;
+    failed: number;
+    errors: string[];
+  }> => {
+    const text = await file.text();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { success: false, added: 0, updated: 0, failed: 0, errors: ["Invalid JSON file"] };
+    }
+    // Support both { accounts: [...] } (export format) and raw array
+    const accounts = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed.accounts)
+        ? parsed.accounts
+        : null;
+    if (!accounts) {
+      return { success: false, added: 0, updated: 0, failed: 0, errors: ["Invalid format: expected { accounts: [...] }"] };
+    }
+
+    const resp = await fetch("/auth/accounts/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accounts }),
+    });
+    const result = await resp.json();
+    if (resp.ok) {
+      await loadAccounts();
+    }
+    return result;
+  }, [loadAccounts]);
+
   return {
     list,
     loading,
@@ -168,5 +223,7 @@ export function useAccounts() {
     startAdd,
     submitRelay,
     deleteAccount,
+    exportAccounts,
+    importAccounts,
   };
 }

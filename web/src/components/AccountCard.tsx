@@ -41,9 +41,11 @@ interface AccountCardProps {
   onDelete: (id: string) => Promise<string | null>;
   proxies?: ProxyEntry[];
   onProxyChange?: (accountId: string, proxyId: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
-export function AccountCard({ account, index, onDelete, proxies, onProxyChange }: AccountCardProps) {
+export function AccountCard({ account, index, onDelete, proxies, onProxyChange, selected, onToggleSelect }: AccountCardProps) {
   const t = useT();
   const { lang } = useI18n();
   const email = account.email || "Unknown";
@@ -99,11 +101,23 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange }
   const sWindowSec = srl?.limit_window_seconds;
   const sWindowDur = sWindowSec ? formatWindowDuration(sWindowSec, lang === "zh") : null;
 
+  const handleToggle = useCallback(() => {
+    onToggleSelect?.(account.id);
+  }, [account.id, onToggleSelect]);
+
   return (
-    <div class="bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl p-4 shadow-sm hover:shadow-md transition-all hover:border-primary/30 dark:hover:border-primary/50">
+    <div class={`bg-white dark:bg-card-dark border rounded-xl p-4 shadow-sm hover:shadow-md transition-all ${selected ? "border-primary ring-1 ring-primary/30" : "border-gray-200 dark:border-border-dark hover:border-primary/30 dark:hover:border-primary/50"}`}>
       {/* Header */}
       <div class="flex justify-between items-start mb-4">
         <div class="flex items-center gap-3">
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={handleToggle}
+              class="size-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary/50 cursor-pointer shrink-0"
+            />
+          )}
           <div class={`size-10 rounded-full ${bgColor} ${textColor} flex items-center justify-center font-bold text-lg`}>
             {initial}
           </div>

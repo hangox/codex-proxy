@@ -117,6 +117,8 @@ function Dashboard() {
             lastUpdated={accounts.lastUpdated}
             proxies={proxies.proxies}
             onProxyChange={handleProxyChange}
+            onExport={accounts.exportAccounts}
+            onImport={accounts.importAccounts}
           />
           <ProxyPool proxies={proxies} />
           <ApiConfig

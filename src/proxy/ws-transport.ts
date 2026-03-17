@@ -7,11 +7,26 @@
  * regardless of whether HTTP SSE or WebSocket was used.
  *
  * Used when `previous_response_id` is present — HTTP SSE does not support it.
+ *
+ * The `ws` package is loaded lazily via dynamic import to avoid
+ * "Dynamic require of 'events' is not supported" errors when the
+ * backend is bundled as ESM for Electron (esbuild cannot convert
+ * ws's CJS require chain to ESM statics).
  */
 
-import WebSocket from "ws";
-import { HttpsProxyAgent } from "https-proxy-agent";
 import type { CodexInputItem } from "./codex-api.js";
+
+/** Cached ws module — loaded once on first use. */
+let _WS: typeof import("ws").default | undefined;
+
+/** Lazily load the `ws` package. */
+async function getWS(): Promise<typeof import("ws").default> {
+  if (!_WS) {
+    const mod = await import("ws");
+    _WS = mod.default;
+  }
+  return _WS;
+}
 
 /** Flat WebSocket message format expected by the Codex backend. */
 export interface WsCreateRequest {
@@ -42,24 +57,29 @@ export interface WsCreateRequest {
  * The SSE format matches what parseStream() expects:
  *   event: <type>\ndata: <json>\n\n
  */
-export function createWebSocketResponse(
+export async function createWebSocketResponse(
   wsUrl: string,
   headers: Record<string, string>,
   request: WsCreateRequest,
   signal?: AbortSignal,
   proxyUrl?: string | null,
 ): Promise<Response> {
+  const WS = await getWS();
+
+  // Lazy-import proxy agent only when needed
+  const wsOpts: ConstructorParameters<typeof WS>[2] = { headers };
+  if (proxyUrl) {
+    const { HttpsProxyAgent } = await import("https-proxy-agent");
+    wsOpts.agent = new HttpsProxyAgent(proxyUrl);
+  }
+
   return new Promise<Response>((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error("Aborted before WebSocket connect"));
       return;
     }
 
-    const wsOpts: WebSocket.ClientOptions = { headers };
-    if (proxyUrl) {
-      wsOpts.agent = new HttpsProxyAgent(proxyUrl);
-    }
-    const ws = new WebSocket(wsUrl, wsOpts);
+    const ws = new WS(wsUrl, wsOpts);
     const encoder = new TextEncoder();
     let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
     let streamClosed = false;

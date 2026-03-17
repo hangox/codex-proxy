@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Electron 桌面端从独立分支迁移为 npm workspace（`packages/electron/`），消除 master→electron 分支同步冲突；删除 `sync-electron.yml`，release.yml 改为 workspace 感知构建
+- `scripts/setup-curl.ts`：加入 GITHUB_TOKEN 认证避免 CI rate limit；Windows DLL 名适配 v1.5+（`libcurl-impersonate.dll`）；tar 解压 bsdtar/GNU tar 自动 fallback
+
 ### Added
 
 - Dashboard 额度设置面板：可在 Web UI 直接调整额度刷新间隔、主/次预警阈值、自动跳过耗尽账号开关，无需手动编辑 YAML；API `GET/POST /admin/quota-settings` 支持鉴权 (#92)

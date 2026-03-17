@@ -59,10 +59,11 @@ function getPlatformInfo(version: string): PlatformInfo {
   }
 
   if (platform === "win32") {
-    // Windows: download libcurl-impersonate package (DLL named libcurl.dll)
+    // Windows: download libcurl-impersonate package
+    // v1.5+ renamed libcurl.dll → libcurl-impersonate.dll
     return {
       assetPattern: /libcurl-impersonate-.*\.x86_64-win32\.tar\.gz/,
-      binaryName: "libcurl.dll",
+      binaryName: "libcurl-impersonate.dll",
       destName: "libcurl.dll",
     };
   }
@@ -70,13 +71,18 @@ function getPlatformInfo(version: string): PlatformInfo {
   throw new Error(`Unsupported platform: ${platform}-${arch}`);
 }
 
+function githubHeaders(): Record<string, string> {
+  const h: Record<string, string> = { "Accept": "application/vnd.github+json" };
+  const token = process.env.GITHUB_TOKEN;
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
 /** Fetch the latest release tag from GitHub. */
 async function getLatestVersion(): Promise<string> {
   const apiUrl = `https://api.github.com/repos/${REPO}/releases/latest`;
   console.log(`[setup] Checking latest release...`);
-  const resp = await fetch(apiUrl, {
-    headers: { "Accept": "application/vnd.github+json" },
-  });
+  const resp = await fetch(apiUrl, { headers: githubHeaders() });
   if (!resp.ok) {
     console.warn(`[setup] Could not fetch latest release (${resp.status}), using fallback ${FALLBACK_VERSION}`);
     return FALLBACK_VERSION;
@@ -89,7 +95,7 @@ async function getDownloadUrl(info: PlatformInfo, version: string): Promise<stri
   const apiUrl = `https://api.github.com/repos/${REPO}/releases/tags/${version}`;
   console.log(`[setup] Fetching release info from ${apiUrl}`);
 
-  const resp = await fetch(apiUrl);
+  const resp = await fetch(apiUrl, { headers: githubHeaders() });
   if (!resp.ok) {
     throw new Error(`GitHub API returned ${resp.status}: ${await resp.text()}`);
   }
@@ -131,11 +137,16 @@ function downloadAndExtract(url: string, info: PlatformInfo): void {
   execSync(`curl -L -o "${archivePath}" "${url}"`, { stdio: "inherit" });
 
   console.log(`[setup] Extracting...`);
-  // Windows: tar interprets D: as remote host; --force-local + forward slashes fix this
   if (process.platform === "win32") {
+    // Windows bsdtar (default on CI) handles D: paths fine without --force-local
+    // GNU tar (e.g. Git Bash) needs --force-local; try without first, fallback with
     const tarArchive = archivePath.replaceAll("\\", "/");
     const tarDest = tmpDir.replaceAll("\\", "/");
-    execSync(`tar xzf "${tarArchive}" --force-local -C "${tarDest}"`, { stdio: "inherit" });
+    try {
+      execSync(`tar xzf "${tarArchive}" -C "${tarDest}"`, { stdio: "inherit" });
+    } catch {
+      execSync(`tar xzf "${tarArchive}" --force-local -C "${tarDest}"`, { stdio: "inherit" });
+    }
   } else {
     execSync(`tar xzf "${archivePath}" -C "${tmpDir}"`, { stdio: "inherit" });
   }

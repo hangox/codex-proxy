@@ -1,0 +1,23 @@
+{
+  "name": "@codex-proxy/electron",
+  "version": "1.0.57",
+  "private": true,
+  "main": "dist-electron/main.cjs",
+  "author": "codex-proxy",
+  "scripts": {
+    "build": "node electron/build.mjs",
+    "dev": "cd ../.. && npm run build && cd packages/electron && npm run build && electron .",
+    "pack": "npx electron-builder --config electron-builder.yml",
+    "pack:win": "npx electron-builder --config electron-builder.yml --win",
+    "pack:mac": "npx electron-builder --config electron-builder.yml --mac",
+    "pack:linux": "npx electron-builder --config electron-builder.yml --linux"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.12"
+  }
+}

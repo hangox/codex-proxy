@@ -75,12 +75,13 @@ function Dashboard() {
   const prevUpdateAvailable = useRef(false);
 
   // Auto-open modal when update becomes available after a check
+  // (Electron has its own native auto-updater — don't show web modal)
   useEffect(() => {
-    if (update.hasUpdate && !prevUpdateAvailable.current) {
+    if (update.hasUpdate && !prevUpdateAvailable.current && update.proxyUpdateInfo?.mode !== "electron") {
       setShowModal(true);
     }
     prevUpdateAvailable.current = update.hasUpdate;
-  }, [update.hasUpdate]);
+  }, [update.hasUpdate, update.proxyUpdateInfo?.mode]);
 
   const handleProxyChange = async (accountId: string, proxyId: string) => {
     accounts.patchLocal(accountId, { proxyId });

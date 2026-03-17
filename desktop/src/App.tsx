@@ -15,62 +15,22 @@ import { useAccounts } from "../../shared/hooks/use-accounts";
 import { useProxies } from "../../shared/hooks/use-proxies";
 import { useStatus } from "../../shared/hooks/use-status";
 import { useUpdateStatus } from "../../shared/hooks/use-update-status";
-import { useI18n } from "../../shared/i18n/context";
 
-function useUpdateMessage() {
-  const { t } = useI18n();
+/** Minimal status hook — only used for version/commit display.
+ *  Updates are handled by electron-updater via system tray. */
+function useVersionInfo() {
   const update = useUpdateStatus();
-
-  let msg: string | null = null;
-  let color = "text-primary";
-
-  if (!update.checking && update.result) {
-    const parts: string[] = [];
-    const r = update.result;
-
-    if (r.proxy?.error) {
-      parts.push(`Proxy: ${r.proxy.error}`);
-      color = "text-red-500";
-    } else if (r.proxy?.update_available) {
-      parts.push(t("updateAvailable"));
-      color = "text-amber-500";
-    }
-
-    if (r.codex?.error) {
-      parts.push(`Codex: ${r.codex.error}`);
-      color = "text-red-500";
-    } else if (r.codex_update_in_progress) {
-      parts.push(t("fingerprintUpdating"));
-    } else if (r.codex?.version_changed) {
-      parts.push(`Codex: v${r.codex.current_version}`);
-      color = "text-blue-500";
-    }
-
-    msg = parts.length > 0 ? parts.join(" · ") : t("upToDate");
-  } else if (!update.checking && update.error) {
-    msg = update.error;
-    color = "text-red-500";
-  }
-
-  const proxyUpdate = update.status?.proxy.update_available
-    ? {
-        mode: update.status.proxy.mode,
-        updateAvailable: true as const,
-        commits: update.status.proxy.commits,
-        release: update.status.proxy.release,
-        onApply: update.applyUpdate,
-        applying: update.applying,
-      }
-    : null;
-
-  return { ...update, msg, color, proxyUpdate };
+  return {
+    version: update.status?.proxy.version ?? null,
+    commit: update.status?.proxy.commit ?? null,
+  };
 }
 
 function Dashboard() {
   const accounts = useAccounts();
   const proxies = useProxies();
   const status = useStatus(accounts.list.length);
-  const update = useUpdateMessage();
+  const versionInfo = useVersionInfo();
 
   const handleProxyChange = async (accountId: string, proxyId: string) => {
     accounts.patchLocal(accountId, { proxyId });
@@ -81,13 +41,8 @@ function Dashboard() {
     <>
       <Header
         onAddAccount={accounts.startAdd}
-        onCheckUpdate={update.checkForUpdate}
-        checking={update.checking}
-        updateStatusMsg={update.msg}
-        updateStatusColor={update.color}
-        version={update.status?.proxy.version ?? null}
-        commit={update.status?.proxy.commit ?? null}
-        proxyUpdate={update.proxyUpdate}
+        version={versionInfo.version}
+        commit={versionInfo.commit}
       />
       <main class="flex-grow px-4 md:px-8 lg:px-40 py-8 flex justify-center">
         <div class="flex flex-col w-full max-w-[960px] gap-6">
@@ -136,7 +91,7 @@ function Dashboard() {
           <TestConnection />
         </div>
       </main>
-      <Footer updateStatus={update.status} />
+      <Footer updateStatus={null} />
     </>
   );
 }
@@ -165,20 +120,15 @@ export function App() {
 }
 
 function ProxySettingsPage() {
-  const update = useUpdateMessage();
+  const versionInfo = useVersionInfo();
 
   return (
     <>
       <Header
         onAddAccount={() => { location.hash = ""; }}
-        onCheckUpdate={update.checkForUpdate}
-        checking={update.checking}
-        updateStatusMsg={update.msg}
-        updateStatusColor={update.color}
-        version={update.status?.proxy.version ?? null}
-        commit={update.status?.proxy.commit ?? null}
+        version={versionInfo.version}
+        commit={versionInfo.commit}
         isProxySettings
-        proxyUpdate={update.proxyUpdate}
       />
       <ProxySettings />
     </>

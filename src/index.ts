@@ -19,7 +19,7 @@ import { ProxyPool } from "./proxy/proxy-pool.js";
 import { createProxyRoutes } from "./routes/proxies.js";
 import { createResponsesRoutes } from "./routes/responses.js";
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker.js";
-import { startProxyUpdateChecker, stopProxyUpdateChecker, setCloseHandler } from "./self-update.js";
+import { startProxyUpdateChecker, stopProxyUpdateChecker, setCloseHandler, getDeployMode } from "./self-update.js";
 import { initProxy } from "./tls/curl-binary.js";
 import { initTransport } from "./tls/transport.js";
 import { loadStaticModels } from "./models/model-store.js";
@@ -116,9 +116,12 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   }
   console.log();
 
-  // Start background update checker
+  // Start background update checkers
+  // (Electron has its own native auto-updater — skip proxy update checker)
   startUpdateChecker();
-  startProxyUpdateChecker();
+  if (getDeployMode() !== "electron") {
+    startProxyUpdateChecker();
+  }
 
   // Start background model refresh (requires auth to be ready)
   startModelRefresh(accountPool, cookieJar, proxyPool);

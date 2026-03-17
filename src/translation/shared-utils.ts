@@ -43,6 +43,7 @@ const SUPPRESS_PROMPT =
  * to override desktop-specific behaviors.
  */
 export function buildInstructions(userInstructions: string): string {
+  if (!getConfig().model.inject_desktop_context) return userInstructions;
   const ctx = getDesktopContext();
   if (!ctx) return userInstructions;
   if (getConfig().model.suppress_desktop_directives) {

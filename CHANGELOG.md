@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 默认关闭 desktop context 注入：之前每次请求注入 ~1500 token 的 Codex Desktop 系统提示，导致 prompt_tokens 虚高；新增 `model.inject_desktop_context` 配置项（默认 `false`），需要时可手动开启 (#95)
+
 ### Added
 
 - 额度自动刷新 + 分层预警：后台每 5 分钟（可配置）定时拉取所有账号的官方额度，缓存到 AccountEntry 供 Dashboard 即时读取；额度达到阈值（默认 80%/90%，可自定义）时显示 warning/critical 横幅；额度耗尽的账号自动标记为 rate_limited 跳过分配，到期自动恢复 (#92)

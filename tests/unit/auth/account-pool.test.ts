@@ -58,6 +58,7 @@ vi.mock("@src/models/model-store.js", () => ({
 import { AccountPool } from "@src/auth/account-pool.js";
 import { getConfig } from "@src/config.js";
 import { isTokenExpired } from "@src/auth/jwt-utils.js";
+import { extractUserProfile } from "@src/auth/jwt-utils.js";
 import { getModelPlanTypes } from "@src/models/model-store.js";
 
 describe("AccountPool", () => {
@@ -317,16 +318,42 @@ describe("AccountPool", () => {
   });
 
   describe("model-aware selection", () => {
-    it("falls back to all accounts when model has plan requirements but no account matches", () => {
+    it("prefers matching plan accounts when available", () => {
+      pool.addAccount("token-free"); // planType = "free" (default mock)
+
+      // Temporarily mock extractUserProfile to return "team" for the next addAccount
+      vi.mocked(extractUserProfile).mockReturnValueOnce({
+        email: "team@test.com",
+        chatgpt_plan_type: "team",
+      });
+      pool.addAccount("token-team");
+
+      // gpt-5.4 is listed for team only
+      vi.mocked(getModelPlanTypes).mockReturnValue(["team"]);
+
+      const acquired = pool.acquire({ model: "gpt-5.4" });
+      expect(acquired).not.toBeNull();
+      expect(acquired!.token).toBe("token-team");
+    });
+
+    it("falls back to all accounts when no account matches model plan", () => {
       pool.addAccount("token-aaa"); // planType defaults to "free"
       pool.addAccount("token-bbb");
 
-      // Mock getModelPlanTypes to require "pro" plan
-      vi.mocked(getModelPlanTypes).mockReturnValue(["pro"]);
+      // gpt-5.4 listed for "team" only, but free can actually use it
+      vi.mocked(getModelPlanTypes).mockReturnValue(["team"]);
 
-      // Should fall back to available accounts instead of returning null,
-      // because the backend model list per plan is incomplete
-      const acquired = pool.acquire({ model: "gpt-pro-model" });
+      const acquired = pool.acquire({ model: "gpt-5.4" });
+      expect(acquired).not.toBeNull();
+    });
+
+    it("skips plan filtering when model has no known plan requirements", () => {
+      pool.addAccount("token-aaa");
+
+      // Unknown model — no plan data
+      vi.mocked(getModelPlanTypes).mockReturnValue([]);
+
+      const acquired = pool.acquire({ model: "unknown-model" });
       expect(acquired).not.toBeNull();
     });
   });

@@ -1,5 +1,6 @@
 appId: com.codex-proxy.app
 productName: Codex Proxy
+electronVersion: "35.7.5"
 
 publish:
   provider: github
@@ -9,26 +10,18 @@ publish:
 directories:
   output: release
 
+# Pre-pack script copies config/, public/, public-desktop/, bin/ from
+# monorepo root into this directory. Paths here are relative to projectDir.
 files:
   - dist-electron/**/*
+  - config/**/*
+  - public/**/*
+  - public-desktop/**/*
   - electron/assets/**/*
   - package.json
   - "!node_modules"
   - node_modules/koffi/**
   - "!dist"
-  # Include root-level runtime files (resolved relative to packages/electron/)
-  - from: ../../config
-    to: config
-    filter:
-      - "**/*"
-  - from: ../../public
-    to: public
-    filter:
-      - "**/*"
-  - from: ../../public-desktop
-    to: public-desktop
-    filter:
-      - "**/*"
 
 # Static assets unpacked from asar (filesystem access at runtime)
 asarUnpack:
@@ -40,7 +33,7 @@ asarUnpack:
 
 # curl-impersonate binaries as extra resources (outside asar)
 extraResources:
-  - from: ../../bin/
+  - from: bin/
     to: bin/
     filter:
       - "**/*"

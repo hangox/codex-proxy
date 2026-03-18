@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `/v1/responses` 不再强制要求 `instructions` 字段，未传时默认空字符串（#71）
+  - 修复 Cherry 等第三方客户端不传 `instructions` 时返回 400 的兼容性问题
+
 ### Added
 
 - Sticky rotation strategy（#107）：新增 `sticky` 账号轮换策略，持续使用同一账号直到限速或额度耗尽

@@ -29,6 +29,7 @@ import type {
   AcquiredAccount,
   AccountsFile,
   CodexQuota,
+  RelayFormat,
 } from "./types.js";
 
 function getAccountsFile(): string {
@@ -69,9 +70,10 @@ export class AccountPool {
    * Returns null if no accounts are available.
    *
    * @param options.model - Prefer accounts whose planType matches this model's known plans
+   * @param options.format - Prefer relay accounts exposing this API format
    * @param options.excludeIds - Entry IDs to exclude (e.g. already tried)
    */
-  acquire(options?: { model?: string; excludeIds?: string[] }): AcquiredAccount | null {
+  acquire(options?: { model?: string; format?: RelayFormat; excludeIds?: string[] }): AcquiredAccount | null {
     const now = new Date();
     const nowMs = now.getTime();
 
@@ -100,17 +102,37 @@ export class AccountPool {
     // Model-aware selection: prefer accounts whose planType matches the model's known plans
     let candidates = available;
     if (options?.model) {
-      const preferredPlans = getModelPlanTypes(options.model);
-      if (preferredPlans.length > 0) {
-        const planSet = new Set(preferredPlans);
-        const matched = available.filter((a) => a.planType && planSet.has(a.planType));
-        if (matched.length > 0) {
-          candidates = matched;
-        } else {
-          // No account matches the model's plan requirements — don't fallback to incompatible accounts
-          return null;
+      const model = options.model;
+      const preferredPlans = getModelPlanTypes(model);
+      const planSet = preferredPlans.length > 0 ? new Set(preferredPlans) : null;
+
+      const matched = available.filter((a) => {
+        if (a.type === "relay") {
+          // Relay: check explicit model whitelist (null = all models OK)
+          return !a.allowedModels || a.allowedModels.includes(model);
         }
+        // Native: check plan type if model has requirements
+        return planSet ? (a.planType != null && planSet.has(a.planType)) : true;
+      });
+
+      if (matched.length > 0) {
+        candidates = matched;
+      } else {
+        // No account matches (plan requirements for native OR allowedModels for relay)
+        return null;
       }
+    }
+
+    // Format-aware filtering: if route specifies a format, prefer matching relays
+    if (options?.format) {
+      const formatMatched = candidates.filter(
+        (a) => a.type === "relay" && a.format === options.format,
+      );
+      if (formatMatched.length > 0) {
+        candidates = formatMatched;
+      }
+      // If no format match, candidates still contain native + codex relays
+      // → route handler checks acquired.format to decide direct vs translation path
     }
 
     const selected = this.selectByStrategy(candidates);
@@ -119,6 +141,9 @@ export class AccountPool {
       entryId: selected.id,
       token: selected.token,
       accountId: selected.accountId,
+      type: selected.type,
+      baseUrl: selected.baseUrl,
+      format: selected.format,
     };
   }
 
@@ -159,7 +184,7 @@ export class AccountPool {
     }
 
     const available = [...this.accounts.values()].filter(
-      (a) => a.status === "active" && !this.acquireLocks.has(a.id) && a.planType,
+      (a) => a.status === "active" && !this.acquireLocks.has(a.id) && a.planType && a.type !== "relay",
     );
 
     // Group by planType, pick least-used from each group
@@ -307,10 +332,77 @@ export class AccountPool {
       addedAt: new Date().toISOString(),
       cachedQuota: null,
       quotaFetchedAt: null,
+      type: "native",
+      baseUrl: null,
+      label: null,
+      allowedModels: null,
+      format: null,
     };
 
     this.accounts.set(id, entry);
     this.persistNow(); // Critical data — persist immediately
+    return id;
+  }
+
+  /**
+   * Add a relay account (third-party API key + base URL). Returns the entry ID.
+   * Deduplicates by baseUrl + apiKey.
+   */
+  addRelayAccount(params: {
+    apiKey: string;
+    baseUrl: string;
+    label: string;
+    format?: RelayFormat;
+    allowedModels?: string[];
+  }): string {
+    // Deduplicate by baseUrl + apiKey
+    for (const existing of this.accounts.values()) {
+      if (existing.type === "relay" && existing.baseUrl === params.baseUrl && existing.token === params.apiKey) {
+        // Update existing entry
+        existing.label = params.label;
+        existing.allowedModels = params.allowedModels ?? null;
+        existing.format = params.format ?? "codex";
+        existing.status = "active";
+        this.persistNow();
+        return existing.id;
+      }
+    }
+
+    const id = randomBytes(8).toString("hex");
+    const entry: AccountEntry = {
+      id,
+      token: params.apiKey,
+      refreshToken: null,
+      email: null,
+      accountId: null,
+      planType: null,
+      proxyApiKey: "codex-proxy-" + randomBytes(24).toString("hex"),
+      status: "active",
+      usage: {
+        request_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        empty_response_count: 0,
+        last_used: null,
+        rate_limit_until: null,
+        window_request_count: 0,
+        window_input_tokens: 0,
+        window_output_tokens: 0,
+        window_counters_reset_at: null,
+        limit_window_seconds: null,
+      },
+      addedAt: new Date().toISOString(),
+      cachedQuota: null,
+      quotaFetchedAt: null,
+      type: "relay",
+      baseUrl: params.baseUrl,
+      label: params.label,
+      allowedModels: params.allowedModels ?? null,
+      format: params.format ?? "codex",
+    };
+
+    this.accounts.set(id, entry);
+    this.persistNow();
     return id;
   }
 
@@ -548,8 +640,8 @@ export class AccountPool {
       }
     }
 
-    // Mark expired tokens
-    if (entry.status === "active" && isTokenExpired(entry.token)) {
+    // Mark expired tokens (relay accounts don't use JWT expiry)
+    if (entry.status === "active" && entry.type !== "relay" && isTokenExpired(entry.token)) {
       entry.status = "expired";
     }
 
@@ -576,8 +668,12 @@ export class AccountPool {
   }
 
   private toInfo(entry: AccountEntry): AccountInfo {
-    const payload = decodeJwtPayload(entry.token);
-    const exp = payload?.exp;
+    let expiresAt: string | null = null;
+    if (entry.type !== "relay") {
+      const payload = decodeJwtPayload(entry.token);
+      const exp = payload?.exp;
+      expiresAt = typeof exp === "number" ? new Date(exp * 1000).toISOString() : null;
+    }
     const info: AccountInfo = {
       id: entry.id,
       email: entry.email,
@@ -586,10 +682,12 @@ export class AccountPool {
       status: entry.status,
       usage: { ...entry.usage },
       addedAt: entry.addedAt,
-      expiresAt:
-        typeof exp === "number"
-          ? new Date(exp * 1000).toISOString()
-          : null,
+      expiresAt,
+      type: entry.type,
+      label: entry.label,
+      baseUrl: entry.baseUrl,
+      allowedModels: entry.allowedModels,
+      format: entry.format,
     };
     if (entry.cachedQuota) {
       info.quota = entry.cachedQuota;
@@ -637,7 +735,8 @@ export class AccountPool {
         for (const entry of data.accounts) {
           if (entry.id && entry.token) {
             // Backfill missing fields from JWT (e.g. planType was null before fix)
-            if (!entry.planType || !entry.email || !entry.accountId) {
+            // Skip for relay accounts — they don't use JWT
+            if (entry.type !== "relay" && (!entry.planType || !entry.email || !entry.accountId)) {
               const profile = extractUserProfile(entry.token);
               const accountId = extractChatGptAccountId(entry.token);
               if (!entry.planType && profile?.chatgpt_plan_type) {
@@ -671,6 +770,20 @@ export class AccountPool {
             if (entry.cachedQuota === undefined) {
               entry.cachedQuota = null;
               entry.quotaFetchedAt = null;
+              needsPersist = true;
+            }
+            // Backfill relay fields for old entries
+            if ((entry as unknown as Record<string, unknown>).type === undefined) {
+              entry.type = "native";
+              entry.baseUrl = null;
+              entry.label = null;
+              entry.allowedModels = null;
+              entry.format = null;
+              needsPersist = true;
+            }
+            // Backfill format field for old relay entries
+            if (entry.type === "relay" && (entry as unknown as Record<string, unknown>).format === undefined) {
+              entry.format = "codex";
               needsPersist = true;
             }
             this.accounts.set(entry.id, entry);
@@ -726,6 +839,11 @@ export class AccountPool {
         addedAt: new Date().toISOString(),
         cachedQuota: null,
         quotaFetchedAt: null,
+        type: "native",
+        baseUrl: null,
+        label: null,
+        allowedModels: null,
+        format: null,
       };
 
       this.accounts.set(id, entry);

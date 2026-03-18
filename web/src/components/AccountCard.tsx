@@ -48,15 +48,19 @@ interface AccountCardProps {
 export function AccountCard({ account, index, onDelete, proxies, onProxyChange, selected, onToggleSelect }: AccountCardProps) {
   const t = useT();
   const { lang } = useI18n();
-  const email = account.email || "Unknown";
-  const initial = email.charAt(0).toUpperCase();
+  const isRelay = account.type === "relay";
+  const displayName = isRelay ? (account.label || "Relay") : (account.email || "Unknown");
+  const initial = isRelay ? "R" : displayName.charAt(0).toUpperCase();
   const [bgColor, textColor] = avatarColors[index % avatarColors.length];
   const usage = account.usage || {};
   const requests = usage.request_count ?? 0;
   const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
   const winRequests = usage.window_request_count ?? 0;
   const winTokens = (usage.window_input_tokens ?? 0) + (usage.window_output_tokens ?? 0);
-  const plan = account.planType || t("freeTier");
+  const formatLabel = isRelay && account.format && account.format !== "codex"
+    ? account.format.charAt(0).toUpperCase() + account.format.slice(1)
+    : null;
+  const plan = isRelay ? (formatLabel ? `Relay · ${formatLabel}` : "Relay") : (account.planType || t("freeTier"));
   const windowSec = account.quota?.rate_limit?.limit_window_seconds;
   const windowDur = windowSec ? formatWindowDuration(windowSec, lang === "zh") : null;
 
@@ -122,15 +126,25 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
             {initial}
           </div>
           <div>
-            <h3 class="text-[0.82rem] font-semibold leading-tight">{email}</h3>
+            <h3 class="text-[0.82rem] font-semibold leading-tight">{displayName}</h3>
             <p class="text-xs text-slate-500 dark:text-text-dim">
               {plan}
-              {windowDur && (
+              {isRelay && account.baseUrl && (
+                <span class="ml-1 text-[0.65rem] text-slate-400 dark:text-text-dim/70 truncate max-w-[160px] inline-block align-bottom" title={account.baseUrl}>
+                  {account.baseUrl.replace(/^https?:\/\//, "")}
+                </span>
+              )}
+              {!isRelay && windowDur && (
                 <span class="ml-1.5 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-border-dark text-slate-500 dark:text-text-dim text-[0.65rem] font-medium">
                   {windowDur}
                 </span>
               )}
             </p>
+            {isRelay && account.allowedModels && account.allowedModels.length > 0 && (
+              <p class="text-[0.6rem] text-slate-400 dark:text-text-dim/60 mt-0.5 truncate max-w-[200px]" title={account.allowedModels.join(", ")}>
+                {account.allowedModels.join(", ")}
+              </p>
+            )}
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -189,8 +203,8 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
         </div>
       )}
 
-      {/* Quota bars */}
-      {(rl || srl) && (
+      {/* Quota bars (not shown for relay accounts) */}
+      {!isRelay && (rl || srl) && (
         <div class="pt-3 mt-3 border-t border-slate-100 dark:border-border-dark space-y-3">
           {/* Primary window */}
           {rl && (

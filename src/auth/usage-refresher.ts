@@ -35,7 +35,7 @@ async function fetchQuotaForAllAccounts(
 ): Promise<void> {
   if (!pool.isAuthenticated()) return;
 
-  const entries = pool.getAllEntries().filter((e) => e.status === "active");
+  const entries = pool.getAllEntries().filter((e) => e.status === "active" && e.type !== "relay");
   if (entries.length === 0) return;
 
   const config = getConfig();

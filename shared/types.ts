@@ -36,6 +36,11 @@ export interface Account {
   quotaFetchedAt?: string | null;
   proxyId?: string;
   proxyName?: string;
+  type?: "native" | "relay";
+  label?: string | null;
+  baseUrl?: string | null;
+  allowedModels?: string[] | null;
+  format?: string | null;
 }
 
 export interface ProxyHealthInfo {

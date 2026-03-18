@@ -30,6 +30,7 @@ function StableText({ tKey, children, class: cls }: { tKey: TranslationKey; chil
 
 interface HeaderProps {
   onAddAccount: () => void;
+  onAddRelay?: () => void;
   onCheckUpdate: () => void;
   onOpenUpdateModal?: () => void;
   checking: boolean;
@@ -41,7 +42,7 @@ interface HeaderProps {
   hasUpdate?: boolean;
 }
 
-export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, isProxySettings, hasUpdate }: HeaderProps) {
+export function Header({ onAddAccount, onAddRelay, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, isProxySettings, hasUpdate }: HeaderProps) {
   const { lang, toggleLang, t } = useI18n();
   const { isDark, toggle: toggleTheme } = useTheme();
 
@@ -141,6 +142,17 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
                   </svg>
                   <StableText tKey="proxySettings" class="text-xs font-semibold">{t("proxySettings")}</StableText>
                 </a>
+                {onAddRelay && (
+                  <button
+                    onClick={onAddRelay}
+                    class="flex items-center gap-2 px-3 py-2 border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark text-xs font-semibold rounded-lg transition-colors active:scale-95"
+                  >
+                    <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.54a4.5 4.5 0 00-6.364-6.364L4.757 8.308a4.5 4.5 0 001.242 7.244" />
+                    </svg>
+                    <span>Relay</span>
+                  </button>
+                )}
                 <button
                   onClick={onAddAccount}
                   class="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors shadow-sm active:scale-95"

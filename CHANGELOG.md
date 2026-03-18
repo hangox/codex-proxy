@@ -8,6 +8,19 @@
 
 ### Added
 
+- Relay account support（#105）：支持通过 API Key + Base URL 添加第三方中转站账号
+  - `POST /auth/accounts/relay` 端点（apiKey, baseUrl, label, allowedModels）
+  - AccountPool 新增 `addRelayAccount()` 方法，按 baseUrl+apiKey 去重
+  - `acquire()` 支持 relay 模型过滤（allowedModels 白名单，null = 全部模型）
+  - CodexApi 支持 `baseUrlOverride`：relay 模式使用简单 Bearer auth，跳过指纹/Cookie
+  - Relay 账号自动跳过 JWT 刷新、额度获取、Token 过期检测
+  - Dashboard：Header 新增 Relay 按钮，AddRelayAccount 表单，AccountCard 适配 relay 显示
+  - **Format 直通模式**：relay 支持 `format` 字段（codex/openai/anthropic/gemini）
+  - 非 codex format 的 relay 走直通路径：原始请求直接转发到 relay，不经过 Codex 翻译层
+  - `handleDirectProxy()` 处理器：流式 SSE pipe + 非流式完整返回 + 429 限流
+  - 各 route handler（chat/messages/gemini）翻译前优先匹配 format 兼容的 relay
+  - Dashboard 表单加 Format 下拉，AccountCard 显示 format 标签
+  - 45 个新测试覆盖 pool/api/route/direct-proxy 层
 - `POST /admin/refresh-models` 端点：手动触发模型列表刷新，解决 model-fetcher ~1h 缓存过时导致新模型不可用的问题；支持 Bearer auth（当配置 proxy_api_key 时）
 - Plan routing integration tests：通过 proxy handler 完整路径验证 free/team 账号的模型路由（7 cases），覆盖 plan map 更新后请求解除阻塞的场景
 

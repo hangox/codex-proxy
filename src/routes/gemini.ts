@@ -21,6 +21,7 @@ import {
 } from "../translation/codex-to-gemini.js";
 import { getConfig } from "../config.js";
 import { getModelCatalog } from "../models/model-store.js";
+import { handleDirectProxy } from "./shared/direct-proxy.js";
 import {
   handleProxyRequest,
   type FormatAdapter,
@@ -143,6 +144,19 @@ export function createGeminiRoutes(
       );
     }
     const req = validationResult.data;
+
+    // Try direct proxy via format-compatible relay (skip Codex translation)
+    const directAcquired = accountPool.acquire({ model: geminiModel, format: "gemini" });
+    if (directAcquired?.format === "gemini") {
+      return handleDirectProxy({
+        c, accountPool, acquired: directAcquired,
+        rawBody: JSON.stringify(body),
+        upstreamPath: `/models/${modelActionParam}`,
+        isStreaming,
+        proxyPool,
+      });
+    }
+    if (directAcquired) accountPool.releaseWithoutCounting(directAcquired.entryId);
 
     const { codexRequest, tupleSchema } = translateGeminiToCodexRequest(
       req,

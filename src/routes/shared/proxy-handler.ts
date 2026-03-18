@@ -106,9 +106,10 @@ export async function handleProxyRequest(
     return c.json(fmt.formatNoAccount());
   }
 
-  const { entryId, token, accountId } = acquired;
+  const { entryId, token, accountId, type: accountType, baseUrl: accountBaseUrl } = acquired;
   const proxyUrl = proxyPool?.resolveProxyUrl(entryId);
-  let codexApi = new CodexApi(token, accountId, cookieJar, entryId, proxyUrl);
+  const jar = accountType === "relay" ? undefined : cookieJar;
+  let codexApi = new CodexApi(token, accountId, jar, entryId, proxyUrl, accountBaseUrl);
   // Tracks which account the outer catch should release (updated by retry loop)
   let activeEntryId = entryId;
   // Track tried accounts for model retry exclusion
@@ -210,7 +211,8 @@ export async function handleProxyRequest(
               currentEntryId = newAcquired.entryId;
               activeEntryId = currentEntryId;
               const retryProxyUrl = proxyPool?.resolveProxyUrl(newAcquired.entryId);
-              currentCodexApi = new CodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, retryProxyUrl);
+              const retryJar = newAcquired.type === "relay" ? undefined : cookieJar;
+              currentCodexApi = new CodexApi(newAcquired.token, newAcquired.accountId, retryJar, newAcquired.entryId, retryProxyUrl, newAcquired.baseUrl);
               try {
                 currentRawResponse = await withRetry(
                   () => currentCodexApi.createResponse(req.codexRequest, abortController.signal),
@@ -269,7 +271,8 @@ export async function handleProxyRequest(
             activeEntryId = retry.entryId;
             triedEntryIds.push(retry.entryId);
             const retryProxyUrl = proxyPool?.resolveProxyUrl(retry.entryId);
-            codexApi = new CodexApi(retry.token, retry.accountId, cookieJar, retry.entryId, retryProxyUrl);
+            const retryJar = retry.type === "relay" ? undefined : cookieJar;
+            codexApi = new CodexApi(retry.token, retry.accountId, retryJar, retry.entryId, retryProxyUrl, retry.baseUrl);
             console.log(`[${fmt.tag}] Retrying with account ${retry.entryId}`);
             continue; // re-enter model retry loop
           }
@@ -302,7 +305,8 @@ export async function handleProxyRequest(
             activeEntryId = retry.entryId;
             triedEntryIds.push(retry.entryId);
             const retryProxyUrl = proxyPool?.resolveProxyUrl(retry.entryId);
-            codexApi = new CodexApi(retry.token, retry.accountId, cookieJar, retry.entryId, retryProxyUrl);
+            const retryJar = retry.type === "relay" ? undefined : cookieJar;
+            codexApi = new CodexApi(retry.token, retry.accountId, retryJar, retry.entryId, retryProxyUrl, retry.baseUrl);
             console.log(`[${fmt.tag}] 429 fallback → account ${retry.entryId}`);
             continue;
           }

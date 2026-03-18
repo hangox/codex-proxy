@@ -30,6 +30,9 @@ export interface AccountUsage {
   limit_window_seconds?: number | null;
 }
 
+export type AccountType = "native" | "relay";
+export type RelayFormat = "codex" | "openai" | "anthropic" | "gemini";
+
 export interface AccountEntry {
   id: string;
   token: string;
@@ -45,6 +48,16 @@ export interface AccountEntry {
   cachedQuota: CodexQuota | null;
   /** ISO timestamp of when cachedQuota was last updated. */
   quotaFetchedAt: string | null;
+  /** Account type: native (ChatGPT JWT) or relay (third-party API key). */
+  type: AccountType;
+  /** Relay-only: upstream base URL (e.g. "https://relay.example.com/backend-api"). */
+  baseUrl: string | null;
+  /** Relay-only: user-friendly display name. */
+  label: string | null;
+  /** Relay-only: restrict to specific models (null = all models). */
+  allowedModels: string[] | null;
+  /** Relay-only: API format this relay exposes (null = native account or codex default). */
+  format: RelayFormat | null;
 }
 
 /** Public info (no token) */
@@ -59,6 +72,11 @@ export interface AccountInfo {
   expiresAt: string | null;
   quota?: CodexQuota;
   quotaFetchedAt?: string | null;
+  type: AccountType;
+  label: string | null;
+  baseUrl: string | null;
+  allowedModels: string[] | null;
+  format: RelayFormat | null;
 }
 
 /** A single rate limit window (primary or secondary). */
@@ -92,6 +110,11 @@ export interface AcquiredAccount {
   entryId: string;
   token: string;
   accountId: string | null;
+  type: AccountType;
+  /** Relay-only: upstream base URL override. Null for native accounts. */
+  baseUrl: string | null;
+  /** Relay-only: API format (null for native accounts). */
+  format: RelayFormat | null;
 }
 
 /** Persistence format */

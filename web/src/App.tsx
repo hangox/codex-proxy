@@ -5,6 +5,7 @@ import { Header } from "./components/Header";
 import { UpdateModal } from "./components/UpdateModal";
 import { AccountList } from "./components/AccountList";
 import { AddAccount } from "./components/AddAccount";
+import { AddRelayAccount } from "./components/AddRelayAccount";
 import { ProxyPool } from "./components/ProxyPool";
 import { ApiConfig } from "./components/ApiConfig";
 import { AnthropicSetup } from "./components/AnthropicSetup";
@@ -93,6 +94,7 @@ function Dashboard() {
     <>
       <Header
         onAddAccount={accounts.startAdd}
+        onAddRelay={accounts.showRelayForm}
         onCheckUpdate={update.checkForUpdate}
         onOpenUpdateModal={() => setShowModal(true)}
         checking={update.checking}
@@ -109,6 +111,11 @@ function Dashboard() {
             onSubmitRelay={accounts.submitRelay}
             addInfo={accounts.addInfo}
             addError={accounts.addError}
+          />
+          <AddRelayAccount
+            visible={accounts.relayFormVisible}
+            onSubmit={accounts.addRelayAccount}
+            onCancel={accounts.hideRelayForm}
           />
           <AccountList
             accounts={accounts.list}

@@ -35,6 +35,14 @@ const BulkImportSchema = z.object({
   })).min(1),
 });
 
+const RelayAccountSchema = z.object({
+  apiKey: z.string().min(1),
+  baseUrl: z.string().url(),
+  label: z.string().min(1),
+  format: z.enum(["codex", "openai", "anthropic", "gemini"]).default("codex"),
+  allowedModels: z.array(z.string()).optional(),
+});
+
 export function createAccountRoutes(
   pool: AccountPool,
   scheduler: RefreshScheduler,
@@ -44,9 +52,10 @@ export function createAccountRoutes(
   const app = new Hono();
 
   /** Helper: build a CodexApi with cookie + proxy support. */
-  function makeApi(entryId: string, token: string, accountId: string | null): CodexApi {
+  function makeApi(entryId: string, token: string, accountId: string | null, baseUrl?: string | null): CodexApi {
     const proxyUrl = proxyPool?.resolveProxyUrl(entryId);
-    return new CodexApi(token, accountId, cookieJar, entryId, proxyUrl);
+    const jar = baseUrl ? undefined : cookieJar;
+    return new CodexApi(token, accountId, jar, entryId, proxyUrl, baseUrl);
   }
 
   // Start OAuth flow to add a new account — 302 redirect to Auth0
@@ -113,6 +122,29 @@ export function createAccountRoutes(
     return c.json({ success: true, added, updated, failed, errors });
   });
 
+  // Add relay account (third-party API key + base URL)
+  app.post("/auth/accounts/relay", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      c.status(400);
+      return c.json({ error: "Malformed JSON request body" });
+    }
+
+    const parsed = RelayAccountSchema.safeParse(body);
+    if (!parsed.success) {
+      c.status(400);
+      return c.json({ error: "Invalid request", details: parsed.error.issues });
+    }
+
+    const entryId = pool.addRelayAccount(parsed.data);
+    // No scheduler.scheduleOne() — relay accounts don't use JWT refresh
+    const accounts = pool.getAccounts();
+    const added = accounts.find((a) => a.id === entryId);
+    return c.json({ success: true, account: added });
+  });
+
   // List all accounts
   // ?quota=true  → return cached quota (fast, from background refresh)
   // ?quota=fresh → force live fetch from upstream (manual refresh button)
@@ -125,7 +157,7 @@ export function createAccountRoutes(
       const accounts = pool.getAccounts();
       const enriched: AccountInfo[] = await Promise.all(
         accounts.map(async (acct) => {
-          if (acct.status !== "active") {
+          if (acct.status !== "active" || acct.type === "relay") {
             return {
               ...acct,
               proxyId: proxyPool?.getAssignment(acct.id) ?? "global",
@@ -143,7 +175,7 @@ export function createAccountRoutes(
           }
 
           try {
-            const api = makeApi(acct.id, entry.token, entry.accountId);
+            const api = makeApi(acct.id, entry.token, entry.accountId, entry.baseUrl);
             const usage = await api.getUsage();
             const quota = toQuota(usage);
             // Cache the fresh quota
@@ -240,6 +272,11 @@ export function createAccountRoutes(
       return c.json({ error: "Account not found" });
     }
 
+    if (entry.type === "relay") {
+      c.status(400);
+      return c.json({ error: "Quota API is not available for relay accounts" });
+    }
+
     if (entry.status !== "active") {
       c.status(409);
       return c.json({ error: `Account is ${entry.status}, cannot query quota` });
@@ -248,7 +285,7 @@ export function createAccountRoutes(
     const hasCookies = !!(cookieJar?.getCookieHeader(id));
 
     try {
-      const api = makeApi(id, entry.token, entry.accountId);
+      const api = makeApi(id, entry.token, entry.accountId, entry.baseUrl);
       const usage = await api.getUsage();
       return c.json({ quota: toQuota(usage), raw: usage });
     } catch (err) {

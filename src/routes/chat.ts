@@ -10,6 +10,7 @@ import {
 } from "../translation/codex-to-openai.js";
 import { getConfig } from "../config.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
+import { handleDirectProxy } from "./shared/direct-proxy.js";
 import {
   handleProxyRequest,
   type FormatAdapter,
@@ -121,9 +122,22 @@ export function createChatRoutes(
       });
     }
     const req = parsed.data;
+    const displayModel = buildDisplayModelName(parseModelName(req.model));
+
+    // Try direct proxy via format-compatible relay (skip Codex translation)
+    const directAcquired = accountPool.acquire({ model: displayModel, format: "openai" });
+    if (directAcquired?.format === "openai") {
+      return handleDirectProxy({
+        c, accountPool, acquired: directAcquired,
+        rawBody: JSON.stringify(body),
+        upstreamPath: "/chat/completions",
+        isStreaming: req.stream ?? false,
+        proxyPool,
+      });
+    }
+    if (directAcquired) accountPool.releaseWithoutCounting(directAcquired.entryId);
 
     const { codexRequest, tupleSchema } = translateToCodexRequest(req);
-    const displayModel = buildDisplayModelName(parseModelName(req.model));
     const wantReasoning = !!req.reasoning_effort;
 
     return handleProxyRequest(

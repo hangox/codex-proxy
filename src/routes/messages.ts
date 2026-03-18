@@ -17,6 +17,7 @@ import {
 } from "../translation/codex-to-anthropic.js";
 import { getConfig } from "../config.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
+import { handleDirectProxy } from "./shared/direct-proxy.js";
 import {
   handleProxyRequest,
   type FormatAdapter,
@@ -95,6 +96,20 @@ export function createMessagesRoutes(
       );
     }
     const req = parsed.data;
+    const displayModel = buildDisplayModelName(parseModelName(req.model));
+
+    // Try direct proxy via format-compatible relay (skip Codex translation)
+    const directAcquired = accountPool.acquire({ model: displayModel, format: "anthropic" });
+    if (directAcquired?.format === "anthropic") {
+      return handleDirectProxy({
+        c, accountPool, acquired: directAcquired,
+        rawBody: JSON.stringify(body),
+        upstreamPath: "/messages",
+        isStreaming: req.stream ?? false,
+        proxyPool,
+      });
+    }
+    if (directAcquired) accountPool.releaseWithoutCounting(directAcquired.entryId);
 
     const codexRequest = translateAnthropicToCodexRequest(req);
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";

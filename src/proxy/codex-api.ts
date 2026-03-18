@@ -74,6 +74,8 @@ export class CodexApi {
   private cookieJar: CookieJar | null;
   private entryId: string | null;
   private proxyUrl: string | null | undefined;
+  /** When set, overrides config.api.base_url and uses simple Bearer auth (relay mode). */
+  private baseUrlOverride: string | null;
 
   constructor(
     token: string,
@@ -81,12 +83,34 @@ export class CodexApi {
     cookieJar?: CookieJar | null,
     entryId?: string | null,
     proxyUrl?: string | null,
+    baseUrlOverride?: string | null,
   ) {
     this.token = token;
     this.accountId = accountId;
     this.cookieJar = cookieJar ?? null;
     this.entryId = entryId ?? null;
     this.proxyUrl = proxyUrl;
+    this.baseUrlOverride = baseUrlOverride ?? null;
+  }
+
+  /** Whether this client is operating in relay mode (third-party upstream). */
+  get isRelay(): boolean {
+    return this.baseUrlOverride !== null;
+  }
+
+  /** Resolve the effective base URL for upstream requests. */
+  private getBaseUrl(): string {
+    return this.baseUrlOverride ?? getConfig().api.base_url;
+  }
+
+  /** Build simple headers for relay mode (no fingerprint/cookies). */
+  private buildRelayHeaders(contentType?: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Authorization": `Bearer ${this.token}`,
+      "Accept": "application/json",
+    };
+    if (contentType) headers["Content-Type"] = contentType;
+    return headers;
   }
 
   setToken(token: string): void {
@@ -114,14 +138,16 @@ export class CodexApi {
    * GET /backend-api/codex/usage
    */
   async getUsage(): Promise<CodexUsageResponse> {
-    const config = getConfig();
     const transport = getTransport();
-    const url = `${config.api.base_url}/codex/usage`;
+    const url = `${this.getBaseUrl()}/codex/usage`;
 
-    const headers = this.applyHeaders(
-      buildHeaders(this.token, this.accountId),
-    );
-    headers["Accept"] = "application/json";
+    let headers: Record<string, string>;
+    if (this.isRelay) {
+      headers = this.buildRelayHeaders();
+    } else {
+      headers = this.applyHeaders(buildHeaders(this.token, this.accountId));
+      headers["Accept"] = "application/json";
+    }
     // When transport lacks Chrome TLS fingerprint, downgrade Accept-Encoding
     // to encodings system curl can always decompress.
     if (!transport.isImpersonate()) {
@@ -157,7 +183,7 @@ export class CodexApi {
   async getModels(): Promise<BackendModelEntry[] | null> {
     const config = getConfig();
     const transport = getTransport();
-    const baseUrl = config.api.base_url;
+    const baseUrl = this.getBaseUrl();
 
     // Endpoints to probe (most specific first)
     // /codex/models now requires ?client_version= query parameter
@@ -168,10 +194,13 @@ export class CodexApi {
       `${baseUrl}/sentinel/chat-requirements`,
     ];
 
-    const headers = this.applyHeaders(
-      buildHeaders(this.token, this.accountId),
-    );
-    headers["Accept"] = "application/json";
+    let headers: Record<string, string>;
+    if (this.isRelay) {
+      headers = this.buildRelayHeaders();
+    } else {
+      headers = this.applyHeaders(buildHeaders(this.token, this.accountId));
+      headers["Accept"] = "application/json";
+    }
     if (!transport.isImpersonate()) {
       headers["Accept-Encoding"] = "gzip, deflate";
     }
@@ -227,14 +256,16 @@ export class CodexApi {
    * Probe a backend endpoint and return raw JSON (for debug).
    */
   async probeEndpoint(path: string): Promise<Record<string, unknown> | null> {
-    const config = getConfig();
     const transport = getTransport();
-    const url = `${config.api.base_url}${path}`;
+    const url = `${this.getBaseUrl()}${path}`;
 
-    const headers = this.applyHeaders(
-      buildHeaders(this.token, this.accountId),
-    );
-    headers["Accept"] = "application/json";
+    let headers: Record<string, string>;
+    if (this.isRelay) {
+      headers = this.buildRelayHeaders();
+    } else {
+      headers = this.applyHeaders(buildHeaders(this.token, this.accountId));
+      headers["Accept"] = "application/json";
+    }
     if (!transport.isImpersonate()) {
       headers["Accept-Encoding"] = "gzip, deflate";
     }
@@ -278,14 +309,16 @@ export class CodexApi {
     request: CodexResponsesRequest,
     signal?: AbortSignal,
   ): Promise<Response> {
-    const config = getConfig();
-    const baseUrl = config.api.base_url;
+    const baseUrl = this.getBaseUrl();
     const wsUrl = baseUrl.replace(/^https?:/, "wss:") + "/codex/responses";
 
     // Build headers — same auth but no Content-Type (WebSocket upgrade)
-    const headers = this.applyHeaders(
-      buildHeaders(this.token, this.accountId),
-    );
+    let headers: Record<string, string>;
+    if (this.isRelay) {
+      headers = this.buildRelayHeaders();
+    } else {
+      headers = this.applyHeaders(buildHeaders(this.token, this.accountId));
+    }
     headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
     headers["x-openai-internal-codex-residency"] = "us";
 
@@ -315,17 +348,21 @@ export class CodexApi {
     request: CodexResponsesRequest,
     signal?: AbortSignal,
   ): Promise<Response> {
-    const config = getConfig();
     const transport = getTransport();
-    const baseUrl = config.api.base_url;
-    const url = `${baseUrl}/codex/responses`;
+    const url = `${this.getBaseUrl()}/codex/responses`;
 
-    const headers = this.applyHeaders(
-      buildHeadersWithContentType(this.token, this.accountId),
-    );
-    headers["Accept"] = "text/event-stream";
-    // Codex Desktop sends this beta header to enable newer API features
-    headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
+    let headers: Record<string, string>;
+    if (this.isRelay) {
+      headers = this.buildRelayHeaders("application/json");
+      headers["Accept"] = "text/event-stream";
+    } else {
+      headers = this.applyHeaders(
+        buildHeadersWithContentType(this.token, this.accountId),
+      );
+      headers["Accept"] = "text/event-stream";
+      // Codex Desktop sends this beta header to enable newer API features
+      headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
+    }
 
     // Strip non-API fields from body — not supported by HTTP SSE.
     const { service_tier: _st, previous_response_id: _pid, useWebSocket: _ws, ...bodyFields } = request;
@@ -340,8 +377,10 @@ export class CodexApi {
       throw new CodexApiError(0, msg);
     }
 
-    // Capture cookies
-    this.captureCookies(transportRes.setCookieHeaders);
+    // Capture cookies (skip for relay — no cookie management needed)
+    if (!this.isRelay) {
+      this.captureCookies(transportRes.setCookieHeaders);
+    }
 
     if (transportRes.status < 200 || transportRes.status >= 300) {
       // Read the body for error details (cap at 1MB to prevent memory spikes)

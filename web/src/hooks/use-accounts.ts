@@ -27,6 +27,11 @@ export interface Account {
     window_output_tokens?: number;
   };
   quota?: AccountQuota;
+  type?: "native" | "relay";
+  label?: string | null;
+  baseUrl?: string | null;
+  allowedModels?: string[] | null;
+  format?: string | null;
 }
 
 export function useAccounts() {
@@ -37,6 +42,7 @@ export function useAccounts() {
   const [addVisible, setAddVisible] = useState(false);
   const [addInfo, setAddInfo] = useState("");
   const [addError, setAddError] = useState("");
+  const [relayFormVisible, setRelayFormVisible] = useState(false);
 
   const loadAccounts = useCallback(async () => {
     setRefreshing(true);
@@ -160,6 +166,41 @@ export function useAccounts() {
     [loadAccounts]
   );
 
+  const showRelayForm = useCallback(() => {
+    setAddInfo("");
+    setAddError("");
+    setRelayFormVisible(true);
+  }, []);
+
+  const hideRelayForm = useCallback(() => {
+    setRelayFormVisible(false);
+  }, []);
+
+  const addRelayAccount = useCallback(
+    async (params: { apiKey: string; baseUrl: string; label: string; format?: string; allowedModels?: string[] }) => {
+      setAddInfo("");
+      setAddError("");
+      try {
+        const resp = await fetch("/auth/accounts/relay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(params),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success) {
+          setRelayFormVisible(false);
+          setAddInfo("accountAdded");
+          await loadAccounts();
+          return null;
+        }
+        return data.error || "Failed to add relay account";
+      } catch (err) {
+        return "Network error: " + (err instanceof Error ? err.message : String(err));
+      }
+    },
+    [loadAccounts],
+  );
+
   const deleteAccount = useCallback(
     async (id: string) => {
       try {
@@ -187,9 +228,13 @@ export function useAccounts() {
     addVisible,
     addInfo,
     addError,
+    relayFormVisible,
     refresh: loadAccounts,
     startAdd,
     submitRelay,
     deleteAccount,
+    showRelayForm,
+    hideRelayForm,
+    addRelayAccount,
   };
 }

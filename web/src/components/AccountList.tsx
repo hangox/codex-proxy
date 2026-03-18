@@ -127,21 +127,42 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           </span>
         </div>
       )}
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {loading ? (
-          <div class="md:col-span-2 text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
-            {t("loadingAccounts")}
-          </div>
-        ) : accounts.length === 0 ? (
-          <div class="md:col-span-2 text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
-            {t("noAccounts")}
-          </div>
-        ) : (
-          accounts.map((acct, i) => (
-            <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} />
-          ))
-        )}
-      </div>
+      {loading ? (
+        <div class="text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
+          {t("loadingAccounts")}
+        </div>
+      ) : accounts.length === 0 ? (
+        <div class="text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
+          {t("noAccounts")}
+        </div>
+      ) : (
+        <>
+          {/* Native accounts */}
+          {accounts.filter((a) => a.type !== "relay").length > 0 && (
+            <div class="flex flex-col gap-3">
+              {accounts.some((a) => a.type === "relay") && (
+                <h3 class="text-xs font-semibold text-slate-400 dark:text-text-dim uppercase tracking-wider">ChatGPT</h3>
+              )}
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {accounts.filter((a) => a.type !== "relay").map((acct, i) => (
+                  <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} />
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Relay accounts */}
+          {accounts.filter((a) => a.type === "relay").length > 0 && (
+            <div class="flex flex-col gap-3">
+              <h3 class="text-xs font-semibold text-slate-400 dark:text-text-dim uppercase tracking-wider">Relay</h3>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {accounts.filter((a) => a.type === "relay").map((acct, i) => (
+                  <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }

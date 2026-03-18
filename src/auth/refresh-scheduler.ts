@@ -35,6 +35,7 @@ export class RefreshScheduler {
   /** Schedule refresh for all accounts in the pool. */
   scheduleAll(): void {
     for (const entry of this.pool.getAllEntries()) {
+      if (entry.type === "relay") continue; // Relay accounts don't use JWT refresh
       if (entry.status === "active") {
         this.scheduleOne(entry.id, entry.token);
       } else if (entry.status === "refreshing") {
@@ -57,8 +58,12 @@ export class RefreshScheduler {
     }
   }
 
-  /** Schedule refresh for a single account. */
+  /** Schedule refresh for a single account. Relay accounts are skipped. */
   scheduleOne(entryId: string, token: string): void {
+    // Relay accounts don't use JWT refresh
+    const entry = this.pool.getEntry(entryId);
+    if (entry?.type === "relay") return;
+
     // Clear existing timer
     this.clearOne(entryId);
 

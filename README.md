@@ -465,7 +465,8 @@ server:
 <!-- CHANGELOG:START -->
 ### [Unreleased]
 
-- Dashboard 额度设置面板：可在 Web UI 直接调整额度刷新间隔、主/次预警阈值、自动跳过耗尽账号开关，无需手动编辑 YAML；API `GET/POST /admin/quota-settings` 支持鉴权 (#92)
+- `POST /admin/refresh-models` 端点：手动触发模型列表刷新，解决 model-fetcher ~1h 缓存过时导致新模型不可用的问题；支持 Bearer auth（当配置 proxy_api_key 时）
+- Plan routing integration tests：通过 proxy handler 完整路径验证 free/team 账号的模型路由（7 cases），覆盖 plan map 更新后请求解除阻塞的场景
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

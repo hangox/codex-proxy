@@ -73,6 +73,10 @@ jobs:
         working-directory: packages/electron
         run: node electron/build.mjs
 
+      - name: Prepare pack (copy root resources)
+        working-directory: packages/electron
+        run: node electron/prepare-pack.mjs
+
       - name: Pack (${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }})
         working-directory: packages/electron
         run: npx electron-builder --config electron-builder.yml --${{ matrix.platform }} ${{ matrix.arch && format('--{0}', matrix.arch) || '' }} --publish always

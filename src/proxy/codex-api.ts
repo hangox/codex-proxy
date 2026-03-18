@@ -23,7 +23,7 @@ let _firstModelFetchLogged = false;
 
 export interface CodexResponsesRequest {
   model: string;
-  instructions: string;
+  instructions?: string | null;
   input: CodexInputItem[];
   stream: true;
   store: false;

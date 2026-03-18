@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v1.0.11)"
+        description: "Tag to release (e.g. v1.0.57)"
         required: true
         type: string
 
@@ -49,7 +49,7 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install root dependencies
+      - name: Install all workspace dependencies
         run: npm ci --ignore-scripts
 
       - name: Setup curl-impersonate
@@ -57,29 +57,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install web dependencies
+      - name: Install web frontend dependencies
         run: cd web && npm ci
 
-      - name: Install desktop dependencies
-        run: cd desktop && npm ci
+      - name: Install desktop frontend dependencies
+        run: cd packages/electron/desktop && npm ci
 
-      - name: Build app
-        run: npm run app:build
+      - name: Build core (web + tsc)
+        run: npm run build
+
+      - name: Build desktop frontend
+        run: cd packages/electron/desktop && npx vite build
+
+      - name: Bundle Electron (esbuild)
+        working-directory: packages/electron
+        run: node electron/build.mjs
+
+      - name: Prepare pack (copy root resources)
+        working-directory: packages/electron
+        run: node electron/prepare-pack.mjs
 
       - name: Pack (${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }})
-        run: npx electron-builder --config electron-builder.yml --${{ matrix.platform }} ${{ matrix.arch && format('--{0}', matrix.arch) || '' }} --publish never
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.artifact }}
-          path: |
-            release/*.exe
-            release/*.dmg
-            release/*.AppImage
-            release/*.yml
-            release/*.yaml
-          if-no-files-found: ignore
+        working-directory: packages/electron
+        run: npx electron-builder --config electron-builder.yml --${{ matrix.platform }} ${{ matrix.arch && format('--{0}', matrix.arch) || '' }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release:
     needs: build
@@ -93,20 +95,13 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
       - name: Resolve tag
         id: tag
         run: |
           TAG="${{ inputs.tag || github.ref_name }}"
           echo "name=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Generate release notes
-        id: notes
+      - name: Generate release notes and publish
         run: |
           TAG="${{ steps.tag.outputs.name }}"
           PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | grep -v "^${TAG}$" | head -1)
@@ -120,17 +115,8 @@ jobs:
               BODY="Bug fixes and improvements"
             fi
           fi
-          {
-            echo "NOTES<<EOFNOTES"
-            echo "$BODY"
-            echo "EOFNOTES"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          body: ${{ steps.notes.outputs.NOTES }}
-          draft: false
-          prerelease: false
-          files: artifacts/*
+          echo "$BODY" > /tmp/release-notes.md
+          gh release edit "$TAG" --draft=false --notes-file /tmp/release-notes.md 2>/dev/null || \
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,36 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codex-proxy-test .
+
+      - name: Test default port (8080)
+        run: |
+          docker run -d --name test-container -p 8080:8080 codex-proxy-test
+          echo "Waiting for healthcheck to pass..."
+          timeout 30s bash -c 'while ! curl -s http://localhost:8080/health > /dev/null; do sleep 1; done'
+          curl -f http://localhost:8080/health
+          docker rm -f test-container
+
+      - name: Test custom port (8090)
+        run: |
+          mkdir -p config
+          echo "server:" > config/custom.yaml
+          echo "  port: 8090" >> config/custom.yaml
+          docker run -d --name test-container-custom -v $PWD/config/custom.yaml:/app/config/default.yaml -p 8090:8090 codex-proxy-test
+          echo "Waiting for healthcheck to pass..."
+          timeout 30s bash -c 'while ! curl -s http://localhost:8090/health > /dev/null; do sleep 1; done'
+          curl -f http://localhost:8090/health
+          docker rm -f test-container-custom

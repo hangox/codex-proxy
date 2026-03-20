@@ -19,10 +19,8 @@
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
-    "@preact/preset-vite": "2.8.2",
     "electron": "^35.7.5",
     "electron-builder": "^26.0.0",
-    "esbuild": "^0.25.12",
-    "vite": "^5.4.21"
+    "esbuild": "^0.25.12"
   }
 }

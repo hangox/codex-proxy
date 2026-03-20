@@ -1,0 +1,83 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build -t codex-proxy-test .
+
+      - name: Test Default Port (8080)
+        run: |
+          docker run -d -p 8080:8080 --name test-container-8080 codex-proxy-test
+
+          # Wait for healthcheck to pass (up to 30s)
+          echo "Waiting for container to become healthy..."
+          for i in {1..30}; do
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' test-container-8080 2>/dev/null || echo "none")
+            if [ "$HEALTH" = "healthy" ]; then
+              echo "Container is healthy."
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$HEALTH" != "healthy" ]; then
+            echo "Container failed to become healthy. Logs:"
+            docker logs test-container-8080
+            exit 1
+          fi
+
+          # Verify health endpoint
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Expected HTTP 200, got $HTTP_STATUS"
+            docker logs test-container-8080
+            exit 1
+          fi
+          echo "Healthcheck passed on port 8080."
+
+          docker stop test-container-8080
+          docker rm test-container-8080
+
+      - name: Test Custom Port (8090)
+        run: |
+          # Use PORT env variable to override port, mapped to 8090 on host
+          docker run -d -p 8090:8090 -e PORT=8090 --name test-container-8090 codex-proxy-test
+
+          # Wait for healthcheck to pass
+          echo "Waiting for container to become healthy..."
+          for i in {1..30}; do
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' test-container-8090 2>/dev/null || echo "none")
+            if [ "$HEALTH" = "healthy" ]; then
+              echo "Container is healthy."
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$HEALTH" != "healthy" ]; then
+            echo "Container failed to become healthy. Logs:"
+            docker logs test-container-8090
+            exit 1
+          fi
+
+          # Verify health endpoint on custom port
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health)
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Expected HTTP 200, got $HTTP_STATUS"
+            docker logs test-container-8090
+            exit 1
+          fi
+          echo "Healthcheck passed on port 8090."
+
+          docker stop test-container-8090
+          docker rm test-container-8090

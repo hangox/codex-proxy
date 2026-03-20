@@ -3,8 +3,8 @@ api:
   timeout_seconds: 60
 client:
   originator: Codex Desktop
-  app_version: 26.311.21342
-  build_number: "993"
+  app_version: 26.318.11754
+  build_number: "1100"
   platform: darwin
   arch: arm64
   chromium_version: "144"
@@ -39,6 +39,10 @@ tls:
 quota:
   refresh_interval_minutes: 5
   warning_thresholds:
-    primary: [80, 90]
-    secondary: [80, 90]
+    primary:
+      - 80
+      - 90
+    secondary:
+      - 80
+      - 90
   skip_exhausted: true

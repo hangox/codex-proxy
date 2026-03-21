@@ -25,7 +25,7 @@ describe("prepare-pack.mjs", () => {
       const dest = resolve(PKG_DIR, dir);
       // Only remove if it's a copy (not the root original)
       if (existsSync(dest) && resolve(dest) !== resolve(ROOT_DIR, dir)) {
-        rmSync(dest, { recursive: true });
+        try { rmSync(dest, { recursive: true, force: true }); } catch (e) {}
       }
     }
   }

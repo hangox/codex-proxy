@@ -1,0 +1,48 @@
+name: Electron Smoke Test
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/electron/**'
+  pull_request:
+    paths:
+      - 'packages/electron/**'
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Build web and backend
+        run: npm run build
+
+      - name: Build electron frontend
+        working-directory: packages/electron
+        run: npm run build
+
+      - name: Prepare pack
+        working-directory: packages/electron
+        run: node electron/prepare-pack.mjs
+
+      - name: Package Electron app
+        working-directory: packages/electron
+        run: npx electron-builder --linux --dir
+        env:
+          PUBLISH: never
+
+      - name: Run Playwright test
+        run: xvfb-run npx vitest run packages/electron/__tests__/launch/smoke.test.ts

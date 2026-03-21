@@ -20,7 +20,7 @@ scripts/apply-update.ts
 scripts/check-update.ts
 scripts/types.ts
 scripts/test-*.ts
-tests/
+# tests/
 scripts/cron-update.sh
 config/extraction-patterns.yaml
 

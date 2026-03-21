@@ -1,0 +1,90 @@
+name: CI Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run tests (including e2e)
+        run: xvfb-run npm run test
+
+      - name: Verify Docker build and health (Smoke Test)
+        run: |
+          docker build -t codex-proxy-test:latest .
+          docker run -d --name test-container -p 8080:8080 codex-proxy-test:latest
+
+          # Wait for healthcheck to pass
+          timeout=30
+          while [ $timeout -gt 0 ]; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-container)
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy!"
+              break
+            fi
+            sleep 1
+            timeout=$((timeout-1))
+          done
+
+          if [ $timeout -eq 0 ]; then
+            echo "Container failed to become healthy in time."
+            docker logs test-container
+            exit 1
+          fi
+
+          # Verify HTTP endpoint returns 200
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Expected HTTP 200 from /health, got $HTTP_STATUS"
+            exit 1
+          fi
+
+          docker rm -f test-container
+
+      - name: Verify Docker build and health with custom port (Smoke Test)
+        run: |
+          docker run -d --name test-container-custom -p 8090:8090 -e PORT=8090 codex-proxy-test:latest
+
+          # Wait for healthcheck to pass
+          timeout=30
+          while [ $timeout -gt 0 ]; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-container-custom)
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy on custom port!"
+              break
+            fi
+            sleep 1
+            timeout=$((timeout-1))
+          done
+
+          if [ $timeout -eq 0 ]; then
+            echo "Container failed to become healthy in time on custom port."
+            docker logs test-container-custom
+            exit 1
+          fi
+
+          # Verify HTTP endpoint returns 200 on custom port
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Expected HTTP 200 from /health on 8090, got $HTTP_STATUS"
+            exit 1
+          fi
+
+          docker rm -f test-container-custom

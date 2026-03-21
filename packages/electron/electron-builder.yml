@@ -1,6 +1,6 @@
 appId: com.codex-proxy.app
 productName: Codex Proxy
-electronVersion: "35.7.5"
+electronVersion: "41.0.3"
 
 publish:
   provider: github

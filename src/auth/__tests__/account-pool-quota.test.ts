@@ -55,6 +55,7 @@ vi.mock("../../utils/jitter.js", () => ({
 
 vi.mock("../../models/model-store.js", () => ({
   getModelPlanTypes: vi.fn(() => []),
+  isPlanFetched: vi.fn(() => true),
 }));
 
 import { AccountPool } from "../account-pool.js";

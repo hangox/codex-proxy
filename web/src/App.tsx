@@ -16,6 +16,7 @@ import { TestConnection } from "./components/TestConnection";
 import { Footer } from "./components/Footer";
 import { ProxySettings } from "./pages/ProxySettings";
 import { AccountManagement } from "./pages/AccountManagement";
+import { UsageStats } from "./pages/UsageStats";
 import { useAccounts } from "../../shared/hooks/use-accounts";
 import { useProxies } from "../../shared/hooks/use-proxies";
 import { useStatus } from "../../shared/hooks/use-status";
@@ -185,15 +186,22 @@ function useHash(): string {
   return hash;
 }
 
+function PageRouter({ hash }: { hash: string }) {
+  switch (hash) {
+    case "#/proxy-settings": return <ProxySettingsPage />;
+    case "#/account-management": return <AccountManagement />;
+    case "#/usage-stats": return <UsageStats />;
+    default: return <Dashboard />;
+  }
+}
+
 export function App() {
   const hash = useHash();
-  const isProxySettings = hash === "#/proxy-settings";
-  const isAccountManagement = hash === "#/account-management";
 
   return (
     <I18nProvider>
       <ThemeProvider>
-        {isProxySettings ? <ProxySettingsPage /> : isAccountManagement ? <AccountManagement /> : <Dashboard />}
+        <PageRouter hash={hash} />
       </ThemeProvider>
     </I18nProvider>
   );

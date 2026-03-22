@@ -186,16 +186,22 @@ function useHash(): string {
   return hash;
 }
 
+function PageRouter({ hash }: { hash: string }) {
+  switch (hash) {
+    case "#/proxy-settings": return <ProxySettingsPage />;
+    case "#/account-management": return <AccountManagement />;
+    case "#/usage-stats": return <UsageStats />;
+    default: return <Dashboard />;
+  }
+}
+
 export function App() {
   const hash = useHash();
-  const isProxySettings = hash === "#/proxy-settings";
-  const isAccountManagement = hash === "#/account-management";
-  const isUsageStats = hash === "#/usage-stats";
 
   return (
     <I18nProvider>
       <ThemeProvider>
-        {isProxySettings ? <ProxySettingsPage /> : isAccountManagement ? <AccountManagement /> : isUsageStats ? <UsageStats /> : <Dashboard />}
+        <PageRouter hash={hash} />
       </ThemeProvider>
     </I18nProvider>
   );

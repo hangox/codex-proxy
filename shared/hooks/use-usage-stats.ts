@@ -42,29 +42,29 @@ export function useUsageSummary(refreshIntervalMs = 30_000) {
   return { summary, loading };
 }
 
-export function useUsageHistory(granularity: Granularity, hours: number) {
+export function useUsageHistory(granularity: Granularity, hours: number, refreshIntervalMs = 60_000) {
   const [dataPoints, setDataPoints] = useState<UsageDataPoint[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-
-    (async () => {
-      try {
-        const resp = await fetch(
-          `/admin/usage-stats/history?granularity=${granularity}&hours=${hours}`,
-        );
-        if (resp.ok && !cancelled) {
-          const body = await resp.json();
-          setDataPoints(body.data_points);
-        }
-      } catch { /* ignore */ }
-      if (!cancelled) setLoading(false);
-    })();
-
-    return () => { cancelled = true; };
+  const load = useCallback(async () => {
+    try {
+      const resp = await fetch(
+        `/admin/usage-stats/history?granularity=${granularity}&hours=${hours}`,
+      );
+      if (resp.ok) {
+        const body = await resp.json();
+        setDataPoints(body.data_points);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
   }, [granularity, hours]);
+
+  useEffect(() => {
+    setLoading(true);
+    load();
+    const id = setInterval(load, refreshIntervalMs);
+    return () => clearInterval(id);
+  }, [load, refreshIntervalMs]);
 
   return { dataPoints, loading };
 }

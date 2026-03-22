@@ -13,7 +13,7 @@ interface UsageChartProps {
 
 const PADDING = { top: 20, right: 20, bottom: 40, left: 65 };
 
-function formatNumber(n: number): string {
+export function formatNumber(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
   return String(n);
@@ -27,13 +27,16 @@ function formatTime(iso: string): string {
 export function UsageChart({ data, height = 260 }: UsageChartProps) {
   const width = 720; // SVG viewBox width, responsive via CSS
 
-  const { inputPoints, outputPoints, requestPoints, yMaxTokens, yMaxReqs, xLabels, yTokenLabels, yReqLabels } = useMemo(() => {
+  const reqHeight = Math.round(height * 0.6);
+
+  const { inputPoints, outputPoints, requestPoints, xLabels, yTokenLabels, yReqLabels } = useMemo(() => {
     if (data.length === 0) {
-      return { inputPoints: "", outputPoints: "", requestPoints: "", yMaxTokens: 0, yMaxReqs: 0, xLabels: [], yTokenLabels: [], yReqLabels: [] };
+      return { inputPoints: "", outputPoints: "", requestPoints: "", xLabels: [], yTokenLabels: [], yReqLabels: [] };
     }
 
     const chartW = width - PADDING.left - PADDING.right;
     const chartH = height - PADDING.top - PADDING.bottom;
+    const reqChartH = reqHeight - PADDING.top - PADDING.bottom;
 
     const maxInput = Math.max(...data.map((d) => d.input_tokens));
     const maxOutput = Math.max(...data.map((d) => d.output_tokens));
@@ -42,7 +45,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
 
     const toX = (i: number) => PADDING.left + (i / Math.max(data.length - 1, 1)) * chartW;
     const toYTokens = (v: number) => PADDING.top + chartH - (v / yMaxT) * chartH;
-    const toYReqs = (v: number) => PADDING.top + chartH - (v / yMaxR) * chartH;
+    const toYReqs = (v: number) => PADDING.top + reqChartH - (v / yMaxR) * reqChartH;
 
     const inp = data.map((d, i) => `${toX(i)},${toYTokens(d.input_tokens)}`).join(" ");
     const out = data.map((d, i) => `${toX(i)},${toYTokens(d.output_tokens)}`).join(" ");
@@ -60,13 +63,12 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
     const yRL = [];
     for (let i = 0; i <= 4; i++) {
       const frac = i / 4;
-      const y = PADDING.top + chartH - frac * chartH;
-      yTL.push({ y, label: formatNumber(Math.round(yMaxT * frac)) });
-      yRL.push({ y, label: formatNumber(Math.round(yMaxR * frac)) });
+      yTL.push({ y: PADDING.top + chartH - frac * chartH, label: formatNumber(Math.round(yMaxT * frac)) });
+      yRL.push({ y: PADDING.top + reqChartH - frac * reqChartH, label: formatNumber(Math.round(yMaxR * frac)) });
     }
 
-    return { inputPoints: inp, outputPoints: out, requestPoints: req, yMaxTokens: yMaxT, yMaxReqs: yMaxR, xLabels: xl, yTokenLabels: yTL, yReqLabels: yRL };
-  }, [data, height]);
+    return { inputPoints: inp, outputPoints: out, requestPoints: req, xLabels: xl, yTokenLabels: yTL, yReqLabels: yRL };
+  }, [data, height, reqHeight]);
 
   if (data.length === 0) {
     return (
@@ -161,9 +163,9 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
           </span>
         </div>
         <svg
-          viewBox={`0 0 ${width} ${height * 0.6}`}
+          viewBox={`0 0 ${width} ${reqHeight}`}
           class="w-full"
-          style={{ maxHeight: `${height * 0.6}px` }}
+          style={{ maxHeight: `${reqHeight}px` }}
         >
           {/* Grid lines */}
           {yReqLabels.map((tick) => (
@@ -196,7 +198,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
             <text
               key={`rxl-${tick.x}`}
               x={tick.x}
-              y={height * 0.6 - 8}
+              y={reqHeight - 8}
               text-anchor="middle"
               class="fill-slate-400 dark:fill-text-dim"
               font-size="9"

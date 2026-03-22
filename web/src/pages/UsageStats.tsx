@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useUsageSummary, useUsageHistory, type Granularity } from "../../../shared/hooks/use-usage-stats";
-import { UsageChart } from "../components/UsageChart";
+import { UsageChart, formatNumber } from "../components/UsageChart";
 import type { TranslationKey } from "../../../shared/i18n/translations";
 
 const granularityOptions: Array<{ value: Granularity; label: TranslationKey }> = [
@@ -14,13 +14,6 @@ const rangeOptions: Array<{ hours: number; label: TranslationKey }> = [
   { hours: 72, label: "last3d" },
   { hours: 168, label: "last7d" },
 ];
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + "B";
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return String(n);
-}
 
 export function UsageStats() {
   const t = useT();
@@ -51,15 +44,15 @@ export function UsageStats() {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <SummaryCard
             label={t("totalInputTokens")}
-            value={summaryLoading ? "—" : formatTokens(summary?.total_input_tokens ?? 0)}
+            value={summaryLoading ? "—" : formatNumber(summary?.total_input_tokens ?? 0)}
           />
           <SummaryCard
             label={t("totalOutputTokens")}
-            value={summaryLoading ? "—" : formatTokens(summary?.total_output_tokens ?? 0)}
+            value={summaryLoading ? "—" : formatNumber(summary?.total_output_tokens ?? 0)}
           />
           <SummaryCard
             label={t("totalRequestCount")}
-            value={summaryLoading ? "—" : formatTokens(summary?.total_request_count ?? 0)}
+            value={summaryLoading ? "—" : formatNumber(summary?.total_request_count ?? 0)}
           />
           <SummaryCard
             label={t("activeAccounts")}
@@ -79,7 +72,7 @@ export function UsageStats() {
                   : "bg-white dark:bg-card-dark border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:border-primary/50"
               }`}
             >
-              {t(label )}
+              {t(label)}
             </button>
           ))}
           <div class="w-px h-5 bg-gray-200 dark:bg-border-dark self-center" />
@@ -93,7 +86,7 @@ export function UsageStats() {
                   : "bg-white dark:bg-card-dark border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:border-primary/50"
               }`}
             >
-              {t(label )}
+              {t(label)}
             </button>
           ))}
         </div>

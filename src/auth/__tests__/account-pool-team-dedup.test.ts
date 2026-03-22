@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../../models/model-store.js", () => ({
   getModelPlanTypes: vi.fn(() => []),
+  isPlanFetched: vi.fn(() => true),
 }));
 
 vi.mock("../../config.js", () => ({

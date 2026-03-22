@@ -1,0 +1,49 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codex-proxy-test .
+
+      - name: Test Default Port (8080)
+        run: |
+          # Start container
+          docker run -d --name test-container-default -p 8080:8080 codex-proxy-test
+
+          # Wait for healthcheck to pass (up to 30s)
+          timeout 30 bash -c 'until docker inspect --format="{{.State.Health.Status}}" test-container-default | grep -q "healthy"; do sleep 2; done'
+
+          # Verify health endpoint
+          curl -f http://localhost:8080/health
+
+          # Cleanup
+          docker stop test-container-default
+          docker rm test-container-default
+
+      - name: Test Custom Port (8090)
+        run: |
+          # Create custom config
+          mkdir -p config
+          echo -e "server:\n  port: 8090" > config/default.yaml
+
+          # Start container with custom config mapped
+          docker run -d --name test-container-custom -p 8090:8090 -v $(pwd)/config/default.yaml:/app/config/default.yaml codex-proxy-test
+
+          # Wait for healthcheck to pass (up to 30s)
+          timeout 30 bash -c 'until docker inspect --format="{{.State.Health.Status}}" test-container-custom | grep -q "healthy"; do sleep 2; done'
+
+          # Verify health endpoint
+          curl -f http://localhost:8090/health
+
+          # Cleanup
+          docker stop test-container-custom
+          docker rm test-container-custom

@@ -467,6 +467,7 @@ server:
 
 - 账号封禁检测：上游返回非 Cloudflare 的 403 时自动标记为 `banned` 状态
 - 上游 401 token 吊销（"token has been invalidated"）自动标记过期并切换下一个账号
+- Account Management 页面（`#/account-management`）：批量删除、批量改状态（active/disabled）、导入导出
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

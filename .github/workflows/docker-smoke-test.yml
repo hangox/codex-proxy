@@ -1,0 +1,65 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codex-proxy-test .
+
+      - name: Test default port (8080)
+        run: |
+          docker run -d --name proxy-default -p 8080:8080 codex-proxy-test
+
+          # Wait for healthcheck to pass (up to 30s)
+          echo "Waiting for container to be healthy..."
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health | grep 200 > /dev/null; then
+              echo "Healthcheck passed!"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Healthcheck failed."
+          docker logs proxy-default
+          exit 1
+
+      - name: Cleanup default container
+        run: |
+          docker stop proxy-default
+          docker rm proxy-default
+
+      - name: Test custom port (8090)
+        run: |
+          # Create custom config
+          sed 's/port: 8080/port: 8090/' config/default.yaml > custom.yaml
+
+          # Run container mapping custom.yaml to config/default.yaml
+          docker run -d --name proxy-custom -p 8090:8090 \
+            -v $(pwd)/custom.yaml:/app/config/default.yaml \
+            codex-proxy-test
+
+          echo "Waiting for custom container to be healthy..."
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health | grep 200 > /dev/null; then
+              echo "Healthcheck passed on 8090!"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Healthcheck failed on 8090."
+          docker logs proxy-custom
+          exit 1
+
+      - name: Cleanup custom container
+        if: always()
+        run: |
+          docker stop proxy-custom || true
+          docker rm proxy-custom || true

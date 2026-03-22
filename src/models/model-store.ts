@@ -308,6 +308,14 @@ export function getModelPlanTypes(modelId: string): string[] {
   return [...(_modelPlanIndex.get(modelId) ?? [])];
 }
 
+/**
+ * Check if models have ever been successfully fetched for a given plan type.
+ * Returns false when the plan's model list is unknown (fetch failed or never attempted).
+ */
+export function isPlanFetched(planType: string): boolean {
+  return _planModelMap.has(planType);
+}
+
 // ── Model name suffix parsing ───────────────────────────────────────
 
 export interface ParsedModelName {

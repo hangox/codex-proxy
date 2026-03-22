@@ -12,7 +12,7 @@ import {
   extractUserProfile,
   isTokenExpired,
 } from "./jwt-utils.js";
-import { getModelPlanTypes } from "../models/model-store.js";
+import { getModelPlanTypes, isPlanFetched } from "../models/model-store.js";
 import { getRotationStrategy } from "./rotation-strategy.js";
 import { createFsPersistence } from "./account-persistence.js";
 import type { AccountPersistence } from "./account-persistence.js";
@@ -93,17 +93,25 @@ export class AccountPool {
 
     if (available.length === 0) return null;
 
-    // Model-aware selection: prefer accounts whose planType matches the model's known plans
+    // Model-aware selection: prefer accounts whose planType matches the model's known plans.
+    // Accounts whose planType has never been fetched are treated as "possibly compatible"
+    // to avoid false 503s when a plan's model fetch failed at startup.
     let candidates = available;
     if (options?.model) {
       const preferredPlans = getModelPlanTypes(options.model);
       if (preferredPlans.length > 0) {
         const planSet = new Set(preferredPlans);
-        const matched = available.filter((a) => a.planType && planSet.has(a.planType));
+        const matched = available.filter((a) => {
+          if (!a.planType) return false;
+          // Plan is known to support this model
+          if (planSet.has(a.planType)) return true;
+          // Plan has never been fetched — include as possibly compatible
+          return !isPlanFetched(a.planType);
+        });
         if (matched.length > 0) {
           candidates = matched;
         } else {
-          // No account matches the model's plan requirements — don't fallback to incompatible accounts
+          // All accounts belong to plans that were fetched but don't include this model
           return null;
         }
       }

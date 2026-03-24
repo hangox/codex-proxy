@@ -234,6 +234,10 @@ export const translations = {
     generalSettingsProxyUrlHint: "SOCKS5/HTTP proxy for upstream. Leave empty for direct.",
     generalSettingsForceHttp11: "Force HTTP/1.1",
     generalSettingsForceHttp11Hint: "Disable HTTP/2 for upstream",
+    generalSettingsInjectContext: "Inject Desktop Context",
+    generalSettingsInjectContextHint: "Prepend Codex Desktop context to instructions",
+    generalSettingsSuppressDirectives: "Suppress Desktop Directives",
+    generalSettingsSuppressDirectivesHint: "Override desktop-specific behaviors (requires inject enabled)",
     generalSettingsRestartRequired: "Port changed. Restart to apply.",
   },
   zh: {
@@ -474,6 +478,10 @@ export const translations = {
     generalSettingsProxyUrlHint: "上游代理地址，留空直连",
     generalSettingsForceHttp11: "强制 HTTP/1.1",
     generalSettingsForceHttp11Hint: "禁用上游 HTTP/2",
+    generalSettingsInjectContext: "注入桌面上下文",
+    generalSettingsInjectContextHint: "在指令前注入 Codex 桌面上下文",
+    generalSettingsSuppressDirectives: "压制桌面指令",
+    generalSettingsSuppressDirectivesHint: "覆盖桌面特定行为（需先开启注入）",
     generalSettingsRestartRequired: "端口已更改，需重启生效",
   },
 } as const;

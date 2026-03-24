@@ -13,7 +13,7 @@ model:
   default_reasoning_effort: medium
   default_service_tier: null
   inject_desktop_context: false
-  suppress_desktop_directives: true
+  suppress_desktop_directives: false
 auth:
   jwt_token: null
   chatgpt_oauth: true

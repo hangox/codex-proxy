@@ -98,6 +98,8 @@ export function createSettingsRoutes(): Hono {
       port: config.server.port,
       proxy_url: config.tls.proxy_url,
       force_http11: config.tls.force_http11,
+      inject_desktop_context: config.model.inject_desktop_context,
+      suppress_desktop_directives: config.model.suppress_desktop_directives,
     });
   });
 
@@ -118,6 +120,8 @@ export function createSettingsRoutes(): Hono {
       port?: number;
       proxy_url?: string | null;
       force_http11?: boolean;
+      inject_desktop_context?: boolean;
+      suppress_desktop_directives?: boolean;
     };
 
     // --- validation ---
@@ -152,6 +156,14 @@ export function createSettingsRoutes(): Hono {
         if (!data.tls) data.tls = {};
         (data.tls as Record<string, unknown>).force_http11 = body.force_http11;
       }
+      if (body.inject_desktop_context !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).inject_desktop_context = body.inject_desktop_context;
+      }
+      if (body.suppress_desktop_directives !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).suppress_desktop_directives = body.suppress_desktop_directives;
+      }
     });
     reloadAllConfigs();
 
@@ -161,6 +173,8 @@ export function createSettingsRoutes(): Hono {
       port: updated.server.port,
       proxy_url: updated.tls.proxy_url,
       force_http11: updated.tls.force_http11,
+      inject_desktop_context: updated.model.inject_desktop_context,
+      suppress_desktop_directives: updated.model.suppress_desktop_directives,
       restart_required: body.port !== undefined && body.port !== oldPort,
     });
   });

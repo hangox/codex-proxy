@@ -15,6 +15,7 @@
  */
 
 import { Hono } from "hono";
+import yaml from "js-yaml";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import type { AccountPool } from "../auth/account-pool.js";
 
@@ -352,6 +353,66 @@ export function createProxyRoutes(proxyPool: ProxyPool, accountPool: AccountPool
 
     proxyPool.bulkAssign(body.assignments);
     return c.json({ success: true, applied: body.assignments.length });
+  });
+
+  // --- Export proxies as YAML ---
+  app.get("/api/proxies/export", (c) => {
+    const all = proxyPool.getAll();
+    const exportData = all.map((p) => ({ name: p.name, url: p.url }));
+    const yamlStr = yaml.dump(exportData, { lineWidth: -1, quotingType: '"' });
+    return new Response(yamlStr, {
+      headers: {
+        "Content-Type": "text/yaml; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="proxies.yaml"',
+      },
+    });
+  });
+
+  // --- Import proxies from YAML ---
+  app.post("/api/proxies/import", async (c) => {
+    const rawBody = await c.req.text();
+    let parsed: unknown;
+    try {
+      parsed = yaml.load(rawBody);
+    } catch {
+      c.status(400);
+      return c.json({ error: "Invalid YAML" });
+    }
+
+    if (!Array.isArray(parsed)) {
+      c.status(400);
+      return c.json({ error: "Expected a YAML array of { name, url } entries" });
+    }
+
+    const added: string[] = [];
+    const errors: string[] = [];
+    for (const entry of parsed as Array<Record<string, unknown>>) {
+      const url = typeof entry.url === "string" ? entry.url.trim() : "";
+      if (!url) {
+        errors.push(`Skipped entry with missing url: ${JSON.stringify(entry)}`);
+        continue;
+      }
+      try {
+        const p = new URL(url);
+        const allowed = ["http:", "https:", "socks5:", "socks5h:"];
+        if (!allowed.includes(p.protocol)) {
+          errors.push(`Unsupported protocol "${p.protocol}" in ${url}`);
+          continue;
+        }
+      } catch {
+        errors.push(`Invalid URL: ${url}`);
+        continue;
+      }
+      const name = typeof entry.name === "string" ? entry.name.trim() || url : url;
+      const id = proxyPool.add(name, url);
+      added.push(id);
+    }
+
+    if (added.length > 0) {
+      proxyPool.startHealthCheckTimer();
+    }
+
+    return c.json({ success: true, added: added.length, errors });
   });
 
   return app;

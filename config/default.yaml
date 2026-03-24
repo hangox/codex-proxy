@@ -17,6 +17,7 @@ model:
 auth:
   jwt_token: null
   chatgpt_oauth: true
+  refresh_enabled: true
   refresh_margin_seconds: 300
   rotation_strategy: least_used
   rate_limit_backoff_seconds: 60
@@ -26,7 +27,7 @@ auth:
 server:
   host: "::"
   port: 8080
-  proxy_api_key: pwd
+  proxy_api_key: null
 session:
   ttl_minutes: 60
   cleanup_interval_minutes: 5
@@ -37,7 +38,8 @@ tls:
   proxy_url: null
   force_http11: false
 quota:
-  refresh_interval_minutes: 5
+  refresh_interval_minutes: 0
+  concurrency: 10
   warning_thresholds:
     primary:
       - 80

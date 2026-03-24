@@ -6,6 +6,10 @@ export interface GeneralSettingsData {
   force_http11: boolean;
   inject_desktop_context: boolean;
   suppress_desktop_directives: boolean;
+  default_model: string;
+  default_reasoning_effort: string;
+  refresh_enabled: boolean;
+  refresh_margin_seconds: number;
 }
 
 interface GeneralSettingsSaveResponse extends GeneralSettingsData {
@@ -57,6 +61,10 @@ export function useGeneralSettings(apiKey: string | null) {
         force_http11: result.force_http11,
         inject_desktop_context: result.inject_desktop_context,
         suppress_desktop_directives: result.suppress_desktop_directives,
+        default_model: result.default_model,
+        default_reasoning_effort: result.default_reasoning_effort,
+        refresh_enabled: result.refresh_enabled,
+        refresh_margin_seconds: result.refresh_margin_seconds,
       });
       setRestartRequired(result.restart_required);
       setSaved(true);

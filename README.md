@@ -431,6 +431,24 @@ server:
 > 完整更新日志请查看 [CHANGELOG.md](./CHANGELOG.md)，以下内容由 CI 自动同步。
 
 <!-- CHANGELOG:START -->
+### [Unreleased]
+
+- Dashboard 登录门（#141）：当 `proxy_api_key` 已配置且请求来自非 localhost 时，需输入密码才能访问控制台
+- 账号封禁检测：上游返回非 Cloudflare 的 403 时自动标记为 `banned` 状态
+- 上游 401 token 吊销（"token has been invalidated"）自动标记过期并切换下一个账号
+- Usage Stats 页面（`#/usage-stats`）：累计 token 用量汇总 + 时间趋势图
+- Account Management 页面（`#/account-management`）：批量删除、批量改状态（active/disabled）、导入导出
+
+### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
+
+- 原生 function_call / tool_calls 支持（所有协议）
+
+### [v0.7.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.7.0) - 2026-02-22
+
+- `developer` 角色支持（OpenAI 协议）
+- 数组格式 content 支持
+- tool / function 消息兼容（所有协议）
+- 模型响应中自动过滤 Codex Desktop 指令
 <!-- CHANGELOG:END -->
 
 ## ☕ 赞赏

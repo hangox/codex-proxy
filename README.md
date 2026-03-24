@@ -339,7 +339,9 @@ for await (const chunk of stream) {
 
 ## ⚙️ 配置说明
 
-所有配置位于 `config/default.yaml`：
+> **重要**：不要直接修改 `config/default.yaml`，该文件会在版本更新时被覆盖。自定义配置请通过 Dashboard 设置面板修改（自动保存到 `data/local.yaml`），或手动创建 `data/local.yaml` 写入需要覆盖的字段。`data/` 目录不受更新影响。
+
+默认配置位于 `config/default.yaml`：
 
 | 分类 | 关键配置 | 说明 |
 |------|---------|------|

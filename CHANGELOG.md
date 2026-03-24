@@ -14,6 +14,7 @@
 
 ### Added
 
+- Dashboard「基础设置」面板：端口、上游代理、强制 HTTP/1.1 可在 UI 配置，保存到 `data/local.yaml`（更新不覆盖）
 - HTTP/2 自动降级：curl 因 H2 错误失败时自动切换 HTTP/1.1（TTL 10 分钟后重试 H2）
   - exit code 16（H2 专属）无条件触发；其他 exit code 需 stderr 含 H2 关键词
   - `force_http11` 配置仍可手动强制 HTTP/1.1

@@ -12,6 +12,7 @@ import { ApiConfig } from "./components/ApiConfig";
 import { AnthropicSetup } from "./components/AnthropicSetup";
 import { CodeExamples } from "./components/CodeExamples";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { GeneralSettings } from "./components/GeneralSettings";
 import { QuotaSettings } from "./components/QuotaSettings";
 import { RotationSettings } from "./components/RotationSettings";
 import { TestConnection } from "./components/TestConnection";
@@ -161,6 +162,7 @@ function Dashboard() {
             serviceTier={status.selectedSpeed}
           />
           <SettingsPanel />
+          <GeneralSettings />
           <QuotaSettings />
           <RotationSettings />
           <TestConnection />

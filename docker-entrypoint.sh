@@ -4,6 +4,7 @@ set -e
 # Seed empty config bind mount with defaults from the image
 if [ -d /defaults ] && [ -z "$(ls -A /app/config 2>/dev/null)" ]; then
   echo "[Init] Config directory is empty — seeding from image defaults"
+  mkdir -p /app/config
   cp -r /defaults/* /app/config/
 fi
 

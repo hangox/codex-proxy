@@ -49,6 +49,7 @@ export class RefreshScheduler {
       return;
     }
 
+    let expiredIndex = 0;
     for (const entry of this.pool.getAllEntries()) {
       // Skip accounts without refresh token — can't auto-refresh
       if (!entry.refreshToken) continue;
@@ -60,8 +61,9 @@ export class RefreshScheduler {
         console.log(`[RefreshScheduler] Account ${entry.id}: recovering from 'refreshing' state`);
         this.doRefresh(entry.id);
       } else if (entry.status === "expired") {
-        // Recovery attempt for expired accounts
-        const delay = jitterInt(30_000, 0.3);
+        // Recovery attempt — stagger by 2s per account to avoid burst
+        const delay = 30_000 + expiredIndex * 2_000;
+        expiredIndex++;
         console.log(`[RefreshScheduler] Account ${entry.id}: expired, recovery attempt in ${Math.round(delay / 1000)}s`);
         const timer = setTimeout(() => {
           this.timers.delete(entry.id);

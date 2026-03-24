@@ -433,22 +433,25 @@ server:
 <!-- CHANGELOG:START -->
 ### [Unreleased]
 
-- Dashboard 登录门（#141）：当 `proxy_api_key` 已配置且请求来自非 localhost 时，需输入密码才能访问控制台
-- 账号封禁检测：上游返回非 Cloudflare 的 403 时自动标记为 `banned` 状态
-- 上游 401 token 吊销（"token has been invalidated"）自动标记过期并切换下一个账号
-- Usage Stats 页面（`#/usage-stats`）：累计 token 用量汇总 + 时间趋势图
-- Account Management 页面（`#/account-management`）：批量删除、批量改状态（active/disabled）、导入导出
+**Added**
+- HTTP/2 自动降级：curl 因 H2 错误失败时自动切换 HTTP/1.1（TTL 10 分钟后重试 H2）
+  - exit code 16（H2 专属）无条件触发；其他 exit code 需 stderr 含 H2 关键词
+  - `force_http11` 配置仍可手动强制 HTTP/1.1
+**Changed**
+- TLS 指纹对齐：curl-impersonate 升级支持 chrome144 profile（v1.5.1），`KNOWN_CHROME_PROFILES` 新增 133/136/142/144
+- 默认协议从 HTTP/1.1 改为 HTTP/2，匹配真实 Codex Desktop 行为
+- 指纹版本同步至 v26.318.11754（build 1100）
+**Fixed**
+- 配置 overlay 机制：Dashboard 设置写入 `data/local.yaml`（gitignored），不再修改 `config/default.yaml`
+  - `git pull` 不会覆盖用户自定义设置（proxy_api_key、rotation_strategy、quota 等）
+  - `config/default.yaml` 的 `proxy_api_key` 默认值改为 `null`（自动生成）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 
+**Added**
 - 原生 function_call / tool_calls 支持（所有协议）
-
-### [v0.7.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.7.0) - 2026-02-22
-
-- `developer` 角色支持（OpenAI 协议）
-- 数组格式 content 支持
-- tool / function 消息兼容（所有协议）
-- 模型响应中自动过滤 Codex Desktop 指令
+**Fixed**
+- 格式错误的 chat payload 返回 400 `invalid_json` 错误
 <!-- CHANGELOG:END -->
 
 ## ☕ 赞赏

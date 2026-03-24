@@ -13,6 +13,10 @@ export function GeneralSettings() {
   const [draftForceHttp11, setDraftForceHttp11] = useState<boolean | null>(null);
   const [draftInjectContext, setDraftInjectContext] = useState<boolean | null>(null);
   const [draftSuppressDirectives, setDraftSuppressDirectives] = useState<boolean | null>(null);
+  const [draftDefaultModel, setDraftDefaultModel] = useState<string | null>(null);
+  const [draftReasoningEffort, setDraftReasoningEffort] = useState<string | null>(null);
+  const [draftRefreshEnabled, setDraftRefreshEnabled] = useState<boolean | null>(null);
+  const [draftRefreshMargin, setDraftRefreshMargin] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(true);
 
   const currentPort = gs.data?.port ?? 8080;
@@ -20,19 +24,31 @@ export function GeneralSettings() {
   const currentForceHttp11 = gs.data?.force_http11 ?? false;
   const currentInjectContext = gs.data?.inject_desktop_context ?? false;
   const currentSuppressDirectives = gs.data?.suppress_desktop_directives ?? false;
+  const currentDefaultModel = gs.data?.default_model ?? "";
+  const currentReasoningEffort = gs.data?.default_reasoning_effort ?? "medium";
+  const currentRefreshEnabled = gs.data?.refresh_enabled ?? true;
+  const currentRefreshMargin = gs.data?.refresh_margin_seconds ?? 300;
 
   const displayPort = draftPort ?? String(currentPort);
   const displayProxyUrl = draftProxyUrl ?? currentProxyUrl;
   const displayForceHttp11 = draftForceHttp11 ?? currentForceHttp11;
   const displayInjectContext = draftInjectContext ?? currentInjectContext;
   const displaySuppressDirectives = draftSuppressDirectives ?? currentSuppressDirectives;
+  const displayDefaultModel = draftDefaultModel ?? currentDefaultModel;
+  const displayReasoningEffort = draftReasoningEffort ?? currentReasoningEffort;
+  const displayRefreshEnabled = draftRefreshEnabled ?? currentRefreshEnabled;
+  const displayRefreshMargin = draftRefreshMargin ?? String(currentRefreshMargin);
 
   const isDirty =
     draftPort !== null ||
     draftProxyUrl !== null ||
     draftForceHttp11 !== null ||
     draftInjectContext !== null ||
-    draftSuppressDirectives !== null;
+    draftSuppressDirectives !== null ||
+    draftDefaultModel !== null ||
+    draftReasoningEffort !== null ||
+    draftRefreshEnabled !== null ||
+    draftRefreshMargin !== null;
 
   const handleSave = useCallback(async () => {
     const patch: Record<string, unknown> = {};
@@ -59,13 +75,35 @@ export function GeneralSettings() {
       patch.suppress_desktop_directives = draftSuppressDirectives;
     }
 
+    if (draftDefaultModel !== null) {
+      patch.default_model = draftDefaultModel.trim();
+    }
+
+    if (draftReasoningEffort !== null) {
+      patch.default_reasoning_effort = draftReasoningEffort;
+    }
+
+    if (draftRefreshEnabled !== null) {
+      patch.refresh_enabled = draftRefreshEnabled;
+    }
+
+    if (draftRefreshMargin !== null) {
+      const val = parseInt(draftRefreshMargin, 10);
+      if (isNaN(val) || val < 0) return;
+      patch.refresh_margin_seconds = val;
+    }
+
     await gs.save(patch);
     setDraftPort(null);
     setDraftProxyUrl(null);
     setDraftForceHttp11(null);
     setDraftInjectContext(null);
     setDraftSuppressDirectives(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, gs]);
+    setDraftDefaultModel(null);
+    setDraftReasoningEffort(null);
+    setDraftRefreshEnabled(null);
+    setDraftRefreshMargin(null);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -104,6 +142,39 @@ export function GeneralSettings() {
               value={displayPort}
               onInput={(e) => setDraftPort((e.target as HTMLInputElement).value)}
             />
+          </div>
+
+          {/* Default Model */}
+          <div class="space-y-1.5">
+            <label class="text-xs font-semibold text-slate-700 dark:text-text-main">
+              {t("generalSettingsDefaultModel")}
+            </label>
+            <p class="text-xs text-slate-400 dark:text-text-dim">{t("generalSettingsDefaultModelHint")}</p>
+            <input
+              type="text"
+              class={inputCls}
+              value={displayDefaultModel}
+              onInput={(e) => setDraftDefaultModel((e.target as HTMLInputElement).value)}
+              placeholder="gpt-5.2-codex"
+            />
+          </div>
+
+          {/* Default Reasoning Effort */}
+          <div class="space-y-1.5">
+            <label class="text-xs font-semibold text-slate-700 dark:text-text-main">
+              {t("generalSettingsReasoningEffort")}
+            </label>
+            <p class="text-xs text-slate-400 dark:text-text-dim">{t("generalSettingsReasoningEffortHint")}</p>
+            <select
+              class={`${inputCls} max-w-[200px]`}
+              value={displayReasoningEffort}
+              onChange={(e) => setDraftReasoningEffort((e.target as HTMLSelectElement).value)}
+            >
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+            </select>
           </div>
 
           {/* Upstream Proxy */}
@@ -180,6 +251,38 @@ export function GeneralSettings() {
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsSuppressDirectivesHint")}</p>
+          </div>
+
+          {/* Auto-refresh Tokens */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="refresh-enabled"
+                checked={displayRefreshEnabled}
+                onChange={(e) => setDraftRefreshEnabled((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="refresh-enabled" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("generalSettingsRefreshEnabled")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsRefreshEnabledHint")}</p>
+          </div>
+
+          {/* Refresh Margin */}
+          <div class="space-y-1.5">
+            <label class="text-xs font-semibold text-slate-700 dark:text-text-main">
+              {t("generalSettingsRefreshMargin")}
+            </label>
+            <p class="text-xs text-slate-400 dark:text-text-dim">{t("generalSettingsRefreshMarginHint")}</p>
+            <input
+              type="number"
+              min="0"
+              class={`${inputCls} max-w-[160px]`}
+              value={displayRefreshMargin}
+              onInput={(e) => setDraftRefreshMargin((e.target as HTMLInputElement).value)}
+            />
           </div>
 
           {/* Save button + status */}

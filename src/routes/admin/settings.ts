@@ -100,6 +100,10 @@ export function createSettingsRoutes(): Hono {
       force_http11: config.tls.force_http11,
       inject_desktop_context: config.model.inject_desktop_context,
       suppress_desktop_directives: config.model.suppress_desktop_directives,
+      default_model: config.model.default,
+      default_reasoning_effort: config.model.default_reasoning_effort,
+      refresh_enabled: config.auth.refresh_enabled,
+      refresh_margin_seconds: config.auth.refresh_margin_seconds,
     });
   });
 
@@ -122,6 +126,10 @@ export function createSettingsRoutes(): Hono {
       force_http11?: boolean;
       inject_desktop_context?: boolean;
       suppress_desktop_directives?: boolean;
+      default_model?: string;
+      default_reasoning_effort?: string;
+      refresh_enabled?: boolean;
+      refresh_margin_seconds?: number;
     };
 
     // --- validation ---
@@ -141,7 +149,23 @@ export function createSettingsRoutes(): Hono {
       }
     }
 
+    if (body.default_reasoning_effort !== undefined) {
+      const validEfforts = ["low", "medium", "high", "xhigh"];
+      if (!validEfforts.includes(body.default_reasoning_effort)) {
+        c.status(400);
+        return c.json({ error: `default_reasoning_effort must be one of: ${validEfforts.join(", ")}` });
+      }
+    }
+
+    if (body.refresh_margin_seconds !== undefined) {
+      if (!Number.isInteger(body.refresh_margin_seconds) || body.refresh_margin_seconds < 0) {
+        c.status(400);
+        return c.json({ error: "refresh_margin_seconds must be an integer >= 0" });
+      }
+    }
+
     const oldPort = config.server.port;
+    const oldDefaultModel = config.model.default;
 
     mutateYaml(getLocalConfigPath(), (data) => {
       if (body.port !== undefined) {
@@ -164,10 +188,29 @@ export function createSettingsRoutes(): Hono {
         if (!data.model) data.model = {};
         (data.model as Record<string, unknown>).suppress_desktop_directives = body.suppress_desktop_directives;
       }
+      if (body.default_model !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).default = body.default_model;
+      }
+      if (body.default_reasoning_effort !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).default_reasoning_effort = body.default_reasoning_effort;
+      }
+      if (body.refresh_enabled !== undefined) {
+        if (!data.auth) data.auth = {};
+        (data.auth as Record<string, unknown>).refresh_enabled = body.refresh_enabled;
+      }
+      if (body.refresh_margin_seconds !== undefined) {
+        if (!data.auth) data.auth = {};
+        (data.auth as Record<string, unknown>).refresh_margin_seconds = body.refresh_margin_seconds;
+      }
     });
     reloadAllConfigs();
 
     const updated = getConfig();
+    const restartRequired =
+      (body.port !== undefined && body.port !== oldPort) ||
+      (body.default_model !== undefined && body.default_model !== oldDefaultModel);
     return c.json({
       success: true,
       port: updated.server.port,
@@ -175,7 +218,11 @@ export function createSettingsRoutes(): Hono {
       force_http11: updated.tls.force_http11,
       inject_desktop_context: updated.model.inject_desktop_context,
       suppress_desktop_directives: updated.model.suppress_desktop_directives,
-      restart_required: body.port !== undefined && body.port !== oldPort,
+      default_model: updated.model.default,
+      default_reasoning_effort: updated.model.default_reasoning_effort,
+      refresh_enabled: updated.auth.refresh_enabled,
+      refresh_margin_seconds: updated.auth.refresh_margin_seconds,
+      restart_required: restartRequired,
     });
   });
 
@@ -187,6 +234,7 @@ export function createSettingsRoutes(): Hono {
       refresh_interval_minutes: config.quota.refresh_interval_minutes,
       warning_thresholds: config.quota.warning_thresholds,
       skip_exhausted: config.quota.skip_exhausted,
+      concurrency: config.quota.concurrency,
     });
   });
 
@@ -207,12 +255,20 @@ export function createSettingsRoutes(): Hono {
       refresh_interval_minutes?: number;
       warning_thresholds?: { primary?: number[]; secondary?: number[] };
       skip_exhausted?: boolean;
+      concurrency?: number;
     };
 
     if (body.refresh_interval_minutes !== undefined) {
-      if (!Number.isInteger(body.refresh_interval_minutes) || body.refresh_interval_minutes < 1) {
+      if (!Number.isInteger(body.refresh_interval_minutes) || body.refresh_interval_minutes < 0) {
         c.status(400);
-        return c.json({ error: "refresh_interval_minutes must be an integer >= 1" });
+        return c.json({ error: "refresh_interval_minutes must be an integer >= 0" });
+      }
+    }
+
+    if (body.concurrency !== undefined) {
+      if (!Number.isInteger(body.concurrency) || body.concurrency < 1) {
+        c.status(400);
+        return c.json({ error: "concurrency must be an integer >= 1" });
       }
     }
 
@@ -243,6 +299,9 @@ export function createSettingsRoutes(): Hono {
       if (body.skip_exhausted !== undefined) {
         quota.skip_exhausted = body.skip_exhausted;
       }
+      if (body.concurrency !== undefined) {
+        quota.concurrency = body.concurrency;
+      }
     });
     reloadAllConfigs();
 
@@ -252,6 +311,7 @@ export function createSettingsRoutes(): Hono {
       refresh_interval_minutes: updated.quota.refresh_interval_minutes,
       warning_thresholds: updated.quota.warning_thresholds,
       skip_exhausted: updated.quota.skip_exhausted,
+      concurrency: updated.quota.concurrency,
     });
   });
 

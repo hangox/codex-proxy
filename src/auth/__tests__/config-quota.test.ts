@@ -16,7 +16,8 @@ import { z } from "zod";
 
 // Replicate the quota schema to test independently
 const QuotaSchema = z.object({
-  refresh_interval_minutes: z.number().min(1).default(5),
+  refresh_interval_minutes: z.number().min(0).default(5),
+  concurrency: z.number().int().min(1).default(10),
   warning_thresholds: z.object({
     primary: z.array(z.number().min(1).max(100)).default([80, 90]),
     secondary: z.array(z.number().min(1).max(100)).default([80, 90]),
@@ -53,8 +54,13 @@ describe("quota config schema", () => {
     expect(result.skip_exhausted).toBe(false);
   });
 
-  it("rejects refresh_interval_minutes < 1", () => {
-    expect(() => QuotaSchema.parse({ refresh_interval_minutes: 0 })).toThrow();
+  it("accepts refresh_interval_minutes = 0 (disable auto-refresh)", () => {
+    const result = QuotaSchema.parse({ refresh_interval_minutes: 0 });
+    expect(result.refresh_interval_minutes).toBe(0);
+  });
+
+  it("rejects refresh_interval_minutes < 0", () => {
+    expect(() => QuotaSchema.parse({ refresh_interval_minutes: -1 })).toThrow();
   });
 
   it("rejects threshold > 100", () => {

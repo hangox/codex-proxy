@@ -38,6 +38,10 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
   const [addError, setAddError] = useState("");
   const [checking, setChecking] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importYaml, setImportYaml] = useState("");
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const resetForm = useCallback(() => {
     setNewName("");
@@ -94,6 +98,52 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
     [proxies, t],
   );
 
+  const handleExport = useCallback(async () => {
+    try {
+      const resp = await fetch("/api/proxies/export");
+      if (!resp.ok) return;
+      const yamlText = await resp.text();
+      const blob = new Blob([yamlText], { type: "text/yaml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "proxies.yaml";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleImport = useCallback(async () => {
+    if (!importYaml.trim()) return;
+    setImporting(true);
+    setImportStatus(null);
+    try {
+      const resp = await fetch("/api/proxies/import", {
+        method: "POST",
+        headers: { "Content-Type": "text/yaml" },
+        body: importYaml,
+      });
+      const data = await resp.json() as { success?: boolean; added?: number; error?: string };
+      if (!resp.ok) {
+        setImportStatus(data.error ?? t("proxyImportError"));
+      } else {
+        setImportStatus(t("proxyImportSuccess").replace("{count}", String(data.added ?? 0)));
+        setImportYaml("");
+        await proxies.refresh();
+        setTimeout(() => {
+          setShowImport(false);
+          setImportStatus(null);
+        }, 2000);
+      }
+    } catch {
+      setImportStatus(t("proxyImportError"));
+    } finally {
+      setImporting(false);
+    }
+  }, [importYaml, proxies, t]);
+
   return (
     <section>
       {/* Header */}
@@ -106,14 +156,28 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
         </div>
         <div class="flex items-center gap-2">
           {proxies.proxies.length > 0 && (
-            <button
-              onClick={handleCheckAll}
-              disabled={checkingAll}
-              class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors disabled:opacity-50"
-            >
-              {checkingAll ? "..." : t("checkAllHealth")}
-            </button>
+            <>
+              <button
+                onClick={handleExport}
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+              >
+                {t("proxyExport")}
+              </button>
+              <button
+                onClick={handleCheckAll}
+                disabled={checkingAll}
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors disabled:opacity-50"
+              >
+                {checkingAll ? "..." : t("checkAllHealth")}
+              </button>
+            </>
           )}
+          <button
+            onClick={() => setShowImport(!showImport)}
+            class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+          >
+            {t("proxyImport")}
+          </button>
           <button
             onClick={() => setShowAdd(!showAdd)}
             class="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
@@ -122,6 +186,45 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
           </button>
         </div>
       </div>
+
+      {/* Import modal */}
+      {showImport && (
+        <div class="bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl p-4 mb-4">
+          <h3 class="text-sm font-semibold mb-2">{t("proxyImportTitle")}</h3>
+          <textarea
+            class={`${inputCls} w-full h-32 font-mono resize-y`}
+            value={importYaml}
+            onInput={(e) => setImportYaml((e.target as HTMLTextAreaElement).value)}
+            placeholder={t("proxyImportPlaceholder")}
+          />
+          <div class="flex items-center justify-between mt-3">
+            {importStatus && (
+              <p class={`text-xs ${importStatus.includes("fail") || importStatus.includes("error") ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+                {importStatus}
+              </p>
+            )}
+            <div class="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => { setShowImport(false); setImportYaml(""); setImportStatus(null); }}
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+              >
+                {t("cancelBtn")}
+              </button>
+              <button
+                onClick={handleImport}
+                disabled={importing || !importYaml.trim()}
+                class={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  !importing && importYaml.trim()
+                    ? "bg-primary text-white hover:bg-primary/90 cursor-pointer"
+                    : "bg-slate-100 dark:bg-[#21262d] text-slate-400 dark:text-text-dim cursor-not-allowed"
+                }`}
+              >
+                {importing ? "..." : t("proxyImport")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add form */}
       {showAdd && (

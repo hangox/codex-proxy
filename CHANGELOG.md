@@ -8,13 +8,22 @@
 
 ### Changed
 
-- TLS 指纹对齐：curl-impersonate 升级支持 chrome144 profile（v1.5.1），`KNOWN_CHROME_PROFILES` 新增 133/136/142/144
+- TLS 指纹对齐：curl-impersonate 升级支持 chrome144 profile（v1.5.1），`KNOWN_CHROME_PROFILES` 新增 133/142
 - 默认协议从 HTTP/1.1 改为 HTTP/2，匹配真实 Codex Desktop 行为
 - 指纹版本同步至 v26.318.11754（build 1100）
+- 配额自动刷新默认关闭（`refresh_interval_minutes: 0`），用户在 Dashboard 自行设置
+- 配额刷新改为有限并发（默认 10，可配 `quota.concurrency`），不再全量并发
+- Token 刷新走账号分配的代理，永久错误需连续 2 次才标 expired
+- `proxy_api_key` 默认值从 `pwd` 改为 `null`（自动生成）
+- `suppress_desktop_directives` 默认值改为 `false`
 
 ### Added
 
-- Dashboard「基础设置」面板：端口、上游代理、强制 HTTP/1.1 可在 UI 配置，保存到 `data/local.yaml`（更新不覆盖）
+- Dashboard「基础设置」面板：端口、代理、HTTP/1.1、默认模型、推理等级、注入/压制、Token 刷新开关
+- Dashboard「配额设置」面板：新增并发数配置
+- 代理池 YAML 导入导出（`/api/proxies/export`、`/api/proxies/import`）
+- 账号列表分页（默认显示 10 个，可展开）
+- Token 自动刷新开关（`auth.refresh_enabled`）
 - HTTP/2 自动降级：curl 因 H2 错误失败时自动切换 HTTP/1.1（TTL 10 分钟后重试 H2）
   - exit code 16（H2 专属）无条件触发；其他 exit code 需 stderr 含 H2 关键词
   - `force_http11` 配置仍可手动强制 HTTP/1.1

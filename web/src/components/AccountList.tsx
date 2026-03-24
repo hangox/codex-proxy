@@ -17,11 +17,14 @@ interface AccountListProps {
   onImport?: (file: File) => Promise<{ success: boolean; added: number; updated: number; failed: number; errors: string[] }>;
 }
 
+const PAGE_SIZE = 10;
+
 export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing, lastUpdated, proxies, onProxyChange, onExport, onImport }: AccountListProps) {
   const t = useT();
   const { lang } = useI18n();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [warnings, setWarnings] = useState<QuotaWarning[]>([]);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // Poll quota warnings
   useEffect(() => {
@@ -149,11 +152,38 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
             {t("noAccounts")}
           </div>
         ) : (
-          accounts.map((acct, i) => (
+          accounts.slice(0, visibleCount).map((acct, i) => (
             <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} />
           ))
         )}
       </div>
+      {!loading && accounts.length > PAGE_SIZE && (
+        <div class="flex items-center justify-center gap-3 mt-2">
+          {visibleCount < accounts.length ? (
+            <>
+              <button
+                onClick={() => setVisibleCount((c) => Math.min(c + PAGE_SIZE, accounts.length))}
+                class="px-4 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+              >
+                {t("showMore")}
+              </button>
+              <button
+                onClick={() => setVisibleCount(accounts.length)}
+                class="px-4 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+              >
+                {t("showAll")}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setVisibleCount(PAGE_SIZE)}
+              class="px-4 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+            >
+              {t("collapse")}
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

@@ -30,7 +30,22 @@
 
   <a href="https://x.com/IceBearMiner"><img src="https://img.shields.io/badge/Follow-@IceBearMiner-000?style=flat-square&logo=x&logoColor=white" alt="X"></a>
   <a href="https://github.com/icebear0828/codex-proxy/issues"><img src="https://img.shields.io/github/issues/icebear0828/codex-proxy?style=flat-square" alt="Issues"></a>
-  <a href="#-赞赏"><img src="https://img.shields.io/badge/赞赏-微信-07C160?style=flat-square&logo=wechat&logoColor=white" alt="赞赏"></a>
+  <a href="#-赞赏--交流"><img src="https://img.shields.io/badge/赞赏-微信-07C160?style=flat-square&logo=wechat&logoColor=white" alt="赞赏"></a>
+
+  <br><br>
+
+  <table>
+    <tr>
+      <td align="center">
+        <img src="./.github/assets/donate.png" width="180" alt="微信赞赏码"><br>
+        <sub>☕ 赞赏</sub>
+      </td>
+      <td align="center">
+        <img src="./.github/assets/wechat-group.jpg" width="180" alt="微信交流群"><br>
+        <sub>💬 交流群</sub>
+      </td>
+    </tr>
+  </table>
 
 </div>
 
@@ -344,7 +359,7 @@ tls:
   curl_binary: auto                # auto 自动检测 curl-impersonate
   impersonate_profile: chrome144   # Chrome 伪装版本
   proxy_url: null                  # null = 自动检测本地代理
-  force_http11: true               # 解决代理不支持 HTTP/2 的问题
+  force_http11: false              # HTTP/2 失败时自动降级 HTTP/1.1；true = 强制 HTTP/1.1
 ```
 
 ### API 密钥
@@ -454,12 +469,9 @@ server:
 - 格式错误的 chat payload 返回 400 `invalid_json` 错误
 <!-- CHANGELOG:END -->
 
-## ☕ 赞赏
+## ☕ 赞赏 & 交流
 
-<div align="center">
-  <p>觉得有帮助？请作者喝杯咖啡</p>
-  <img src="./.github/assets/donate.png" width="200" alt="微信赞赏码">
-</div>
+觉得有帮助？请作者喝杯咖啡，或加入微信交流群获取使用帮助。二维码见 [页面顶部](#)。
 
 ## ⭐ Star History
 

@@ -4,6 +4,7 @@ export interface QuotaSettingsData {
   refresh_interval_minutes: number;
   warning_thresholds: { primary: number[]; secondary: number[] };
   skip_exhausted: boolean;
+  concurrency: number;
 }
 
 export function useQuotaSettings(apiKey: string | null) {
@@ -47,6 +48,7 @@ export function useQuotaSettings(apiKey: string | null) {
         refresh_interval_minutes: result.refresh_interval_minutes,
         warning_thresholds: result.warning_thresholds,
         skip_exhausted: result.skip_exhausted,
+        concurrency: result.concurrency,
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);

@@ -12,6 +12,7 @@ import { CodexApi } from "../proxy/codex-api.js";
 import { CodexApiError } from "../proxy/codex-types.js";
 import { getConfig } from "../config.js";
 import { jitter } from "../utils/jitter.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { toQuota } from "./quota-utils.js";
 import {
   evaluateThresholds,
@@ -62,8 +63,9 @@ async function fetchQuotaForAllAccounts(
 
   console.log(`[QuotaRefresh] Refreshing quota for ${entries.length} active/rate-limited/banned account(s)`);
 
-  const results = await Promise.allSettled(
-    entries.map(async (entry) => {
+  const results = await mapWithConcurrency(
+    entries,
+    async (entry) => {
       const proxyUrl = proxyPool?.resolveProxyUrl(entry.id);
       const api = new CodexApi(entry.token, entry.accountId, cookieJar, entry.id, proxyUrl);
       const usage = await api.getUsage();
@@ -123,7 +125,8 @@ async function fetchQuotaForAllAccounts(
       if (sw) warnings.push(sw);
 
       updateWarnings(entry.id, warnings);
-    }),
+    },
+    config.quota.concurrency,
   );
 
   let succeeded = 0;
@@ -189,6 +192,13 @@ export function startQuotaRefresh(
   _proxyPool = proxyPool ?? null;
   _usageStats = usageStats ?? null;
 
+  const config = getConfig();
+
+  if (config.quota.refresh_interval_minutes === 0) {
+    console.log("[QuotaRefresh] Auto-refresh disabled (refresh_interval_minutes = 0)");
+    return;
+  }
+
   _refreshTimer = setTimeout(async () => {
     try {
       await fetchQuotaForAllAccounts(accountPool, cookieJar, _proxyPool);
@@ -197,7 +207,6 @@ export function startQuotaRefresh(
     }
   }, INITIAL_DELAY_MS);
 
-  const config = getConfig();
   console.log(`[QuotaRefresh] Scheduled initial quota refresh in 3s (interval: ${config.quota.refresh_interval_minutes}min)`);
 }
 

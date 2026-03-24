@@ -143,12 +143,22 @@ describe("POST /admin/quota-settings", () => {
     expect(data.success).toBe(true);
   });
 
-  it("validates refresh_interval_minutes >= 1", async () => {
+  it("accepts refresh_interval_minutes = 0 (disable auto-refresh)", async () => {
     const app = createWebRoutes(mockPool);
     const res = await app.request("/admin/quota-settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_interval_minutes: 0 }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("validates refresh_interval_minutes >= 0", async () => {
+    const app = createWebRoutes(mockPool);
+    const res = await app.request("/admin/quota-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_interval_minutes: -1 }),
     });
     expect(res.status).toBe(400);
   });

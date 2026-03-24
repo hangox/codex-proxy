@@ -164,6 +164,7 @@ export async function exchangeCode(
  */
 export async function refreshAccessToken(
   refreshToken: string,
+  accountProxyUrl?: string | null,
 ): Promise<TokenResponse> {
   const config = getConfig();
 
@@ -174,11 +175,11 @@ export async function refreshAccessToken(
   });
 
   const resp = await withDirectFallback(
-    (proxyUrl) => curlFetchPost(
+    (fallbackProxyUrl) => curlFetchPost(
       config.auth.oauth_token_endpoint,
       "application/x-www-form-urlencoded",
       body.toString(),
-      { proxyUrl },
+      { proxyUrl: fallbackProxyUrl ?? accountProxyUrl },
     ),
     { tag: "OAuth/refresh", shouldFallback: isCfResponse },
   );

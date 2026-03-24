@@ -64,6 +64,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const refreshScheduler = new RefreshScheduler(accountPool);
   const cookieJar = new CookieJar();
   const proxyPool = new ProxyPool();
+  refreshScheduler.setProxyPool(proxyPool);
 
   // Create Hono app
   const app = new Hono();

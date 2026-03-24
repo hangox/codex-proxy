@@ -32,6 +32,7 @@ const ConfigSchema = z.object({
     jwt_token: z.string().nullable().default(null),
     chatgpt_oauth: z.boolean().default(true),
     refresh_margin_seconds: z.number().min(0).default(300),
+    refresh_enabled: z.boolean().default(true),
     rotation_strategy: z.enum(ROTATION_STRATEGIES).default("least_used"),
     rate_limit_backoff_seconds: z.number().min(1).default(60),
     oauth_client_id: z.string().default("app_EMoamEEZ73f0CkXaXp7hrann"),
@@ -55,7 +56,8 @@ const ConfigSchema = z.object({
     force_http11: z.boolean().default(false),
   }).default({}),
   quota: z.object({
-    refresh_interval_minutes: z.number().min(1).default(5),
+    refresh_interval_minutes: z.number().min(0).default(5),
+    concurrency: z.number().int().min(1).default(10),
     warning_thresholds: z.object({
       primary: z.array(z.number().min(1).max(100)).default([80, 90]),
       secondary: z.array(z.number().min(1).max(100)).default([80, 90]),

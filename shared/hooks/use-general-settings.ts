@@ -4,6 +4,8 @@ export interface GeneralSettingsData {
   port: number;
   proxy_url: string | null;
   force_http11: boolean;
+  inject_desktop_context: boolean;
+  suppress_desktop_directives: boolean;
 }
 
 interface GeneralSettingsSaveResponse extends GeneralSettingsData {
@@ -53,6 +55,8 @@ export function useGeneralSettings(apiKey: string | null) {
         port: result.port,
         proxy_url: result.proxy_url,
         force_http11: result.force_http11,
+        inject_desktop_context: result.inject_desktop_context,
+        suppress_desktop_directives: result.suppress_desktop_directives,
       });
       setRestartRequired(result.restart_required);
       setSaved(true);

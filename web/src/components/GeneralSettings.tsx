@@ -11,20 +11,28 @@ export function GeneralSettings() {
   const [draftPort, setDraftPort] = useState<string | null>(null);
   const [draftProxyUrl, setDraftProxyUrl] = useState<string | null>(null);
   const [draftForceHttp11, setDraftForceHttp11] = useState<boolean | null>(null);
+  const [draftInjectContext, setDraftInjectContext] = useState<boolean | null>(null);
+  const [draftSuppressDirectives, setDraftSuppressDirectives] = useState<boolean | null>(null);
   const [collapsed, setCollapsed] = useState(true);
 
   const currentPort = gs.data?.port ?? 8080;
   const currentProxyUrl = gs.data?.proxy_url ?? "";
   const currentForceHttp11 = gs.data?.force_http11 ?? false;
+  const currentInjectContext = gs.data?.inject_desktop_context ?? false;
+  const currentSuppressDirectives = gs.data?.suppress_desktop_directives ?? false;
 
   const displayPort = draftPort ?? String(currentPort);
   const displayProxyUrl = draftProxyUrl ?? currentProxyUrl;
   const displayForceHttp11 = draftForceHttp11 ?? currentForceHttp11;
+  const displayInjectContext = draftInjectContext ?? currentInjectContext;
+  const displaySuppressDirectives = draftSuppressDirectives ?? currentSuppressDirectives;
 
   const isDirty =
     draftPort !== null ||
     draftProxyUrl !== null ||
-    draftForceHttp11 !== null;
+    draftForceHttp11 !== null ||
+    draftInjectContext !== null ||
+    draftSuppressDirectives !== null;
 
   const handleSave = useCallback(async () => {
     const patch: Record<string, unknown> = {};
@@ -43,11 +51,21 @@ export function GeneralSettings() {
       patch.force_http11 = draftForceHttp11;
     }
 
+    if (draftInjectContext !== null) {
+      patch.inject_desktop_context = draftInjectContext;
+    }
+
+    if (draftSuppressDirectives !== null) {
+      patch.suppress_desktop_directives = draftSuppressDirectives;
+    }
+
     await gs.save(patch);
     setDraftPort(null);
     setDraftProxyUrl(null);
     setDraftForceHttp11(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, gs]);
+    setDraftInjectContext(null);
+    setDraftSuppressDirectives(null);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -118,6 +136,50 @@ export function GeneralSettings() {
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsForceHttp11Hint")}</p>
+          </div>
+
+          {/* Inject Desktop Context */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="inject-desktop-context"
+                checked={displayInjectContext}
+                onChange={(e) => setDraftInjectContext((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="inject-desktop-context" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("generalSettingsInjectContext")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsInjectContextHint")}</p>
+          </div>
+
+          {/* Suppress Desktop Directives */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="suppress-desktop-directives"
+                checked={displaySuppressDirectives}
+                onChange={(e) => setDraftSuppressDirectives((e.target as HTMLInputElement).checked)}
+                disabled={!displayInjectContext}
+                class={`w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary ${
+                  displayInjectContext ? "cursor-pointer" : "cursor-not-allowed opacity-50"
+                }`}
+              />
+              <label
+                for="suppress-desktop-directives"
+                class={`text-xs font-semibold cursor-pointer ${
+                  displayInjectContext
+                    ? "text-slate-700 dark:text-text-main"
+                    : "text-slate-400 dark:text-text-dim"
+                }`}
+              >
+                {t("generalSettingsSuppressDirectives")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsSuppressDirectivesHint")}</p>
           </div>
 
           {/* Save button + status */}

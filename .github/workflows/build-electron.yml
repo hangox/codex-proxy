@@ -1,0 +1,56 @@
+name: Build and Test Electron App
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-electron:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install all workspace dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Setup curl-impersonate
+        run: npx tsx scripts/setup-curl.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install web frontend dependencies
+        run: cd web && npm ci
+
+      - name: Install desktop frontend dependencies
+        run: cd packages/electron/desktop && npm ci
+
+      - name: Build core (web + tsc)
+        run: npm run build
+
+      - name: Build desktop frontend
+        run: cd packages/electron/desktop && npx vite build
+
+      - name: Bundle Electron (esbuild)
+        working-directory: packages/electron
+        run: npm run build
+
+      - name: Prepare pack (copy root resources)
+        working-directory: packages/electron
+        run: node electron/prepare-pack.mjs
+
+      - name: Pack Electron (linux)
+        working-directory: packages/electron
+        run: npx electron-builder --config electron-builder.yml --linux --publish never
+
+      - name: Run E2E Launch Test
+        run: xvfb-run npx vitest run packages/electron/__tests__/launch.test.ts

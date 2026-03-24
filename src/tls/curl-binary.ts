@@ -75,7 +75,7 @@ let _resolved: string | null = null;
 let _isImpersonate = false;
 let _supportsCompressed = true;
 let _tlsArgs: string[] | null = null;
-let _resolvedProfile = "chrome142";
+let _resolvedProfile = "chrome136";
 let _http11Fallback = false;
 let _http11FallbackUntil = 0; // epoch ms — fallback expires after this time
 const HTTP11_FALLBACK_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -132,7 +132,7 @@ export function resolveCurlBinary(): string {
  * Only these versions are valid --impersonate targets.
  * Sorted ascending — update when curl-impersonate adds new profiles.
  */
-const KNOWN_CHROME_PROFILES = [99, 100, 101, 104, 107, 110, 116, 119, 120, 123, 124, 131, 133, 136, 142, 144];
+const KNOWN_CHROME_PROFILES = [99, 100, 101, 104, 107, 110, 116, 119, 120, 123, 124, 131, 133, 136, 142];
 
 /**
  * Map a configured profile to the nearest known-supported version.
@@ -169,7 +169,7 @@ function detectImpersonateSupport(binary: string): string[] {
       timeout: 5000,
     });
     if (helpOutput.includes("--impersonate")) {
-      const configured = getConfig().tls.impersonate_profile ?? "chrome142";
+      const configured = getConfig().tls.impersonate_profile ?? "chrome136";
       const profile = resolveProfile(configured);
       _resolvedProfile = profile;
       console.log(`[TLS] Using --impersonate ${profile}`);

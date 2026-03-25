@@ -1,12 +1,15 @@
 /**
- * Electron auto-updater — checks GitHub Releases for new versions,
- * downloads updates, and installs them on quit.
+ * Electron auto-updater — checks GitHub Releases for new versions.
  *
- * Supports Windows (NSIS), macOS (zip), and Linux (AppImage).
+ * macOS (no code signing): notifies user and opens GitHub release page.
+ * Windows / Linux: downloads and installs via electron-updater.
  */
 
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-updater";
-import { BrowserWindow, dialog } from "electron";
+import { BrowserWindow, dialog, shell } from "electron";
+
+const IS_MAC = process.platform === "darwin";
+const GITHUB_REPO = "icebear0828/codex-proxy";
 
 export interface AutoUpdateState {
   checking: boolean;
@@ -15,6 +18,7 @@ export interface AutoUpdateState {
   downloaded: boolean;
   progress: number;
   version: string | null;
+  releaseUrl: string | null;
   error: string | null;
 }
 
@@ -30,6 +34,7 @@ const state: AutoUpdateState = {
   downloaded: false,
   progress: 0,
   version: null,
+  releaseUrl: null,
   error: null,
 };
 
@@ -46,7 +51,8 @@ export function getAutoUpdateState(): AutoUpdateState {
 
 export function initAutoUpdater(options: AutoUpdaterOptions): void {
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // macOS: ad-hoc signed zips can't be auto-installed — disable to avoid silent failures
+  autoUpdater.autoInstallOnAppQuit = !IS_MAC;
   autoUpdater.allowPrerelease = false;
 
   autoUpdater.on("checking-for-update", () => {
@@ -58,33 +64,57 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
     state.checking = false;
     state.updateAvailable = true;
     state.version = info.version;
+    state.releaseUrl = `https://github.com/${GITHUB_REPO}/releases/tag/v${info.version}`;
     options.rebuildTrayMenu();
 
     // Don't re-prompt if user already dismissed this version
     if (info.version === dismissedVersion) return;
 
     const win = options.getMainWindow();
-    const msgOptions = {
-      type: "info" as const,
-      title: "Update Available",
-      message: `A new version (v${info.version}) is available.`,
-      detail: "Would you like to download it now?",
-      buttons: ["Download", "Later"],
-      defaultId: 0,
-    };
-    const promise = win
-      ? dialog.showMessageBox(win, msgOptions)
-      : dialog.showMessageBox(msgOptions);
-    promise.then(({ response }) => {
-      if (response === 0) {
-        autoUpdater.downloadUpdate().catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error("[AutoUpdater] Download failed:", msg);
-        });
-      } else {
-        dismissedVersion = info.version;
-      }
-    });
+
+    if (IS_MAC) {
+      // macOS: no valid code signature — direct user to download DMG manually
+      const msgOptions = {
+        type: "info" as const,
+        title: "Update Available",
+        message: `A new version (v${info.version}) is available.`,
+        detail: "Open the release page to download the latest DMG?",
+        buttons: ["Open Release Page", "Later"],
+        defaultId: 0,
+      };
+      const promise = win
+        ? dialog.showMessageBox(win, msgOptions)
+        : dialog.showMessageBox(msgOptions);
+      promise.then(({ response }) => {
+        if (response === 0) {
+          shell.openExternal(state.releaseUrl!).catch(() => {});
+        } else {
+          dismissedVersion = info.version;
+        }
+      });
+    } else {
+      const msgOptions = {
+        type: "info" as const,
+        title: "Update Available",
+        message: `A new version (v${info.version}) is available.`,
+        detail: "Would you like to download it now?",
+        buttons: ["Download", "Later"],
+        defaultId: 0,
+      };
+      const promise = win
+        ? dialog.showMessageBox(win, msgOptions)
+        : dialog.showMessageBox(msgOptions);
+      promise.then(({ response }) => {
+        if (response === 0) {
+          autoUpdater.downloadUpdate().catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error("[AutoUpdater] Download failed:", msg);
+          });
+        } else {
+          dismissedVersion = info.version;
+        }
+      });
+    }
   });
 
   autoUpdater.on("update-not-available", () => {
@@ -92,6 +122,7 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
     state.updateAvailable = false;
   });
 
+  // download-progress and update-downloaded are only relevant on Windows/Linux
   autoUpdater.on("download-progress", (progress: ProgressInfo) => {
     state.downloading = true;
     const rounded = Math.round(progress.percent);
@@ -159,7 +190,14 @@ export function checkForUpdateManual(): void {
   });
 }
 
+/** Open release page on macOS; download installer on Windows/Linux. */
 export function downloadUpdate(): void {
+  if (IS_MAC) {
+    if (state.releaseUrl) {
+      shell.openExternal(state.releaseUrl).catch(() => {});
+    }
+    return;
+  }
   autoUpdater.downloadUpdate().catch((err: Error) => {
     console.warn("[AutoUpdater] Download failed:", err.message);
   });

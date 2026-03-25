@@ -257,7 +257,10 @@ function buildTrayMenu(): Electron.MenuItemConstructorOptions[] {
     });
   } else if (updateState.updateAvailable) {
     items.push({
-      label: `Download Update (v${updateState.version})`,
+      // macOS: no code signing — open release page for manual DMG download
+      label: IS_MAC && updateState.releaseUrl
+        ? `Open Release Page (v${updateState.version})`
+        : `Download Update (v${updateState.version})`,
       click: () => downloadUpdate(),
     });
   } else {

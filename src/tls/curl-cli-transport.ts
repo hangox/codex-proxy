@@ -189,17 +189,19 @@ export class CurlCliTransport implements TlsTransport {
 
   /**
    * Simple GET — execFile curl, returns full body as string.
+   * Also captures Set-Cookie headers from the response via -D /dev/stderr.
    */
   get(
     url: string,
     headers: Record<string, string>,
     timeoutSec = 30,
     proxyUrl?: string | null,
-  ): Promise<{ status: number; body: string }> {
+  ): Promise<{ status: number; body: string; setCookieHeaders?: string[] }> {
     const args = [
       ...getChromeTlsArgs(),
       ...resolveProxyArgs(proxyUrl),
       "-s", "-S",
+      "-D", "/dev/stderr",  // dump response headers to stderr
       ...(supportsCompressed() ? ["--compressed"] : []),
       "--max-time", String(timeoutSec),
     ];
@@ -209,7 +211,7 @@ export class CurlCliTransport implements TlsTransport {
     args.push("-w", STATUS_SEPARATOR + "%{http_code}");
     args.push(url);
 
-    return execCurl(args);
+    return execCurlWithHeaders(args);
   }
 
   /**
@@ -262,6 +264,47 @@ export function formatSpawnError(err: Error & { errno?: number; code?: string })
     );
   }
   return `curl spawn error: ${err.message}`;
+}
+
+/** Execute curl via execFile, parse status + Set-Cookie headers from stderr (-D /dev/stderr). */
+function execCurlWithHeaders(args: string[]): Promise<{ status: number; body: string; setCookieHeaders: string[] }> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      resolveCurlBinary(),
+      args,
+      { maxBuffer: 2 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const castErr = err as Error & { errno?: number; code?: string };
+          if (castErr.errno === -86 || err.message.includes("-86")) {
+            reject(new Error(formatSpawnError(castErr)));
+          } else {
+            const exitCode = typeof castErr.code === "string" ? parseInt(castErr.code, 10) : null;
+            checkHttp2Fallback(stderr, Number.isNaN(exitCode) ? null : exitCode);
+            reject(new Error(`curl failed: ${err.message} ${stderr}`));
+          }
+          return;
+        }
+
+        const sepIdx = stdout.lastIndexOf(STATUS_SEPARATOR);
+        if (sepIdx === -1) {
+          reject(new Error("curl: missing status separator in output"));
+          return;
+        }
+
+        const body = stdout.slice(0, sepIdx);
+        const status = parseInt(stdout.slice(sepIdx + STATUS_SEPARATOR.length), 10);
+
+        // Parse Set-Cookie from dumped headers in stderr
+        const setCookieHeaders = stderr
+          .split(/\r?\n/)
+          .filter((line) => /^set-cookie:/i.test(line))
+          .map((line) => line.replace(/^set-cookie:\s*/i, ""));
+
+        resolve({ status, body, setCookieHeaders });
+      },
+    );
+  });
 }
 
 /** Execute curl via execFile and parse the status code from the output. */

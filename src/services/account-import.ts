@@ -5,6 +5,7 @@
 
 import type { AccountPool } from "../auth/account-pool.js";
 import type { AccountInfo } from "../auth/types.js";
+import { extractChatGptAccountId } from "../auth/jwt-utils.js";
 
 export interface ImportEntry {
   token?: string;
@@ -31,6 +32,8 @@ export interface ImportDeps {
     proxyUrl: string | null,
   ): Promise<{ access_token: string; refresh_token?: string }>;
   getProxyUrl(): string | null;
+  /** Optional warmup: establishes session cookies after import to avoid cold-start bans. */
+  warmup?(entryId: string, token: string, accountId: string | null): Promise<void>;
 }
 
 export class AccountImportService {
@@ -65,6 +68,16 @@ export class AccountImportService {
         this.pool.setLabel(entryId, entry.label);
       }
 
+      // Warmup: establish session cookies to avoid cold-start detection
+      if (this.deps.warmup) {
+        const accountId = extractChatGptAccountId(resolved.token);
+        try {
+          await this.deps.warmup(entryId, resolved.token, accountId);
+        } catch (err) {
+          console.warn(`[Import] Warmup failed for ${entryId}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
       if (existingIds.has(entryId)) {
         updated++;
       } else {
@@ -95,6 +108,16 @@ export class AccountImportService {
 
     const entryId = this.pool.addAccount(resolved.token, resolved.rt);
     this.scheduler.scheduleOne(entryId, resolved.token);
+
+    // Warmup: establish session cookies to avoid cold-start detection
+    if (this.deps.warmup) {
+      const accountId = extractChatGptAccountId(resolved.token);
+      try {
+        await this.deps.warmup(entryId, resolved.token, accountId);
+      } catch (err) {
+        console.warn(`[Import] Warmup failed for ${entryId}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
 
     const account = this.pool.getAccounts().find((a) => a.id === entryId);
     if (!account) {

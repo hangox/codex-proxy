@@ -39,7 +39,7 @@ export interface TlsTransport {
     headers: Record<string, string>,
     timeoutSec?: number,
     proxyUrl?: string | null,
-  ): Promise<{ status: number; body: string }>;
+  ): Promise<{ status: number; body: string; setCookieHeaders?: string[] }>;
 
   /**
    * Simple (non-streaming) POST — returns full body as string.

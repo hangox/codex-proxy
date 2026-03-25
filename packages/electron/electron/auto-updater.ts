@@ -7,9 +7,7 @@
 
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-updater";
 import { BrowserWindow, dialog, shell } from "electron";
-
-const IS_MAC = process.platform === "darwin";
-const GITHUB_REPO = "icebear0828/codex-proxy";
+import { IS_MAC, GITHUB_REPO } from "./constants.js";
 
 export interface AutoUpdateState {
   checking: boolean;
@@ -71,50 +69,34 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
     if (info.version === dismissedVersion) return;
 
     const win = options.getMainWindow();
-
-    if (IS_MAC) {
-      // macOS: no valid code signature — direct user to download DMG manually
-      const msgOptions = {
-        type: "info" as const,
-        title: "Update Available",
-        message: `A new version (v${info.version}) is available.`,
-        detail: "Open the release page to download the latest DMG?",
-        buttons: ["Open Release Page", "Later"],
-        defaultId: 0,
-      };
-      const promise = win
-        ? dialog.showMessageBox(win, msgOptions)
-        : dialog.showMessageBox(msgOptions);
-      promise.then(({ response }) => {
-        if (response === 0) {
-          shell.openExternal(state.releaseUrl!).catch(() => {});
-        } else {
-          dismissedVersion = info.version;
-        }
-      });
-    } else {
-      const msgOptions = {
-        type: "info" as const,
-        title: "Update Available",
-        message: `A new version (v${info.version}) is available.`,
-        detail: "Would you like to download it now?",
-        buttons: ["Download", "Later"],
-        defaultId: 0,
-      };
-      const promise = win
-        ? dialog.showMessageBox(win, msgOptions)
-        : dialog.showMessageBox(msgOptions);
-      promise.then(({ response }) => {
-        if (response === 0) {
-          autoUpdater.downloadUpdate().catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.error("[AutoUpdater] Download failed:", msg);
+    const msgOptions = {
+      type: "info" as const,
+      title: "Update Available",
+      message: `A new version (v${info.version}) is available.`,
+      detail: IS_MAC
+        ? "Open the release page to download the latest DMG?"
+        : "Would you like to download it now?",
+      buttons: IS_MAC ? ["Open Release Page", "Later"] : ["Download", "Later"],
+      defaultId: 0,
+    };
+    const promise = win
+      ? dialog.showMessageBox(win, msgOptions)
+      : dialog.showMessageBox(msgOptions);
+    promise.then(({ response }) => {
+      if (response === 0) {
+        if (IS_MAC) {
+          shell.openExternal(state.releaseUrl!).catch((err: unknown) => {
+            console.error("[AutoUpdater] Failed to open release page:", err instanceof Error ? err.message : err);
           });
         } else {
-          dismissedVersion = info.version;
+          autoUpdater.downloadUpdate().catch((err: unknown) => {
+            console.error("[AutoUpdater] Download failed:", err instanceof Error ? err.message : err);
+          });
         }
-      });
-    }
+      } else {
+        dismissedVersion = info.version;
+      }
+    });
   });
 
   autoUpdater.on("update-not-available", () => {
@@ -122,7 +104,6 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
     state.updateAvailable = false;
   });
 
-  // download-progress and update-downloaded are only relevant on Windows/Linux
   autoUpdater.on("download-progress", (progress: ProgressInfo) => {
     state.downloading = true;
     const rounded = Math.round(progress.percent);
@@ -194,7 +175,9 @@ export function checkForUpdateManual(): void {
 export function downloadUpdate(): void {
   if (IS_MAC) {
     if (state.releaseUrl) {
-      shell.openExternal(state.releaseUrl).catch(() => {});
+      shell.openExternal(state.releaseUrl).catch((err: unknown) => {
+        console.error("[AutoUpdater] Failed to open release page:", err instanceof Error ? err.message : err);
+      });
     }
     return;
   }
@@ -208,6 +191,7 @@ export function installUpdate(): void {
 }
 
 export function stopAutoUpdater(): void {
+  autoUpdater.removeAllListeners();
   if (initialTimer) {
     clearTimeout(initialTimer);
     initialTimer = null;

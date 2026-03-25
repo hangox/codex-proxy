@@ -17,8 +17,8 @@ import {
   downloadUpdate,
   stopAutoUpdater,
 } from "./auto-updater.js";
+import { IS_MAC } from "./constants.js";
 
-const IS_MAC = process.platform === "darwin";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;

@@ -492,23 +492,20 @@ server:
 ### [Unreleased]
 
 **Added**
-- Dashboard「基础设置」面板：端口、代理、HTTP/1.1、默认模型、推理等级、注入/压制、Token 刷新开关
-- Dashboard「配额设置」面板：新增并发数配置
-- 代理池 YAML 导入导出（`/api/proxies/export`、`/api/proxies/import`）
-- 账号列表分页（默认显示 10 个，可展开）
-- Token 自动刷新开关（`auth.refresh_enabled`）
+- 账号标签（label）：支持为每个账号设置自定义标签（如 "Team Alpha"、"个人"），解决同一邮箱加入多个 team 无法区分的问题。AccountCard 有标签时显示标签为主标题，hover 显示编辑按钮
+- Refresh-token-only 导入：批量导入现在支持只传 `refreshToken`（无需有效 JWT），后端自动用 RT 换取 AT 后添加账号
+- 导入模板下载：AccountImportExport 工具栏新增模板下载按钮，包含 token-only、RT-only、label 等示例格式
+- 导入支持 label 字段：批量导入时可为每条记录指定 label
+- Claude Code Setup 卡片：Dashboard 按 Opus/Sonnet/Haiku/自定义 层级一键复制环境变量（推荐模型 gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex）
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
-- TLS 指纹对齐：curl-impersonate 升级支持 chrome144 profile（v1.5.1），`KNOWN_CHROME_PROFILES` 新增 133/142
-- 默认协议从 HTTP/1.1 改为 HTTP/2，匹配真实 Codex Desktop 行为
-- 指纹版本同步至 v26.318.11754（build 1100）
-- 配额自动刷新默认关闭（`refresh_interval_minutes: 0`），用户在 Dashboard 自行设置
-- 配额刷新改为有限并发（默认 10，可配 `quota.concurrency`），不再全量并发
-- ...（[查看全部](./CHANGELOG.md)）
+- AccountList 头部重做：标题行 + 导航标签 + 操作工具栏三层分离，按钮带文字标签，分页信息更清晰（`10 / 908` + 展开全部）
+- 暗色主题修复：图表 SVG 线条颜色改用 CSS 变量（dark mode 下更亮）、代码块 light mode 背景修正、Toggle 开关 thumb 对比度提升
 **Fixed**
-- 配置 overlay 机制：Dashboard 设置写入 `data/local.yaml`（gitignored），不再修改 `config/default.yaml`
-  - `git pull` 不会覆盖用户自定义设置（proxy_api_key、rotation_strategy、quota 等）
-  - `config/default.yaml` 的 `proxy_api_key` 默认值改为 `null`（自动生成）
+- Electron 模式下 `data/local.yaml` 中的 `server.host` 配置不生效——Electron 硬编码 `127.0.0.1` 覆盖了用户配置，现在 `local.yaml` 显式设置的 host 优先于启动参数（#175）
+- Dashboard 清空上游代理后 reload 被环境变量 `HTTPS_PROXY` 覆盖回来——`local.yaml` 显式设置的 `proxy_url` 现在优先于环境变量
+- Release 资产命名统一：`artifactName` 模板强制 `Codex-Proxy-{version}-{os}-{arch}.{ext}`，消除 `Codex.Proxy` vs `Codex-Proxy` 重复，x64 DMG 现在明确标注架构（`mac-x64`）
+- macOS x64 构建前清理旧资产，避免 release 页面出现重复文件
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

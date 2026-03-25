@@ -31,6 +31,11 @@ vi.mock("electron", () => ({
   },
 }));
 
+vi.mock("../electron/constants.js", () => ({
+  IS_MAC: false,
+  GITHUB_REPO: "icebear0828/codex-proxy",
+}));
+
 // Import after mocks are set up
 const { getAutoUpdateState, initAutoUpdater, stopAutoUpdater } = await import(
   "../electron/auto-updater.js"

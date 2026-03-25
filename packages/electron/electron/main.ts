@@ -193,7 +193,7 @@ function createWindow(): void {
   });
 
   const port = serverHandle?.port ?? 8080;
-  mainWindow.loadURL(`http://127.0.0.1:${port}/desktop`);
+  mainWindow.loadURL(`http://127.0.0.1:${port}/`);
 
   // Mark <html> with platform class so frontend CSS can adapt
   mainWindow.webContents.on("did-finish-load", () => {

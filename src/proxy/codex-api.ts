@@ -92,6 +92,41 @@ export class CodexApi {
     return fetchUsage(headers, this.proxyUrl);
   }
 
+  /**
+   * Warmup request: GET /codex/usage with cookie capture.
+   * Establishes session cookies (cf_clearance, __cf_bm, etc.) so subsequent
+   * API requests look like a continuous session rather than a cold start.
+   * Returns usage data if successful, null on any error.
+   */
+  async warmup(): Promise<CodexUsageResponse | null> {
+    const config = getConfig();
+    const transport = getTransport();
+    const url = `${config.api.base_url}/codex/usage`;
+    const headers = this.applyHeaders(
+      buildHeaders(this.token, this.accountId),
+    );
+    headers["Accept"] = "application/json";
+    if (!transport.isImpersonate()) {
+      headers["Accept-Encoding"] = "gzip, deflate";
+    }
+
+    try {
+      let body: string;
+      if (transport.getWithCookies) {
+        const result = await transport.getWithCookies(url, headers, 15, this.proxyUrl);
+        this.captureCookies(result.setCookieHeaders);
+        body = result.body;
+      } else {
+        const result = await transport.get(url, headers, 15, this.proxyUrl);
+        body = result.body;
+      }
+      const parsed = JSON.parse(body) as CodexUsageResponse;
+      return parsed.rate_limit ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Fetch available models from the Codex backend. Probes known endpoints; returns null if none respond. */
   async getModels(): Promise<BackendModelEntry[] | null> {
     const headers = this.applyHeaders(

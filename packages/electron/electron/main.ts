@@ -17,8 +17,8 @@ import {
   downloadUpdate,
   stopAutoUpdater,
 } from "./auto-updater.js";
+import { IS_MAC } from "./constants.js";
 
-const IS_MAC = process.platform === "darwin";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -193,7 +193,7 @@ function createWindow(): void {
   });
 
   const port = serverHandle?.port ?? 8080;
-  mainWindow.loadURL(`http://127.0.0.1:${port}/desktop`);
+  mainWindow.loadURL(`http://127.0.0.1:${port}/`);
 
   // Mark <html> with platform class so frontend CSS can adapt
   mainWindow.webContents.on("did-finish-load", () => {
@@ -257,7 +257,10 @@ function buildTrayMenu(): Electron.MenuItemConstructorOptions[] {
     });
   } else if (updateState.updateAvailable) {
     items.push({
-      label: `Download Update (v${updateState.version})`,
+      // macOS: no code signing — open release page for manual DMG download
+      label: IS_MAC && updateState.releaseUrl
+        ? `Open Release Page (v${updateState.version})`
+        : `Download Update (v${updateState.version})`,
       click: () => downloadUpdate(),
     });
   } else {

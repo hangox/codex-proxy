@@ -199,9 +199,21 @@ export function UpdateModal({
                 </span>
               </div>
             ) : (
-              <span class="text-xs text-slate-500 dark:text-text-dim italic">
-                {t("electronUpdateHint")}
-              </span>
+              // electron mode: no code signing on macOS — direct user to download DMG
+              release?.url ? (
+                <a
+                  href={release.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="px-4 py-2 text-xs font-semibold bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+                >
+                  {t("electronDownloadBtn")}
+                </a>
+              ) : (
+                <span class="text-xs text-slate-500 dark:text-text-dim italic">
+                  {t("electronUpdateHint")}
+                </span>
+              )
             )}
           </div>
         )}

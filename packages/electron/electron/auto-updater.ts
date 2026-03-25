@@ -1,12 +1,13 @@
 /**
- * Electron auto-updater — checks GitHub Releases for new versions,
- * downloads updates, and installs them on quit.
+ * Electron auto-updater — checks GitHub Releases for new versions.
  *
- * Supports Windows (NSIS), macOS (zip), and Linux (AppImage).
+ * macOS (no code signing): notifies user and opens GitHub release page.
+ * Windows / Linux: downloads and installs via electron-updater.
  */
 
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-updater";
-import { BrowserWindow, dialog } from "electron";
+import { BrowserWindow, dialog, shell } from "electron";
+import { IS_MAC, GITHUB_REPO } from "./constants.js";
 
 export interface AutoUpdateState {
   checking: boolean;
@@ -15,6 +16,7 @@ export interface AutoUpdateState {
   downloaded: boolean;
   progress: number;
   version: string | null;
+  releaseUrl: string | null;
   error: string | null;
 }
 
@@ -30,6 +32,7 @@ const state: AutoUpdateState = {
   downloaded: false,
   progress: 0,
   version: null,
+  releaseUrl: null,
   error: null,
 };
 
@@ -46,7 +49,8 @@ export function getAutoUpdateState(): AutoUpdateState {
 
 export function initAutoUpdater(options: AutoUpdaterOptions): void {
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // macOS: ad-hoc signed zips can't be auto-installed — disable to avoid silent failures
+  autoUpdater.autoInstallOnAppQuit = !IS_MAC;
   autoUpdater.allowPrerelease = false;
 
   autoUpdater.on("checking-for-update", () => {
@@ -58,6 +62,7 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
     state.checking = false;
     state.updateAvailable = true;
     state.version = info.version;
+    state.releaseUrl = `https://github.com/${GITHUB_REPO}/releases/tag/v${info.version}`;
     options.rebuildTrayMenu();
 
     // Don't re-prompt if user already dismissed this version
@@ -68,8 +73,10 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
       type: "info" as const,
       title: "Update Available",
       message: `A new version (v${info.version}) is available.`,
-      detail: "Would you like to download it now?",
-      buttons: ["Download", "Later"],
+      detail: IS_MAC
+        ? "Open the release page to download the latest DMG?"
+        : "Would you like to download it now?",
+      buttons: IS_MAC ? ["Open Release Page", "Later"] : ["Download", "Later"],
       defaultId: 0,
     };
     const promise = win
@@ -77,10 +84,15 @@ export function initAutoUpdater(options: AutoUpdaterOptions): void {
       : dialog.showMessageBox(msgOptions);
     promise.then(({ response }) => {
       if (response === 0) {
-        autoUpdater.downloadUpdate().catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error("[AutoUpdater] Download failed:", msg);
-        });
+        if (IS_MAC) {
+          shell.openExternal(state.releaseUrl!).catch((err: unknown) => {
+            console.error("[AutoUpdater] Failed to open release page:", err instanceof Error ? err.message : err);
+          });
+        } else {
+          autoUpdater.downloadUpdate().catch((err: unknown) => {
+            console.error("[AutoUpdater] Download failed:", err instanceof Error ? err.message : err);
+          });
+        }
       } else {
         dismissedVersion = info.version;
       }
@@ -159,7 +171,16 @@ export function checkForUpdateManual(): void {
   });
 }
 
+/** Open release page on macOS; download installer on Windows/Linux. */
 export function downloadUpdate(): void {
+  if (IS_MAC) {
+    if (state.releaseUrl) {
+      shell.openExternal(state.releaseUrl).catch((err: unknown) => {
+        console.error("[AutoUpdater] Failed to open release page:", err instanceof Error ? err.message : err);
+      });
+    }
+    return;
+  }
   autoUpdater.downloadUpdate().catch((err: Error) => {
     console.warn("[AutoUpdater] Download failed:", err.message);
   });
@@ -170,6 +191,7 @@ export function installUpdate(): void {
 }
 
 export function stopAutoUpdater(): void {
+  autoUpdater.removeAllListeners();
   if (initialTimer) {
     clearTimeout(initialTimer);
     initialTimer = null;

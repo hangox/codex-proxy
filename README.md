@@ -499,15 +499,15 @@ server:
 - Claude Code Setup 卡片：Dashboard 按 Opus/Sonnet/Haiku/自定义 层级一键复制环境变量（推荐模型 gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex）
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
+- 版本号从 1.0.x 跳到 2.0.0，CI bump workflow 改为从 package.json 读取 major.minor 系列
 - **Phase 3 — Service 层提取**：`src/routes/accounts.ts` 从 518 行降至 172 行（-67%），业务逻辑拆分到 `src/services/account-import.ts`、`account-query.ts`、`account-mutation.ts` 三个 service 类，全部通过 constructor DI，29 个新测试零 `vi.mock()`
 - **Phase 2 — Config DI**：`src/config.ts` 新增 `setConfigForTesting()`/`resetConfigForTesting()`，AccountPool constructor 支持 `rotationStrategy`/`initialToken`/`rateLimitBackoffSeconds` 注入，translation 函数支持 `modelConfig` 可选参数。测试中 `vi.mock("config.js")` 从 9 处降至 2 处
 - AccountList 头部重做：标题行 + 导航标签 + 操作工具栏三层分离，按钮带文字标签，分页信息更清晰（`10 / 908` + 展开全部）
 - 暗色主题修复：图表 SVG 线条颜色改用 CSS 变量（dark mode 下更亮）、代码块 light mode 背景修正、Toggle 开关 thumb 对比度提升
 **Fixed**
-- Electron 模式下 `data/local.yaml` 中的 `server.host` 配置不生效——Electron 硬编码 `127.0.0.1` 覆盖了用户配置，现在 `local.yaml` 显式设置的 host 优先于启动参数（#175）
-- Dashboard 清空上游代理后 reload 被环境变量 `HTTPS_PROXY` 覆盖回来——`local.yaml` 显式设置的 `proxy_url` 现在优先于环境变量
-- Release 资产命名统一：`artifactName` 模板强制 `Codex-Proxy-{version}-{os}-{arch}.{ext}`，消除 `Codex.Proxy` vs `Codex-Proxy` 重复，x64 DMG 现在明确标注架构（`mac-x64`）
-- macOS x64 构建前清理旧资产，避免 release 页面出现重复文件
+- 导入/导出按钮图标反了——导入改为下箭头、导出改为上箭头（#191）
+- Windows 桌面端按钮溢出——Electron 最小宽度从 680px 提高到 800px，覆盖 Tailwind md: 断点（#192）
+- `local.yaml` 的 `server.host` 覆盖已有测试验证，Electron 模式下正确生效（#190）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

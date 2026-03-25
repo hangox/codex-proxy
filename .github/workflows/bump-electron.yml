@@ -99,7 +99,12 @@ jobs:
           "
 
           git add package.json packages/electron/package.json
-          git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          # If version already matches (e.g. first tag in a new series), skip the commit
+          if git diff --cached --quiet; then
+            echo "package.json already at ${NEW_VERSION}, tagging without version commit"
+          else
+            git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          fi
           git tag -a "$NEW_TAG" -m "Release ${NEW_TAG}"
 
           # Retry push with rebase on conflict (other workflows may push concurrently)

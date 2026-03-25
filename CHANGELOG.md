@@ -6,7 +6,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 导入/导出按钮图标反了——导入改为下箭头、导出改为上箭头（#191）
+- Windows 桌面端按钮溢出——Electron 最小宽度从 680px 提高到 800px，覆盖 Tailwind md: 断点（#192）
+- `local.yaml` 的 `server.host` 覆盖已有测试验证，Electron 模式下正确生效（#190）
+
 ### Changed
+
+- 版本号从 1.0.x 跳到 2.0.0，CI bump workflow 改为从 package.json 读取 major.minor 系列
 
 - **Phase 3 — Service 层提取**：`src/routes/accounts.ts` 从 518 行降至 172 行（-67%），业务逻辑拆分到 `src/services/account-import.ts`、`account-query.ts`、`account-mutation.ts` 三个 service 类，全部通过 constructor DI，29 个新测试零 `vi.mock()`
 - **Phase 2 — Config DI**：`src/config.ts` 新增 `setConfigForTesting()`/`resetConfigForTesting()`，AccountPool constructor 支持 `rotationStrategy`/`initialToken`/`rateLimitBackoffSeconds` 注入，translation 函数支持 `modelConfig` 可选参数。测试中 `vi.mock("config.js")` 从 9 处降至 2 处

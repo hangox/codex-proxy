@@ -27,10 +27,26 @@ jobs:
       - name: Check for new commits since last tag
         id: check
         run: |
-          LAST_TAG=$(git tag --sort=-v:refname | grep '^v' | head -1 || echo "")
+          # Read major.minor from package.json (source of truth for version series)
+          PKG_VERSION=$(node -e "console.log(require('./package.json').version)")
+          IFS='.' read -r PKG_MAJOR PKG_MINOR _PKG_PATCH <<< "$PKG_VERSION"
+          SERIES="${PKG_MAJOR}.${PKG_MINOR}"
+
+          # Find latest tag in this series (e.g. v2.0.x)
+          LAST_TAG=$(git tag --sort=-v:refname | grep "^v${SERIES}\." | head -1 || echo "")
           if [ -z "$LAST_TAG" ]; then
-            echo "No previous tag, skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            # First release in this series — use any previous tag for commit check
+            LAST_TAG=$(git tag --sort=-v:refname | grep '^v' | head -1 || echo "")
+            if [ -z "$LAST_TAG" ]; then
+              echo "No previous tag, skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "New series ${SERIES}.x — will start at ${SERIES}.0"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "new_series=true" >> "$GITHUB_OUTPUT"
+            echo "series=$SERIES" >> "$GITHUB_OUTPUT"
+            echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -46,6 +62,7 @@ jobs:
           echo "Found $NEW_COMMITS new commit(s) since $LAST_TAG"
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+          echo "series=$SERIES" >> "$GITHUB_OUTPUT"
 
       - name: Bump version + tag
         id: bump
@@ -54,11 +71,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          LAST_TAG="${{ steps.check.outputs.last_tag }}"
-          CURRENT="${LAST_TAG#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          SERIES="${{ steps.check.outputs.series }}"
+          if [ "${{ steps.check.outputs.new_series }}" = "true" ]; then
+            NEW_VERSION="${SERIES}.0"
+          else
+            LAST_TAG="${{ steps.check.outputs.last_tag }}"
+            CURRENT="${LAST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+            NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
           NEW_TAG="v${NEW_VERSION}"
 
           # Check tag doesn't already exist
@@ -78,7 +99,12 @@ jobs:
           "
 
           git add package.json packages/electron/package.json
-          git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          # If version already matches (e.g. first tag in a new series), skip the commit
+          if git diff --cached --quiet; then
+            echo "package.json already at ${NEW_VERSION}, tagging without version commit"
+          else
+            git commit -m "chore: bump version to ${NEW_VERSION} [skip ci]"
+          fi
           git tag -a "$NEW_TAG" -m "Release ${NEW_TAG}"
 
           # Retry push with rebase on conflict (other workflows may push concurrently)

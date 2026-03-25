@@ -111,9 +111,16 @@ export class CodexApi {
     }
 
     try {
-      const result = await transport.get(url, headers, 15, this.proxyUrl);
-      if (result.setCookieHeaders) this.captureCookies(result.setCookieHeaders);
-      const parsed = JSON.parse(result.body) as CodexUsageResponse;
+      let body: string;
+      if (transport.getWithCookies) {
+        const result = await transport.getWithCookies(url, headers, 15, this.proxyUrl);
+        this.captureCookies(result.setCookieHeaders);
+        body = result.body;
+      } else {
+        const result = await transport.get(url, headers, 15, this.proxyUrl);
+        body = result.body;
+      }
+      const parsed = JSON.parse(body) as CodexUsageResponse;
       return parsed.rate_limit ? parsed : null;
     } catch {
       return null;

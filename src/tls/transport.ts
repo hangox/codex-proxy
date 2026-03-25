@@ -39,7 +39,15 @@ export interface TlsTransport {
     headers: Record<string, string>,
     timeoutSec?: number,
     proxyUrl?: string | null,
-  ): Promise<{ status: number; body: string; setCookieHeaders?: string[] }>;
+  ): Promise<{ status: number; body: string }>;
+
+  /** GET with Set-Cookie header capture. Used by warmup for session cookie establishment. */
+  getWithCookies?(
+    url: string,
+    headers: Record<string, string>,
+    timeoutSec?: number,
+    proxyUrl?: string | null,
+  ): Promise<{ status: number; body: string; setCookieHeaders: string[] }>;
 
   /**
    * Simple (non-streaming) POST — returns full body as string.

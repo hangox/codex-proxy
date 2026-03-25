@@ -189,19 +189,44 @@ export class CurlCliTransport implements TlsTransport {
 
   /**
    * Simple GET — execFile curl, returns full body as string.
-   * Also captures Set-Cookie headers from the response via -D /dev/stderr.
    */
   get(
     url: string,
     headers: Record<string, string>,
     timeoutSec = 30,
     proxyUrl?: string | null,
-  ): Promise<{ status: number; body: string; setCookieHeaders?: string[] }> {
+  ): Promise<{ status: number; body: string }> {
     const args = [
       ...getChromeTlsArgs(),
       ...resolveProxyArgs(proxyUrl),
       "-s", "-S",
-      "-D", "/dev/stderr",  // dump response headers to stderr
+      ...(supportsCompressed() ? ["--compressed"] : []),
+      "--max-time", String(timeoutSec),
+    ];
+
+    pushHeaderArgs(args, headers);
+    args.push("-H", "Expect:");
+    args.push("-w", STATUS_SEPARATOR + "%{http_code}");
+    args.push(url);
+
+    return execCurl(args);
+  }
+
+  /**
+   * GET with Set-Cookie header capture via -D /dev/stderr.
+   * Used by warmup to establish session cookies after account import.
+   */
+  getWithCookies(
+    url: string,
+    headers: Record<string, string>,
+    timeoutSec = 30,
+    proxyUrl?: string | null,
+  ): Promise<{ status: number; body: string; setCookieHeaders: string[] }> {
+    const args = [
+      ...getChromeTlsArgs(),
+      ...resolveProxyArgs(proxyUrl),
+      "-s", "-S",
+      "-D", "/dev/stderr",
       ...(supportsCompressed() ? ["--compressed"] : []),
       "--max-time", String(timeoutSec),
     ];

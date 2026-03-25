@@ -5,12 +5,11 @@
  * - toInfo() populating cached quota
  */
 
-// MUST be imported before @src/ imports to activate vi.mock declarations
-import "@helpers/account-pool-setup.js";
-
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createMemoryPersistence } from "@helpers/account-pool-factory.js";
 import { createValidJwt } from "@helpers/jwt.js";
+import { createMockConfig } from "@helpers/config.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import { AccountPool } from "../account-pool.js";
 import type { CodexQuota } from "../types.js";
 
@@ -34,8 +33,11 @@ describe("AccountPool quota methods", () => {
   let pool: AccountPool;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    setConfigForTesting(createMockConfig());
     pool = new AccountPool({ persistence: createMemoryPersistence() });
+  });
+  afterEach(() => {
+    resetConfigForTesting();
   });
 
   describe("updateCachedQuota", () => {

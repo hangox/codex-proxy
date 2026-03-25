@@ -4,20 +4,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createMockConfig } from "@helpers/config.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 
 // ── Mocks ────────────────────────────────────────────────────────────
-
-let mockConfig = {
-  auth: {
-    refresh_enabled: true,
-    refresh_margin_seconds: 300,
-    refresh_concurrency: 2,
-  },
-};
-
-vi.mock("../../config.js", () => ({
-  getConfig: () => mockConfig,
-}));
 
 // Track concurrent calls
 let activeCalls = 0;
@@ -101,17 +91,14 @@ describe("RefreshScheduler concurrency control", () => {
     activeCalls = 0;
     peakConcurrency = 0;
     callLog.length = 0;
-    mockConfig = {
-      auth: {
-        refresh_enabled: true,
-        refresh_margin_seconds: 300,
-        refresh_concurrency: 2,
-      },
-    };
+    setConfigForTesting(createMockConfig({
+      auth: { refresh_enabled: true, refresh_margin_seconds: 300, refresh_concurrency: 2 },
+    }));
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    resetConfigForTesting();
   });
 
   it("limits concurrent refreshes to configured value", async () => {
@@ -132,7 +119,9 @@ describe("RefreshScheduler concurrency control", () => {
   });
 
   it("respects higher concurrency config", async () => {
-    mockConfig.auth.refresh_concurrency = 4;
+    setConfigForTesting(createMockConfig({
+      auth: { refresh_enabled: true, refresh_margin_seconds: 300, refresh_concurrency: 4 },
+    }));
     const pool = makePool(8);
 
     const { RefreshScheduler } = await import("../refresh-scheduler.js");
@@ -147,7 +136,9 @@ describe("RefreshScheduler concurrency control", () => {
   });
 
   it("works with concurrency=1 (serial)", async () => {
-    mockConfig.auth.refresh_concurrency = 1;
+    setConfigForTesting(createMockConfig({
+      auth: { refresh_enabled: true, refresh_margin_seconds: 300, refresh_concurrency: 1 },
+    }));
     const pool = makePool(3);
 
     const { RefreshScheduler } = await import("../refresh-scheduler.js");

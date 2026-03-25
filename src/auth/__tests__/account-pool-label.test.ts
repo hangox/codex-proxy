@@ -2,17 +2,19 @@
  * Tests for account label (user-editable disambiguation).
  */
 
-// MUST be imported before @src/ imports to activate vi.mock declarations
-import "@helpers/account-pool-setup.js";
-
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createMemoryPersistence } from "@helpers/account-pool-factory.js";
 import { createValidJwt } from "@helpers/jwt.js";
+import { createMockConfig } from "@helpers/config.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import { AccountPool } from "../account-pool.js";
 
 describe("account label", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    setConfigForTesting(createMockConfig());
+  });
+  afterEach(() => {
+    resetConfigForTesting();
   });
 
   it("new accounts have label=null", () => {

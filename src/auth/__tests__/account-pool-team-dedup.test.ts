@@ -6,19 +6,21 @@
  * See: https://github.com/icebear0828/codex-proxy/issues/126
  */
 
-// MUST be imported before @src/ imports to activate vi.mock declarations
-import "@helpers/account-pool-setup.js";
-
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createMemoryPersistence } from "@helpers/account-pool-factory.js";
 import { createValidJwt } from "@helpers/jwt.js";
+import { createMockConfig } from "@helpers/config.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import { AccountPool } from "../account-pool.js";
 
 const TEAM_ACCOUNT_ID = "acct-team-abc123";
 
 describe("team account dedup (issue #126)", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    setConfigForTesting(createMockConfig());
+  });
+  afterEach(() => {
+    resetConfigForTesting();
   });
 
   it("allows multiple team members with same accountId but different userId", () => {

@@ -5,22 +5,29 @@
  * until rate-limited or quota-exhausted.
  */
 
-// MUST be imported before @src/ imports to activate vi.mock declarations
-import "@helpers/account-pool-setup.js";
-
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createMemoryPersistence } from "@helpers/account-pool-factory.js";
 import { createMockConfig } from "@helpers/config.js";
 import { createValidJwt } from "@helpers/jwt.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import { AccountPool } from "../account-pool.js";
-import { getConfig } from "@src/config.js";
-import { getModelPlanTypes } from "@src/models/model-store.js";
+import { getModelPlanTypes } from "../../models/model-store.js";
+
+// Only model-store needs mocking (for model-aware selection test)
+vi.mock("../../models/model-store.js", () => ({
+  getModelPlanTypes: vi.fn(() => []),
+  isPlanFetched: vi.fn(() => true),
+  getModelInfo: vi.fn(() => null),
+  parseModelName: vi.fn((m: string) => ({ modelId: m, serviceTier: null, reasoningEffort: null })),
+}));
 
 describe("account-pool sticky strategy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default to sticky strategy for all tests in this suite
-    vi.mocked(getConfig).mockReturnValue(createMockConfig({ auth: { rotation_strategy: "sticky" } }));
+    setConfigForTesting(createMockConfig({ auth: { rotation_strategy: "sticky" } }));
+  });
+  afterEach(() => {
+    resetConfigForTesting();
   });
 
   it("selects account with most recent last_used", () => {
@@ -119,7 +126,7 @@ describe("account-pool sticky strategy", () => {
   });
 
   it("least_used still works (regression guard)", () => {
-    vi.mocked(getConfig).mockReturnValue(createMockConfig({ auth: { rotation_strategy: "least_used" } }));
+    setConfigForTesting(createMockConfig({ auth: { rotation_strategy: "least_used" } }));
 
     const pool = new AccountPool({ persistence: createMemoryPersistence() });
     const idA = pool.addAccount(createValidJwt({ accountId: "a", email: "a@test.com", planType: "free" }));

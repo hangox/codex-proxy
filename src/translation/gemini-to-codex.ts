@@ -15,6 +15,7 @@ import type {
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
 import { buildInstructions, budgetToEffort, prepareSchema } from "./shared-utils.js";
+import type { ModelConfigOverride } from "./shared-utils.js";
 import { geminiToolsToCodex, geminiToolConfigToCodex } from "./tool-format.js";
 
 /**
@@ -166,6 +167,7 @@ export interface GeminiTranslationResult {
 export function translateGeminiToCodexRequest(
   req: GeminiGenerateContentRequest,
   geminiModel: string,
+  modelConfig?: ModelConfigOverride,
 ): GeminiTranslationResult {
   // Extract system instructions
   let userInstructions: string;
@@ -174,7 +176,8 @@ export function translateGeminiToCodexRequest(
   } else {
     userInstructions = "You are a helpful assistant.";
   }
-  const instructions = buildInstructions(userInstructions);
+  const cfg = modelConfig ?? getConfig().model;
+  const instructions = buildInstructions(userInstructions, cfg);
 
   // Build input items from contents
   const input: CodexInputItem[] = [];
@@ -196,7 +199,6 @@ export function translateGeminiToCodexRequest(
   const parsed = parseModelName(geminiModel);
   const modelId = parsed.modelId;
   const modelInfo = getModelInfo(modelId);
-  const config = getConfig();
 
   // Convert tools to Codex format
   const codexTools = req.tools?.length ? geminiToolsToCodex(req.tools) : [];
@@ -225,13 +227,13 @@ export function translateGeminiToCodexRequest(
     thinkingEffort ??
     parsed.reasoningEffort ??
     modelInfo?.defaultReasoningEffort ??
-    config.model.default_reasoning_effort;
+    cfg.default_reasoning_effort;
   request.reasoning = { summary: "auto", ...(effort ? { effort } : {}) };
 
   // Service tier: suffix > config default
   const serviceTier =
     parsed.serviceTier ??
-    config.model.default_service_tier ??
+    cfg.default_service_tier ??
     null;
   if (serviceTier) {
     request.service_tier = serviceTier;

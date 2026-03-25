@@ -11,6 +11,7 @@ import type {
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
 import { buildInstructions, prepareSchema } from "./shared-utils.js";
+import type { ModelConfigOverride } from "./shared-utils.js";
 import {
   openAIToolsToCodex,
   openAIToolChoiceToCodex,
@@ -86,6 +87,7 @@ export interface TranslationResult {
 
 export function translateToCodexRequest(
   req: ChatCompletionRequest,
+  modelConfig?: ModelConfigOverride,
 ): TranslationResult {
   // Collect system/developer messages as instructions
   const systemMessages = req.messages.filter(
@@ -94,7 +96,8 @@ export function translateToCodexRequest(
   const userInstructions =
     systemMessages.map((m) => extractText(m.content)).join("\n\n") ||
     "You are a helpful assistant.";
-  const instructions = buildInstructions(userInstructions);
+  const cfg = modelConfig ?? getConfig().model;
+  const instructions = buildInstructions(userInstructions, cfg);
 
   // Build input items from non-system messages
   // Handles new format (tool/tool_calls) and legacy format (function/function_call)
@@ -155,7 +158,6 @@ export function translateToCodexRequest(
   const parsed = parseModelName(req.model);
   const modelId = parsed.modelId;
   const modelInfo = getModelInfo(modelId);
-  const config = getConfig();
 
   // Convert tools to Codex format
   const codexTools = req.tools?.length
@@ -185,14 +187,14 @@ export function translateToCodexRequest(
     req.reasoning_effort ??
     parsed.reasoningEffort ??
     modelInfo?.defaultReasoningEffort ??
-    config.model.default_reasoning_effort;
+    cfg.default_reasoning_effort;
   request.reasoning = { summary: "auto", ...(effort ? { effort } : {}) };
 
   // Service tier: explicit API field > suffix > config default
   const serviceTier =
     req.service_tier ??
     parsed.serviceTier ??
-    config.model.default_service_tier ??
+    cfg.default_service_tier ??
     null;
   if (serviceTier) {
     request.service_tier = serviceTier;

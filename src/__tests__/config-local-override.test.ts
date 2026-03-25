@@ -147,4 +147,39 @@ server:
 
     expect(config.server.host).toBe("0.0.0.0");
   });
+
+  it("local.yaml host overrides Electron programmatic default", async () => {
+    const localYaml = `
+server:
+  host: "0.0.0.0"
+`;
+    const configDir = makeTempConfig(MINIMAL_DEFAULT, localYaml);
+    const { loadConfig, hasLocalOverride } = await import("../config.js");
+    const config = loadConfig(configDir);
+
+    // Simulate startServer host resolution (src/index.ts:103-105)
+    const electronDefault = "127.0.0.1";
+    const resolved = hasLocalOverride("server", "host")
+      ? config.server.host
+      : electronDefault;
+
+    expect(resolved).toBe("0.0.0.0");
+  });
+
+  it("falls back to Electron default when local.yaml has no host", async () => {
+    const localYaml = `
+server:
+  proxy_api_key: test-key
+`;
+    const configDir = makeTempConfig(MINIMAL_DEFAULT, localYaml);
+    const { loadConfig, hasLocalOverride } = await import("../config.js");
+    const config = loadConfig(configDir);
+
+    const electronDefault = "127.0.0.1";
+    const resolved = hasLocalOverride("server", "host")
+      ? config.server.host
+      : (electronDefault ?? config.server.host);
+
+    expect(resolved).toBe("127.0.0.1");
+  });
 });

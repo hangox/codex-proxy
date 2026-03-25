@@ -175,7 +175,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 750,
-    minWidth: 680,
+    minWidth: 800,
     minHeight: 500,
     title: "Codex Proxy",
     // macOS: native hidden titlebar with traffic lights inset into content

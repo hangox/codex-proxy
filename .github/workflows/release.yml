@@ -81,9 +81,9 @@ jobs:
           [ -z "$ASSETS" ] && exit 0
 
           case "${{ matrix.platform }}" in
-            mac) PATTERN="${{ matrix.arch }}" ;;
-            win) PATTERN="(Setup|\.exe|\.nsis|win)" ;;
-            linux) PATTERN="(AppImage|linux)" ;;
+            mac) PATTERN="mac-${{ matrix.arch }}" ;;
+            win) PATTERN="win-" ;;
+            linux) PATTERN="linux-" ;;
           esac
 
           echo "$ASSETS" | grep -iE "$PATTERN" | while read -r name; do
@@ -145,6 +145,19 @@ jobs:
         working-directory: packages/electron
         run: node electron/prepare-pack.mjs
 
+      - name: Clean stale x64 release assets
+        continue-on-error: true
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null || echo "")
+          [ -z "$ASSETS" ] && exit 0
+          echo "$ASSETS" | grep -iE "mac-x64" | while read -r name; do
+            echo "Removing stale asset: $name"
+            gh release delete-asset "$TAG" "$name" -y 2>/dev/null || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Pack (mac-x64)
         working-directory: packages/electron
         run: npx electron-builder --config electron-builder.yml --mac --x64 --publish never
@@ -155,12 +168,33 @@ jobs:
           cd packages/electron/release
           for f in *; do
             [ -f "$f" ] || continue
-            # Skip arm64 files and yml manifests (arm64 build already uploaded these)
+            # Only upload x64 files; skip arm64 and yml manifests
             echo "$f" | grep -qi "arm64" && continue
             echo "$f" | grep -qiE "\.yml$" && continue
             echo "Uploading: $f"
             gh release upload "$TAG" "$f" --clobber 2>/dev/null || true
           done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge x64 entries into latest-mac.yml
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          gh release download "$TAG" --pattern "latest-mac.yml" --output /tmp/arm64-mac.yml --clobber 2>/dev/null || exit 0
+          LOCAL_YML="packages/electron/release/latest-mac.yml"
+          [ -f "$LOCAL_YML" ] || exit 0
+          node -e "
+          const fs = require('fs');
+          const yaml = require('js-yaml');
+          const arm64Yml = yaml.load(fs.readFileSync('/tmp/arm64-mac.yml', 'utf8'));
+          const x64Yml = yaml.load(fs.readFileSync('$LOCAL_YML', 'utf8'));
+          const arm64Files = (arm64Yml.files || []).filter(f => f.url.includes('arm64'));
+          const x64Files = (x64Yml.files || []).filter(f => !f.url.includes('arm64'));
+          arm64Yml.files = [...arm64Files, ...x64Files];
+          fs.writeFileSync('/tmp/merged-mac.yml', yaml.dump(arm64Yml, { lineWidth: -1, quotingType: '\"' }));
+          "
+          mv /tmp/merged-mac.yml /tmp/latest-mac.yml
+          gh release upload "$TAG" /tmp/latest-mac.yml --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

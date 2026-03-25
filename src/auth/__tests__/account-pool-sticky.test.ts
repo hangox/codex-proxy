@@ -5,78 +5,46 @@
  * until rate-limited or quota-exhausted.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-let mockStrategy: "least_used" | "round_robin" | "sticky" = "sticky";
-
-const mockGetModelPlanTypes = vi.fn<(id: string) => string[]>(() => []);
-
-vi.mock("../../models/model-store.js", () => ({
-  getModelPlanTypes: (...args: unknown[]) => mockGetModelPlanTypes(args[0] as string),
-  isPlanFetched: () => true,
-}));
-
-vi.mock("../../config.js", () => ({
-  getConfig: vi.fn(() => ({
-    server: { proxy_api_key: null },
-    auth: { jwt_token: "", rotation_strategy: mockStrategy, rate_limit_backoff_seconds: 60 },
-  })),
-}));
-
-let profileForToken: Record<string, { chatgpt_plan_type: string; email: string }> = {};
-
-vi.mock("../../auth/jwt-utils.js", () => ({
-  isTokenExpired: vi.fn(() => false),
-  decodeJwtPayload: vi.fn(() => ({ exp: Math.floor(Date.now() / 1000) + 3600 })),
-  extractChatGptAccountId: vi.fn((token: string) => `aid-${token}`),
-  extractUserProfile: vi.fn((token: string) => profileForToken[token] ?? null),
-}));
-
-vi.mock("../../utils/jitter.js", () => ({
-  jitter: vi.fn((val: number) => val),
-}));
-
-vi.mock("fs", () => ({
-  readFileSync: vi.fn(() => JSON.stringify({ accounts: [] })),
-  writeFileSync: vi.fn(),
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  renameSync: vi.fn(),
-}));
-
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createMemoryPersistence } from "@helpers/account-pool-factory.js";
+import { createMockConfig } from "@helpers/config.js";
+import { createValidJwt } from "@helpers/jwt.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import { AccountPool } from "../account-pool.js";
+import { getModelPlanTypes } from "../../models/model-store.js";
+
+// Only model-store needs mocking (for model-aware selection test)
+vi.mock("../../models/model-store.js", () => ({
+  getModelPlanTypes: vi.fn(() => []),
+  isPlanFetched: vi.fn(() => true),
+  getModelInfo: vi.fn(() => null),
+  parseModelName: vi.fn((m: string) => ({ modelId: m, serviceTier: null, reasoningEffort: null })),
+}));
 
 describe("account-pool sticky strategy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    profileForToken = {};
-    mockStrategy = "sticky";
+    setConfigForTesting(createMockConfig({ auth: { rotation_strategy: "sticky" } }));
+  });
+  afterEach(() => {
+    resetConfigForTesting();
   });
 
   it("selects account with most recent last_used", () => {
-    profileForToken = {
-      "tok-a": { chatgpt_plan_type: "free", email: "a@test.com" },
-      "tok-b": { chatgpt_plan_type: "free", email: "b@test.com" },
-      "tok-c": { chatgpt_plan_type: "free", email: "c@test.com" },
-    };
-
-    const pool = new AccountPool();
-    const idA = pool.addAccount("tok-a");
-    const idB = pool.addAccount("tok-b");
-    const idC = pool.addAccount("tok-c");
+    const pool = new AccountPool({ persistence: createMemoryPersistence() });
+    const idA = pool.addAccount(createValidJwt({ accountId: "a", email: "a@test.com", planType: "free" }));
+    const idB = pool.addAccount(createValidJwt({ accountId: "b", email: "b@test.com", planType: "free" }));
+    const idC = pool.addAccount(createValidJwt({ accountId: "c", email: "c@test.com", planType: "free" }));
 
     // Simulate: B was used most recently, then A, then C
-    const entryC = pool.getEntry(idC)!;
-    entryC.usage.last_used = new Date(Date.now() - 30_000).toISOString();
-    entryC.usage.request_count = 1;
+    pool.getEntry(idC)!.usage.last_used = new Date(Date.now() - 30_000).toISOString();
+    pool.getEntry(idC)!.usage.request_count = 1;
 
-    const entryA = pool.getEntry(idA)!;
-    entryA.usage.last_used = new Date(Date.now() - 10_000).toISOString();
-    entryA.usage.request_count = 2;
+    pool.getEntry(idA)!.usage.last_used = new Date(Date.now() - 10_000).toISOString();
+    pool.getEntry(idA)!.usage.request_count = 2;
 
-    const entryB = pool.getEntry(idB)!;
-    entryB.usage.last_used = new Date(Date.now() - 1_000).toISOString();
-    entryB.usage.request_count = 5;
+    pool.getEntry(idB)!.usage.last_used = new Date(Date.now() - 1_000).toISOString();
+    pool.getEntry(idB)!.usage.request_count = 5;
 
     // Sticky should pick B (most recent last_used) despite having most requests
     const acquired = pool.acquire();
@@ -86,14 +54,9 @@ describe("account-pool sticky strategy", () => {
   });
 
   it("sticks to same account across multiple acquire/release cycles", () => {
-    profileForToken = {
-      "tok-a": { chatgpt_plan_type: "free", email: "a@test.com" },
-      "tok-b": { chatgpt_plan_type: "free", email: "b@test.com" },
-    };
-
-    const pool = new AccountPool();
-    pool.addAccount("tok-a");
-    pool.addAccount("tok-b");
+    const pool = new AccountPool({ persistence: createMemoryPersistence() });
+    pool.addAccount(createValidJwt({ accountId: "a", email: "a@test.com", planType: "free" }));
+    pool.addAccount(createValidJwt({ accountId: "b", email: "b@test.com", planType: "free" }));
 
     // First acquire picks one (arbitrary from fresh pool)
     const first = pool.acquire()!;
@@ -108,19 +71,13 @@ describe("account-pool sticky strategy", () => {
   });
 
   it("falls back when current account is rate-limited", () => {
-    profileForToken = {
-      "tok-a": { chatgpt_plan_type: "free", email: "a@test.com" },
-      "tok-b": { chatgpt_plan_type: "free", email: "b@test.com" },
-    };
-
-    const pool = new AccountPool();
-    const idA = pool.addAccount("tok-a");
-    const idB = pool.addAccount("tok-b");
+    const pool = new AccountPool({ persistence: createMemoryPersistence() });
+    const idA = pool.addAccount(createValidJwt({ accountId: "a", email: "a@test.com", planType: "free" }));
+    const idB = pool.addAccount(createValidJwt({ accountId: "b", email: "b@test.com", planType: "free" }));
 
     // Make A the sticky choice
-    const entryA = pool.getEntry(idA)!;
-    entryA.usage.last_used = new Date().toISOString();
-    entryA.usage.request_count = 5;
+    pool.getEntry(idA)!.usage.last_used = new Date().toISOString();
+    pool.getEntry(idA)!.usage.request_count = 5;
 
     // Rate-limit A
     pool.markRateLimited(idA, { retryAfterSec: 300 });
@@ -133,16 +90,10 @@ describe("account-pool sticky strategy", () => {
   });
 
   it("picks first available when no account has been used yet", () => {
-    profileForToken = {
-      "tok-a": { chatgpt_plan_type: "free", email: "a@test.com" },
-      "tok-b": { chatgpt_plan_type: "free", email: "b@test.com" },
-      "tok-c": { chatgpt_plan_type: "free", email: "c@test.com" },
-    };
-
-    const pool = new AccountPool();
-    pool.addAccount("tok-a");
-    pool.addAccount("tok-b");
-    pool.addAccount("tok-c");
+    const pool = new AccountPool({ persistence: createMemoryPersistence() });
+    pool.addAccount(createValidJwt({ accountId: "a", email: "a@test.com", planType: "free" }));
+    pool.addAccount(createValidJwt({ accountId: "b", email: "b@test.com", planType: "free" }));
+    pool.addAccount(createValidJwt({ accountId: "c", email: "c@test.com", planType: "free" }));
 
     // All accounts have null last_used — should pick one
     const first = pool.acquire();
@@ -157,20 +108,15 @@ describe("account-pool sticky strategy", () => {
   });
 
   it("respects model filtering", () => {
-    profileForToken = {
-      "tok-free": { chatgpt_plan_type: "free", email: "free@test.com" },
-      "tok-team": { chatgpt_plan_type: "team", email: "team@test.com" },
-    };
-    mockGetModelPlanTypes.mockReturnValue(["team"]);
+    vi.mocked(getModelPlanTypes).mockReturnValue(["team"]);
 
-    const pool = new AccountPool();
-    const idFree = pool.addAccount("tok-free");
-    const idTeam = pool.addAccount("tok-team");
+    const pool = new AccountPool({ persistence: createMemoryPersistence() });
+    const idFree = pool.addAccount(createValidJwt({ accountId: "free1", email: "free@test.com", planType: "free" }));
+    const idTeam = pool.addAccount(createValidJwt({ accountId: "team1", email: "team@test.com", planType: "team" }));
 
     // Use the free account more recently
-    const entryFree = pool.getEntry(idFree)!;
-    entryFree.usage.last_used = new Date().toISOString();
-    entryFree.usage.request_count = 10;
+    pool.getEntry(idFree)!.usage.last_used = new Date().toISOString();
+    pool.getEntry(idFree)!.usage.request_count = 10;
 
     // Model requires team plan — sticky should pick team account despite free being more recent
     const acquired = pool.acquire({ model: "gpt-5.4" });
@@ -180,23 +126,16 @@ describe("account-pool sticky strategy", () => {
   });
 
   it("least_used still works (regression guard)", () => {
-    mockStrategy = "least_used";
-    profileForToken = {
-      "tok-a": { chatgpt_plan_type: "free", email: "a@test.com" },
-      "tok-b": { chatgpt_plan_type: "free", email: "b@test.com" },
-    };
+    setConfigForTesting(createMockConfig({ auth: { rotation_strategy: "least_used" } }));
 
-    const pool = new AccountPool();
-    const idA = pool.addAccount("tok-a");
-    const idB = pool.addAccount("tok-b");
+    const pool = new AccountPool({ persistence: createMemoryPersistence() });
+    const idA = pool.addAccount(createValidJwt({ accountId: "a", email: "a@test.com", planType: "free" }));
+    const idB = pool.addAccount(createValidJwt({ accountId: "b", email: "b@test.com", planType: "free" }));
 
     // A has more requests — least_used should prefer B
-    const entryA = pool.getEntry(idA)!;
-    entryA.usage.request_count = 10;
-    entryA.usage.last_used = new Date().toISOString();
-
-    const entryB = pool.getEntry(idB)!;
-    entryB.usage.request_count = 2;
+    pool.getEntry(idA)!.usage.request_count = 10;
+    pool.getEntry(idA)!.usage.last_used = new Date().toISOString();
+    pool.getEntry(idB)!.usage.request_count = 2;
 
     const acquired = pool.acquire();
     expect(acquired).not.toBeNull();

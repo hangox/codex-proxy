@@ -11,6 +11,7 @@ import type {
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
 import { buildInstructions, budgetToEffort } from "./shared-utils.js";
+import type { ModelConfigOverride } from "./shared-utils.js";
 import { anthropicToolsToCodex, anthropicToolChoiceToCodex } from "./tool-format.js";
 
 /**
@@ -172,6 +173,7 @@ function contentToInputItems(
  */
 export function translateAnthropicToCodexRequest(
   req: AnthropicMessagesRequest,
+  modelConfig?: ModelConfigOverride,
 ): CodexResponsesRequest {
   // Extract system instructions
   let userInstructions: string;
@@ -184,7 +186,8 @@ export function translateAnthropicToCodexRequest(
   } else {
     userInstructions = "You are a helpful assistant.";
   }
-  const instructions = buildInstructions(userInstructions);
+  const cfg = modelConfig ?? getConfig().model;
+  const instructions = buildInstructions(userInstructions, cfg);
 
   // Build input items from messages
   const input: CodexInputItem[] = [];
@@ -205,7 +208,6 @@ export function translateAnthropicToCodexRequest(
   const parsed = parseModelName(req.model);
   const modelId = parsed.modelId;
   const modelInfo = getModelInfo(modelId);
-  const config = getConfig();
 
   // Convert tools to Codex format
   const codexTools = req.tools?.length ? anthropicToolsToCodex(req.tools) : [];
@@ -232,13 +234,13 @@ export function translateAnthropicToCodexRequest(
     thinkingEffort ??
     parsed.reasoningEffort ??
     modelInfo?.defaultReasoningEffort ??
-    config.model.default_reasoning_effort;
+    cfg.default_reasoning_effort;
   request.reasoning = { summary: "auto", ...(effort ? { effort } : {}) };
 
   // Service tier: suffix > config default
   const serviceTier =
     parsed.serviceTier ??
-    config.model.default_service_tier ??
+    cfg.default_service_tier ??
     null;
   if (serviceTier) {
     request.service_tier = serviceTier;

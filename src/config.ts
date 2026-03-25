@@ -227,6 +227,17 @@ export function hasLocalOverride(...path: string[]): boolean {
   return obj !== undefined;
 }
 
+/** Test-only: replace the config singleton. Production code MUST NOT call this. */
+export function setConfigForTesting(config: AppConfig): void {
+  _config = config;
+}
+
+/** Test-only: reset config and fingerprint singletons. */
+export function resetConfigForTesting(): void {
+  _config = null;
+  _fingerprint = null;
+}
+
 export function mutateClientConfig(patch: Partial<AppConfig["client"]>): void {
   if (!_config) throw new Error("Config not loaded");
   Object.assign(_config.client, patch);

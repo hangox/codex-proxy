@@ -16,7 +16,7 @@ import { getModelPlanTypes, isPlanFetched } from "../models/model-store.js";
 import { getRotationStrategy } from "./rotation-strategy.js";
 import { createFsPersistence } from "./account-persistence.js";
 import type { AccountPersistence } from "./account-persistence.js";
-import type { RotationStrategy, RotationState } from "./rotation-strategy.js";
+import type { RotationStrategy, RotationState, RotationStrategyName } from "./rotation-strategy.js";
 import type {
   AccountEntry,
   AccountInfo,
@@ -36,11 +36,28 @@ export class AccountPool {
   private rotationState: RotationState = { roundRobinIndex: 0 };
   private persistence: AccountPersistence;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private rateLimitBackoffSeconds: number;
 
-  constructor(options?: { persistence?: AccountPersistence }) {
+  constructor(options?: {
+    persistence?: AccountPersistence;
+    rotationStrategy?: RotationStrategyName;
+    initialToken?: string | null;
+    rateLimitBackoffSeconds?: number;
+  }) {
     this.persistence = options?.persistence ?? createFsPersistence();
-    const config = getConfig();
-    this.strategy = getRotationStrategy(config.auth.rotation_strategy);
+
+    // Config DI: prefer explicit params, fallback to getConfig()
+    const needsConfig =
+      options?.rotationStrategy === undefined ||
+      options?.initialToken === undefined ||
+      options?.rateLimitBackoffSeconds === undefined;
+    const config = needsConfig ? getConfig() : undefined;
+
+    this.strategy = getRotationStrategy(
+      options?.rotationStrategy ?? config!.auth.rotation_strategy,
+    );
+    this.rateLimitBackoffSeconds =
+      options?.rateLimitBackoffSeconds ?? config!.auth.rate_limit_backoff_seconds;
 
     // Load persisted accounts (handles migration from legacy format)
     const { entries } = this.persistence.load();
@@ -48,9 +65,13 @@ export class AccountPool {
       this.accounts.set(entry.id, entry);
     }
 
-    // Override with config jwt_token if set
-    if (config.auth.jwt_token) {
-      this.addAccount(config.auth.jwt_token);
+    // Override with initial token if set
+    const initialToken =
+      options?.initialToken !== undefined
+        ? options.initialToken
+        : config!.auth.jwt_token;
+    if (initialToken) {
+      this.addAccount(initialToken);
     }
     const envToken = process.env.CODEX_JWT_TOKEN;
     if (envToken) {
@@ -220,9 +241,8 @@ export class AccountPool {
     const entry = this.accounts.get(entryId);
     if (!entry) return;
 
-    const config = getConfig();
     const backoff = jitter(
-      options?.retryAfterSec ?? config.auth.rate_limit_backoff_seconds,
+      options?.retryAfterSec ?? this.rateLimitBackoffSeconds,
       0.2,
     );
     const until = new Date(Date.now() + backoff * 1000);

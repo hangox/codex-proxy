@@ -7,8 +7,15 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { getConfig } from "../config.js";
+import type { AppConfig } from "../config.js";
 import { getConfigDir } from "../paths.js";
 import { hasTupleSchemas, convertTupleSchemas } from "./tuple-schema.js";
+
+/** Subset of model config used by translation functions. */
+export type ModelConfigOverride = Pick<
+  AppConfig["model"],
+  "default_reasoning_effort" | "default_service_tier" | "inject_desktop_context" | "suppress_desktop_directives"
+>;
 
 let cachedDesktopContext: string | null = null;
 
@@ -42,11 +49,15 @@ const SUPPRESS_PROMPT =
  * When suppress_desktop_directives is enabled, appends a suppress prompt
  * to override desktop-specific behaviors.
  */
-export function buildInstructions(userInstructions: string): string {
-  if (!getConfig().model.inject_desktop_context) return userInstructions;
+export function buildInstructions(
+  userInstructions: string,
+  modelConfig?: Pick<ModelConfigOverride, "inject_desktop_context" | "suppress_desktop_directives">,
+): string {
+  const cfg = modelConfig ?? getConfig().model;
+  if (!cfg.inject_desktop_context) return userInstructions;
   const ctx = getDesktopContext();
   if (!ctx) return userInstructions;
-  if (getConfig().model.suppress_desktop_directives) {
+  if (cfg.suppress_desktop_directives) {
     return `${ctx}\n\n${SUPPRESS_PROMPT}\n\n${userInstructions}`;
   }
   return `${ctx}\n\n${userInstructions}`;

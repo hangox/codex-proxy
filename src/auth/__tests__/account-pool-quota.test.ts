@@ -3,61 +3,13 @@
  * - updateCachedQuota()
  * - markQuotaExhausted()
  * - toInfo() populating cached quota
- * - loadPersisted() backfill
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("fs", () => ({
-  readFileSync: vi.fn(() => { throw new Error("ENOENT"); }),
-  writeFileSync: vi.fn(),
-  renameSync: vi.fn(),
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-}));
-
-vi.mock("../../paths.js", () => ({
-  getDataDir: vi.fn(() => "/tmp/test-data"),
-  getConfigDir: vi.fn(() => "/tmp/test-config"),
-}));
-
-vi.mock("../../config.js", () => ({
-  getConfig: vi.fn(() => ({
-    auth: {
-      jwt_token: null,
-      rotation_strategy: "least_used",
-      rate_limit_backoff_seconds: 60,
-    },
-    server: { proxy_api_key: null },
-    quota: {
-      refresh_interval_minutes: 5,
-      warning_thresholds: { primary: [80, 90], secondary: [80, 90] },
-      skip_exhausted: true,
-    },
-  })),
-}));
-
-// Use a counter to generate unique accountIds
-let _idCounter = 0;
-vi.mock("../../auth/jwt-utils.js", () => ({
-  decodeJwtPayload: vi.fn(() => ({ exp: Math.floor(Date.now() / 1000) + 3600 })),
-  extractChatGptAccountId: vi.fn(() => `acct-${++_idCounter}`),
-  extractUserProfile: vi.fn(() => ({
-    email: `user${_idCounter}@test.com`,
-    chatgpt_plan_type: "plus",
-  })),
-  isTokenExpired: vi.fn(() => false),
-}));
-
-vi.mock("../../utils/jitter.js", () => ({
-  jitter: vi.fn((val: number) => val),
-}));
-
-vi.mock("../../models/model-store.js", () => ({
-  getModelPlanTypes: vi.fn(() => []),
-  isPlanFetched: vi.fn(() => true),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { createMemoryPersistence } from "@helpers/account-pool-factory.js";
+import { createValidJwt } from "@helpers/jwt.js";
+import { createMockConfig } from "@helpers/config.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import { AccountPool } from "../account-pool.js";
 import type { CodexQuota } from "../types.js";
 
@@ -81,12 +33,16 @@ describe("AccountPool quota methods", () => {
   let pool: AccountPool;
 
   beforeEach(() => {
-    pool = new AccountPool();
+    setConfigForTesting(createMockConfig());
+    pool = new AccountPool({ persistence: createMemoryPersistence() });
+  });
+  afterEach(() => {
+    resetConfigForTesting();
   });
 
   describe("updateCachedQuota", () => {
     it("stores quota and timestamp on account", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-aaa");
+      const id = pool.addAccount(createValidJwt({ accountId: "a1", planType: "plus" }));
       const quota = makeQuota();
 
       pool.updateCachedQuota(id, quota);
@@ -104,7 +60,7 @@ describe("AccountPool quota methods", () => {
 
   describe("markQuotaExhausted", () => {
     it("sets status to rate_limited with reset time", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-bbb");
+      const id = pool.addAccount(createValidJwt({ accountId: "a2" }));
       const resetAt = Math.floor(Date.now() / 1000) + 7200;
 
       pool.markQuotaExhausted(id, resetAt);
@@ -115,7 +71,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("uses fallback when resetAt is null", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-ccc");
+      const id = pool.addAccount(createValidJwt({ accountId: "a3" }));
 
       pool.markQuotaExhausted(id, null);
 
@@ -125,7 +81,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("does not override disabled status", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-ddd");
+      const id = pool.addAccount(createValidJwt({ accountId: "a4" }));
       pool.markStatus(id, "disabled");
 
       pool.markQuotaExhausted(id, Math.floor(Date.now() / 1000) + 3600);
@@ -135,7 +91,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("does not override expired status", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-ddd2");
+      const id = pool.addAccount(createValidJwt({ accountId: "a5" }));
       pool.markStatus(id, "expired");
 
       pool.markQuotaExhausted(id, Math.floor(Date.now() / 1000) + 3600);
@@ -145,7 +101,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("extends rate_limit_until on already rate_limited account", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-ddd3");
+      const id = pool.addAccount(createValidJwt({ accountId: "a6" }));
       // Simulate 429 backoff (short)
       pool.markRateLimited(id, { retryAfterSec: 60 });
       const entryBefore = pool.getEntry(id);
@@ -163,7 +119,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("does not shorten existing rate_limit_until", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-ddd4");
+      const id = pool.addAccount(createValidJwt({ accountId: "a7" }));
       // Mark with long reset (e.g. 7-day quota)
       const longResetAt = Math.floor(Date.now() / 1000) + 86400; // 24 hours
       pool.markQuotaExhausted(id, longResetAt);
@@ -182,7 +138,7 @@ describe("AccountPool quota methods", () => {
 
   describe("toInfo with cached quota", () => {
     it("populates quota field from cachedQuota", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-eee");
+      const id = pool.addAccount(createValidJwt({ accountId: "a8", planType: "team" }));
       const quota = makeQuota({ plan_type: "team" });
 
       pool.updateCachedQuota(id, quota);
@@ -194,7 +150,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("does not include quota when cachedQuota is null", () => {
-      const id = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-fff");
+      const id = pool.addAccount(createValidJwt({ accountId: "a9" }));
 
       const accounts = pool.getAccounts();
       const acct = accounts.find((a) => a.id === id);
@@ -204,8 +160,8 @@ describe("AccountPool quota methods", () => {
 
   describe("acquire skips exhausted accounts", () => {
     it("skips rate_limited (quota exhausted) account", () => {
-      const id1 = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-ggg");
-      const id2 = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-hhh");
+      const id1 = pool.addAccount(createValidJwt({ accountId: "b1" }));
+      const id2 = pool.addAccount(createValidJwt({ accountId: "b2" }));
 
       // Exhaust first account
       pool.markQuotaExhausted(id1, Math.floor(Date.now() / 1000) + 7200);
@@ -217,7 +173,7 @@ describe("AccountPool quota methods", () => {
     });
 
     it("returns null when all accounts exhausted", () => {
-      const id1 = pool.addAccount("eyJhbGciOiJIUzI1NiJ9.test-token-iii");
+      const id1 = pool.addAccount(createValidJwt({ accountId: "c1" }));
       pool.markQuotaExhausted(id1, Math.floor(Date.now() / 1000) + 7200);
 
       const acquired = pool.acquire();

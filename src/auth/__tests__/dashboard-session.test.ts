@@ -1,11 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-vi.mock("../../config.js", () => ({
-  getConfig: vi.fn(() => ({
-    session: { ttl_minutes: 1, cleanup_interval_minutes: 1 },
-  })),
-}));
-
+import { createMockConfig } from "@helpers/config.js";
+import { setConfigForTesting, resetConfigForTesting } from "../../config.js";
 import {
   createSession,
   validateSession,
@@ -17,12 +12,16 @@ import {
 } from "../dashboard-session.js";
 
 beforeEach(() => {
+  setConfigForTesting(createMockConfig({
+    session: { ttl_minutes: 1, cleanup_interval_minutes: 1 },
+  }));
   _resetForTest();
 });
 
 afterEach(() => {
   stopSessionCleanup();
   _resetForTest();
+  resetConfigForTesting();
 });
 
 describe("dashboard-session", () => {

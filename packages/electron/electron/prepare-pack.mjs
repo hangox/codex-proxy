@@ -22,7 +22,7 @@ for (const dir of DIRS) {
 
   if (isClean) {
     if (existsSync(dest)) {
-      rmSync(dest, { recursive: true });
+      rmSync(dest, { recursive: true, force: true });
       console.log(`[prepare-pack] removed ${dir}/`);
     }
   } else {

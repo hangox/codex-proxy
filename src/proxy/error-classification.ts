@@ -16,8 +16,8 @@ interface CodexLikeError {
 function isCodexLike(err: unknown): err is CodexLikeError {
   return (
     err instanceof Error &&
-    typeof (err as Record<string, unknown>).status === "number" &&
-    typeof (err as Record<string, unknown>).body === "string"
+    typeof (err as unknown as Record<string, unknown>).status === "number" &&
+    typeof (err as unknown as Record<string, unknown>).body === "string"
   );
 }
 

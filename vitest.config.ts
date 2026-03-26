@@ -7,6 +7,7 @@ export default defineConfig({
       "@src": resolve(__dirname, "src"),
       "@helpers": resolve(__dirname, "tests/_helpers"),
       "@fixtures": resolve(__dirname, "tests/_fixtures"),
+      "preact": resolve(__dirname, "node_modules/preact"),
     },
   },
   test: {

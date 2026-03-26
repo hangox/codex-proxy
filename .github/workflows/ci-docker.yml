@@ -28,18 +28,39 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - type: default
+            port: 8080
+          - type: custom
+            port: 8090
     steps:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
         run: docker build -t codex-proxy:smoke .
 
+      - name: Prepare custom config
+        if: matrix.type == 'custom'
+        run: |
+          cp config/default.yaml config/custom.yaml
+          sed -i 's/port: 8080/port: 8090/g' config/custom.yaml
+
       - name: Start container
         run: |
-          docker run -d --name smoke-test \
-            -p 18080:8080 \
-            -e NODE_ENV=production \
-            codex-proxy:smoke
+          if [ "${{ matrix.type }}" = "custom" ]; then
+            docker run -d --name smoke-test \
+              -p 18080:8090 \
+              -e NODE_ENV=production \
+              -v $(pwd)/config/custom.yaml:/app/config/default.yaml \
+              codex-proxy:smoke
+          else
+            docker run -d --name smoke-test \
+              -p 18080:8080 \
+              -e NODE_ENV=production \
+              codex-proxy:smoke
+          fi
           echo "Container started"
 
       - name: Wait for healthy

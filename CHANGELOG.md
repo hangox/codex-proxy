@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### Removed
+
+- 删除废弃的 `packages/electron/desktop/` UI（Electron 已直接加载 web/ UI），消除 18 个重复组件
+- 删除 `public-desktop/` 构建产物目录及 `/desktop` 路由
+- 删除 `web/src/` 中 6 个未被引用的死文件（hooks/utils/i18n/theme，~443 LOC）
+
+### Changed
+
+- 提取 `src/proxy/error-classification.ts`：`isBanError`/`isTokenInvalidError`/`isModelNotSupportedError`/`extractRetryAfterSec` 从 proxy-handler 和 usage-refresher 中去重，19 个新测试
+- `scripts/` 按用途分类到 `infra/`、`build/`、`poc/`、`manual-test/` 子目录
+- 新增 `src/context.ts`（AppContext 容器），fingerprint/manager、codex-api、codex-usage、codex-models 支持可选 DI 参数（fallback 到全局单例）
+
 ### Fixed
 
 - 导入/导出按钮图标反了——导入改为下箭头、导出改为上箭头（#191）

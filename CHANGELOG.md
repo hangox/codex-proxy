@@ -8,6 +8,18 @@
 
 ### Added
 
+- E2E 测试：proxy-routes（36 cases）、dashboard-auth（9）、batch-label（11）、admin-general（11）、debug-routes（5）—— 覆盖率从 51% 提升至 ~75%
+- 单元测试：config-loader（16 cases）、config-schema（10）、codex-models（9）
+- account-import service 测试补充 RT rotation/fallback 2 cases
+
+### Fixed
+
+- 修复 `PUT /api/proxies/settings` 被 `PUT /api/proxies/:id` 路由参数 shadow 的 bug（Hono 按注册顺序匹配）
+
+### Changed
+
+- 删除冗余测试文件：`self-update-auto.test.ts`（superset 覆盖）、`account-import-refresh.test.ts`（迁移到 service 层）
+- 重命名 `model-plan-routing.test.ts` → `plan-routing-integration.test.ts` 以区分作用域
 - libcurl FFI 连接复用：macOS/Linux 自动构建 dylib，通过 CURLSH 共享连接缓存 + SSL session，消除每次请求的 TCP/TLS 握手开销（~2.9s → ~100-300ms）
 - setup 脚本自动下载静态库、编译 C wrapper、生成 dylib + cacert.pem
 - 自动更新（热更新）功能，默认开启，用户可在 Dashboard 设置中关闭

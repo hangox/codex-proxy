@@ -78,6 +78,18 @@ export function createProxyRoutes(proxyPool: ProxyPool, accountPool: AccountPool
     return c.json({ success: true, proxy });
   });
 
+  // Update settings (must be registered before :id to avoid shadowing)
+  app.put("/api/proxies/settings", async (c) => {
+    const body = await c.req.json<{ healthCheckIntervalMinutes?: number }>();
+    if (typeof body.healthCheckIntervalMinutes === "number") {
+      proxyPool.setHealthIntervalMinutes(body.healthCheckIntervalMinutes);
+    }
+    return c.json({
+      success: true,
+      healthCheckIntervalMinutes: proxyPool.getHealthIntervalMinutes(),
+    });
+  });
+
   // Update proxy
   app.put("/api/proxies/:id", async (c) => {
     const id = c.req.param("id");
@@ -174,18 +186,6 @@ export function createProxyRoutes(proxyPool: ProxyPool, accountPool: AccountPool
     const accountId = c.req.param("accountId");
     proxyPool.unassign(accountId);
     return c.json({ success: true });
-  });
-
-  // Update settings
-  app.put("/api/proxies/settings", async (c) => {
-    const body = await c.req.json<{ healthCheckIntervalMinutes?: number }>();
-    if (typeof body.healthCheckIntervalMinutes === "number") {
-      proxyPool.setHealthIntervalMinutes(body.healthCheckIntervalMinutes);
-    }
-    return c.json({
-      success: true,
-      healthCheckIntervalMinutes: proxyPool.getHealthIntervalMinutes(),
-    });
   });
 
   // ── Bulk Assignment Endpoints ────────────────────────────────────

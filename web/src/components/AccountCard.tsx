@@ -245,7 +245,7 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
               class="p-1.5 text-slate-400 dark:text-text-dim hover:text-amber-500 transition-colors rounded-md hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-40"
               title={t("refreshQuota")}
             >
-              <svg class={`size-[16px] ${quotaRefreshing ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <svg class="size-[16px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
               </svg>
             </button>
@@ -303,10 +303,10 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
       )}
 
       {/* Quota bars */}
-      {(rl || srl) && (
+      {(rl || srl || account.status === "active") && (
         <div class="pt-3 mt-3 border-t border-slate-100 dark:border-border-dark space-y-3">
           {/* Primary window */}
-          {rl && (
+          {(rl || account.status === "active") && (
             <div>
               <div class="flex justify-between text-[0.78rem] mb-1.5">
                 <span class="text-slate-500 dark:text-text-dim">
@@ -315,7 +315,7 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
                     <span class="ml-1 text-slate-400 dark:text-text-dim/70 text-[0.65rem]">({windowDur})</span>
                   )}
                 </span>
-                {rl.limit_reached ? (
+                {rl?.limit_reached ? (
                   <span class="px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs font-medium">
                     {t("limitReached")}
                   </span>

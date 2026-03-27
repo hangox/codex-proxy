@@ -44,8 +44,8 @@ export class AccountRegistry {
       if (accountId) {
         if (existing.accountId === accountId && existing.userId === userId) {
           existing.token = token;
-          if (refreshToken !== undefined) {
-            existing.refreshToken = refreshToken ?? null;
+          if (typeof refreshToken === "string" && refreshToken.length > 0) {
+            existing.refreshToken = refreshToken;
           }
           existing.email = profile?.email ?? existing.email;
           existing.planType = profile?.chatgpt_plan_type ?? existing.planType;
@@ -99,13 +99,14 @@ export class AccountRegistry {
     return deleted;
   }
 
-  updateToken(entryId: string, newToken: string, refreshToken?: string | null): void {
+  updateToken(entryId: string, newToken: string, refreshToken?: string): void {
     const entry = this.accounts.get(entryId);
     if (!entry) return;
 
     entry.token = newToken;
-    if (refreshToken !== undefined) {
-      entry.refreshToken = refreshToken ?? null;
+    // Never clear an existing RT — only replace with a new non-empty value
+    if (typeof refreshToken === "string" && refreshToken.length > 0) {
+      entry.refreshToken = refreshToken;
     }
     const profile = extractUserProfile(newToken);
     entry.email = profile?.email ?? entry.email;

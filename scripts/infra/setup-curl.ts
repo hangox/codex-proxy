@@ -10,10 +10,13 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, chmodSync, readdirSync, copyFileSync, rmSync, writeFileSync } from "fs";
-import { resolve, join } from "path";
+import { existsSync, mkdirSync, chmodSync, readdirSync, copyFileSync, rmSync, writeFileSync, readFileSync } from "fs";
+import { resolve, join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 const REPO = "lexiforest/curl-impersonate";
+const SELF_REPO = "icebear0828/codex-proxy";
+const LIBS_TAG = "curl-libs";
 const FALLBACK_VERSION = "v1.4.4";
 const BIN_DIR = resolve(process.cwd(), "bin");
 const CACERT_URL = "https://curl.se/ca/cacert.pem";
@@ -24,6 +27,15 @@ interface PlatformInfo {
   /** Name of the binary inside the archive */
   binaryName: string;
   /** Name to save the binary as in bin/ */
+  destName: string;
+}
+
+interface FfiLibInfo {
+  /** Pattern to match the libcurl-impersonate asset in GitHub Releases */
+  assetPattern: RegExp;
+  /** Name of the shared library inside the archive */
+  libraryName: string;
+  /** Name to save the library as in bin/ */
   destName: string;
 }
 
@@ -71,6 +83,36 @@ function getPlatformInfo(version: string): PlatformInfo {
   throw new Error(`Unsupported platform: ${platform}-${arch}`);
 }
 
+/**
+ * Get FFI shared library info for platforms that support it.
+ * Returns null if the platform already uses the shared lib as its primary download (Windows).
+ */
+function getFfiLibInfo(version: string): FfiLibInfo | null {
+  const platform = process.platform;
+  const arch = getTargetArch();
+
+  if (platform === "darwin") {
+    const archStr = arch === "arm64" ? "arm64-macos" : "x86_64-macos";
+    return {
+      assetPattern: new RegExp(`^libcurl-impersonate-${version.replaceAll(".", "\\.")}\\.${archStr}\\.tar\\.gz$`),
+      libraryName: "libcurl-impersonate.dylib",
+      destName: "libcurl-impersonate.dylib",
+    };
+  }
+
+  if (platform === "linux") {
+    const archStr = arch === "arm64" ? "aarch64-linux-gnu" : "x86_64-linux-gnu";
+    return {
+      assetPattern: new RegExp(`^libcurl-impersonate-${version.replaceAll(".", "\\.")}\\.${archStr}\\.tar\\.gz$`),
+      libraryName: "libcurl-impersonate.so",
+      destName: "libcurl-impersonate.so",
+    };
+  }
+
+  // Windows already downloads the DLL as its primary binary
+  return null;
+}
+
 function githubHeaders(): Record<string, string> {
   const h: Record<string, string> = { "Accept": "application/vnd.github+json" };
   const token = process.env.GITHUB_TOKEN;
@@ -91,7 +133,7 @@ async function getLatestVersion(): Promise<string> {
   return release.tag_name;
 }
 
-async function getDownloadUrl(info: PlatformInfo, version: string): Promise<string> {
+async function getDownloadUrl(info: Pick<PlatformInfo, "assetPattern">, version: string): Promise<string> {
   const apiUrl = `https://api.github.com/repos/${REPO}/releases/tags/${version}`;
   console.log(`[setup] Fetching release info from ${apiUrl}`);
 
@@ -120,7 +162,8 @@ async function getDownloadUrl(info: PlatformInfo, version: string): Promise<stri
   return asset.browser_download_url;
 }
 
-function downloadAndExtract(url: string, info: PlatformInfo): void {
+function downloadAndExtract(url: string, info: { binaryName?: string; libraryName?: string; destName: string }): void {
+  const searchName = info.binaryName ?? info.libraryName ?? info.destName;
   if (!existsSync(BIN_DIR)) {
     mkdirSync(BIN_DIR, { recursive: true });
   }
@@ -152,11 +195,11 @@ function downloadAndExtract(url: string, info: PlatformInfo): void {
   }
 
   // Find the binary in extracted files (may be in a subdirectory)
-  const binary = findFile(tmpDir, info.binaryName);
+  const binary = findFile(tmpDir, searchName);
   if (!binary) {
     const files = listFilesRecursive(tmpDir);
     throw new Error(
-      `Could not find ${info.binaryName} in extracted archive.\nFiles found:\n  ${files.join("\n  ")}`,
+      `Could not find ${searchName} in extracted archive.\nFiles found:\n  ${files.join("\n  ")}`,
     );
   }
 
@@ -211,6 +254,92 @@ function listFilesRecursive(dir: string): string[] {
     }
   }
   return results;
+}
+
+/** Path to the C wrapper source (shared with CI workflow). */
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const CURL_WRAPPER_PATH = resolve(SCRIPT_DIR, "curl_wrapper.c");
+
+/**
+ * Try to download a pre-built shared library from the project's GitHub Releases.
+ * Returns true if successful, false if not available.
+ */
+async function downloadPrebuiltLib(ffiLib: FfiLibInfo): Promise<boolean> {
+  const platform = process.platform;
+  const arch = getTargetArch();
+
+  // Map to the asset naming convention used by build-curl-libs.yml
+  // e.g. libcurl-impersonate-arm64-macos.dylib, libcurl-impersonate-x86_64-linux-gnu.so
+  let assetArch: string;
+  if (platform === "darwin") {
+    assetArch = arch === "arm64" ? "arm64-macos" : "x86_64-macos";
+  } else {
+    assetArch = arch === "arm64" ? "aarch64-linux-gnu" : "x86_64-linux-gnu";
+  }
+
+  const ext = platform === "darwin" ? "dylib" : "so";
+  const assetName = `libcurl-impersonate-${assetArch}.${ext}`;
+  const url = `https://github.com/${SELF_REPO}/releases/download/${LIBS_TAG}/${assetName}`;
+
+  console.log(`[setup] Trying pre-built library: ${assetName}`);
+  try {
+    const resp = await fetch(url, { redirect: "follow" });
+    if (!resp.ok) {
+      console.log(`[setup] Pre-built not available (${resp.status})`);
+      return false;
+    }
+
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    const destPath = resolve(BIN_DIR, ffiLib.destName);
+    if (!existsSync(BIN_DIR)) mkdirSync(BIN_DIR, { recursive: true });
+    writeFileSync(destPath, buffer);
+    chmodSync(destPath, 0o755);
+    console.log(`[setup] Installed pre-built ${ffiLib.destName}`);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[setup] Pre-built download failed (${msg})`);
+    return false;
+  }
+}
+
+/**
+ * Build a shared library (dylib/so) from the downloaded static .a library.
+ * Compiles a C wrapper that re-exports curl_ symbols with default visibility.
+ */
+function buildSharedLib(staticLibPath: string, destPath: string): void {
+  const tmpDir = resolve(BIN_DIR, ".tmp-build");
+  if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  mkdirSync(tmpDir, { recursive: true });
+
+  const wrapperO = resolve(tmpDir, "curl_wrapper.o");
+
+  const arch = getTargetArch();
+  const isDarwin = process.platform === "darwin";
+
+  // -arch is Apple clang only; Linux clang uses -target or just compiles native
+  const archFlag = isDarwin ? `-arch ${arch === "arm64" ? "arm64" : "x86_64"}` : "";
+
+  console.log(`[setup] Compiling wrapper (${arch})...`);
+  execSync(`clang -c ${archFlag} -fvisibility=default "${CURL_WRAPPER_PATH}" -o "${wrapperO}"`, { stdio: "inherit" });
+
+  const linkLibs = isDarwin
+    ? "-lz -lc++ -liconv -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -licucore"
+    : "-lz -lstdc++ -lpthread -ldl";
+
+  // -Wl,-all_load is macOS ld; Linux ld uses --whole-archive
+  const wholeArchive = isDarwin
+    ? `-Wl,-all_load "${staticLibPath}"`
+    : `-Wl,--whole-archive "${staticLibPath}" -Wl,--no-whole-archive`;
+
+  console.log(`[setup] Linking shared library...`);
+  execSync(
+    `clang -shared ${archFlag} -o "${destPath}" "${wrapperO}" ${wholeArchive} ${linkLibs}`,
+    { stdio: "inherit" },
+  );
+
+  rmSync(tmpDir, { recursive: true });
+  console.log(`[setup] Built ${destPath}`);
 }
 
 /**
@@ -297,6 +426,50 @@ async function main() {
   } else {
     console.log(`[setup] Installed libcurl-impersonate DLL for FFI transport`);
     // BoringSSL needs a CA bundle — download it
+    await downloadCaCert(force);
+  }
+
+  // Install FFI shared library (macOS/Linux) for connection pooling
+  // Strategy: pre-built download → local compile from .a → skip (CLI fallback)
+  const ffiLib = getFfiLibInfo(version);
+  if (ffiLib) {
+    const ffiDest = resolve(BIN_DIR, ffiLib.destName);
+    const shouldInstallFfi = !existsSync(ffiDest) || force;
+
+    if (shouldInstallFfi) {
+      // Step 1: Try pre-built binary from project releases (no clang needed)
+      const gotPrebuilt = await downloadPrebuiltLib(ffiLib);
+
+      if (!gotPrebuilt) {
+        // Step 2: Fallback — download static .a and compile locally
+        console.log(`[setup] Falling back to local build (requires clang)...`);
+        try {
+          const ffiUrl = await getDownloadUrl(ffiLib, version);
+          const tmpDir = resolve(BIN_DIR, ".tmp-ffi");
+          if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+          mkdirSync(tmpDir, { recursive: true });
+          const archivePath = resolve(tmpDir, "archive.tar.gz");
+          execSync(`curl -L -o "${archivePath}" "${ffiUrl}"`, { stdio: "inherit" });
+          execSync(`tar xzf "${archivePath}" -C "${tmpDir}"`, { stdio: "inherit" });
+
+          const staticLib = findFile(tmpDir, "libcurl-impersonate.a");
+          if (!staticLib) {
+            const files = listFilesRecursive(tmpDir);
+            throw new Error(`No .a found in archive. Files: ${files.join(", ")}`);
+          }
+
+          buildSharedLib(staticLib, ffiDest);
+          rmSync(tmpDir, { recursive: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[setup] Warning: could not build FFI library (${msg}). CLI transport will still work.`);
+        }
+      }
+    } else {
+      console.log(`[setup] ${ffiLib.destName} already exists`);
+    }
+
+    // BoringSSL needs a CA bundle
     await downloadCaCert(force);
   }
 

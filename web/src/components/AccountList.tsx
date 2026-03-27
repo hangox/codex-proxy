@@ -27,15 +27,27 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [warnings, setWarnings] = useState<QuotaWarning[]>([]);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [quotaRefreshing, setQuotaRefreshing] = useState(false);
+  const [healthChecking, setHealthChecking] = useState(false);
+  const [healthResult, setHealthResult] = useState<{ alive: number; dead: number; skipped: number } | null>(null);
+  const [hideExhausted, setHideExhausted] = useState(false);
 
-  const refreshAllQuota = useCallback(async () => {
-    setQuotaRefreshing(true);
+  const runHealthCheck = useCallback(async () => {
+    setHealthChecking(true);
+    setHealthResult(null);
     try {
-      await fetch("/auth/accounts?quota=fresh");
+      const resp = await fetch("/auth/accounts/health-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setHealthResult(data.summary);
+        setTimeout(() => setHealthResult(null), 8000);
+      }
       onRefresh();
     } finally {
-      setQuotaRefreshing(false);
+      setHealthChecking(false);
     }
   }, [onRefresh]);
 
@@ -75,6 +87,11 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
 
   const activeCount = accounts.filter((a) => a.status === "active").length;
 
+  const isExhausted = (a: Account) =>
+    a.quota?.rate_limit?.limit_reached === true || a.status === "rate_limited";
+  const exhaustedCount = accounts.filter(isExhausted).length;
+  const displayAccounts = hideExhausted ? accounts.filter((a) => !isExhausted(a)) : accounts;
+
   return (
     <section class="flex flex-col gap-4">
       {/* Row 1: Title + stats */}
@@ -109,16 +126,16 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           </svg>
           <span class="hidden sm:inline">{t("refreshList")}</span>
         </button>
-        {/* Refresh all quota */}
+        {/* Health check (batch token refresh) */}
         <button
-          onClick={refreshAllQuota}
-          disabled={quotaRefreshing}
-          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          onClick={runHealthCheck}
+          disabled={healthChecking}
+          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5" />
+          <svg class={`size-3.5 ${healthChecking ? "animate-pulse" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z" />
           </svg>
-          <span class="hidden sm:inline">{t("quotaShort")}</span>
+          <span class="hidden sm:inline">{healthChecking ? t("healthChecking") : t("healthCheck")}</span>
         </button>
         {/* Import / Export */}
         {onExport && onImport && (
@@ -140,15 +157,39 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
             <span class="hidden sm:inline">{selectedIds.size === accounts.length ? t("deselectAll") : t("selectAll")}</span>
           </button>
         )}
+        {/* Hide exhausted toggle */}
+        {exhaustedCount > 0 && (
+          <button
+            onClick={() => setHideExhausted((v) => !v)}
+            class={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              hideExhausted
+                ? "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20"
+                : "text-slate-600 dark:text-text-dim hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+            }`}
+          >
+            <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              {hideExhausted ? (
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
+              ) : (
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+              )}
+            </svg>
+            <span class="hidden sm:inline">
+              {hideExhausted
+                ? t("hideExhaustedOn").replace("{count}", String(exhaustedCount))
+                : t("hideExhaustedOff").replace("{count}", String(exhaustedCount))}
+            </span>
+          </button>
+        )}
         {/* Pagination — right side */}
-        {!loading && accounts.length > PAGE_SIZE && (
+        {!loading && displayAccounts.length > PAGE_SIZE && (
           <div class="flex items-center gap-2 ml-auto pl-3 border-l border-gray-200 dark:border-border-dark">
             <span class="text-xs text-slate-400 dark:text-text-dim tabular-nums">
-              {Math.min(visibleCount, accounts.length)} / {accounts.length}
+              {Math.min(visibleCount, displayAccounts.length)} / {displayAccounts.length}
             </span>
-            {visibleCount < accounts.length ? (
+            {visibleCount < displayAccounts.length ? (
               <button
-                onClick={() => setVisibleCount(accounts.length)}
+                onClick={() => setVisibleCount(displayAccounts.length)}
                 class="px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/10 rounded-lg transition-colors"
               >
                 {t("expandAll")}
@@ -164,6 +205,24 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           </div>
         )}
       </div>
+      {/* Health check result banner */}
+      {healthResult && (
+        <div class={`px-4 py-2.5 rounded-lg text-sm flex items-center gap-2 ${
+          healthResult.dead > 0
+            ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 text-red-700 dark:text-red-400"
+            : "bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/30 text-emerald-700 dark:text-emerald-400"
+        }`}>
+          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z" />
+          </svg>
+          <span>
+            {t("healthCheckResult")
+              .replace("{alive}", String(healthResult.alive))
+              .replace("{dead}", String(healthResult.dead))
+              .replace("{skipped}", String(healthResult.skipped))}
+          </span>
+        </div>
+      )}
       {/* Quota warning banners */}
       {warnings.filter((w) => w.level === "critical").length > 0 && (
         <div class="px-4 py-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 text-red-700 dark:text-red-400 text-sm flex items-center gap-2">
@@ -190,21 +249,21 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           <div class="md:col-span-2 text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
             {t("loadingAccounts")}
           </div>
-        ) : accounts.length === 0 ? (
+        ) : displayAccounts.length === 0 ? (
           <div class="md:col-span-2 text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
-            {t("noAccounts")}
+            {hideExhausted && accounts.length > 0 ? t("allExhausted") : t("noAccounts")}
           </div>
         ) : (
-          accounts.slice(0, visibleCount).map((acct, i) => (
-            <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} onRefreshQuota={async (id) => { await fetch(`/auth/accounts?quota=fresh&id=${id}`); onRefresh(); }} onToggleStatus={onToggleStatus} onUpdateLabel={onUpdateLabel} />
+          displayAccounts.slice(0, visibleCount).map((acct, i) => (
+            <AccountCard key={acct.id} account={acct} index={i} onDelete={onDelete} proxies={proxies} onProxyChange={onProxyChange} selected={selectedIds.has(acct.id)} onToggleSelect={toggleSelect} onRefreshQuota={async (id) => { await fetch(`/auth/accounts/${encodeURIComponent(id)}/refresh`, { method: "POST" }); onRefresh(); }} onToggleStatus={onToggleStatus} onUpdateLabel={onUpdateLabel} />
           ))
         )}
       </div>
       {/* Show more at bottom when partially expanded */}
-      {!loading && accounts.length > PAGE_SIZE && visibleCount < accounts.length && visibleCount > PAGE_SIZE && (
+      {!loading && displayAccounts.length > PAGE_SIZE && visibleCount < displayAccounts.length && visibleCount > PAGE_SIZE && (
         <div class="flex items-center justify-center mt-2">
           <button
-            onClick={() => setVisibleCount((c) => Math.min(c + PAGE_SIZE, accounts.length))}
+            onClick={() => setVisibleCount((c) => Math.min(c + PAGE_SIZE, displayAccounts.length))}
             class="px-4 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
           >
             {t("showMore")}

@@ -219,20 +219,12 @@ export class RefreshScheduler {
         const isOneTimeRT = entry.refreshToken.startsWith("oaistb_rt_");
         const tokens = await refreshAccessToken(entry.refreshToken, accountProxyUrl);
 
-        // oaistb_rt_ tokens are single-use: the old RT is revoked after exchange.
-        // If the server didn't return a new RT, mark the account as unable to refresh.
-        if (isOneTimeRT && !tokens.refresh_token) {
-          console.warn(`[RefreshScheduler] Account ${entryId}: oaistb_rt_ used but no new RT returned — future refresh will fail`);
-          this.pool.updateToken(entryId, tokens.access_token, null);
-          this.scheduleOne(entryId, tokens.access_token);
-          return;
+        // updateToken guards against clearing RT — safe to pass tokens.refresh_token directly.
+        // If the server returned no new RT, the existing one is preserved.
+        if (!tokens.refresh_token) {
+          console.warn(`[RefreshScheduler] Account ${entryId}: server returned no new RT, keeping existing`);
         }
-
-        this.pool.updateToken(
-          entryId,
-          tokens.access_token,
-          tokens.refresh_token,
-        );
+        this.pool.updateToken(entryId, tokens.access_token, tokens.refresh_token ?? undefined);
         const rtType = isOneTimeRT ? " (oaistb_rt_ → rotated)" : "";
         console.log(`[RefreshScheduler] Account ${entryId} refreshed successfully${rtType}`);
         this.scheduleOne(entryId, tokens.access_token);

@@ -103,7 +103,7 @@ export class AccountPool {
     return this.registry.removeAccount(id);
   }
 
-  updateToken(entryId: string, newToken: string, refreshToken?: string | null): void {
+  updateToken(entryId: string, newToken: string, refreshToken?: string): void {
     this.registry.updateToken(entryId, newToken, refreshToken);
   }
 

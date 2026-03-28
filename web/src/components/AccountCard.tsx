@@ -78,7 +78,9 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
   // Quota — primary window (default 0% used = 100% available for accounts without data)
   const q = account.quota;
   const rl = q?.rate_limit;
-  const pct = rl?.used_percent != null ? Math.round(rl.used_percent) : (account.status === "active" ? 0 : null);
+  const pct = rl?.limit_reached ? 100
+    : rl?.used_percent != null ? Math.round(rl.used_percent)
+    : (account.status === "active" ? 0 : null);
   const barColor =
     pct == null ? "bg-primary" : pct >= 90 ? "bg-red-500" : pct >= 60 ? "bg-amber-500" : "bg-primary";
   const pctColor =
@@ -93,7 +95,9 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
 
   // Quota — secondary window (e.g. weekly)
   const srl = q?.secondary_rate_limit;
-  const sPct = srl?.used_percent != null ? Math.round(srl.used_percent) : null;
+  const sPct = srl?.limit_reached ? 100
+    : srl?.used_percent != null ? Math.round(srl.used_percent)
+    : null;
   const sBarColor =
     sPct == null ? "bg-indigo-500" : sPct >= 90 ? "bg-red-500" : sPct >= 60 ? "bg-amber-500" : "bg-indigo-500";
   const sPctColor =

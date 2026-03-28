@@ -171,6 +171,13 @@ export async function handleProxyRequest(
           const windowSec = rl.primary.window_minutes != null ? rl.primary.window_minutes * 60 : null;
           accountPool.syncRateLimitWindow(entryId, rl.primary.reset_at, windowSec);
         }
+        // Proactively mark exhausted accounts so they don't get re-selected
+        if (quota.rate_limit.limit_reached && rl.primary?.reset_at != null) {
+          const backoffSec = rl.primary.reset_at - Math.floor(Date.now() / 1000);
+          if (backoffSec > 0) {
+            accountPool.markRateLimited(entryId, { retryAfterSec: backoffSec });
+          }
+        }
       }
 
       // ── Streaming path ──

@@ -19,7 +19,7 @@ export function toQuota(usage: CodexUsageResponse): CodexQuota {
     },
     secondary_rate_limit: sw
       ? {
-          limit_reached: usage.rate_limit.limit_reached,
+          limit_reached: sw.used_percent != null ? sw.used_percent >= 100 : usage.rate_limit.limit_reached,
           used_percent: sw.used_percent ?? null,
           reset_at: sw.reset_at ?? null,
           limit_window_seconds: sw.limit_window_seconds ?? null,

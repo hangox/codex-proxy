@@ -87,4 +87,38 @@ describe("SessionAffinityMap", () => {
     }
     expect(map.lookupConversationId("resp_abc")).toBeNull();
   });
+
+  // turnState tracking
+  describe("turnState tracking", () => {
+    it("lookupTurnState returns recorded turnState", () => {
+      map = new SessionAffinityMap();
+      map.record("resp_1", "entry_1", "conv_1", "ts_abc");
+      expect(map.lookupTurnState("resp_1")).toBe("ts_abc");
+    });
+
+    it("lookupTurnState returns null when no turnState was recorded", () => {
+      map = new SessionAffinityMap();
+      map.record("resp_1", "entry_1", "conv_1");
+      expect(map.lookupTurnState("resp_1")).toBeNull();
+    });
+
+    it("turnState expires along with entry", () => {
+      map = new SessionAffinityMap(50);
+      map.record("resp_1", "entry_1", "conv_1", "ts_abc");
+      expect(map.lookupTurnState("resp_1")).toBe("ts_abc");
+
+      const start = Date.now();
+      while (Date.now() - start < 60) {
+        // busy wait
+      }
+      expect(map.lookupTurnState("resp_1")).toBeNull();
+    });
+
+    it("turnState is updated on re-record", () => {
+      map = new SessionAffinityMap();
+      map.record("resp_1", "entry_1", "conv_1", "ts_old");
+      map.record("resp_1", "entry_1", "conv_1", "ts_new");
+      expect(map.lookupTurnState("resp_1")).toBe("ts_new");
+    });
+  });
 });

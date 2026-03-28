@@ -87,6 +87,42 @@ describe("handleCodexApiError", () => {
         countRequest: true,
       });
     });
+
+    it("uses cached quota reset time when account is exhausted", () => {
+      const resetAt = Math.floor(Date.now() / 1000) + 86400; // 1 day from now
+      pool.getEntry.mockReturnValue({
+        email: "test@example.com",
+        cachedQuota: {
+          rate_limit: { limit_reached: true, reset_at: resetAt },
+        },
+      });
+      const err = new CodexApiError(429, JSON.stringify({ error: { resets_in_seconds: 30 } }));
+
+      handleCodexApiError(err, pool as never, entryId, model, tag, false);
+
+      const call = pool.markRateLimited.mock.calls[0];
+      expect(call[0]).toBe(entryId);
+      // Should use the longer cached reset time instead of 30s
+      expect(call[1].retryAfterSec).toBeGreaterThan(86000);
+      expect(call[1].countRequest).toBe(true);
+    });
+
+    it("uses short backoff when account is not exhausted", () => {
+      pool.getEntry.mockReturnValue({
+        email: "test@example.com",
+        cachedQuota: {
+          rate_limit: { limit_reached: false, used_percent: 50, reset_at: null },
+        },
+      });
+      const err = new CodexApiError(429, JSON.stringify({ error: { resets_in_seconds: 30 } }));
+
+      handleCodexApiError(err, pool as never, entryId, model, tag, false);
+
+      expect(pool.markRateLimited).toHaveBeenCalledWith(entryId, {
+        retryAfterSec: 30,
+        countRequest: true,
+      });
+    });
   });
 
   // ── 403 ban ──

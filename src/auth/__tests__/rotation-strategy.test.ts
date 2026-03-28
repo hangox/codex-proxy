@@ -3,7 +3,13 @@ import { getRotationStrategy } from "../rotation-strategy.js";
 import type { RotationState } from "../rotation-strategy.js";
 import type { AccountEntry } from "../types.js";
 
-function makeEntry(id: string, overrides?: Partial<AccountEntry["usage"]>): AccountEntry {
+import type { CodexQuota } from "../types.js";
+
+function makeEntry(
+  id: string,
+  overrides?: Partial<AccountEntry["usage"]>,
+  quota?: Partial<CodexQuota> | null,
+): AccountEntry {
   return {
     id,
     token: `tok-${id}`,
@@ -11,6 +17,7 @@ function makeEntry(id: string, overrides?: Partial<AccountEntry["usage"]>): Acco
     email: `${id}@test.com`,
     accountId: `acct-${id}`,
     userId: `user-${id}`,
+    label: null,
     planType: "free",
     proxyApiKey: `key-${id}`,
     status: "active",
@@ -29,7 +36,20 @@ function makeEntry(id: string, overrides?: Partial<AccountEntry["usage"]>): Acco
       ...overrides,
     },
     addedAt: new Date().toISOString(),
-    cachedQuota: null,
+    cachedQuota: quota ? {
+      plan_type: "free",
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        used_percent: null,
+        reset_at: null,
+        limit_window_seconds: null,
+        ...quota.rate_limit,
+      },
+      secondary_rate_limit: null,
+      code_review_rate_limit: null,
+      ...quota,
+    } as CodexQuota : null,
     quotaFetchedAt: null,
   };
 }
@@ -64,6 +84,44 @@ describe("rotation-strategy", () => {
       const a = makeEntry("a", { request_count: 3, window_reset_at: reset, last_used: "2026-01-02T00:00:00Z" });
       const b = makeEntry("b", { request_count: 3, window_reset_at: reset, last_used: "2026-01-01T00:00:00Z" });
       expect(strategy.select([a, b], state).id).toBe("b");
+    });
+
+    it("deprioritizes exhausted accounts (limit_reached) even with earlier reset", () => {
+      const exhausted = makeEntry(
+        "exhausted",
+        { request_count: 0, window_reset_at: Date.now() + 1 * 86400_000 },
+        { rate_limit: { allowed: true, limit_reached: true, used_percent: 100, reset_at: null, limit_window_seconds: null } },
+      );
+      const healthy = makeEntry(
+        "healthy",
+        { request_count: 5, window_reset_at: Date.now() + 7 * 86400_000 },
+        { rate_limit: { allowed: true, limit_reached: false, used_percent: 30, reset_at: null, limit_window_seconds: null } },
+      );
+      expect(strategy.select([exhausted, healthy], state).id).toBe("healthy");
+    });
+
+    it("sorts exhausted accounts among themselves by reset time", () => {
+      const a = makeEntry(
+        "a",
+        { window_reset_at: Date.now() + 3 * 86400_000 },
+        { rate_limit: { allowed: true, limit_reached: true, used_percent: 100, reset_at: null, limit_window_seconds: null } },
+      );
+      const b = makeEntry(
+        "b",
+        { window_reset_at: Date.now() + 1 * 86400_000 },
+        { rate_limit: { allowed: true, limit_reached: true, used_percent: 100, reset_at: null, limit_window_seconds: null } },
+      );
+      expect(strategy.select([a, b], state).id).toBe("b");
+    });
+
+    it("treats accounts without cached quota as non-exhausted", () => {
+      const noQuota = makeEntry("noQuota", { request_count: 2, window_reset_at: Date.now() + 7 * 86400_000 });
+      const exhausted = makeEntry(
+        "exhausted",
+        { request_count: 0, window_reset_at: Date.now() + 1 * 86400_000 },
+        { rate_limit: { allowed: true, limit_reached: true, used_percent: 100, reset_at: null, limit_window_seconds: null } },
+      );
+      expect(strategy.select([exhausted, noQuota], state).id).toBe("noQuota");
     });
   });
 

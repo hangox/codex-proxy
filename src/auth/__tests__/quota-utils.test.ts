@@ -83,6 +83,75 @@ describe("toQuota", () => {
     expect(quota.code_review_rate_limit!.used_percent).toBe(100);
   });
 
+  it("secondary limit_reached inferred from own used_percent >= 100", () => {
+    const quota = toQuota(makeUsageResponse({
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,       // primary NOT reached
+        primary_window: {
+          used_percent: 10,
+          reset_at: 1700000000,
+          limit_window_seconds: 3600,
+          reset_after_seconds: 3000,
+        },
+        secondary_window: {
+          used_percent: 100,         // secondary exhausted
+          reset_at: 1700500000,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 300000,
+        },
+      },
+    }));
+
+    expect(quota.secondary_rate_limit!.limit_reached).toBe(true);
+  });
+
+  it("secondary limit_reached falls back to primary when own used_percent is null", () => {
+    const quota = toQuota(makeUsageResponse({
+      rate_limit: {
+        allowed: true,
+        limit_reached: true,
+        primary_window: {
+          used_percent: 100,
+          reset_at: 1700000000,
+          limit_window_seconds: 3600,
+          reset_after_seconds: 0,
+        },
+        secondary_window: {
+          used_percent: null as unknown as number,
+          reset_at: 1700500000,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 300000,
+        },
+      },
+    }));
+
+    expect(quota.secondary_rate_limit!.limit_reached).toBe(true);
+  });
+
+  it("secondary limit_reached is false when own used_percent < 100", () => {
+    const quota = toQuota(makeUsageResponse({
+      rate_limit: {
+        allowed: true,
+        limit_reached: true,       // primary reached but secondary is fine
+        primary_window: {
+          used_percent: 100,
+          reset_at: 1700000000,
+          limit_window_seconds: 3600,
+          reset_after_seconds: 0,
+        },
+        secondary_window: {
+          used_percent: 50,
+          reset_at: 1700500000,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 300000,
+        },
+      },
+    }));
+
+    expect(quota.secondary_rate_limit!.limit_reached).toBe(false);
+  });
+
   it("handles null primary window gracefully", () => {
     const quota = toQuota(makeUsageResponse({
       rate_limit: {

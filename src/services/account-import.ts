@@ -34,9 +34,19 @@ export interface ImportDeps {
   getProxyUrl(): string | null;
   /** Optional warmup: establishes session cookies after import to avoid cold-start bans. */
   warmup?(entryId: string, token: string, accountId: string | null): Promise<void>;
+  /** Optional verify: checks if the account is usable and returns usage data. Only used for single imports. */
+  verifyAccount?(token: string, accountId: string | null, proxyUrl: string | null): Promise<{
+    ok: boolean;
+    error?: string;
+    /** Raw usage response for caching quota on success. */
+    usage?: import("../proxy/codex-api.js").CodexUsageResponse;
+  }>;
 }
 
 export class AccountImportService {
+  /** Tracks RTs currently being refreshed to prevent concurrent consumption. */
+  private refreshingRTs = new Set<string>();
+
   constructor(
     private pool: AccountPool,
     private scheduler: { scheduleOne(entryId: string, token: string): void },
@@ -106,8 +116,34 @@ export class AccountImportService {
       return { ok: false, error: resolved.error, kind: resolved.kind };
     }
 
+    // Single import: verify account is usable and collect quota
+    let usageData: import("../proxy/codex-api.js").CodexUsageResponse | undefined;
+    if (this.deps.verifyAccount) {
+      const accountId = extractChatGptAccountId(resolved.token);
+      const proxyUrl = this.deps.getProxyUrl();
+      try {
+        const check = await this.deps.verifyAccount(resolved.token, accountId, proxyUrl);
+        if (!check.ok) {
+          return { ok: false, error: check.error ?? "Account verification failed", kind: "validation" };
+        }
+        usageData = check.usage;
+      } catch (err) {
+        return {
+          ok: false,
+          error: `Account verification failed: ${err instanceof Error ? err.message : String(err)}`,
+          kind: "validation",
+        };
+      }
+    }
+
     const entryId = this.pool.addAccount(resolved.token, resolved.rt);
     this.scheduler.scheduleOne(entryId, resolved.token);
+
+    // Cache quota from verification (so dashboard shows data immediately)
+    if (usageData) {
+      const { toQuota } = await import("../auth/quota-utils.js");
+      this.pool.updateCachedQuota(entryId, toQuota(usageData));
+    }
 
     const account = this.pool.getAccounts().find((a) => a.id === entryId);
     if (!account) {
@@ -133,7 +169,18 @@ export class AccountImportService {
       return { ok: true, token, rt };
     }
 
-    // Refresh-token-only path
+    // Refresh-token-only path — check if this RT already belongs to an existing account
+    const existing = this.pool.getAllEntries().find((a) => a.refreshToken === rt);
+    if (existing) {
+      return { ok: true, token: existing.token, rt: existing.refreshToken };
+    }
+
+    // Prevent concurrent refresh of the same RT (e.g. duplicate entries in import file)
+    if (this.refreshingRTs.has(rt as string)) {
+      return { ok: false, error: "Duplicate RT in import batch (skipped to protect token)", kind: "refresh_failed" };
+    }
+    this.refreshingRTs.add(rt as string);
+
     try {
       const proxyUrl = this.deps.getProxyUrl();
       const tokens = await this.deps.refreshToken(rt as string, proxyUrl);
@@ -159,6 +206,8 @@ export class AccountImportService {
         error: `Refresh token exchange failed: ${err instanceof Error ? err.message : String(err)}`,
         kind: "refresh_failed",
       };
+    } finally {
+      this.refreshingRTs.delete(rt as string);
     }
   }
 }

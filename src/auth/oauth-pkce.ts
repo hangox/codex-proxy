@@ -10,7 +10,7 @@ import { resolve } from "path";
 import { homedir } from "os";
 import { getConfig } from "../config.js";
 import { curlFetchPost, type CurlFetchResponse } from "../tls/curl-fetch.js";
-import { withDirectFallback, isCloudflareChallengeResponse, isProxyNetworkError } from "../tls/direct-fallback.js";
+import { withDirectFallback, isCloudflareChallengeResponse, isProxyNetworkError, isSafeToRetryRefresh } from "../tls/direct-fallback.js";
 import { getProxyUrl } from "../tls/curl-binary.js";
 
 export interface PKCEChallenge {
@@ -215,9 +215,18 @@ export async function refreshAccessToken(
       return JSON.parse(resp.body) as TokenResponse;
     } catch (err) {
       lastError = err;
-      if (isProxyNetworkError(err) && i < chain.length - 1) {
-        console.warn(`[OAuth/refresh] Network error at step ${i}, falling back`);
-        continue;
+      if (i < chain.length - 1) {
+        // Only fallback to next proxy if the request definitely didn't reach
+        // the server. Mid-connection failures (timeout, reset) mean the server
+        // may have already consumed the one-time RT — retrying would cause
+        // "refresh_token_reused" and permanently kill the RT.
+        if (isSafeToRetryRefresh(err)) {
+          console.warn(`[OAuth/refresh] Connection failed at step ${i} (pre-flight), falling back`);
+          continue;
+        }
+        if (isProxyNetworkError(err)) {
+          console.warn(`[OAuth/refresh] Network error at step ${i} (mid-flight, NOT retrying to protect RT)`);
+        }
       }
       throw err;
     }

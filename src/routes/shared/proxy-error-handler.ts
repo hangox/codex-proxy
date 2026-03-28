@@ -77,10 +77,21 @@ export function handleCodexApiError(
   // 2. Rate-limited
   if (err.status === 429) {
     const retryAfterSec = extractRetryAfterSec(err.body);
-    pool.markRateLimited(entryId, { retryAfterSec, countRequest: true });
+
+    // If cached quota shows limit_reached with a known reset time, use that
+    // instead of the short default backoff (prevents exhausted accounts from
+    // cycling back to "active" after 60s only to get 429'd again)
+    const entry = pool.getEntry(entryId);
+    const cachedReset = entry?.cachedQuota?.rate_limit?.reset_at;
+    const effectiveRetry = (entry?.cachedQuota?.rate_limit?.limit_reached && cachedReset)
+      ? Math.max(retryAfterSec ?? 0, cachedReset - Math.floor(Date.now() / 1000))
+      : retryAfterSec;
+
+    pool.markRateLimited(entryId, { retryAfterSec: effectiveRetry ?? undefined, countRequest: true });
+    const backoffDisplay = effectiveRetry != null ? Math.round(effectiveRetry) : null;
     console.warn(
       `[${tag}] Account ${entryId} (${email}) | 429 rate limited` +
-        (retryAfterSec != null ? ` (resets in ${Math.round(retryAfterSec)}s)` : "") +
+        (backoffDisplay != null ? ` (resets in ${backoffDisplay}s)` : "") +
         `, trying different account...`,
     );
     return { action: "retry", status: 429, message: err.message, useFormat429: true };

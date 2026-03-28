@@ -36,6 +36,14 @@
 
 ---
 
+> **Disclaimer**: This project is independently developed and maintained by a single person — built to scratch my own itch. I have my own account pipeline and am not short on tokens; this project exists because I needed it, not to freeload off anyone.
+>
+> I open-source and maintain this voluntarily. Features get added when I need them; bugs get fixed as soon as I find them. But I am under no obligation to serve any individual user's demands.
+>
+> Think the code is garbage? Don't use it. Think you can do better? Open a PR and join as a contributor. The issue tracker is for bug reports and suggestions — not feature demands, update nagging, or unsolicited code reviews.
+
+---
+
 **Codex Proxy** is a lightweight local gateway that translates the [Codex Desktop](https://openai.com/codex) Responses API into multiple standard protocol endpoints — OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini, and Codex `/v1/responses` passthrough. Use Codex coding models directly in Cursor, Claude Code, Continue, or any compatible client.
 
 Just a ChatGPT account (or a third-party API relay) and this proxy — your own personal AI coding assistant gateway, running locally.

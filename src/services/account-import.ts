@@ -34,8 +34,13 @@ export interface ImportDeps {
   getProxyUrl(): string | null;
   /** Optional warmup: establishes session cookies after import to avoid cold-start bans. */
   warmup?(entryId: string, token: string, accountId: string | null): Promise<void>;
-  /** Optional verify: checks if the account is usable (e.g. not deactivated). Only used for single imports. */
-  verifyAccount?(token: string, accountId: string | null, proxyUrl: string | null): Promise<{ ok: boolean; error?: string }>;
+  /** Optional verify: checks if the account is usable and returns usage data. Only used for single imports. */
+  verifyAccount?(token: string, accountId: string | null, proxyUrl: string | null): Promise<{
+    ok: boolean;
+    error?: string;
+    /** Raw usage response for caching quota on success. */
+    usage?: import("../proxy/codex-api.js").CodexUsageResponse;
+  }>;
 }
 
 export class AccountImportService {
@@ -111,7 +116,8 @@ export class AccountImportService {
       return { ok: false, error: resolved.error, kind: resolved.kind };
     }
 
-    // Single import: verify account is usable before adding (e.g. not deactivated)
+    // Single import: verify account is usable and collect quota
+    let usageData: import("../proxy/codex-api.js").CodexUsageResponse | undefined;
     if (this.deps.verifyAccount) {
       const accountId = extractChatGptAccountId(resolved.token);
       const proxyUrl = this.deps.getProxyUrl();
@@ -120,6 +126,7 @@ export class AccountImportService {
         if (!check.ok) {
           return { ok: false, error: check.error ?? "Account verification failed", kind: "validation" };
         }
+        usageData = check.usage;
       } catch (err) {
         return {
           ok: false,
@@ -131,6 +138,12 @@ export class AccountImportService {
 
     const entryId = this.pool.addAccount(resolved.token, resolved.rt);
     this.scheduler.scheduleOne(entryId, resolved.token);
+
+    // Cache quota from verification (so dashboard shows data immediately)
+    if (usageData) {
+      const { toQuota } = await import("../auth/quota-utils.js");
+      this.pool.updateCachedQuota(entryId, toQuota(usageData));
+    }
 
     const account = this.pool.getAccounts().find((a) => a.id === entryId);
     if (!account) {

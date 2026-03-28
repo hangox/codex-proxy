@@ -14,7 +14,7 @@
  * PUT    /api/proxies/settings     — update settings { healthCheckIntervalMinutes }
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import yaml from "js-yaml";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import type { AccountPool } from "../auth/account-pool.js";
@@ -375,7 +375,7 @@ export function createProxyRoutes(proxyPool: ProxyPool, accountPool: AccountPool
 
     // Explicit text/plain from frontend tab selection
     if (contentType.includes("text/plain")) {
-      return importPlainTextProxies(rawBody, proxyPool);
+      return importPlainTextProxies(c, rawBody, proxyPool);
     }
 
     // YAML path
@@ -457,7 +457,7 @@ const PROTOCOL_PREFIX_RE = /^(https?|socks5h?):\/\//;
  *   host:port:username:password     → http://username:password@host:port
  *   protocol://host:port:user:pass  → protocol://user:pass@host:port
  */
-function importPlainTextProxies(rawBody: string, proxyPool: ProxyPool): Response {
+function importPlainTextProxies(c: Context, rawBody: string, proxyPool: ProxyPool): Response {
   const added: string[] = [];
   const errors: string[] = [];
 
@@ -480,6 +480,10 @@ function importPlainTextProxies(rawBody: string, proxyPool: ProxyPool): Response
     if (parts.length === 2) {
       // host:port
       const [host, port] = parts;
+      if (isNaN(parseInt(port, 10))) {
+        errors.push(`Invalid port in host:port format: ${line}`);
+        continue;
+      }
       url = `${scheme}://${host}:${port}`;
     } else if (parts.length === 3) {
       // host:username:password
@@ -505,5 +509,5 @@ function importPlainTextProxies(rawBody: string, proxyPool: ProxyPool): Response
     proxyPool.startHealthCheckTimer();
   }
 
-  return Response.json({ success: true, added: added.length, errors });
+  return c.json({ success: errors.length === 0, added: added.length, errors });
 }

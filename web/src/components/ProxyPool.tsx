@@ -126,11 +126,13 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
         headers: { "Content-Type": importMode === "yaml" ? "text/yaml" : "text/plain" },
         body: importText,
       });
-      const data = await resp.json() as { success?: boolean; added?: number; error?: string };
+      const data = await resp.json() as { success?: boolean; added?: number; error?: string; errors?: string[] };
       if (!resp.ok) {
         setImportStatus(data.error ?? t("proxyImportError"));
       } else {
-        setImportStatus(t("proxyImportSuccess").replace("{count}", String(data.added ?? 0)));
+        const msg = t("proxyImportSuccess").replace("{count}", String(data.added ?? 0));
+        const errCount = data.errors?.length ?? 0;
+        setImportStatus(errCount > 0 ? `${msg} (${errCount} errors)` : msg);
         setImportText("");
         await proxies.refresh();
         setTimeout(() => {

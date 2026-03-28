@@ -4,6 +4,8 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+> **置顶声明**：本项目由个人独立开发维护，自愿开源。该有的功能会加，有 bug 会第一时间修。觉得代码垃圾可以不用，觉得你写得好欢迎提 PR。我没有义务为任何人定制服务。
+
 ## [Unreleased]
 
 ### Added

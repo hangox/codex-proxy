@@ -34,6 +34,8 @@ export interface ImportDeps {
   getProxyUrl(): string | null;
   /** Optional warmup: establishes session cookies after import to avoid cold-start bans. */
   warmup?(entryId: string, token: string, accountId: string | null): Promise<void>;
+  /** Optional verify: checks if the account is usable (e.g. not deactivated). Only used for single imports. */
+  verifyAccount?(token: string, accountId: string | null, proxyUrl: string | null): Promise<{ ok: boolean; error?: string }>;
 }
 
 export class AccountImportService {
@@ -107,6 +109,24 @@ export class AccountImportService {
     const resolved = await this.resolveToken(token, refreshToken ?? null);
     if (!resolved.ok) {
       return { ok: false, error: resolved.error, kind: resolved.kind };
+    }
+
+    // Single import: verify account is usable before adding (e.g. not deactivated)
+    if (this.deps.verifyAccount) {
+      const accountId = extractChatGptAccountId(resolved.token);
+      const proxyUrl = this.deps.getProxyUrl();
+      try {
+        const check = await this.deps.verifyAccount(resolved.token, accountId, proxyUrl);
+        if (!check.ok) {
+          return { ok: false, error: check.error ?? "Account verification failed", kind: "validation" };
+        }
+      } catch (err) {
+        return {
+          ok: false,
+          error: `Account verification failed: ${err instanceof Error ? err.message : String(err)}`,
+          kind: "validation",
+        };
+      }
     }
 
     const entryId = this.pool.addAccount(resolved.token, resolved.rt);

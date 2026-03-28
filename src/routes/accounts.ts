@@ -44,6 +44,22 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
     // Warmup disabled: sending GET /codex/usage immediately after RT exchange
     // triggers OpenAI risk detection and causes account deactivation.
     warmup: undefined,
+    // Single-import verification: GET /codex/usage to check deactivated accounts.
+    // Only used by importOne (manual add), not importMany (batch) to avoid risk.
+    verifyAccount: async (token, accountId, proxyUrl) => {
+      const api = new CodexApi(token, accountId, cookieJar, null, proxyUrl);
+      try {
+        await api.getUsage();
+        return { ok: true };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.toLowerCase().includes("deactivated")) {
+          return { ok: false, error: "Account has been deactivated" };
+        }
+        // Non-deactivation errors (network, rate-limit) — don't block import
+        return { ok: true };
+      }
+    },
   });
   const querySvc = new AccountQueryService(
     pool,

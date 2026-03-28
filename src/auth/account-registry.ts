@@ -115,7 +115,7 @@ export class AccountRegistry {
     entry.userId = profile?.chatgpt_user_id ?? entry.userId;
     // Don't reactivate manually disabled or banned accounts
     if (entry.status !== "disabled" && entry.status !== "banned") {
-      entry.status = "active";
+      entry.status = isTokenExpired(newToken) ? "expired" : "active";
     }
     this.persistNow();
   }

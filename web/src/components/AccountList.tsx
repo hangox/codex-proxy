@@ -29,7 +29,51 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthResult, setHealthResult] = useState<{ alive: number; dead: number; skipped: number } | null>(null);
-  const [hideExhausted, setHideExhausted] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [refreshingExpired, setRefreshingExpired] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<string | null>(null);
+
+  const runRefreshExpired = useCallback(async () => {
+    const expiredIds = accounts.filter((a) => a.status === "expired").map((a) => a.id);
+    if (expiredIds.length === 0) return;
+    setRefreshingExpired(true);
+    setHealthResult(null);
+    try {
+      const resp = await fetch("/auth/accounts/health-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: expiredIds }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setHealthResult(data.summary);
+        setTimeout(() => setHealthResult(null), 8000);
+      }
+      onRefresh();
+    } finally {
+      setRefreshingExpired(false);
+    }
+  }, [accounts, onRefresh]);
+
+  const deleteInvalid = useCallback(async () => {
+    const invalidIds = accounts
+      .filter((a) => a.status === "banned" || a.status === "expired")
+      .map((a) => a.id);
+    if (invalidIds.length === 0) return;
+    if (!confirm(t("deleteInvalidConfirm").replace("{count}", String(invalidIds.length)))) return;
+    try {
+      const resp = await fetch("/auth/accounts/batch-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: invalidIds }),
+      });
+      if (resp.ok) {
+        setDeleteResult(t("deletedCount").replace("{count}", String(invalidIds.length)));
+        setTimeout(() => setDeleteResult(null), 5000);
+      }
+      onRefresh();
+    } catch { /* ignore */ }
+  }, [accounts, onRefresh, t]);
 
   const runHealthCheck = useCallback(async () => {
     setHealthChecking(true);
@@ -87,10 +131,16 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
 
   const activeCount = accounts.filter((a) => a.status === "active").length;
 
-  const isExhausted = (a: Account) =>
-    a.quota?.rate_limit?.limit_reached === true || a.status === "rate_limited";
-  const exhaustedCount = accounts.filter(isExhausted).length;
-  const displayAccounts = hideExhausted ? accounts.filter((a) => !isExhausted(a)) : accounts;
+  const isInvalid = (a: Account) => a.status === "expired" || a.status === "banned";
+  const invalidCount = accounts.filter(isInvalid).length;
+  const expiredCount = accounts.filter((a) => a.status === "expired").length;
+
+  const statusCounts: Record<string, number> = {};
+  for (const a of accounts) statusCounts[a.status] = (statusCounts[a.status] ?? 0) + 1;
+
+  const displayAccounts = statusFilter === "all"
+    ? accounts
+    : accounts.filter((a) => a.status === statusFilter);
 
   return (
     <section class="flex flex-col gap-4">
@@ -157,28 +207,42 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
             <span class="hidden sm:inline">{selectedIds.size === accounts.length ? t("deselectAll") : t("selectAll")}</span>
           </button>
         )}
-        {/* Hide exhausted toggle */}
-        {exhaustedCount > 0 && (
+        {/* Status filter dropdown */}
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter((e.target as HTMLSelectElement).value)}
+          class="px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-lg cursor-pointer hover:border-primary dark:hover:border-primary transition-colors"
+        >
+          <option value="all">{t("filterAll")} ({accounts.length})</option>
+          {statusCounts.active ? <option value="active">{t("filterActive")} ({statusCounts.active})</option> : null}
+          {statusCounts.expired ? <option value="expired">{t("filterExpired")} ({statusCounts.expired})</option> : null}
+          {statusCounts.banned ? <option value="banned">{t("filterBanned")} ({statusCounts.banned})</option> : null}
+          {statusCounts.rate_limited ? <option value="rate_limited">{t("filterRateLimited")} ({statusCounts.rate_limited})</option> : null}
+          {statusCounts.disabled ? <option value="disabled">{t("filterDisabled")} ({statusCounts.disabled})</option> : null}
+        </select>
+        {/* Refresh expired tokens */}
+        {expiredCount > 0 && (
           <button
-            onClick={() => setHideExhausted((v) => !v)}
-            class={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              hideExhausted
-                ? "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20"
-                : "text-slate-600 dark:text-text-dim hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20"
-            }`}
+            onClick={runRefreshExpired}
+            disabled={refreshingExpired}
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <svg class={`size-3.5 ${refreshingExpired ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            <span class="hidden sm:inline">{refreshingExpired ? t("refreshingExpired") : t("refreshExpired")}</span>
+          </button>
+        )}
+        {/* Delete invalid accounts */}
+        {invalidCount > 0 && (
+          <button
+            onClick={deleteInvalid}
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
           >
             <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              {hideExhausted ? (
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" />
-              ) : (
-                <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-              )}
+              <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
             </svg>
-            <span class="hidden sm:inline">
-              {hideExhausted
-                ? t("hideExhaustedOn").replace("{count}", String(exhaustedCount))
-                : t("hideExhaustedOff").replace("{count}", String(exhaustedCount))}
-            </span>
+            <span class="hidden sm:inline">{t("deleteInvalid")}</span>
           </button>
         )}
         {/* Pagination — right side */}
@@ -223,6 +287,15 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           </span>
         </div>
       )}
+      {/* Delete result banner */}
+      {deleteResult && (
+        <div class="px-4 py-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/30 text-emerald-700 dark:text-emerald-400 text-sm flex items-center gap-2">
+          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+          </svg>
+          <span>{deleteResult}</span>
+        </div>
+      )}
       {/* Quota warning banners */}
       {warnings.filter((w) => w.level === "critical").length > 0 && (
         <div class="px-4 py-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 text-red-700 dark:text-red-400 text-sm flex items-center gap-2">
@@ -251,7 +324,7 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
           </div>
         ) : displayAccounts.length === 0 ? (
           <div class="md:col-span-2 text-center py-8 text-slate-400 dark:text-text-dim text-sm bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-colors">
-            {hideExhausted && accounts.length > 0 ? t("allExhausted") : t("noAccounts")}
+            {statusFilter !== "all" && accounts.length > 0 ? t("noMatchingAccounts") : t("noAccounts")}
           </div>
         ) : (
           displayAccounts.slice(0, visibleCount).map((acct, i) => (

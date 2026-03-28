@@ -39,7 +39,8 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
   const [checking, setChecking] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [importYaml, setImportYaml] = useState("");
+  const [importMode, setImportMode] = useState<"text" | "yaml">("text");
+  const [importText, setImportText] = useState("");
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -116,21 +117,21 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
   }, []);
 
   const handleImport = useCallback(async () => {
-    if (!importYaml.trim()) return;
+    if (!importText.trim()) return;
     setImporting(true);
     setImportStatus(null);
     try {
       const resp = await fetch("/api/proxies/import", {
         method: "POST",
-        headers: { "Content-Type": "text/yaml" },
-        body: importYaml,
+        headers: { "Content-Type": importMode === "yaml" ? "text/yaml" : "text/plain" },
+        body: importText,
       });
       const data = await resp.json() as { success?: boolean; added?: number; error?: string };
       if (!resp.ok) {
         setImportStatus(data.error ?? t("proxyImportError"));
       } else {
         setImportStatus(t("proxyImportSuccess").replace("{count}", String(data.added ?? 0)));
-        setImportYaml("");
+        setImportText("");
         await proxies.refresh();
         setTimeout(() => {
           setShowImport(false);
@@ -142,7 +143,7 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
     } finally {
       setImporting(false);
     }
-  }, [importYaml, proxies, t]);
+  }, [importText, importMode, proxies, t]);
 
   return (
     <section>
@@ -190,31 +191,51 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
       {/* Import modal */}
       {showImport && (
         <div class="bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl p-4 mb-4">
-          <h3 class="text-sm font-semibold mb-2">{t("proxyImportTitle")}</h3>
+          <div class="flex items-center gap-1 mb-3">
+            {(["text", "yaml"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => { setImportMode(mode); setImportStatus(null); }}
+                class={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  importMode === mode
+                    ? "bg-primary text-white"
+                    : "text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark"
+                }`}
+              >
+                {t(mode === "text" ? "proxyImportTextTab" : "proxyImportYamlTab")}
+              </button>
+            ))}
+          </div>
           <textarea
             class={`${inputCls} w-full h-32 font-mono resize-y`}
-            value={importYaml}
-            onInput={(e) => setImportYaml((e.target as HTMLTextAreaElement).value)}
-            placeholder={t("proxyImportPlaceholder")}
+            value={importText}
+            onInput={(e) => setImportText((e.target as HTMLTextAreaElement).value)}
+            placeholder={t(importMode === "text" ? "proxyImportTextPlaceholder" : "proxyImportYamlPlaceholder")}
           />
           <div class="flex items-center justify-between mt-3">
             {importStatus && (
-              <p class={`text-xs ${importStatus.includes("fail") || importStatus.includes("error") ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
+              <p class={`text-xs ${importStatus.includes("fail") || importStatus.includes("error") || importStatus.includes("失败") ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
                 {importStatus}
               </p>
             )}
             <div class="ml-auto flex items-center gap-2">
               <button
-                onClick={() => { setShowImport(false); setImportYaml(""); setImportStatus(null); }}
+                onClick={() => { setShowImport(false); setImportText(""); setImportStatus(null); }}
                 class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
               >
                 {t("cancelBtn")}
               </button>
               <button
+                onClick={() => setImportText(t(importMode === "text" ? "proxyImportTextTemplate" : "proxyImportYamlTemplate"))}
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+              >
+                {t("proxyImportFillTemplate")}
+              </button>
+              <button
                 onClick={handleImport}
-                disabled={importing || !importYaml.trim()}
+                disabled={importing || !importText.trim()}
                 class={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-                  !importing && importYaml.trim()
+                  !importing && importText.trim()
                     ? "bg-primary text-white hover:bg-primary/90 cursor-pointer"
                     : "bg-slate-100 dark:bg-[#21262d] text-slate-400 dark:text-text-dim cursor-not-allowed"
                 }`}

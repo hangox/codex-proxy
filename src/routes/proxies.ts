@@ -368,9 +368,17 @@ export function createProxyRoutes(proxyPool: ProxyPool, accountPool: AccountPool
     });
   });
 
-  // --- Import proxies from YAML ---
+  // --- Import proxies from YAML or plain text ---
   app.post("/api/proxies/import", async (c) => {
     const rawBody = await c.req.text();
+    const contentType = c.req.header("content-type") ?? "";
+
+    // Explicit text/plain from frontend tab selection
+    if (contentType.includes("text/plain")) {
+      return importPlainTextProxies(rawBody, proxyPool);
+    }
+
+    // YAML path
     let parsed: unknown;
     try {
       parsed = yaml.load(rawBody);
@@ -436,4 +444,66 @@ function composeProxyUrl(
   }
   const portSuffix = port ? `:${port}` : "";
   return `${scheme}://${auth}${trimmedHost}${portSuffix}`;
+}
+
+const PROTOCOL_PREFIX_RE = /^(https?|socks5h?):\/\//;
+
+/**
+ * Parse plain-text proxy list.
+ *
+ * Supported line formats:
+ *   host:port                      → http://host:port
+ *   host:username:password          → http://username:password@host
+ *   host:port:username:password     → http://username:password@host:port
+ *   protocol://host:port:user:pass  → protocol://user:pass@host:port
+ */
+function importPlainTextProxies(rawBody: string, proxyPool: ProxyPool): Response {
+  const added: string[] = [];
+  const errors: string[] = [];
+
+  for (const raw of rawBody.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    // Strip optional protocol prefix
+    let scheme = "http";
+    let rest = line;
+    const protoMatch = PROTOCOL_PREFIX_RE.exec(line);
+    if (protoMatch) {
+      scheme = protoMatch[1];
+      rest = line.slice(protoMatch[0].length);
+    }
+
+    const parts = rest.split(":");
+    let url: string;
+
+    if (parts.length === 2) {
+      // host:port
+      const [host, port] = parts;
+      url = `${scheme}://${host}:${port}`;
+    } else if (parts.length === 3) {
+      // host:username:password
+      const [host, username, password] = parts;
+      url = composeProxyUrl(scheme, host, undefined, username, password);
+    } else if (parts.length >= 4) {
+      // host:port:username:password (password may contain colons)
+      const host = parts[0];
+      const port = parts[1];
+      const username = parts[2];
+      const password = parts.slice(3).join(":");
+      url = composeProxyUrl(scheme, host, port, username, password);
+    } else {
+      errors.push(`Invalid format (expected host:port or host:user:pass): ${line}`);
+      continue;
+    }
+
+    const id = proxyPool.add(line, url);
+    added.push(id);
+  }
+
+  if (added.length > 0) {
+    proxyPool.startHealthCheckTimer();
+  }
+
+  return Response.json({ success: true, added: added.length, errors });
 }

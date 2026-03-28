@@ -8,12 +8,12 @@ export interface GetResponse {
   body: string
   setCookieHeaders: Array<string>
 }
-export declare function httpGet(url: string, headers: Record<string, string>, timeoutSec?: number | undefined | null, proxyUrl?: string | undefined | null): Promise<unknown>
+export declare function httpGet(url: string, headers: Record<string, string>, timeoutSec?: number | undefined | null, proxyUrl?: string | undefined | null, forceHttp11?: boolean | undefined | null): Promise<unknown>
 export interface PostResponse {
   status: number
   body: string
 }
-export declare function httpPost(url: string, headers: Record<string, string>, body: string, timeoutSec?: number | undefined | null, proxyUrl?: string | undefined | null): Promise<unknown>
+export declare function httpPost(url: string, headers: Record<string, string>, body: string, timeoutSec?: number | undefined | null, proxyUrl?: string | undefined | null, forceHttp11?: boolean | undefined | null): Promise<unknown>
 export interface StreamMeta {
   status: number
   headers: Record<string, string>
@@ -25,4 +25,4 @@ export interface StreamMeta {
  * onChunk(Buffer)  — data chunk
  * onChunk(null)    — stream ended (clean EOF or after error)
  */
-export declare function httpPostStream(url: string, headers: Record<string, string>, body: string, onChunk: (arg: Buffer | undefined | null) => any, proxyUrl?: string | undefined | null): Promise<unknown>
+export declare function httpPostStream(url: string, headers: Record<string, string>, body: string, onChunk: (arg: Buffer | undefined | null) => any, proxyUrl?: string | undefined | null, forceHttp11?: boolean | undefined | null): Promise<unknown>

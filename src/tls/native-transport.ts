@@ -12,6 +12,7 @@ import { resolve } from "path";
 import { existsSync } from "fs";
 import type { TlsTransport, TlsTransportResponse } from "./transport.js";
 import { getProxyUrl } from "./curl-binary.js";
+import { getConfig } from "../config.js";
 
 interface NativeGetResponse {
   status: number;
@@ -36,6 +37,7 @@ interface NativeBindings {
     headers: Record<string, string>,
     timeoutSec?: number | null,
     proxyUrl?: string | null,
+    forceHttp11?: boolean | null,
   ): Promise<NativeGetResponse>;
   httpPost(
     url: string,
@@ -43,13 +45,15 @@ interface NativeBindings {
     body: string,
     timeoutSec?: number | null,
     proxyUrl?: string | null,
+    forceHttp11?: boolean | null,
   ): Promise<NativePostResponse>;
   httpPostStream(
     url: string,
     headers: Record<string, string>,
     body: string,
-    onChunk: (chunk: Buffer | null) => void,
+    onChunk: (chunk: Buffer | null | undefined) => void,
     proxyUrl?: string | null,
+    forceHttp11?: boolean | null,
   ): Promise<NativeStreamMeta>;
 }
 
@@ -113,6 +117,7 @@ export class NativeTransport implements TlsTransport {
       body,
       onChunk,
       proxy,
+      getConfig().tls.force_http11,
     );
 
     // Handle abort signal
@@ -149,7 +154,8 @@ export class NativeTransport implements TlsTransport {
     proxyUrl?: string | null,
   ): Promise<{ status: number; body: string }> {
     const proxy = resolveProxy(proxyUrl);
-    const result = await this.bindings.httpGet(url, headers, timeoutSec, proxy);
+    const h11 = getConfig().tls.force_http11;
+    const result = await this.bindings.httpGet(url, headers, timeoutSec, proxy, h11);
     return { status: result.status, body: result.body };
   }
 
@@ -160,7 +166,7 @@ export class NativeTransport implements TlsTransport {
     proxyUrl?: string | null,
   ): Promise<{ status: number; body: string; setCookieHeaders: string[] }> {
     const proxy = resolveProxy(proxyUrl);
-    return this.bindings.httpGet(url, headers, timeoutSec, proxy);
+    return this.bindings.httpGet(url, headers, timeoutSec, proxy, getConfig().tls.force_http11);
   }
 
   async simplePost(
@@ -171,7 +177,7 @@ export class NativeTransport implements TlsTransport {
     proxyUrl?: string | null,
   ): Promise<{ status: number; body: string }> {
     const proxy = resolveProxy(proxyUrl);
-    return this.bindings.httpPost(url, headers, body, timeoutSec, proxy);
+    return this.bindings.httpPost(url, headers, body, timeoutSec, proxy, getConfig().tls.force_http11);
   }
 }
 

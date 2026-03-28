@@ -17,23 +17,29 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Cached reqwest clients keyed by proxy URL for connection pooling + TLS session reuse.
-fn get_client(proxy_url: Option<&str>) -> Result<reqwest::Client> {
-    static CLIENTS: OnceLock<Mutex<HashMap<Option<String>, reqwest::Client>>> = OnceLock::new();
+/// Cache key: (proxy_url, force_http11)
+type ClientKey = (Option<String>, bool);
+
+/// Cached reqwest clients keyed by (proxy_url, http_version) for connection pooling + TLS session reuse.
+fn get_client(proxy_url: Option<&str>, force_http11: bool) -> Result<reqwest::Client> {
+    static CLIENTS: OnceLock<Mutex<HashMap<ClientKey, reqwest::Client>>> = OnceLock::new();
     let cache = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = proxy_url.map(String::from);
+    let key: ClientKey = (proxy_url.map(String::from), force_http11);
 
     let guard = cache.lock().map_err(|e| Error::from_reason(format!("Client cache lock poisoned: {e}")))?;
     if let Some(client) = guard.get(&key) {
-        return Ok(client.clone()); // Arc clone, not deep copy
+        return Ok(client.clone());
     }
     drop(guard);
 
-    // Build new client outside lock
     let mut builder = reqwest::Client::builder()
         .use_rustls_tls()
         .pool_max_idle_per_host(4)
         .tcp_keepalive(Duration::from_secs(30));
+
+    if force_http11 {
+        builder = builder.http1_only();
+    }
 
     if let Some(url) = proxy_url {
         if !url.is_empty() {
@@ -48,7 +54,6 @@ fn get_client(proxy_url: Option<&str>) -> Result<reqwest::Client> {
         .map_err(|e| Error::from_reason(format!("Failed to build HTTP client: {e}")))?;
 
     let mut guard = cache.lock().map_err(|e| Error::from_reason(format!("Client cache lock poisoned: {e}")))?;
-    // Another thread may have inserted while we were building — use their client if so
     Ok(guard.entry(key).or_insert(client).clone())
 }
 
@@ -105,12 +110,14 @@ pub fn http_get(
     headers: HashMap<String, String>,
     timeout_sec: Option<u32>,
     proxy_url: Option<String>,
+    force_http11: Option<bool>,
 ) -> AsyncTask<GetTask> {
     AsyncTask::new(GetTask {
         url,
         headers,
         timeout_sec,
         proxy_url,
+        force_http11: force_http11.unwrap_or(false),
     })
 }
 
@@ -119,6 +126,7 @@ pub struct GetTask {
     headers: HashMap<String, String>,
     timeout_sec: Option<u32>,
     proxy_url: Option<String>,
+    force_http11: bool,
 }
 
 #[napi]
@@ -128,7 +136,7 @@ impl Task for GetTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         runtime().block_on(async {
-            let client = get_client(self.proxy_url.as_deref())?;
+            let client = get_client(self.proxy_url.as_deref(), self.force_http11)?;
             let header_map = to_header_map(&self.headers)?;
 
             let mut req = client.get(&self.url).headers(header_map);
@@ -176,6 +184,7 @@ pub fn http_post(
     body: String,
     timeout_sec: Option<u32>,
     proxy_url: Option<String>,
+    force_http11: Option<bool>,
 ) -> AsyncTask<PostTask> {
     AsyncTask::new(PostTask {
         url,
@@ -183,6 +192,7 @@ pub fn http_post(
         body,
         timeout_sec,
         proxy_url,
+        force_http11: force_http11.unwrap_or(false),
     })
 }
 
@@ -192,6 +202,7 @@ pub struct PostTask {
     body: String,
     timeout_sec: Option<u32>,
     proxy_url: Option<String>,
+    force_http11: bool,
 }
 
 #[napi]
@@ -201,7 +212,7 @@ impl Task for PostTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         runtime().block_on(async {
-            let client = get_client(self.proxy_url.as_deref())?;
+            let client = get_client(self.proxy_url.as_deref(), self.force_http11)?;
             let header_map = to_header_map(&self.headers)?;
 
             let body = std::mem::take(&mut self.body);
@@ -250,6 +261,7 @@ pub fn http_post_stream(
     body: String,
     on_chunk: ThreadsafeFunction<Option<Buffer>, ErrorStrategy::Fatal>,
     proxy_url: Option<String>,
+    force_http11: Option<bool>,
 ) -> AsyncTask<StreamPostTask> {
     AsyncTask::new(StreamPostTask {
         url,
@@ -257,6 +269,7 @@ pub fn http_post_stream(
         body,
         on_chunk,
         proxy_url,
+        force_http11: force_http11.unwrap_or(false),
     })
 }
 
@@ -266,6 +279,7 @@ pub struct StreamPostTask {
     body: String,
     on_chunk: ThreadsafeFunction<Option<Buffer>, ErrorStrategy::Fatal>,
     proxy_url: Option<String>,
+    force_http11: bool,
 }
 
 #[napi]
@@ -277,7 +291,7 @@ impl Task for StreamPostTask {
         use futures_util::StreamExt;
 
         runtime().block_on(async {
-            let client = get_client(self.proxy_url.as_deref())?;
+            let client = get_client(self.proxy_url.as_deref(), self.force_http11)?;
             let header_map = to_header_map(&self.headers)?;
             let body = std::mem::take(&mut self.body);
 

@@ -15,11 +15,17 @@ import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { toQuota } from "../auth/quota-utils.js";
 import { isBanError, isTokenInvalidError } from "../proxy/error-classification.js";
 import { clearWarnings, getActiveWarnings, getWarningsLastUpdated } from "../auth/quota-warnings.js";
+import { probeAccount, batchHealthCheck } from "../auth/health-check.js";
 import { AccountImportService } from "../services/account-import.js";
 import { AccountQueryService } from "../services/account-query.js";
 import { AccountMutationService } from "../services/account-mutation.js";
 
 const BatchIdsSchema = z.object({ ids: z.array(z.string()).min(1) });
+const HealthCheckSchema = z.object({
+  ids: z.array(z.string()).min(1).optional(),
+  stagger_ms: z.number().int().min(500).max(30000).optional(),
+  concurrency: z.number().int().min(1).max(10).optional(),
+}).optional();
 const BatchStatusSchema = z.object({ ids: z.array(z.string()).min(1), status: z.enum(["active", "disabled"]) });
 const LabelSchema = z.object({ label: z.string().max(64).nullable() });
 const BulkImportEntrySchema = z.object({
@@ -83,6 +89,40 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
     const parsed = BatchStatusSchema.safeParse(body);
     if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
     return c.json({ success: true, ...mutationSvc.setStatusBatch(parsed.data.ids, parsed.data.status) });
+  });
+
+  // ── Health check (must be before :id routes) ────────────────────
+
+  app.post("/auth/accounts/health-check", async (c) => {
+    let body: unknown;
+    try { body = await c.req.json(); } catch { body = undefined; }
+    const parsed = HealthCheckSchema.safeParse(body);
+    if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
+    const opts = parsed.data;
+
+    const results = await batchHealthCheck(pool, scheduler, {
+      ids: opts?.ids,
+      staggerMs: opts?.stagger_ms,
+      concurrency: opts?.concurrency,
+    }, proxyPool);
+
+    const alive = results.filter((r) => r.result === "alive").length;
+    const dead = results.filter((r) => r.result === "dead").length;
+    const skipped = results.filter((r) => r.result === "skipped").length;
+
+    return c.json({ summary: { total: results.length, alive, dead, skipped }, results });
+  });
+
+  // ── Per-account routes ─────────────────────────────────────────
+
+  app.post("/auth/accounts/:id/refresh", async (c) => {
+    const id = c.req.param("id");
+    const result = await probeAccount(pool, scheduler, id, proxyPool);
+    if (result.result === "skipped" && result.error === "not found") {
+      c.status(404);
+      return c.json({ error: "Account not found" });
+    }
+    return c.json(result);
   });
 
   app.patch("/auth/accounts/:id/label", async (c) => {

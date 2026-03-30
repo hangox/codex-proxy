@@ -60,6 +60,7 @@ setInterval(() => {
   for (const [state, session] of pendingSessions) {
     if (now - session.createdAt > SESSION_TTL_MS) {
       pendingSessions.delete(state);
+      sessionCallbacks.delete(state);
     }
   }
   for (const [state, completedAt] of completedSessions) {
@@ -252,7 +253,7 @@ const OAUTH_CALLBACK_PORT = 1455;
  *
  * The redirect_uri is always http://localhost:1455/auth/callback to match
  * the Codex CLI and OpenAI's whitelist. The caller must start a callback
- * server on port 1455 via `startCallbackServer()`.
+ * server on port 1455 via `ensureCallbackServer()`.
  */
 export function createOAuthSession(
   originalHost: string,
@@ -346,30 +347,41 @@ export function releaseSession(state: string): void {
   if (session) session.exchanging = false;
 }
 
-// ── Temporary callback server ──────────────────────────────────────
+// ── Singleton callback server ─────────────────────────────────────
 
-/** Track the active callback server so we can close it before starting a new one. */
+type AccountCallback = (accessToken: string, refreshToken: string | undefined) => void;
+
+/** Per-session account callbacks, keyed by state. Consumed on successful exchange. */
+const sessionCallbacks = new Map<string, AccountCallback>();
+
+/** Track the active callback server (singleton, reused across concurrent flows). */
 let activeCallbackServer: Server | null = null;
+let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+
+/** Reset the idle timer — server closes after 5 min of no new OAuth flows. */
+function resetIdleTimeout(): void {
+  if (idleTimeout) clearTimeout(idleTimeout);
+  idleTimeout = setTimeout(() => {
+    if (activeCallbackServer) {
+      try { activeCallbackServer.close(); } catch {}
+      activeCallbackServer = null;
+      console.log(`[OAuth] Callback server closed (idle timeout)`);
+    }
+    idleTimeout = null;
+  }, SESSION_TTL_MS);
+  idleTimeout.unref();
+}
 
 /**
- * Start a temporary HTTP server on 0.0.0.0:{port} that handles the OAuth
- * callback (`/auth/callback`). Closes any previously active callback server
- * first (since we always reuse port 1455).
- *
- * Auto-closes after 5 minutes or after a successful callback.
- *
- * @param port      The port from createOAuthSession() (always 1455)
- * @param onAccount Called with (accessToken, refreshToken) on success
+ * Ensure the singleton callback server is running on port 1455.
+ * If already listening, just resets the idle timer. Multiple concurrent
+ * OAuth flows share this server — each session's callback is stored in
+ * `sessionCallbacks` by state, so they are fully independent.
  */
-export function startCallbackServer(
-  port: number,
-  onAccount: (accessToken: string, refreshToken: string | undefined) => void,
-): Server {
-  // Close any existing callback server on this port
-  if (activeCallbackServer) {
-    try { activeCallbackServer.close(); } catch {}
-    activeCallbackServer = null;
-  }
+export function ensureCallbackServer(port: number): void {
+  resetIdleTimeout();
+
+  if (activeCallbackServer) return;
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
@@ -388,62 +400,49 @@ export function startCallbackServer(
     if (error) {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(callbackResultHtml(false, errorDesc || error));
-      scheduleClose();
       return;
     }
 
     if (!code || !state) {
       res.writeHead(400, { "Content-Type": "text/html" });
       res.end(callbackResultHtml(false, "Missing code or state parameter"));
-      scheduleClose();
       return;
     }
 
     const session = tryAcquireSession(state);
     if (!session) {
       if (isSessionCompleted(state) || peekSession(state)?.exchanging) {
-        // Already completed or another handler is exchanging — treat as success
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(callbackResultHtml(true));
-        scheduleClose();
         return;
       }
       res.writeHead(400, { "Content-Type": "text/html" });
       res.end(callbackResultHtml(false, "Invalid or expired session. Please try again."));
-      scheduleClose();
       return;
     }
 
     try {
       const tokens = await exchangeCode(code, session.codeVerifier, session.redirectUri);
-      onAccount(tokens.access_token, tokens.refresh_token);
+      const cb = sessionCallbacks.get(state);
+      cb?.(tokens.access_token, tokens.refresh_token);
+      sessionCallbacks.delete(state);
       deleteSession(state);
       markSessionCompleted(state);
-      console.log(`[OAuth] Callback server on port ${port} — login successful`);
+      console.log(`[OAuth] Callback — login successful (state=${state.slice(0, 8)}…)`);
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(callbackResultHtml(true));
     } catch (err) {
-      // Release lock so user can retry, but session stays in map
       releaseSession(state);
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[OAuth] Callback server token exchange failed: ${msg}`);
+      console.error(`[OAuth] Callback token exchange failed: ${msg}`);
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(callbackResultHtml(false, msg));
     }
-
-    scheduleClose();
   });
-
-  function scheduleClose() {
-    setTimeout(() => {
-      try { server.close(); } catch {}
-      if (activeCallbackServer === server) activeCallbackServer = null;
-    }, 2000);
-  }
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
-      console.error(`[OAuth] Port ${port} is in use — callback server not started. Previous login session may still be active.`);
+      console.error(`[OAuth] Port ${port} is in use — callback server not started`);
     } else {
       console.error(`[OAuth] Callback server error: ${err.message}`);
     }
@@ -451,21 +450,7 @@ export function startCallbackServer(
 
   server.listen(port, "0.0.0.0");
   activeCallbackServer = server;
-  console.log(`[OAuth] Temporary callback server started on port ${port}`);
-
-  // Auto-close after 5 minutes
-  const timeout = setTimeout(() => {
-    try { server.close(); } catch {}
-    if (activeCallbackServer === server) activeCallbackServer = null;
-    console.log(`[OAuth] Temporary callback server on port ${port} timed out`);
-  }, 5 * 60 * 1000);
-  timeout.unref();
-
-  server.on("close", () => {
-    clearTimeout(timeout);
-  });
-
-  return server;
+  console.log(`[OAuth] Callback server started on port ${port}`);
 }
 
 // ── Device Code Flow (RFC 8628) ────────────────────────────────────
@@ -542,7 +527,8 @@ export interface CliAuthJson {
 
 /**
  * Start an OAuth flow with callback server in one call.
- * Combines createOAuthSession + startCallbackServer + account registration.
+ * Combines createOAuthSession + ensureCallbackServer + account registration.
+ * Supports concurrent flows — each session has its own callback via sessionCallbacks.
  * Used by /auth/login, /auth/login-start, and /auth/accounts/login.
  */
 export function startOAuthFlow(
@@ -552,12 +538,12 @@ export function startOAuthFlow(
   scheduler: { scheduleOne(entryId: string, accessToken: string): void },
 ): { authUrl: string; state: string } {
   const { authUrl, state, port } = createOAuthSession(originalHost, returnTo);
-  startCallbackServer(port, (accessToken, refreshToken) => {
+  sessionCallbacks.set(state, (accessToken, refreshToken) => {
     const entryId = pool.addAccount(accessToken, refreshToken);
     scheduler.scheduleOne(entryId, accessToken);
-    markSessionCompleted(state);
     console.log(`[Auth] OAuth via callback server — account ${entryId} added`);
   });
+  ensureCallbackServer(port);
   return { authUrl, state };
 }
 

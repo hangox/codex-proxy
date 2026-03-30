@@ -8,6 +8,7 @@
 import { randomBytes } from "crypto";
 import { getConfig } from "../config.js";
 import { jitter } from "../utils/jitter.js";
+import { isAnyLimitReached, maxResetAt } from "./quota-utils.js";
 import {
   decodeJwtPayload,
   extractChatGptAccountId,
@@ -374,8 +375,10 @@ export class AccountRegistry {
   refreshStatus(entry: AccountEntry, now: Date): void {
     if (entry.status === "rate_limited" && entry.usage.rate_limit_until) {
       if (now >= new Date(entry.usage.rate_limit_until)) {
-        entry.status = "active";
         entry.usage.rate_limit_until = null;
+        // If cached quota still shows limit reached, mark as quota_exhausted
+        // instead of blindly reverting to active
+        entry.status = isAnyLimitReached(entry.cachedQuota) ? "quota_exhausted" : "active";
       }
     }
 
@@ -402,11 +405,15 @@ export class AccountRegistry {
       this.schedulePersist();
     }
 
-    // Clear stale cached quota when its own reset time has passed
-    const quotaReset = entry.cachedQuota?.rate_limit?.reset_at;
+    // Clear stale cached quota when both primary and secondary reset times have passed
+    const quotaReset = maxResetAt(entry.cachedQuota);
     if (quotaReset != null && nowSec >= quotaReset) {
       entry.cachedQuota = null;
       entry.quotaFetchedAt = null;
+      // Quota data expired — if account was stuck as quota_exhausted, revert to active
+      if (entry.status === "quota_exhausted") {
+        entry.status = "active";
+      }
       this.schedulePersist();
     }
   }

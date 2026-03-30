@@ -16,6 +16,7 @@ import {
   buildHeadersWithContentType,
 } from "../fingerprint/manager.js";
 import { createWebSocketResponse, type WsCreateRequest } from "./ws-transport.js";
+import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseSSEBlock, parseSSEStream } from "./codex-sse.js";
 import { fetchUsage } from "./codex-usage.js";
 import { fetchModels, probeEndpoint as probeEndpointFn } from "./codex-models.js";
@@ -165,10 +166,11 @@ export class CodexApi {
   async createResponse(
     request: CodexResponsesRequest,
     signal?: AbortSignal,
+    onRateLimits?: (rl: ParsedRateLimit) => void,
   ): Promise<Response> {
     if (request.useWebSocket) {
       try {
-        return await this.createResponseViaWebSocket(request, signal);
+        return await this.createResponseViaWebSocket(request, signal, onRateLimits);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[CodexApi] WebSocket failed (${msg}), falling back to HTTP SSE`);
@@ -187,6 +189,7 @@ export class CodexApi {
   private async createResponseViaWebSocket(
     request: CodexResponsesRequest,
     signal?: AbortSignal,
+    onRateLimits?: (rl: ParsedRateLimit) => void,
   ): Promise<Response> {
     const baseUrl = this.resolveBaseUrl();
     const wsUrl = baseUrl.replace(/^https?:/, "wss:") + "/codex/responses";
@@ -216,7 +219,7 @@ export class CodexApi {
     if (request.prompt_cache_key) wsRequest.prompt_cache_key = request.prompt_cache_key;
     if (request.include?.length) wsRequest.include = request.include;
 
-    return createWebSocketResponse(wsUrl, headers, wsRequest, signal, this.proxyUrl);
+    return createWebSocketResponse(wsUrl, headers, wsRequest, signal, this.proxyUrl, onRateLimits);
   }
 
   /**

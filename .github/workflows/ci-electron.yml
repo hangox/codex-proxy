@@ -1,0 +1,54 @@
+name: Electron CI
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'packages/electron/**'
+      - 'src/**'
+      - 'web/**'
+      - 'package.json'
+      - 'package-lock.json'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'packages/electron/**'
+      - 'src/**'
+      - 'web/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm install
+          cd web && npm install
+          cd ../packages/electron && npm install
+
+      - name: Install Playwright Browsers
+        run: cd packages/electron && npx playwright install --with-deps chromium
+
+      - name: Build Web
+        run: cd web && npm run build
+
+      - name: Build and Pack Electron
+        run: |
+          cd packages/electron
+          npm run build
+          npm run pack:linux
+
+      - name: Run Electron Tests
+        run: |
+          cd packages/electron
+          xvfb-run -a npx vitest run __tests__/launch.test.ts

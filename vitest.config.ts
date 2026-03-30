@@ -7,6 +7,9 @@ export default defineConfig({
       "@src": resolve(__dirname, "src"),
       "@helpers": resolve(__dirname, "tests/_helpers"),
       "@fixtures": resolve(__dirname, "tests/_fixtures"),
+      "@": resolve(import.meta.dirname, "./src"),
+      shared: resolve(import.meta.dirname, "./shared"),
+      preact: "node_modules/preact",
     },
   },
   test: {
@@ -17,5 +20,7 @@ export default defineConfig({
       "tests/integration/**/*.{test,spec}.ts",
       "packages/electron/__tests__/**/*.{test,spec}.ts",
     ],
+    // increased for playwright execution
+    testTimeout: 60000,
   },
 });

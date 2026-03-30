@@ -238,4 +238,88 @@ describe("AccountPool quota methods", () => {
       expect(acquired).toBeNull();
     });
   });
+
+  describe("refreshStatus respects cachedQuota", () => {
+    it("transitions to quota_exhausted (not active) when rate_limit expires but cachedQuota still shows limit_reached", () => {
+      const id = pool.addAccount(createValidJwt({ accountId: "rs1" }));
+      const pastResetUnix = Math.floor(Date.now() / 1000) - 10; // already expired
+
+      // Mark quota exhausted with a reset time in the past
+      pool.markQuotaExhausted(id, pastResetUnix);
+
+      // Set cachedQuota showing limit still reached (with a future reset)
+      pool.updateCachedQuota(id, makeQuota({
+        rate_limit: { allowed: true, limit_reached: true, used_percent: 100, reset_at: Math.floor(Date.now() / 1000) + 7200, limit_window_seconds: 3600 },
+      }));
+
+      // getAccounts() triggers refreshStatus — rate_limit_until is in the past,
+      // but cachedQuota.limit_reached is true, so status should be quota_exhausted
+      const accounts = pool.getAccounts();
+      const acct = accounts.find((a) => a.id === id);
+      expect(acct?.status).toBe("quota_exhausted");
+    });
+
+    it("transitions to active when rate_limit expires and cachedQuota is clear", () => {
+      const id = pool.addAccount(createValidJwt({ accountId: "rs2" }));
+      const pastResetUnix = Math.floor(Date.now() / 1000) - 10;
+
+      pool.markQuotaExhausted(id, pastResetUnix);
+      // No cachedQuota set — should revert to active
+
+      const accounts = pool.getAccounts();
+      const acct = accounts.find((a) => a.id === id);
+      expect(acct?.status).toBe("active");
+    });
+
+    it("transitions to quota_exhausted when secondary limit is reached", () => {
+      const id = pool.addAccount(createValidJwt({ accountId: "rs3" }));
+      const pastResetUnix = Math.floor(Date.now() / 1000) - 10;
+
+      pool.markQuotaExhausted(id, pastResetUnix);
+
+      // Primary OK, but secondary exhausted
+      pool.updateCachedQuota(id, makeQuota({
+        secondary_rate_limit: { limit_reached: true, used_percent: 100, reset_at: Math.floor(Date.now() / 1000) + 86400, limit_window_seconds: 604800 },
+      }));
+
+      const accounts = pool.getAccounts();
+      const acct = accounts.find((a) => a.id === id);
+      expect(acct?.status).toBe("quota_exhausted");
+    });
+
+    it("reverts quota_exhausted to active when cachedQuota expires", () => {
+      const id = pool.addAccount(createValidJwt({ accountId: "rs4" }));
+
+      // Set up: account is active with an exhausted cachedQuota whose reset is in the past
+      const entry = pool.getEntry(id)!;
+      entry.status = "quota_exhausted";
+      entry.cachedQuota = makeQuota({
+        rate_limit: { allowed: true, limit_reached: true, used_percent: 100, reset_at: Math.floor(Date.now() / 1000) - 10, limit_window_seconds: 3600 },
+      });
+
+      // getAccounts() triggers refreshStatus — cachedQuota.reset_at is in the past,
+      // so cachedQuota should be cleared and status reverted to active
+      const accounts = pool.getAccounts();
+      const acct = accounts.find((a) => a.id === id);
+      expect(acct?.status).toBe("active");
+      expect(pool.getEntry(id)?.cachedQuota).toBeNull();
+    });
+
+    it("keeps quota_exhausted when secondary reset is still in the future", () => {
+      const id = pool.addAccount(createValidJwt({ accountId: "rs5" }));
+
+      const entry = pool.getEntry(id)!;
+      entry.status = "quota_exhausted";
+      entry.cachedQuota = makeQuota({
+        rate_limit: { allowed: true, limit_reached: false, used_percent: 50, reset_at: Math.floor(Date.now() / 1000) - 10, limit_window_seconds: 3600 },
+        secondary_rate_limit: { limit_reached: true, used_percent: 100, reset_at: Math.floor(Date.now() / 1000) + 86400, limit_window_seconds: 604800 },
+      });
+
+      // Primary reset is in the past but secondary is in the future — maxResetAt picks secondary
+      const accounts = pool.getAccounts();
+      const acct = accounts.find((a) => a.id === id);
+      expect(acct?.status).toBe("quota_exhausted");
+      expect(pool.getEntry(id)?.cachedQuota).not.toBeNull();
+    });
+  });
 });

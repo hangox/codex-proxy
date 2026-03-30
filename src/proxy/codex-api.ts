@@ -43,6 +43,14 @@ import {
   type CodexUsageResponse,
 } from "./codex-types.js";
 
+/**
+ * Map user-facing service_tier to Codex backend value.
+ * Desktop codex-rs sends "fast" → "priority" (see codex-rs client.rs:740).
+ */
+function mapServiceTier(tier: string): string {
+  return tier === "fast" ? "priority" : tier;
+}
+
 export class CodexApi {
   private token: string;
   private accountId: string | null;
@@ -212,7 +220,7 @@ export class CodexApi {
     if (request.tools?.length) wsRequest.tools = request.tools;
     if (request.tool_choice) wsRequest.tool_choice = request.tool_choice;
     if (request.text) wsRequest.text = request.text;
-    // service_tier is stripped — Codex backend rejects it ("Unsupported service_tier")
+    if (request.service_tier) wsRequest.service_tier = mapServiceTier(request.service_tier);
     if (request.prompt_cache_key) wsRequest.prompt_cache_key = request.prompt_cache_key;
     if (request.include?.length) wsRequest.include = request.include;
 
@@ -240,8 +248,8 @@ export class CodexApi {
     headers["x-client-request-id"] = crypto.randomUUID();
     if (request.turnState) headers["x-codex-turn-state"] = request.turnState;
 
-    const { previous_response_id: _pid, useWebSocket: _ws, turnState: _ts, service_tier: _st, ...bodyFields } = request;
-    const body = JSON.stringify(bodyFields);
+    const { previous_response_id: _pid, useWebSocket: _ws, turnState: _ts, service_tier: rawSt, ...bodyFields } = request;
+    const body = JSON.stringify(rawSt ? { ...bodyFields, service_tier: mapServiceTier(rawSt) } : bodyFields);
 
     let transportRes;
     try {

@@ -112,13 +112,27 @@ describe("codex-api headers", () => {
       expect(transport.lastHeaders!["x-codex-turn-state"]).toBeUndefined();
     });
 
-    it("excludes turnState and service_tier from JSON body", async () => {
+    it("excludes turnState from body and maps service_tier fast→priority", async () => {
       const api = await createApi();
       await api.createResponse(
         makeRequest({ turnState: "abc", service_tier: "fast" }),
       );
       const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
       expect(body.turnState).toBeUndefined();
+      expect(body.service_tier).toBe("priority");
+    });
+
+    it("passes non-fast service_tier as-is", async () => {
+      const api = await createApi();
+      await api.createResponse(makeRequest({ service_tier: "flex" }));
+      const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
+      expect(body.service_tier).toBe("flex");
+    });
+
+    it("omits service_tier from body when not set", async () => {
+      const api = await createApi();
+      await api.createResponse(makeRequest({}));
+      const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
       expect(body.service_tier).toBeUndefined();
     });
   });

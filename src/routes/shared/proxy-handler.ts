@@ -23,7 +23,7 @@ import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError, toErrorStatus } from "./proxy-error-handler.js";
 import { streamResponse } from "./response-processor.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
-import { parseRateLimitHeaders, rateLimitToQuota } from "../../proxy/rate-limit-headers.js";
+import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from "../../proxy/rate-limit-headers.js";
 import { getConfig } from "../../config.js";
 import { jitterInt } from "../../utils/jitter.js";
 import { getSessionAffinityMap, type SessionAffinityMap } from "../../auth/session-affinity.js";
@@ -153,17 +153,8 @@ export async function handleProxyRequest(
 
   for (;;) {
     try {
-      const rawResponse = await withRetry(
-        () => codexApi.createResponse(req.codexRequest, abortController.signal),
-        { tag: fmt.tag },
-      );
-
-      // Capture upstream turn-state for sticky routing
-      const upstreamTurnState = rawResponse.headers.get("x-codex-turn-state") ?? undefined;
-
-      // Extract rate-limit quota from upstream response headers (passive collection)
-      const rl = parseRateLimitHeaders(rawResponse.headers);
-      if (rl) {
+      // Apply parsed rate-limit data to the account pool (shared by header + WS event paths)
+      const applyRateLimits = (rl: ParsedRateLimit): void => {
         const entry = accountPool.getEntry(entryId);
         const quota = rateLimitToQuota(rl, entry?.planType ?? null);
         accountPool.updateCachedQuota(entryId, quota);
@@ -178,7 +169,19 @@ export async function handleProxyRequest(
             accountPool.markRateLimited(entryId, { retryAfterSec: backoffSec });
           }
         }
-      }
+      };
+
+      const rawResponse = await withRetry(
+        () => codexApi.createResponse(req.codexRequest, abortController.signal, applyRateLimits),
+        { tag: fmt.tag },
+      );
+
+      // Capture upstream turn-state for sticky routing
+      const upstreamTurnState = rawResponse.headers.get("x-codex-turn-state") ?? undefined;
+
+      // Extract rate-limit quota from upstream response headers (passive collection — HTTP path)
+      const rl = parseRateLimitHeaders(rawResponse.headers);
+      if (rl) applyRateLimits(rl);
 
       // ── Streaming path ──
       if (req.isStreaming) {

@@ -15,6 +15,8 @@
  */
 
 import type { CodexInputItem } from "./codex-api.js";
+import type { ParsedRateLimit } from "./rate-limit-headers.js";
+import { parseRateLimitsEvent } from "./rate-limit-headers.js";
 
 /** Cached ws module — loaded once on first use. */
 let _WS: typeof import("ws").default | undefined;
@@ -68,6 +70,7 @@ export async function createWebSocketResponse(
   request: WsCreateRequest,
   signal?: AbortSignal,
   proxyUrl?: string | null,
+  onRateLimits?: (rl: ParsedRateLimit) => void,
 ): Promise<Response> {
   const WS = await getWS();
 
@@ -153,6 +156,14 @@ export async function createWebSocketResponse(
       try {
         const msg = JSON.parse(raw) as Record<string, unknown>;
         const type = (msg.type as string) ?? "unknown";
+
+        // Extract rate-limit data from codex.rate_limits event (WS-only)
+        if (type === "codex.rate_limits" && onRateLimits) {
+          const rl = parseRateLimitsEvent(msg);
+          if (rl) onRateLimits(rl);
+          // Don't forward internal rate-limit events to downstream clients
+          return;
+        }
 
         // Re-encode as SSE: event: <type>\ndata: <full json>\n\n
         const sse = `event: ${type}\ndata: ${raw}\n\n`;

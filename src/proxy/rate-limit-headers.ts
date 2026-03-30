@@ -82,6 +82,55 @@ export function rateLimitToQuota(
   };
 }
 
+// ── Window shape (shared by header parsing and event parsing) ───
+
+interface RateLimitWindowData {
+  used_percent: number;
+  window_minutes: number | null;
+  reset_at: number | null;
+}
+
+/**
+ * Parse rate-limit data from a `codex.rate_limits` WebSocket SSE event.
+ * Returns null if the payload is not a valid rate_limits event.
+ *
+ * Expected shape (from codex-rs `codex.rate_limits` event):
+ * ```json
+ * {
+ *   "rate_limits": {
+ *     "primary": { "used_percent": 42.0, "window_minutes": 300, "reset_at": 1700000000 },
+ *     "secondary": { "used_percent": 18.0, "window_minutes": 10080, "reset_at": 1700500000 }
+ *   }
+ * }
+ * ```
+ */
+export function parseRateLimitsEvent(data: unknown): ParsedRateLimit | null {
+  if (!data || typeof data !== "object") return null;
+  const obj = data as Record<string, unknown>;
+  const rl = obj.rate_limits;
+  if (!rl || typeof rl !== "object") return null;
+
+  const rlObj = rl as Record<string, unknown>;
+  const primary = parseWindowFromObject(rlObj.primary);
+  const secondary = parseWindowFromObject(rlObj.secondary);
+
+  if (!primary && !secondary) return null;
+  return { primary, secondary };
+}
+
+function parseWindowFromObject(win: unknown): RateLimitWindowData | null {
+  if (!win || typeof win !== "object") return null;
+  const w = win as Record<string, unknown>;
+  const pct = typeof w.used_percent === "number" ? w.used_percent : NaN;
+  if (!isFinite(pct)) return null;
+
+  return {
+    used_percent: pct,
+    window_minutes: typeof w.window_minutes === "number" ? w.window_minutes : null,
+    reset_at: typeof w.reset_at === "number" ? w.reset_at : null,
+  };
+}
+
 function parseWindow(
   get: (name: string) => string | null,
   prefix: string,

@@ -1,0 +1,89 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codex-proxy-test .
+
+      - name: Run container on port 8080
+        run: |
+          docker run -d -p 8080:8080 --name codex-proxy-test codex-proxy-test
+
+          # Wait for healthcheck (up to 30s)
+          echo "Waiting for healthcheck..."
+          for i in {1..15}; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' codex-proxy-test 2>/dev/null || echo "starting")
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$STATUS" != "healthy" ]; then
+            echo "::error::Container failed to become healthy on port 8080"
+            docker logs codex-proxy-test
+            exit 1
+          fi
+
+      - name: Verify /health returns 200 on port 8080
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Expected 200 from /health, got $STATUS"
+            docker logs codex-proxy-test
+            exit 1
+          fi
+
+      - name: Cleanup port 8080 container
+        run: |
+          docker rm -f codex-proxy-test
+
+      - name: Test custom port 8090
+        run: |
+          # Modify config for port 8090
+          sed -i 's/port: 8080/port: 8090/g' config/default.yaml
+
+          # Run container with mounted config
+          docker run -d -p 8090:8090 -v $(pwd)/config/default.yaml:/app/config/default.yaml --name codex-proxy-test-8090 codex-proxy-test
+
+          # Wait for healthcheck (up to 30s)
+          echo "Waiting for healthcheck on port 8090..."
+          for i in {1..15}; do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' codex-proxy-test-8090 2>/dev/null || echo "starting")
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy on port 8090"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$STATUS" != "healthy" ]; then
+            echo "::error::Container failed to become healthy on port 8090"
+            docker logs codex-proxy-test-8090
+            exit 1
+          fi
+
+      - name: Verify /health returns 200 on port 8090
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Expected 200 from /health on 8090, got $STATUS"
+            docker logs codex-proxy-test-8090
+            exit 1
+          fi
+
+      - name: Final cleanup
+        if: always()
+        run: |
+          docker rm -f codex-proxy-test-8090 || true

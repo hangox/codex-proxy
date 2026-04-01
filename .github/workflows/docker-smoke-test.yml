@@ -1,0 +1,86 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  docker-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codex-proxy-test .
+
+      - name: Run container (default port 8080)
+        run: |
+          docker run -d --name test-container -p 8080:8080 codex-proxy-test
+
+          echo "Waiting for container to be healthy..."
+          for i in {1..30}; do
+            STATUS=$(docker inspect --format='{{json .State.Health.Status}}' test-container)
+            if [ "$STATUS" = "\"healthy\"" ]; then
+              echo "Container is healthy!"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Container failed to become healthy within 30 seconds."
+              docker logs test-container
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Verify health endpoint (8080)
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Expected HTTP 200, got $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Cleanup default container
+        run: docker rm -f test-container
+
+      - name: Modify config for custom port 8090
+        run: |
+          mkdir -p config
+          if [ ! -f config/default.yaml ]; then
+            echo "port: 8080" > config/default.yaml
+          fi
+          sed -i 's/port: 8080/port: 8090/' config/default.yaml
+
+      - name: Run container (custom port 8090)
+        run: |
+          docker run -d --name test-container-90 -p 8090:8090 -v ${{ github.workspace }}/config/default.yaml:/app/config/default.yaml codex-proxy-test
+
+          echo "Waiting for container to be healthy..."
+          for i in {1..30}; do
+            STATUS=$(docker inspect --format='{{json .State.Health.Status}}' test-container-90)
+            if [ "$STATUS" = "\"healthy\"" ]; then
+              echo "Container is healthy!"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Container failed to become healthy within 30 seconds."
+              docker logs test-container-90
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Verify health endpoint (8090)
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health)
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Expected HTTP 200, got $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Cleanup custom container
+        if: always()
+        run: docker rm -f test-container-90 || true

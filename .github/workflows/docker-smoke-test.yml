@@ -1,0 +1,92 @@
+name: Docker Smoke Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  docker-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codex-proxy-test .
+
+      - name: Test default port 8080
+        run: |
+          docker run -d --name codex-test-8080 -p 8080:8080 codex-proxy-test
+
+          # Wait for healthcheck to be healthy
+          echo "Waiting for healthcheck..."
+          for i in {1..30}; do
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' codex-test-8080)
+            if [ "$HEALTH" = "healthy" ]; then
+              echo "Container is healthy."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Timeout waiting for healthy status."
+              docker logs codex-test-8080
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify health endpoint
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "/health returned 200 OK"
+          else
+            echo "Expected 200, got $HTTP_STATUS"
+            docker logs codex-test-8080
+            exit 1
+          fi
+
+      - name: Cleanup default container
+        run: docker rm -f codex-test-8080
+
+      - name: Test custom port 8090
+        run: |
+          # Setup custom config
+          mkdir -p custom-config
+          cp config/default.yaml custom-config/default.yaml
+          sed -i 's/port: 8080/port: 8090/g' custom-config/default.yaml
+
+          # Run container with custom config mounted
+          docker run -d --name codex-test-8090 -p 8090:8090 \
+            -v ${{ github.workspace }}/custom-config/default.yaml:/app/config/default.yaml \
+            codex-proxy-test
+
+          # Wait for healthcheck to be healthy
+          echo "Waiting for healthcheck on custom port..."
+          for i in {1..30}; do
+            HEALTH=$(docker inspect --format='{{.State.Health.Status}}' codex-test-8090)
+            if [ "$HEALTH" = "healthy" ]; then
+              echo "Container is healthy."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Timeout waiting for healthy status."
+              docker logs codex-test-8090
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify health endpoint
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health)
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "/health returned 200 OK on port 8090"
+          else
+            echo "Expected 200, got $HTTP_STATUS"
+            docker logs codex-test-8090
+            exit 1
+          fi
+
+      - name: Final cleanup
+        if: always()
+        run: docker rm -f codex-test-8090 || true

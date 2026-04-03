@@ -5,9 +5,14 @@ import { z } from "zod";
 
 // --- Request ---
 
+const AnthropicCacheControlSchema = z.object({
+  type: z.string(),
+}).passthrough();
+
 const AnthropicTextContentSchema = z.object({
   type: z.literal("text"),
   text: z.string(),
+  cache_control: AnthropicCacheControlSchema.optional(),
 });
 
 const AnthropicImageContentSchema = z.object({

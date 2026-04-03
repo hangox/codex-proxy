@@ -243,13 +243,18 @@ export async function* streamCodexToAnthropic(
   yield* closeTextIfOpen();
 
   // 4. message_delta with stop_reason and usage
+  // cache_creation_input_tokens: tokens not served from cache (will be cached for next turn)
+  // cache_read_input_tokens: tokens served from cache (Codex cached_tokens)
+  const cacheReadTokens = cachedTokens ?? 0;
+  const cacheCreationTokens = inputTokens > 0 ? inputTokens - cacheReadTokens : 0;
   yield formatSSE("message_delta", {
     type: "message_delta",
     delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn" },
     usage: {
       input_tokens: inputTokens,
       output_tokens: outputTokens,
-      ...(cachedTokens != null ? { cache_read_input_tokens: cachedTokens } : {}),
+      ...(cacheCreationTokens > 0 ? { cache_creation_input_tokens: cacheCreationTokens } : {}),
+      ...(cacheReadTokens > 0 ? { cache_read_input_tokens: cacheReadTokens } : {}),
     },
   });
 
@@ -330,10 +335,13 @@ export async function collectCodexToAnthropicResponse(
     content.push({ type: "text", text: "" });
   }
 
+  const cacheRead = cachedTokens ?? 0;
+  const cacheCreation = inputTokens > 0 ? inputTokens - cacheRead : 0;
   const usage: AnthropicUsage = {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
-    ...(cachedTokens != null ? { cache_read_input_tokens: cachedTokens } : {}),
+    ...(cacheCreation > 0 ? { cache_creation_input_tokens: cacheCreation } : {}),
+    ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
   };
 
   return {

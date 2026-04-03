@@ -35,6 +35,8 @@ export interface ProxyRequest {
   isStreaming: boolean;
   /** Original schema before tuple→object conversion (for response reconversion). */
   tupleSchema?: Record<string, unknown> | null;
+  /** Whether this is a new conversation (no previous_response_id) — used for cache reporting. */
+  isNewConversation?: boolean;
 }
 
 /** Format-specific adapter provided by each route. */

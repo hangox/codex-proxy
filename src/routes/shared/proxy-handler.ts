@@ -8,7 +8,7 @@
  *   - response-processor.ts   — streaming (SSE) response path
  */
 
-import crypto from "crypto";
+import crypto, { createHash } from "crypto";
 import type { Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
 import { stream } from "hono/streaming";
@@ -68,6 +68,52 @@ export interface FormatAdapter {
 
 const MAX_EMPTY_RETRIES = 2;
 
+/**
+ * Derive a stable conversation key from the Codex request content.
+ *
+ * Claude Code (and other Anthropic-format clients) send the FULL conversation
+ * history on every request. By hashing (system instructions + first user
+ * message), we get a key that:
+ *   - stays constant across all turns of the same conversation
+ *   - changes when the conversation prefix changes (new session)
+ *   - allows Codex to serve subsequent turns from server-side cache
+ *
+ * Returns null if there isn't enough content to form a meaningful key
+ * (e.g. empty input), falling back to a random UUID.
+ */
+function deriveStableConversationKey(req: CodexResponsesRequest): string | null {
+  // Include system instructions in the hash (capped to avoid huge hashes)
+  const instructions = (req.instructions ?? "").slice(0, 2000);
+
+  // Find the first user message — this anchors the conversation identity
+  let firstUserText = "";
+  for (const item of req.input) {
+    if (!("role" in item) || item.role !== "user") continue;
+    const content = item.content;
+    if (typeof content === "string") {
+      firstUserText = content.slice(0, 500);
+    } else if (Array.isArray(content)) {
+      firstUserText = content
+        .filter((p): p is { type: "input_text"; text: string } => p.type === "input_text")
+        .map((p) => p.text)
+        .join("")
+        .slice(0, 500);
+    }
+    break;
+  }
+
+  // Need at least something meaningful
+  if (!instructions && !firstUserText) return null;
+
+  // Null byte as separator prevents "AB"+"C" == "A"+"BC" collisions
+  const hash = createHash("sha256")
+    .update(`${instructions}\x00${firstUserText}`)
+    .digest("hex");
+
+  // Format as UUID-like string (Codex accepts any string, UUID form is conventional)
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
+
 /** Sleep if this account had a recent request, to stagger upstream traffic. */
 async function staggerIfNeeded(prevSlotMs: number | null): Promise<void> {
   const intervalMs = getConfig().auth.request_interval_ms;
@@ -102,9 +148,13 @@ export async function handleProxyRequest(
   const prevRespId = req.codexRequest.previous_response_id;
   const preferredEntryId = prevRespId ? affinityMap.lookup(prevRespId) : null;
 
-  // Conversation ID: inherit from previous response chain, or generate new
-  const conversationId = (prevRespId ? affinityMap.lookupConversationId(prevRespId) : null)
-    ?? crypto.randomUUID();
+  // Conversation ID: inherit from previous response chain, or derive from
+  // content hash (enables cache hits across turns even without previous_response_id),
+  // or fall back to a random UUID.
+  const conversationId =
+    (prevRespId ? affinityMap.lookupConversationId(prevRespId) : null) ??
+    deriveStableConversationKey(req.codexRequest) ??
+    crypto.randomUUID();
   req.codexRequest.prompt_cache_key = conversationId;
 
   // Turn state: sticky routing token from upstream, echoed back on subsequent requests

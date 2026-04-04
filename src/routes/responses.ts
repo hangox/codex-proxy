@@ -6,7 +6,7 @@
  * retry logic, and usage tracking via the shared proxy handler.
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { AccountPool } from "../auth/account-pool.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
@@ -233,7 +233,7 @@ export function createResponsesRoutes(
 ): Hono {
   const app = new Hono();
 
-  app.post("/v1/responses", async (c) => {
+  const handler = (compact: boolean) => async (c: Context) => {
     // Auth check
     if (!accountPool.isAuthenticated()) {
       c.status(401);
@@ -311,9 +311,11 @@ export function createResponsesRoutes(
       store: false,
     };
 
-    // Responses API always uses WebSocket transport — enables server-side storage
-    // and previous_response_id for multi-turn conversations.
-    codexRequest.useWebSocket = true;
+    // Compact uses HTTP SSE only (no WebSocket path for /responses/compact).
+    // Regular responses use WebSocket to enable previous_response_id and server-side storage.
+    if (!compact) {
+      codexRequest.useWebSocket = true;
+    }
     if (typeof body.previous_response_id === "string") {
       codexRequest.previous_response_id = body.previous_response_id;
     }
@@ -377,6 +379,8 @@ export function createResponsesRoutes(
       };
     }
 
+    if (compact) codexRequest.compact = true;
+
     // Client can request non-streaming (collect mode), but upstream is always stream
     const clientWantsStream = body.stream !== false;
 
@@ -393,7 +397,10 @@ export function createResponsesRoutes(
       PASSTHROUGH_FORMAT,
       proxyPool,
     );
-  });
+  };
+
+  app.post("/v1/responses", handler(false));
+  app.post("/v1/responses/compact", handler(true));
 
   return app;
 }

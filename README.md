@@ -558,16 +558,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 - `prompt_cache_key`：每个对话链生成唯一 UUID 传递给后端，启用 prompt cache
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
-- 删除冗余测试文件：`self-update-auto.test.ts`（superset 覆盖）、`account-import-refresh.test.ts`（迁移到 service 层）
-- 重命名 `model-plan-routing.test.ts` → `plan-routing-integration.test.ts` 以区分作用域
-- libcurl FFI 连接复用：macOS/Linux 自动构建 dylib，通过 CURLSH 共享连接缓存 + SSL session，消除每次请求的 TCP/TLS 握手开销（~2.9s → ~100-300ms）
-- setup 脚本自动下载静态库、编译 C wrapper、生成 dylib + cacert.pem
-- 自动更新（热更新）功能，默认开启，用户可在 Dashboard 设置中关闭
-  - Git 模式：检测到更新后自动 pull → install → build → 重启
-  - Electron (Win/Linux)：自动下载更新，退出时安装；dock/任务栏显示下载进度条
-  - Electron (macOS)：自动打开 release 页面（平台限制无法自动安装）
-  - 配置项 `update.auto_update`，持久化到 `data/local.yaml`
+- Dashboard session 默认 TTL 从 1 小时延长至 24 小时
 **Fixed**
+- 上游 401 时立即触发 RT→AT 刷新，而非等待定时器（修复 token 被提前作废后账号一直显示 expired 的问题）
+- Dashboard session 滑动窗口续期：每次有效请求自动延长过期时间，不再固定 TTL 后断连
+- Dashboard 前端全局 401 拦截：session 过期后自动跳回登录页，不再卡死在空白页
 - Add Account 对话框新增 Cancel 按钮，OAuth 流程中可随时关闭对话框 (#319)
 - Electron 打包前清空旧 public/ 目录，防止残留旧版前端资源导致显示异常 (#320)
 

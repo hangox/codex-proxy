@@ -548,11 +548,14 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 ### [Unreleased]
 
 **Added**
+- 第三方 API Key 管理：支持 Anthropic / OpenAI / Gemini / OpenRouter 预设模型 + 自定义 provider，每个 key 绑定一个具体模型，运行时动态路由（优先于 config 固定 key），LRU 轮转多 key 负载均衡
+  - REST API：`GET/POST /auth/api-keys`、`GET /auth/api-keys/catalog`、`POST /auth/api-keys/import`、`GET /auth/api-keys/export`、批量删除、label/status 管理
+  - Dashboard 新增 API Keys tab：表单添加（御三家下拉选模型 / custom 手填）、import/export、toggle 启停、删除
+  - 持久化 `data/api-keys.json`，UpstreamRouter 优先级 0 匹配 pool entry
 - 加强伪装：Rust native transport（reqwest + rustls），TLS 指纹精确匹配真实 Codex Desktop；补齐 `x-openai-internal-codex-residency`、`x-client-request-id`、`x-codex-turn-state` 请求头
 - 账号探活：`POST /auth/accounts/health-check` 批量健康检查 + `POST /auth/accounts/:id/refresh` 单账号刷新，通过 OAuth refresh 探测存活状态，带 stagger 延迟和并发控制
 - Session affinity：同一对话链路由到同一账号，修复 `previous_response_id` 跨账号失效问题
 - `prompt_cache_key`：每个对话链生成唯一 UUID 传递给后端，启用 prompt cache
-- WebSocket 请求新增 `include: ["reasoning.encrypted_content"]`（reasoning 开启时自动设置）
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
 - 删除冗余测试文件：`self-update-auto.test.ts`（superset 覆盖）、`account-import-refresh.test.ts`（迁移到 service 层）

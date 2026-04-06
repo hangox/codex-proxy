@@ -36,6 +36,9 @@ import { OpenAIUpstream } from "./proxy/openai-upstream.js";
 import { AnthropicUpstream } from "./proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "./proxy/gemini-upstream.js";
 import type { UpstreamAdapter } from "./proxy/upstream-adapter.js";
+import { ApiKeyPool } from "./auth/api-key-pool.js";
+import { createApiKeyRoutes } from "./routes/api-keys.js";
+import { createAdapterForEntry } from "./proxy/adapter-factory.js";
 
 export interface ServerHandle {
   close: () => Promise<void>;
@@ -113,9 +116,19 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
       }
     }
   }
-  const upstreamRouter = adapters.size > 0
+  // Initialize API key pool for runtime-managed third-party keys
+  const apiKeyPool = new ApiKeyPool();
+  const hasApiKeys = apiKeyPool.getAll().length > 0;
+
+  const upstreamRouter = (adapters.size > 0 || hasApiKeys)
     ? new UpstreamRouter(adapters, cfg.model_routing, "codex")
     : undefined;
+
+  // Attach API key pool to router for dynamic model resolution
+  if (upstreamRouter) {
+    upstreamRouter.setApiKeyPool(apiKeyPool, createAdapterForEntry);
+    if (hasApiKeys) console.log(`[Init] API key pool: ${apiKeyPool.getAll().length} key(s) loaded`);
+  }
 
   // Mount routes
   const authRoutes = createAuthRoutes(accountPool, refreshScheduler);
@@ -124,6 +137,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const messagesRoutes = createMessagesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
   const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
   const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
+  const apiKeyRoutes = createApiKeyRoutes(apiKeyPool);
   const proxyRoutes = createProxyRoutes(proxyPool, accountPool);
   const usageStats = new UsageStatsStore();
   usageStats.recoverBaseline(accountPool);
@@ -132,6 +146,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.route("/", createDashboardAuthRoutes());
   app.route("/", authRoutes);
   app.route("/", accountRoutes);
+  app.route("/", apiKeyRoutes);
   app.route("/", chatRoutes);
   app.route("/", messagesRoutes);
   app.route("/", geminiRoutes);

@@ -568,8 +568,8 @@ curl -X POST http://localhost:8080/auth/accounts/import \
   - Electron (macOS)：自动打开 release 页面（平台限制无法自动安装）
   - 配置项 `update.auto_update`，持久化到 `data/local.yaml`
 **Fixed**
-- 修复 `service_tier` 在 WebSocket 和 HTTP 两条路径均被丢弃的 bug — 现在正确转发给后端
-- 修复 `PUT /api/proxies/settings` 被 `PUT /api/proxies/:id` 路由参数 shadow 的 bug（Hono 按注册顺序匹配）
+- Add Account 对话框新增 Cancel 按钮，OAuth 流程中可随时关闭对话框 (#319)
+- Electron 打包前清空旧 public/ 目录，防止残留旧版前端资源导致显示异常 (#320)
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

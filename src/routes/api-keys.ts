@@ -6,14 +6,15 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ApiKeyPool } from "../auth/api-key-pool.js";
-import { PROVIDER_CATALOG, isBuiltinProvider } from "../auth/api-key-catalog.js";
+import { PROVIDER_CATALOG } from "../auth/api-key-catalog.js";
 import type { ApiKeyProvider } from "../auth/api-key-catalog.js";
 
 const VALID_PROVIDERS = ["anthropic", "openai", "gemini", "openrouter", "custom"] as const;
+const ModelsSchema = z.array(z.string().trim().min(1)).min(1).transform((models) => [...new Set(models)]);
 
 const AddKeySchema = z.object({
   provider: z.enum(VALID_PROVIDERS),
-  model: z.string().min(1),
+  models: ModelsSchema,
   apiKey: z.string().min(1),
   baseUrl: z.string().url().optional(),
   label: z.string().max(64).nullable().optional(),
@@ -24,7 +25,7 @@ const AddKeySchema = z.object({
 
 const BulkImportEntrySchema = z.object({
   provider: z.enum(VALID_PROVIDERS),
-  model: z.string().min(1),
+  models: ModelsSchema,
   apiKey: z.string().min(1),
   baseUrl: z.string().url().optional(),
   label: z.string().max(64).nullable().optional(),
@@ -32,6 +33,53 @@ const BulkImportEntrySchema = z.object({
   (d) => d.provider !== "custom" || Boolean(d.baseUrl),
   { message: "baseUrl is required for custom providers" },
 );
+
+
+function addEntries(pool: ApiKeyPool, input: z.infer<typeof AddKeySchema>) {
+  const keys = input.models.map((model) => pool.add({
+    provider: input.provider,
+    model,
+    apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
+    label: input.label,
+  }));
+  return {
+    added: keys.length,
+    failed: 0,
+    keys,
+  };
+}
+
+function importEntries(pool: ApiKeyPool, items: z.infer<typeof BulkImportSchema>["keys"]) {
+  let added = 0;
+  const errors: string[] = [];
+
+  for (const item of items) {
+    for (const model of item.models) {
+      try {
+        pool.add({
+          provider: item.provider,
+          model,
+          apiKey: item.apiKey,
+          baseUrl: item.baseUrl,
+          label: item.label,
+        });
+        added++;
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
+  return { added, failed: errors.length, errors };
+}
+
+function maskExportModels<T extends { model?: string }>(items: T[]): Array<Omit<T, "model"> & { models: string[] }> {
+  return items.map(({ model, ...rest }) => ({
+    ...rest,
+    models: model ? [model] : [],
+  }));
+}
 
 const BulkImportSchema = z.object({
   keys: z.array(BulkImportEntrySchema).min(1),
@@ -67,7 +115,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
   // ── Export (full keys for re-import) ──────────────────────────
 
   app.get("/auth/api-keys/export", (c) => {
-    return c.json({ keys: pool.exportForReimport() });
+    return c.json({ keys: maskExportModels(pool.exportForReimport()) });
   });
 
   // ── Import (bulk) ─────────────────────────────────────────────
@@ -77,7 +125,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     try { body = await c.req.json(); } catch { c.status(400); return c.json({ error: "Malformed JSON request body" }); }
     const parsed = await parseBody(BulkImportSchema)(body);
     if (!parsed.ok) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
-    const result = pool.importMany(parsed.data.keys);
+    const result = importEntries(pool, parsed.data.keys);
     return c.json({ success: true, ...result });
   });
 
@@ -88,14 +136,13 @@ export function createApiKeyRoutes(pool: ApiKeyPool): Hono {
     try { body = await c.req.json(); } catch { c.status(400); return c.json({ error: "Malformed JSON request body" }); }
     const parsed = await parseBody(AddKeySchema)(body);
     if (!parsed.ok) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
-    const entry = pool.add(parsed.data as {
-      provider: ApiKeyProvider;
-      model: string;
-      apiKey: string;
-      baseUrl?: string;
-      label?: string | null;
+    const result = addEntries(pool, parsed.data);
+    return c.json({
+      success: true,
+      added: result.added,
+      failed: result.failed,
+      keys: result.keys.map((entry) => ({ ...entry, apiKey: maskKey(entry.apiKey) })),
     });
-    return c.json({ success: true, key: { ...entry, apiKey: maskKey(entry.apiKey) } });
   });
 
   // ── Batch delete ──────────────────────────────────────────────

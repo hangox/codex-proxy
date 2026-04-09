@@ -3,7 +3,7 @@
  * Supports add/delete/toggle/import/export with predefined model catalogs.
  */
 
-import { useState, useCallback, useRef } from "preact/hooks";
+import { useState, useCallback, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
 import type { ApiKeyProvider, ApiKeyEntry } from "../../../shared/hooks/use-api-keys";
 import { CopyButton } from "./CopyButton";
@@ -19,11 +19,11 @@ const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
 // ── Add Key Form ───────────────────────────────────────────────────
 
 function AddKeyForm({ onAdd, catalog }: {
-  onAdd: (input: { provider: ApiKeyProvider; model: string; apiKey: string; baseUrl?: string; label?: string }) => Promise<{ ok: boolean; error?: string }>;
+  onAdd: (input: { provider: ApiKeyProvider; models: string[]; apiKey: string; baseUrl?: string; label?: string }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
 }) {
   const [provider, setProvider] = useState<ApiKeyProvider>("anthropic");
-  const [model, setModel] = useState("");
+  const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [label, setLabel] = useState("");
@@ -32,12 +32,13 @@ function AddKeyForm({ onAdd, catalog }: {
 
   const isCustom = provider === "custom";
   const providerCatalog = !isCustom ? catalog[provider]?.models ?? [] : [];
+  const selectedModelSet = useMemo(() => new Set(selectedModels), [selectedModels]);
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     setError("");
-    if (!model.trim() || !apiKey.trim()) {
-      setError("Model and API Key are required");
+    if (selectedModels.length === 0 || !apiKey.trim()) {
+      setError("Select at least one model and enter an API Key");
       return;
     }
     if (isCustom && !baseUrl.trim()) {
@@ -47,14 +48,14 @@ function AddKeyForm({ onAdd, catalog }: {
     setAdding(true);
     const result = await onAdd({
       provider,
-      model: model.trim(),
+      models: selectedModels,
       apiKey: apiKey.trim(),
       baseUrl: isCustom ? baseUrl.trim() : undefined,
       label: label.trim() || undefined,
     });
     setAdding(false);
     if (result.ok) {
-      setModel("");
+      setSelectedModels([]);
       setApiKey("");
       setBaseUrl("");
       setLabel("");
@@ -63,10 +64,15 @@ function AddKeyForm({ onAdd, catalog }: {
     }
   };
 
+  const handleModelToggle = (modelId: string) => {
+    setSelectedModels((prev) => prev.includes(modelId)
+      ? prev.filter((id) => id !== modelId)
+      : [...prev, modelId]);
+  };
+
   return (
     <form onSubmit={handleSubmit} class="flex flex-col gap-3 p-4 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl">
       <div class="flex flex-wrap gap-3">
-        {/* Provider */}
         <div class="flex flex-col gap-1 min-w-[140px]">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Provider</label>
           <select
@@ -74,7 +80,7 @@ function AddKeyForm({ onAdd, catalog }: {
             onChange={(e) => {
               const v = (e.target as HTMLSelectElement).value as ApiKeyProvider;
               setProvider(v);
-              setModel("");
+              setSelectedModels([]);
               setBaseUrl("");
             }}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
@@ -85,32 +91,6 @@ function AddKeyForm({ onAdd, catalog }: {
           </select>
         </div>
 
-        {/* Model */}
-        <div class="flex flex-col gap-1 flex-1 min-w-[180px]">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Model</label>
-          {providerCatalog.length > 0 ? (
-            <select
-              value={model}
-              onChange={(e) => setModel((e.target as HTMLSelectElement).value)}
-              class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
-            >
-              <option value="">Select model...</option>
-              {providerCatalog.map((m) => (
-                <option key={m.id} value={m.id}>{m.displayName}</option>
-              ))}
-            </select>
-          ) : (
-            <input
-              type="text"
-              value={model}
-              onInput={(e) => setModel((e.target as HTMLInputElement).value)}
-              placeholder="model-name"
-              class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
-            />
-          )}
-        </div>
-
-        {/* API Key */}
         <div class="flex flex-col gap-1 flex-1 min-w-[200px]">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">API Key</label>
           <input
@@ -123,7 +103,29 @@ function AddKeyForm({ onAdd, catalog }: {
         </div>
       </div>
 
-      {/* Custom-only: Base URL */}
+      <div class="flex flex-col gap-1">
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Models</label>
+        {providerCatalog.length > 0 ? (
+          <div class="max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark p-2 flex flex-col gap-1">
+            {providerCatalog.map((model) => (
+              <label key={model.id} class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/70 dark:hover:bg-card-dark/70 text-sm text-slate-800 dark:text-text-main">
+                <input
+                  type="checkbox"
+                  checked={selectedModelSet.has(model.id)}
+                  onChange={() => handleModelToggle(model.id)}
+                />
+                <span>{model.displayName}</span>
+                <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto">{model.id}</span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <div class="px-2.5 py-2 text-sm rounded-lg border border-dashed border-gray-200 dark:border-border-dark text-slate-400 dark:text-text-dim">
+            Custom provider 暂不支持自动拉取模型，请先使用内置 provider。
+          </div>
+        )}
+      </div>
+
       {isCustom && (
         <div class="flex flex-col gap-1">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Base URL</label>
@@ -137,7 +139,6 @@ function AddKeyForm({ onAdd, catalog }: {
         </div>
       )}
 
-      {/* Label + Submit */}
       <div class="flex gap-3 items-end">
         <div class="flex flex-col gap-1 flex-1">
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Label (optional)</label>

@@ -61,7 +61,7 @@ export function useApiKeys() {
 
   const addKey = useCallback(async (input: {
     provider: ApiKeyProvider;
-    model: string;
+    models: string[];
     apiKey: string;
     baseUrl?: string;
     label?: string | null;

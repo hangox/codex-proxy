@@ -5,8 +5,10 @@
 
 import { useState, useCallback, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
-import type { ApiKeyProvider, ApiKeyEntry } from "../../../shared/hooks/use-api-keys";
-import { CopyButton } from "./CopyButton";
+import type { ApiKeyProvider, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
+
+const CUSTOM_MODELS_HINT = "请先输入key和url，将会获取模型列表";
+const CUSTOM_MODELS_FALLBACK_HINT = "模型列表获取失败，请手动输入模型名";
 
 const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
   { value: "anthropic", label: "Anthropic" },
@@ -16,41 +18,143 @@ const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
   { value: "custom", label: "Custom" },
 ];
 
-// ── Add Key Form ───────────────────────────────────────────────────
+type CustomModelStatus = "idle" | "loading" | "loaded" | "fallback";
 
-function AddKeyForm({ onAdd, catalog }: {
+function normalizeCustomModelInput(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderModelChecklist(models: CatalogModel[], selectedModelSet: Set<string>, onToggle: (modelId: string) => void) {
+  return (
+    <div class="max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark p-2 flex flex-col gap-1">
+      {models.map((model) => (
+        <label key={model.id} class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/70 dark:hover:bg-card-dark/70 text-sm text-slate-800 dark:text-text-main">
+          <input
+            type="checkbox"
+            checked={selectedModelSet.has(model.id)}
+            onChange={() => onToggle(model.id)}
+          />
+          <span>{model.displayName}</span>
+          <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto">{model.id}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function AddKeyForm({ onAdd, catalog, fetchCustomModels }: {
   onAdd: (input: { provider: ApiKeyProvider; models: string[]; apiKey: string; baseUrl?: string; label?: string }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
+  fetchCustomModels: (input: { provider: "custom"; apiKey: string; baseUrl: string }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
 }) {
   const [provider, setProvider] = useState<ApiKeyProvider>("anthropic");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [label, setLabel] = useState("");
+  const [manualModelsInput, setManualModelsInput] = useState("");
+  const [customModels, setCustomModels] = useState<CatalogModel[]>([]);
+  const [customModelStatus, setCustomModelStatus] = useState<CustomModelStatus>("idle");
+  const [customModelMessage, setCustomModelMessage] = useState(CUSTOM_MODELS_HINT);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
+  const latestCustomRequestRef = useRef(0);
+  const latestResolvedSignatureRef = useRef("");
 
   const isCustom = provider === "custom";
   const providerCatalog = !isCustom ? catalog[provider]?.models ?? [] : [];
   const selectedModelSet = useMemo(() => new Set(selectedModels), [selectedModels]);
 
+  const resetCustomModels = useCallback((status: CustomModelStatus = "idle", message = CUSTOM_MODELS_HINT) => {
+    setCustomModels([]);
+    setSelectedModels([]);
+    setCustomModelStatus(status);
+    setCustomModelMessage(message);
+  }, []);
+
+  const handleModelToggle = (modelId: string) => {
+    setSelectedModels((prev) => prev.includes(modelId)
+      ? prev.filter((id) => id !== modelId)
+      : [...prev, modelId]);
+  };
+
+  const triggerCustomModelFetch = useCallback(async () => {
+    if (!isCustom) return;
+
+    const normalizedApiKey = apiKey.trim();
+    const normalizedBaseUrl = baseUrl.trim();
+    if (!normalizedApiKey || !normalizedBaseUrl) {
+      resetCustomModels();
+      return;
+    }
+
+    const signature = `${normalizedBaseUrl}::${normalizedApiKey}`;
+    if (latestResolvedSignatureRef.current === signature && customModels.length > 0) return;
+
+    const requestId = latestCustomRequestRef.current + 1;
+    latestCustomRequestRef.current = requestId;
+    setCustomModelStatus("loading");
+    setCustomModelMessage("正在获取模型列表...");
+    setError("");
+
+    const result = await fetchCustomModels({
+      provider: "custom",
+      apiKey: normalizedApiKey,
+      baseUrl: normalizedBaseUrl,
+    });
+
+    if (latestCustomRequestRef.current !== requestId) return;
+
+    if (!result.ok || result.models.length === 0) {
+      setCustomModels([]);
+      setSelectedModels([]);
+      setCustomModelStatus("fallback");
+      setCustomModelMessage(result.ok ? CUSTOM_MODELS_FALLBACK_HINT : `${CUSTOM_MODELS_FALLBACK_HINT}：${result.error}`);
+      latestResolvedSignatureRef.current = "";
+      return;
+    }
+
+    setCustomModels(result.models);
+    setCustomModelStatus("loaded");
+    setCustomModelMessage("");
+    latestResolvedSignatureRef.current = signature;
+    setSelectedModels((prev) => {
+      const next = prev.filter((id) => result.models.some((model) => model.id === id));
+      return next.length > 0 ? next : [result.models[0].id];
+    });
+  }, [apiKey, baseUrl, customModels.length, fetchCustomModels, isCustom, resetCustomModels]);
+
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
     setError("");
-    if (selectedModels.length === 0 || !apiKey.trim()) {
-      setError("Select at least one model and enter an API Key");
+
+    const normalizedApiKey = apiKey.trim();
+    const normalizedBaseUrl = baseUrl.trim();
+    const normalizedManualModels = normalizeCustomModelInput(manualModelsInput);
+    const models = isCustom && customModelStatus === "fallback"
+      ? normalizedManualModels
+      : selectedModels;
+
+    if (models.length === 0 || !normalizedApiKey) {
+      setError(isCustom && customModelStatus === "fallback"
+        ? "请输入至少一个模型名并填写 API Key"
+        : "Select at least one model and enter an API Key");
       return;
     }
-    if (isCustom && !baseUrl.trim()) {
+    if (isCustom && !normalizedBaseUrl) {
       setError("Base URL is required for custom providers");
       return;
     }
+
     setAdding(true);
     const result = await onAdd({
       provider,
-      models: selectedModels,
-      apiKey: apiKey.trim(),
-      baseUrl: isCustom ? baseUrl.trim() : undefined,
+      models,
+      apiKey: normalizedApiKey,
+      baseUrl: isCustom ? normalizedBaseUrl : undefined,
       label: label.trim() || undefined,
     });
     setAdding(false);
@@ -59,15 +163,11 @@ function AddKeyForm({ onAdd, catalog }: {
       setApiKey("");
       setBaseUrl("");
       setLabel("");
+      setManualModelsInput("");
+      resetCustomModels();
     } else {
       setError(result.error || "Failed to add key");
     }
-  };
-
-  const handleModelToggle = (modelId: string) => {
-    setSelectedModels((prev) => prev.includes(modelId)
-      ? prev.filter((id) => id !== modelId)
-      : [...prev, modelId]);
   };
 
   return (
@@ -82,6 +182,11 @@ function AddKeyForm({ onAdd, catalog }: {
               setProvider(v);
               setSelectedModels([]);
               setBaseUrl("");
+              setApiKey("");
+              setLabel("");
+              setManualModelsInput("");
+              latestResolvedSignatureRef.current = "";
+              resetCustomModels();
             }}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           >
@@ -96,7 +201,13 @@ function AddKeyForm({ onAdd, catalog }: {
           <input
             type="password"
             value={apiKey}
-            onInput={(e) => setApiKey((e.target as HTMLInputElement).value)}
+            onInput={(e) => {
+              setApiKey((e.target as HTMLInputElement).value);
+              if (isCustom) {
+                latestResolvedSignatureRef.current = "";
+                resetCustomModels();
+              }
+            }}
             placeholder="sk-..."
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
@@ -105,23 +216,22 @@ function AddKeyForm({ onAdd, catalog }: {
 
       <div class="flex flex-col gap-1">
         <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Models</label>
-        {providerCatalog.length > 0 ? (
-          <div class="max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark p-2 flex flex-col gap-1">
-            {providerCatalog.map((model) => (
-              <label key={model.id} class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/70 dark:hover:bg-card-dark/70 text-sm text-slate-800 dark:text-text-main">
-                <input
-                  type="checkbox"
-                  checked={selectedModelSet.has(model.id)}
-                  onChange={() => handleModelToggle(model.id)}
-                />
-                <span>{model.displayName}</span>
-                <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto">{model.id}</span>
-              </label>
-            ))}
-          </div>
-        ) : (
-          <div class="px-2.5 py-2 text-sm rounded-lg border border-dashed border-gray-200 dark:border-border-dark text-slate-400 dark:text-text-dim">
-            Custom provider 暂不支持自动拉取模型，请先使用内置 provider。
+        {!isCustom && renderModelChecklist(providerCatalog, selectedModelSet, handleModelToggle)}
+        {isCustom && customModelStatus === "loaded" && renderModelChecklist(customModels, selectedModelSet, handleModelToggle)}
+        {isCustom && customModelStatus !== "loaded" && (
+          <div class="flex flex-col gap-2">
+            <div class="px-2.5 py-2 text-sm rounded-lg border border-dashed border-gray-200 dark:border-border-dark text-slate-400 dark:text-text-dim">
+              {customModelStatus === "loading" ? "正在获取模型列表..." : customModelMessage}
+            </div>
+            {customModelStatus === "fallback" && (
+              <input
+                type="text"
+                value={manualModelsInput}
+                onInput={(e) => setManualModelsInput((e.target as HTMLInputElement).value)}
+                placeholder="model-name-1, model-name-2"
+                class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+              />
+            )}
           </div>
         )}
       </div>
@@ -132,7 +242,12 @@ function AddKeyForm({ onAdd, catalog }: {
           <input
             type="url"
             value={baseUrl}
-            onInput={(e) => setBaseUrl((e.target as HTMLInputElement).value)}
+            onInput={(e) => {
+              setBaseUrl((e.target as HTMLInputElement).value);
+              latestResolvedSignatureRef.current = "";
+              resetCustomModels();
+            }}
+            onBlur={() => { void triggerCustomModelFetch(); }}
             placeholder="https://api.example.com/v1"
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
@@ -164,7 +279,7 @@ function AddKeyForm({ onAdd, catalog }: {
   );
 }
 
-// ── Key Row ────────────────────────────────────────────────────────
+export { AddKeyForm };
 
 function providerBadgeColor(provider: ApiKeyProvider): string {
   switch (provider) {
@@ -185,29 +300,24 @@ function KeyRow({ entry, onDelete, onToggle }: {
 
   return (
     <div class={`flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl transition-opacity ${!isActive ? "opacity-50" : ""}`}>
-      {/* Provider badge */}
       <span class={`text-[0.65rem] font-semibold uppercase px-1.5 py-0.5 rounded ${providerBadgeColor(entry.provider)}`}>
         {entry.provider}
       </span>
 
-      {/* Model */}
       <span class="text-sm font-mono text-slate-800 dark:text-text-main">
         {entry.model}
       </span>
 
-      {/* Label */}
       {entry.label && (
         <span class="text-xs text-slate-500 dark:text-text-dim">
           {entry.label}
         </span>
       )}
 
-      {/* Masked key */}
       <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto hidden sm:inline">
         {entry.apiKey}
       </span>
 
-      {/* Toggle */}
       <button
         onClick={() => onToggle(entry.id, isActive ? "disabled" : "active")}
         title={isActive ? "Disable" : "Enable"}
@@ -220,7 +330,6 @@ function KeyRow({ entry, onDelete, onToggle }: {
         }`} />
       </button>
 
-      {/* Delete */}
       <button
         onClick={() => onDelete(entry.id)}
         title="Delete"
@@ -234,10 +343,8 @@ function KeyRow({ entry, onDelete, onToggle }: {
   );
 }
 
-// ── Main Component ──────────────────────────────────────────────────
-
 export function ApiKeyManager() {
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, importKeys } = useApiKeys();
+  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, importKeys, fetchCustomModels } = useApiKeys();
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -261,7 +368,6 @@ export function ApiKeyManager() {
 
   return (
     <div class="flex flex-col gap-3">
-      {/* Header */}
       <div class="flex items-center gap-2">
         <h2 class="text-sm font-semibold text-slate-700 dark:text-text-main flex items-center gap-2">
           <svg class="size-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -300,7 +406,6 @@ export function ApiKeyManager() {
         </div>
       </div>
 
-      {/* Add form */}
       {showForm && (
         <AddKeyForm
           onAdd={async (input) => {
@@ -309,10 +414,10 @@ export function ApiKeyManager() {
             return result;
           }}
           catalog={catalog}
+          fetchCustomModels={fetchCustomModels}
         />
       )}
 
-      {/* Key list */}
       {keys.length === 0 ? (
         <div class="text-center py-8 text-sm text-slate-400 dark:text-text-dim">
           No API keys configured. Click + to add one.

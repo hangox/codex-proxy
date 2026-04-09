@@ -42,18 +42,22 @@ const BulkImportEntrySchema = z.object({
 
 
 function addEntries(pool: ApiKeyPool, input: z.infer<typeof AddKeySchema>) {
-  const keys = input.models.map((model) => pool.add({
-    provider: input.provider,
-    model,
-    apiKey: input.apiKey,
-    baseUrl: input.baseUrl,
-    label: input.label,
-  }));
-  return {
-    added: keys.length,
-    failed: 0,
-    keys,
-  };
+  const keys = [];
+  const errors: string[] = [];
+  for (const model of input.models) {
+    try {
+      keys.push(pool.add({
+        provider: input.provider,
+        model,
+        apiKey: input.apiKey,
+        baseUrl: input.baseUrl,
+        label: input.label,
+      }));
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  return { added: keys.length, failed: errors.length, errors, keys };
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

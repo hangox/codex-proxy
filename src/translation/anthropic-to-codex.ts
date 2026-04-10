@@ -41,6 +41,13 @@ function extractTextContent(
     .join("\n");
 }
 
+const BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
+
+function normalizeSystemInstructionText(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.startsWith(BILLING_HEADER_PREFIX) ? "" : trimmed;
+}
+
 /**
  * Build multimodal content (text + images) from Anthropic blocks.
  * Returns plain string if text-only, or CodexContentPart[] if images present.
@@ -179,9 +186,12 @@ export function translateAnthropicToCodexRequest(
   let userInstructions: string;
   if (req.system) {
     if (typeof req.system === "string") {
-      userInstructions = req.system;
+      userInstructions = normalizeSystemInstructionText(req.system);
     } else {
-      userInstructions = req.system.map((b) => b.text).join("\n\n");
+      userInstructions = req.system
+        .map((b) => normalizeSystemInstructionText(b.text))
+        .filter(Boolean)
+        .join("\n\n");
     }
   } else {
     userInstructions = "You are a helpful assistant.";

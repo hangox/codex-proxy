@@ -8,7 +8,7 @@
  *   - response-processor.ts   — streaming (SSE) response path
  */
 
-import crypto, { createHash } from "crypto";
+import crypto from "crypto";
 import type { Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
 import { stream } from "hono/streaming";
@@ -28,16 +28,23 @@ import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from ".
 import { getConfig } from "../../config.js";
 import { jitterInt } from "../../utils/jitter.js";
 import { getSessionAffinityMap, type SessionAffinityMap } from "../../auth/session-affinity.js";
+import { deriveStableConversationKey } from "./stable-conversation-key.js";
 
 /** Data prepared by each route after parsing and translating the request. */
 export interface ProxyRequest {
   codexRequest: CodexResponsesRequest;
   model: string;
   isStreaming: boolean;
+  /** Stable client-side conversation/session identifier when the upstream client provides one. */
+  clientConversationId?: string;
   /** Original schema before tuple→object conversion (for response reconversion). */
   tupleSchema?: Record<string, unknown> | null;
   /** Whether this is a new conversation (no previous_response_id) — used for cache reporting. */
   isNewConversation?: boolean;
+}
+
+export interface UsageHint {
+  reusedInputTokensUpperBound?: number;
 }
 
 /** Format-specific adapter provided by each route. */
@@ -54,12 +61,14 @@ export interface FormatAdapter {
     onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number }) => void,
     onResponseId: (id: string) => void,
     tupleSchema?: Record<string, unknown> | null,
+    usageHint?: UsageHint,
   ) => AsyncGenerator<string>;
   collectTranslator: (
     api: UpstreamAdapter,
     response: Response,
     model: string,
     tupleSchema?: Record<string, unknown> | null,
+    usageHint?: UsageHint,
   ) => Promise<{
     response: unknown;
     usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number };
@@ -69,50 +78,41 @@ export interface FormatAdapter {
 
 const MAX_EMPTY_RETRIES = 2;
 
-/**
- * Derive a stable conversation key from the Codex request content.
- *
- * Claude Code (and other Anthropic-format clients) send the FULL conversation
- * history on every request. By hashing (system instructions + first user
- * message), we get a key that:
- *   - stays constant across all turns of the same conversation
- *   - changes when the conversation prefix changes (new session)
- *   - allows Codex to serve subsequent turns from server-side cache
- *
- * Returns null if there isn't enough content to form a meaningful key
- * (e.g. empty input), falling back to a random UUID.
- */
-function deriveStableConversationKey(req: CodexResponsesRequest): string | null {
-  // Include system instructions in the hash (capped to avoid huge hashes)
-  const instructions = (req.instructions ?? "").slice(0, 2000);
+function normalizeInstructions(instructions: string | null | undefined): string {
+  return instructions ?? "";
+}
 
-  // Find the first user message — this anchors the conversation identity
-  let firstUserText = "";
-  for (const item of req.input) {
-    if (!("role" in item) || item.role !== "user") continue;
-    const content = item.content;
-    if (typeof content === "string") {
-      firstUserText = content.slice(0, 500);
-    } else if (Array.isArray(content)) {
-      firstUserText = content
-        .filter((p): p is { type: "input_text"; text: string } => p.type === "input_text")
-        .map((p) => p.text)
-        .join("")
-        .slice(0, 500);
+export function shouldActivateImplicitResume(opts: {
+  implicitPrevRespId: string | null;
+  continuationInputStart: number;
+  inputLength: number;
+  preferredEntryId: string | null;
+  acquiredEntryId: string;
+  currentInstructions: string | null | undefined;
+  storedInstructions: string | null;
+}): boolean {
+  return Boolean(
+    opts.implicitPrevRespId &&
+    opts.continuationInputStart < opts.inputLength &&
+    opts.preferredEntryId &&
+    opts.acquiredEntryId === opts.preferredEntryId &&
+    normalizeInstructions(opts.currentInstructions) === normalizeInstructions(opts.storedInstructions),
+  );
+}
+
+function getContinuationInputStartIndex(input: CodexResponsesRequest["input"]): number {
+  let lastModelOutputIndex = -1;
+  for (let i = 0; i < input.length; i++) {
+    const item = input[i];
+    if ("role" in item) {
+      if (item.role === "assistant") lastModelOutputIndex = i;
+      continue;
     }
-    break;
+    if (item.type === "function_call") {
+      lastModelOutputIndex = i;
+    }
   }
-
-  // Need at least something meaningful
-  if (!instructions && !firstUserText) return null;
-
-  // Null byte as separator prevents "AB"+"C" == "A"+"BC" collisions
-  const hash = createHash("sha256")
-    .update(`${instructions}\x00${firstUserText}`)
-    .digest("hex");
-
-  // Format as UUID-like string (Codex accepts any string, UUID form is conventional)
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+  return lastModelOutputIndex >= 0 ? lastModelOutputIndex + 1 : 0;
 }
 
 /** Sleep if this account had a recent request, to stagger upstream traffic. */
@@ -144,23 +144,45 @@ export async function handleProxyRequest(
   fmt: FormatAdapter,
   proxyPool?: ProxyPool,
 ): Promise<Response> {
-  // Session affinity: prefer the account that created the previous response
   const affinityMap = getSessionAffinityMap();
-  const prevRespId = req.codexRequest.previous_response_id;
-  const preferredEntryId = prevRespId ? affinityMap.lookup(prevRespId) : null;
+  const originalInput = req.codexRequest.input;
+  const originalPreviousResponseId = req.codexRequest.previous_response_id;
+  const originalTurnState = req.codexRequest.turnState;
+  const originalUseWebSocket = req.codexRequest.useWebSocket;
+  const currentInstructions = req.codexRequest.instructions;
+  const explicitPrevRespId = req.codexRequest.previous_response_id;
+  const derivedConversationId = deriveStableConversationKey(req.codexRequest);
+  const promptCacheKey = derivedConversationId ?? req.clientConversationId ?? crypto.randomUUID();
+  const continuationInputStart = explicitPrevRespId ? 0 : getContinuationInputStartIndex(req.codexRequest.input);
+  const explicitConversationId = explicitPrevRespId ? affinityMap.lookupConversationId(explicitPrevRespId) : null;
+  const chainConversationId = explicitConversationId ?? req.clientConversationId ?? promptCacheKey;
+  const implicitPrevRespId =
+    !explicitPrevRespId &&
+    continuationInputStart > 0 &&
+    req.clientConversationId
+      ? affinityMap.lookupLatestResponseIdByConversationId(req.clientConversationId)
+      : null;
+  const prevRespId = explicitPrevRespId ?? implicitPrevRespId;
+  const implicitStoredInstructions = implicitPrevRespId
+    ? affinityMap.lookupInstructions(implicitPrevRespId)
+    : null;
+
+  // Session affinity: prefer the account that created the previous response
+  const preferredEntryId =
+    explicitPrevRespId
+      ? affinityMap.lookup(explicitPrevRespId)
+      : implicitPrevRespId && normalizeInstructions(currentInstructions) === normalizeInstructions(implicitStoredInstructions)
+        ? affinityMap.lookup(implicitPrevRespId)
+        : null;
 
   // Conversation ID: inherit from previous response chain, or derive from
   // content hash (enables cache hits across turns even without previous_response_id),
   // or fall back to a random UUID.
-  const conversationId =
-    (prevRespId ? affinityMap.lookupConversationId(prevRespId) : null) ??
-    deriveStableConversationKey(req.codexRequest) ??
-    crypto.randomUUID();
-  req.codexRequest.prompt_cache_key = conversationId;
+  req.codexRequest.prompt_cache_key = promptCacheKey;
 
   // Turn state: sticky routing token from upstream, echoed back on subsequent requests
-  const prevTurnState = prevRespId ? affinityMap.lookupTurnState(prevRespId) : null;
-  if (prevTurnState) req.codexRequest.turnState = prevTurnState;
+  const explicitTurnState = explicitPrevRespId ? affinityMap.lookupTurnState(explicitPrevRespId) : null;
+  if (explicitTurnState) req.codexRequest.turnState = explicitTurnState;
 
   // Set include for reasoning-enabled requests (matches Codex CLI behavior)
   if (req.codexRequest.reasoning && !req.codexRequest.include?.length) {
@@ -180,8 +202,41 @@ export async function handleProxyRequest(
   let modelRetried = false;
   let usageInfo: UsageInfo | undefined;
   let capturedResponseId: string | null = null;
+  let activeUsageHint: UsageHint | undefined;
+  let implicitResumeActive = false;
   // Idempotent-release guard: prevents double-release across retry branches
   const released = new Set<string>();
+
+  if (shouldActivateImplicitResume({
+    implicitPrevRespId,
+    continuationInputStart,
+    inputLength: req.codexRequest.input.length,
+    preferredEntryId,
+    acquiredEntryId: entryId,
+    currentInstructions,
+    storedInstructions: implicitStoredInstructions,
+  })) {
+    req.codexRequest.previous_response_id = implicitPrevRespId!;
+    req.codexRequest.useWebSocket = true;
+    req.codexRequest.input = req.codexRequest.input.slice(continuationInputStart);
+    const implicitTurnState = affinityMap.lookupTurnState(implicitPrevRespId!);
+    if (implicitTurnState) req.codexRequest.turnState = implicitTurnState;
+    activeUsageHint = {
+      reusedInputTokensUpperBound: affinityMap.lookupInputTokens(implicitPrevRespId!) ?? undefined,
+    };
+    implicitResumeActive = true;
+  }
+
+  const restoreImplicitResumeRequest = (): void => {
+    if (!implicitResumeActive) return;
+    req.codexRequest.previous_response_id = originalPreviousResponseId;
+    req.codexRequest.turnState = originalTurnState;
+    req.codexRequest.useWebSocket = originalUseWebSocket;
+    req.codexRequest.input = originalInput;
+    req.codexRequest.instructions = currentInstructions;
+    activeUsageHint = undefined;
+    implicitResumeActive = false;
+  };
 
   {
     const reqJson = JSON.stringify(req.codexRequest);
@@ -264,11 +319,19 @@ export async function handleProxyRequest(
               (u) => { usageInfo = u; },
               req.tupleSchema,
               (id) => { capturedResponseId = id; },
+              activeUsageHint,
             );
           } finally {
             abortController.abort();
             if (capturedResponseId) {
-              affinityMap.record(capturedResponseId, capturedEntryId, conversationId, upstreamTurnState);
+              affinityMap.record(
+                capturedResponseId,
+                capturedEntryId,
+                chainConversationId,
+                upstreamTurnState,
+                req.codexRequest.instructions ?? undefined,
+                usageInfo?.input_tokens,
+              );
             }
             if (usageInfo) {
               const uncached = usageInfo.cached_tokens
@@ -295,7 +358,16 @@ export async function handleProxyRequest(
       // ── Non-streaming path (with empty-response retry) ──
       return await handleNonStreaming(
         c, accountPool, cookieJar, req, fmt, proxyPool,
-        codexApi, rawResponse, entryId, abortController, released, affinityMap, conversationId, upstreamTurnState,
+        codexApi,
+        rawResponse,
+        entryId,
+        abortController,
+        released,
+        affinityMap,
+        chainConversationId,
+        upstreamTurnState,
+        () => activeUsageHint,
+        restoreImplicitResumeRequest,
       );
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
@@ -316,6 +388,7 @@ export async function handleProxyRequest(
       if (decision.releaseBeforeRetry) {
         releaseAccount(accountPool, entryId, undefined, released);
       }
+      restoreImplicitResumeRequest();
       if (decision.markModelRetried) {
         modelRetried = true;
       }
@@ -355,6 +428,8 @@ async function handleNonStreaming(
   affinityMap?: SessionAffinityMap,
   conversationId?: string,
   turnState?: string,
+  getUsageHint?: () => UsageHint | undefined,
+  restoreImplicitResumeRequest?: () => void,
 ): Promise<Response> {
   let currentEntryId = initialEntryId;
   let currentApi = initialApi;
@@ -363,10 +438,21 @@ async function handleNonStreaming(
   for (let attempt = 1; ; attempt++) {
     try {
       const result = await fmt.collectTranslator(
-        currentApi, currentRawResponse, req.model, req.tupleSchema,
+        currentApi,
+        currentRawResponse,
+        req.model,
+        req.tupleSchema,
+        getUsageHint?.(),
       );
       if (result.responseId && affinityMap && conversationId) {
-        affinityMap.record(result.responseId, currentEntryId, conversationId, turnState);
+        affinityMap.record(
+          result.responseId,
+          currentEntryId,
+          conversationId,
+          turnState,
+          req.codexRequest.instructions ?? undefined,
+          result.usage.input_tokens,
+        );
       }
       if (result.usage) {
         const u = result.usage;
@@ -391,6 +477,7 @@ async function handleNonStreaming(
         );
         accountPool.recordEmptyResponse(currentEntryId);
         releaseAccount(accountPool, currentEntryId, collectErr.usage, released);
+        restoreImplicitResumeRequest?.();
 
         const newAcquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag);
         if (!newAcquired) {

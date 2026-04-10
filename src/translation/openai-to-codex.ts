@@ -182,13 +182,14 @@ export function translateToCodexRequest(
     request.tool_choice = codexToolChoice;
   }
 
-  // Reasoning effort: explicit API field > suffix > model default > config default
+  // Reasoning effort: explicit API field > suffix > config default
   const effort =
     req.reasoning_effort ??
     parsed.reasoningEffort ??
-    modelInfo?.defaultReasoningEffort ??
     cfg.default_reasoning_effort;
-  request.reasoning = { summary: "auto", ...(effort ? { effort } : {}) };
+  if (effort) {
+    request.reasoning = { effort, summary: "auto" };
+  }
 
   // Service tier: explicit API field > suffix > config default
   const serviceTier =

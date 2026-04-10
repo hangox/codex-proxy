@@ -560,11 +560,12 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 **Changed**
 - Dashboard session 默认 TTL 从 1 小时延长至 24 小时
 **Fixed**
+- 默认不再发送 `reasoning.effort`：移除 `modelInfo.defaultReasoningEffort` 自动兜底，`default_reasoning_effort` 默认改为 `null`，彻底消除简单对话触发 medium 推理导致的 token 暴涨；Dashboard 新增 "Disabled (no reasoning)" 选项，用户可按需开启
 - 上游 401 时立即触发 RT→AT 刷新，而非等待定时器（修复 token 被提前作废后账号一直显示 expired 的问题）
 - Dashboard session 滑动窗口续期：每次有效请求自动延长过期时间，不再固定 TTL 后断连
 - Dashboard 前端全局 401 拦截：session 过期后自动跳回登录页，不再卡死在空白页
 - Add Account 对话框新增 Cancel 按钮，OAuth 流程中可随时关闭对话框 (#319)
-- Electron 打包前清空旧 public/ 目录，防止残留旧版前端资源导致显示异常 (#320)
+- ...（[查看全部](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

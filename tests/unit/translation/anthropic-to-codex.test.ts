@@ -84,6 +84,21 @@ describe("translateAnthropicToCodexRequest", () => {
       expect(result.instructions).toBe("First paragraph.\n\nSecond paragraph.");
     });
 
+    it("strips Claude billing header noise from system blocks", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            {
+              type: "text" as const,
+              text: "x-anthropic-billing-header: cc_version=2.1.100.db0; cch=abcd1;",
+            },
+            { type: "text" as const, text: "Keep answers short." },
+          ],
+        }),
+      );
+      expect(result.instructions).toBe("Keep answers short.");
+    });
+
     it("falls back to default instructions when no system provided", () => {
       const result = translateAnthropicToCodexRequest(makeRequest());
       expect(result.instructions).toBe("You are a helpful assistant.");

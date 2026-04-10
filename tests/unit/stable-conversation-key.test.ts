@@ -4,45 +4,11 @@
  * 这个函数是让 Codex 缓存真正工作的关键：
  * 同一对话的所有轮次必须得到相同的 prompt_cache_key，
  * 不同对话必须得到不同的 key。
- *
- * 由于该函数是 proxy-handler.ts 中的私有函数，
- * 我们通过启动代理并观察其行为来间接测试，
- * 以及通过提取逻辑到可测试的工具函数来直接测试。
  */
 
-import { createHash } from "crypto";
 import { describe, it, expect } from "vitest";
 import type { CodexResponsesRequest } from "@src/proxy/codex-types.js";
-
-// ── 提取出的纯函数（与 proxy-handler.ts 中逻辑完全一致）──────────────
-
-function deriveStableConversationKey(req: CodexResponsesRequest): string | null {
-  const instructions = (req.instructions ?? "").slice(0, 2000);
-
-  let firstUserText = "";
-  for (const item of req.input) {
-    if (!("role" in item) || item.role !== "user") continue;
-    const content = item.content;
-    if (typeof content === "string") {
-      firstUserText = content.slice(0, 500);
-    } else if (Array.isArray(content)) {
-      firstUserText = content
-        .filter((p): p is { type: "input_text"; text: string } => p.type === "input_text")
-        .map((p) => p.text)
-        .join("")
-        .slice(0, 500);
-    }
-    break;
-  }
-
-  if (!instructions && !firstUserText) return null;
-
-  const hash = createHash("sha256")
-    .update(`${instructions}\x00${firstUserText}`)
-    .digest("hex");
-
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
-}
+import { deriveStableConversationKey } from "@src/routes/shared/stable-conversation-key.js";
 
 function makeReq(opts: {
   instructions?: string;
@@ -74,7 +40,7 @@ describe("deriveStableConversationKey 稳定性", () => {
     expect(k1).toBe(k2);
   });
 
-  it("同一对话多轮次 → key 不变（只有第一条 user 消息参与 hash）", () => {
+  it("同一对话多轮次 → key 不变（固定 model + system + 第一条 user 消息）", () => {
     const turn1 = makeReq({
       instructions: "你是代码助手",
       messages: [{ role: "user", text: "帮我写排序" }],
@@ -123,7 +89,7 @@ describe("deriveStableConversationKey 稳定性", () => {
     expect(k1).not.toBe(k2);
   });
 
-  it("不同系统提示 → 不同 key（即使第一条消息相同）", () => {
+  it("相同第一条消息但系统提示不同 → 使用不同 key", () => {
     const req1 = makeReq({
       instructions: "你是 Python 专家",
       messages: [{ role: "user", text: "你好" }],
@@ -132,6 +98,21 @@ describe("deriveStableConversationKey 稳定性", () => {
       instructions: "你是 Rust 专家",
       messages: [{ role: "user", text: "你好" }],
     });
+
+    expect(deriveStableConversationKey(req1)).not.toBe(
+      deriveStableConversationKey(req2)
+    );
+  });
+
+  it("不同模型 → 不同 key（即使第一条消息相同）", () => {
+    const req1 = makeReq({
+      instructions: "你是助手",
+      messages: [{ role: "user", text: "你好" }],
+    });
+    const req2 = {
+      ...req1,
+      model: "gpt-5.4-mini",
+    } satisfies CodexResponsesRequest;
 
     expect(deriveStableConversationKey(req1)).not.toBe(
       deriveStableConversationKey(req2)
@@ -223,6 +204,36 @@ describe("Claude Code 实际场景", () => {
 
     expect(deriveStableConversationKey(session1Turn1)).not.toBe(
       deriveStableConversationKey(session2Turn1)
+    );
+  });
+
+  it("忽略 Claude 注入的 system-reminder 前缀变化", () => {
+    const prompt = "帮我优化这个函数，并且只给出最终答案。";
+    const turn1 = makeReq({
+      instructions: CLAUDE_CODE_SYSTEM,
+      messages: [{
+        role: "user",
+        text:
+          "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-04-10\n</system-reminder>\n" +
+          prompt,
+      }],
+    });
+    const turn2 = makeReq({
+      instructions: CLAUDE_CODE_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          text:
+            "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-04-11\n# cwd\n/tmp/demo\n</system-reminder>\n" +
+            prompt,
+        },
+        { role: "assistant", text: "ACK-1" },
+        { role: "user", text: "继续" },
+      ],
+    });
+
+    expect(deriveStableConversationKey(turn1)).toBe(
+      deriveStableConversationKey(turn2)
     );
   });
 });

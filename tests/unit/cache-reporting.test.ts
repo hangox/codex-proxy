@@ -155,6 +155,26 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
     const hitRate = 1_183_600 / 70_000_000;
     expect(hitRate).toBeCloseTo(0.017, 2); // 约 1.7%，对应实际数据
   });
+
+  it("隐式续链但上游未返回 cached_tokens 时：使用复用上限推导 cache_read", async () => {
+    const api = makeCodexApiMock();
+    const res = makeCodexResponse({
+      inputTokens: 15_243,
+      outputTokens: 7,
+      cachedTokens: 0,
+    });
+
+    const { response } = await collectCodexToAnthropicResponse(
+      api,
+      res,
+      "gpt-5.4-mini",
+      false,
+      { reusedInputTokensUpperBound: 15_240 },
+    );
+
+    expect(response.usage.cache_read_input_tokens).toBe(15_240);
+    expect(response.usage.cache_creation_input_tokens).toBe(3);
+  });
 });
 
 // ── 流式路径测试 ──────────────────────────────────────────────────
@@ -229,5 +249,24 @@ describe("流式响应 streamCodexToAnthropic", () => {
     // 第二轮缓存命中率 >> 0
     const hitRate2 = delta2.usage.cache_read_input_tokens / 5500;
     expect(hitRate2).toBeGreaterThan(0.8); // 87% 命中率
+  });
+
+  it("流式场景下也会为隐式续链补齐 cache_read", async () => {
+    const api = makeCodexApiMock();
+    const res = makeCodexResponse({
+      inputTokens: 15_243,
+      outputTokens: 7,
+      cachedTokens: 0,
+    });
+
+    const sseText = await collectSSE(
+      streamCodexToAnthropic(api, res, "gpt-5.4-mini", undefined, undefined, false, {
+        reusedInputTokensUpperBound: 15_240,
+      }),
+    );
+    const delta = parseMessageDelta(sseText) as any;
+
+    expect(delta.usage.cache_read_input_tokens).toBe(15_240);
+    expect(delta.usage.cache_creation_input_tokens).toBe(3);
   });
 });

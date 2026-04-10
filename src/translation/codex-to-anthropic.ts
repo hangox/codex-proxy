@@ -19,6 +19,28 @@ import type {
 } from "../types/anthropic.js";
 import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
 
+interface CacheUsageHint {
+  reusedInputTokensUpperBound?: number;
+}
+
+function resolveCacheUsage(
+  inputTokens: number,
+  cachedTokens: number | undefined,
+  usageHint?: CacheUsageHint,
+): { cacheReadTokens: number; cacheCreationTokens: number } {
+  let cacheReadTokens = cachedTokens ?? 0;
+  if (
+    cacheReadTokens <= 0 &&
+    inputTokens > 0 &&
+    usageHint?.reusedInputTokensUpperBound &&
+    usageHint.reusedInputTokensUpperBound > 0
+  ) {
+    cacheReadTokens = Math.min(usageHint.reusedInputTokensUpperBound, inputTokens);
+  }
+  const cacheCreationTokens = inputTokens > 0 ? Math.max(0, inputTokens - cacheReadTokens) : 0;
+  return { cacheReadTokens, cacheCreationTokens };
+}
+
 /** Format an Anthropic SSE event with named event type */
 function formatSSE(eventType: string, data: unknown): string {
   return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -38,6 +60,7 @@ export async function* streamCodexToAnthropic(
   onUsage?: (usage: UsageInfo) => void,
   onResponseId?: (id: string) => void,
   wantThinking?: boolean,
+  usageHint?: CacheUsageHint,
 ): AsyncGenerator<string> {
   const msgId = `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   let outputTokens = 0;
@@ -214,8 +237,14 @@ export async function* streamCodexToAnthropic(
         if (evt.usage) {
           inputTokens = evt.usage.input_tokens;
           outputTokens = evt.usage.output_tokens;
-          cachedTokens = evt.usage.cached_tokens;
-          onUsage?.({ input_tokens: inputTokens, output_tokens: outputTokens, cached_tokens: cachedTokens, reasoning_tokens: evt.usage.reasoning_tokens });
+          const adjusted = resolveCacheUsage(inputTokens, evt.usage.cached_tokens, usageHint);
+          cachedTokens = adjusted.cacheReadTokens || undefined;
+          onUsage?.({
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            cached_tokens: cachedTokens,
+            reasoning_tokens: evt.usage.reasoning_tokens,
+          });
         }
         // Inject error text if stream completed with no content
         if (!hasContent) {
@@ -238,8 +267,7 @@ export async function* streamCodexToAnthropic(
   // 4. message_delta with stop_reason and usage
   // cache_creation_input_tokens: tokens not served from cache (will be cached for next turn)
   // cache_read_input_tokens: tokens served from cache (Codex cached_tokens)
-  const cacheReadTokens = cachedTokens ?? 0;
-  const cacheCreationTokens = inputTokens > 0 ? inputTokens - cacheReadTokens : 0;
+  const { cacheReadTokens, cacheCreationTokens } = resolveCacheUsage(inputTokens, cachedTokens, usageHint);
   yield formatSSE("message_delta", {
     type: "message_delta",
     delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn" },
@@ -266,6 +294,7 @@ export async function collectCodexToAnthropicResponse(
   rawResponse: Response,
   model: string,
   wantThinking?: boolean,
+  usageHint?: CacheUsageHint,
 ): Promise<{
   response: AnthropicMessagesResponse;
   usage: UsageInfo;
@@ -328,8 +357,8 @@ export async function collectCodexToAnthropicResponse(
     content.push({ type: "text", text: "" });
   }
 
-  const cacheRead = cachedTokens ?? 0;
-  const cacheCreation = inputTokens > 0 ? inputTokens - cacheRead : 0;
+  const { cacheReadTokens: cacheRead, cacheCreationTokens: cacheCreation } =
+    resolveCacheUsage(inputTokens, cachedTokens, usageHint);
   const usage: AnthropicUsage = {
     input_tokens: inputTokens,
     output_tokens: outputTokens,

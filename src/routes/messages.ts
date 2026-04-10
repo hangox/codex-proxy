@@ -21,7 +21,9 @@ import {
   handleProxyRequest,
   handleDirectRequest,
   type FormatAdapter,
+  type UsageHint,
 } from "./shared/proxy-handler.js";
+import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 
 function makeError(
@@ -42,10 +44,10 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
       ),
     format429: (msg) => makeError("rate_limit_error", msg),
     formatError: (_status, msg) => makeError("api_error", msg),
-    streamTranslator: (api, response, model, onUsage, onResponseId, _tupleSchema) =>
-      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking),
-    collectTranslator: (api, response, model, _tupleSchema) =>
-      collectCodexToAnthropicResponse(api, response, model, wantThinking),
+    streamTranslator: (api, response, model, onUsage, onResponseId, _tupleSchema, usageHint?: UsageHint) =>
+      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking, usageHint),
+    collectTranslator: (api, response, model, _tupleSchema, usageHint?: UsageHint) =>
+      collectCodexToAnthropicResponse(api, response, model, wantThinking, usageHint),
   };
 }
 
@@ -102,12 +104,19 @@ export function createMessagesRoutes(
       }
     }
 
+    const clientConversationId = extractAnthropicClientConversationId(
+      req,
+      c.req.header("x-claude-code-session-id"),
+    );
+
     const codexRequest = translateAnthropicToCodexRequest(req);
+    codexRequest.useWebSocket = true;
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const proxyReq = {
       codexRequest,
       model: buildDisplayModelName(parseModelName(req.model)),
       isStreaming: req.stream,
+      clientConversationId: clientConversationId ?? undefined,
     };
     const fmt = makeAnthropicFormat(wantThinking);
 

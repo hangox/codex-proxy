@@ -37,4 +37,32 @@ describe("shouldActivateImplicitResume", () => {
       storedInstructions: "system-a",
     })).toBe(false);
   });
+
+  it("tool_result 里的 call_id 属于上一轮 response 时允许隐式续链", () => {
+    expect(shouldActivateImplicitResume({
+      implicitPrevRespId: "resp_prev",
+      continuationInputStart: 2,
+      inputLength: 3,
+      preferredEntryId: "entry_1",
+      acquiredEntryId: "entry_1",
+      currentInstructions: "system-a",
+      storedInstructions: "system-a",
+      requiredFunctionCallOutputIds: ["call_ok"],
+      storedFunctionCallIds: ["call_ok", "call_other"],
+    })).toBe(true);
+  });
+
+  it("tool_result 里的 call_id 不属于上一轮 response 时禁止隐式续链", () => {
+    expect(shouldActivateImplicitResume({
+      implicitPrevRespId: "resp_prev",
+      continuationInputStart: 2,
+      inputLength: 3,
+      preferredEntryId: "entry_1",
+      acquiredEntryId: "entry_1",
+      currentInstructions: "system-a",
+      storedInstructions: "system-a",
+      requiredFunctionCallOutputIds: ["call_missing"],
+      storedFunctionCallIds: ["call_ok"],
+    })).toBe(false);
+  });
 });

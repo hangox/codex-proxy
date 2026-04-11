@@ -124,6 +124,15 @@ describe("deriveStableConversationKey 稳定性", () => {
     expect(deriveStableConversationKey(empty)).toBeNull();
   });
 
+  it("input 缺失时返回 null，避免测试或异常请求触发 500", () => {
+    const req = {
+      model: "gpt-5.4",
+      stream: true as const,
+      store: false as const,
+    } as CodexResponsesRequest;
+    expect(deriveStableConversationKey(req)).toBeNull();
+  });
+
   it("没有 instructions 但有消息时仍能生成 key", () => {
     const req = makeReq({
       messages: [{ role: "user", text: "简单问题" }],

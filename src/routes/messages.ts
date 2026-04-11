@@ -21,6 +21,7 @@ import {
   handleProxyRequest,
   handleDirectRequest,
   type FormatAdapter,
+  type ResponseMetadata,
   type UsageHint,
 } from "./shared/proxy-handler.js";
 import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
@@ -44,10 +45,26 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
       ),
     format429: (msg) => makeError("rate_limit_error", msg),
     formatError: (_status, msg) => makeError("api_error", msg),
-    streamTranslator: (api, response, model, onUsage, onResponseId, _tupleSchema, usageHint?: UsageHint) =>
-      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking, usageHint),
-    collectTranslator: (api, response, model, _tupleSchema, usageHint?: UsageHint) =>
-      collectCodexToAnthropicResponse(api, response, model, wantThinking, usageHint),
+    streamTranslator: (
+      api,
+      response,
+      model,
+      onUsage,
+      onResponseId,
+      _tupleSchema,
+      usageHint?: UsageHint,
+      onResponseMetadata?: (metadata: ResponseMetadata) => void,
+    ) =>
+      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking, usageHint, onResponseMetadata),
+    collectTranslator: (
+      api,
+      response,
+      model,
+      _tupleSchema,
+      usageHint?: UsageHint,
+      onResponseMetadata?: (metadata: ResponseMetadata) => void,
+    ) =>
+      collectCodexToAnthropicResponse(api, response, model, wantThinking, usageHint, onResponseMetadata),
   };
 }
 

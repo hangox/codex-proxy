@@ -11,9 +11,10 @@ export function extractStableConversationSeed(
   req: CodexResponsesRequest,
 ): { instructions: string; firstUserText: string } {
   const instructions = (req.instructions ?? "").slice(0, 2000);
+  const input = Array.isArray(req.input) ? req.input : [];
 
   let firstUserText = "";
-  for (const item of req.input) {
+  for (const item of input) {
     if (!("role" in item) || item.role !== "user") continue;
     const content = item.content;
     if (typeof content === "string") {

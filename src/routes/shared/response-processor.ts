@@ -5,7 +5,7 @@
  */
 
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
-import type { FormatAdapter, UsageHint } from "./proxy-handler.js";
+import type { FormatAdapter, ResponseMetadata, UsageHint } from "./proxy-handler.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 
 /** Minimal subset of Hono's StreamingApi that we actually use. */
@@ -30,6 +30,7 @@ export async function streamResponse(
   tupleSchema?: Record<string, unknown> | null,
   onResponseId?: (id: string) => void,
   usageHint?: UsageHint,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<void> {
   try {
     for await (const chunk of adapter.streamTranslator(
@@ -40,6 +41,7 @@ export async function streamResponse(
       onResponseId ?? (() => {}),
       tupleSchema,
       usageHint,
+      onResponseMetadata,
     )) {
       try {
         await s.write(chunk);

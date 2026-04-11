@@ -18,9 +18,17 @@ files:
   - dist-electron/**/*
   - config/**/*
   - public/**/*
+  - node_modules/ws/**/*
+  - node_modules/https-proxy-agent/**/*
+  - node_modules/agent-base/**/*
+  - node_modules/debug/**/*
+  - node_modules/ms/**/*
   - electron/assets/**/*
   - package.json
-  - "!node_modules"
+  - "!node_modules/.bin/**/*"
+  - "!node_modules/esbuild/**/*"
+  - "!node_modules/@esbuild/**/*"
+  - "!node_modules/**/.codex-proxy-runtime-copy"
   - "!dist"
 
 # Static assets unpacked from asar (filesystem access at runtime)

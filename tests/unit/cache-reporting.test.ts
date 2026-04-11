@@ -61,6 +61,50 @@ function makeCodexResponse(opts: {
   return new Response(body, { status: 200 });
 }
 
+function makeToolCallCodexResponse(callId = "call_test_001"): Response {
+  const itemId = "fc_item_001";
+  const events = [
+    `event: response.created\ndata: ${JSON.stringify({
+      response: { id: "resp_tool_001" },
+    })}\n\n`,
+    `event: response.output_item.added\ndata: ${JSON.stringify({
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: itemId,
+        call_id: callId,
+        name: "test_tool",
+      },
+    })}\n\n`,
+    `event: response.function_call_arguments.done\ndata: ${JSON.stringify({
+      item_id: itemId,
+      arguments: "{\"ok\":true}",
+    })}\n\n`,
+    `event: response.completed\ndata: ${JSON.stringify({
+      response: {
+        id: "resp_tool_001",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 10,
+          input_tokens_details: {},
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    })}\n\n`,
+  ];
+
+  const body = new ReadableStream({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(new TextEncoder().encode(event));
+      }
+      controller.close();
+    },
+  });
+
+  return new Response(body, { status: 200 });
+}
+
 /**
  * 构造一个最小化的 CodexApi mock，parseStream 直接解析 SSE 文本。
  */
@@ -175,6 +219,23 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
     expect(response.usage.cache_read_input_tokens).toBe(15_240);
     expect(response.usage.cache_creation_input_tokens).toBe(3);
   });
+
+  it("工具调用响应会回传 call_id 元数据，供隐式续链接力校验", async () => {
+    const api = makeCodexApiMock();
+    const res = makeToolCallCodexResponse("call_for_collect");
+    const metadataCallIds: string[] = [];
+
+    await collectCodexToAnthropicResponse(
+      api,
+      res,
+      "gpt-5.4-mini",
+      false,
+      undefined,
+      (metadata) => metadataCallIds.push(...(metadata.functionCallIds ?? [])),
+    );
+
+    expect(metadataCallIds).toEqual(["call_for_collect"]);
+  });
 });
 
 // ── 流式路径测试 ──────────────────────────────────────────────────
@@ -268,5 +329,26 @@ describe("流式响应 streamCodexToAnthropic", () => {
 
     expect(delta.usage.cache_read_input_tokens).toBe(15_240);
     expect(delta.usage.cache_creation_input_tokens).toBe(3);
+  });
+
+  it("流式工具调用响应会回传 call_id 元数据", async () => {
+    const api = makeCodexApiMock();
+    const res = makeToolCallCodexResponse("call_for_stream");
+    const metadataCallIds: string[] = [];
+
+    await collectSSE(
+      streamCodexToAnthropic(
+        api,
+        res,
+        "gpt-5.4-mini",
+        undefined,
+        undefined,
+        false,
+        undefined,
+        (metadata) => metadataCallIds.push(...(metadata.functionCallIds ?? [])),
+      ),
+    );
+
+    expect(metadataCallIds).toEqual(["call_for_stream"]);
   });
 });

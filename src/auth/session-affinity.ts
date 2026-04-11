@@ -13,6 +13,7 @@ interface AffinityEntry {
   turnState?: string;
   instructions?: string;
   inputTokens?: number;
+  functionCallIds?: string[];
   createdAt: number;
 }
 
@@ -37,6 +38,7 @@ export class SessionAffinityMap {
     turnState?: string,
     instructions?: string,
     inputTokens?: number,
+    functionCallIds?: string[],
   ): void {
     this.map.set(responseId, {
       entryId,
@@ -44,6 +46,7 @@ export class SessionAffinityMap {
       turnState,
       instructions,
       inputTokens,
+      functionCallIds: functionCallIds ? [...functionCallIds] : undefined,
       createdAt: Date.now(),
     });
   }
@@ -96,6 +99,11 @@ export class SessionAffinityMap {
   lookupInputTokens(responseId: string): number | null {
     const entry = this.getEntry(responseId);
     return entry?.inputTokens ?? null;
+  }
+
+  lookupFunctionCallIds(responseId: string): string[] {
+    const entry = this.getEntry(responseId);
+    return entry?.functionCallIds ? [...entry.functionCallIds] : [];
   }
 
   private getEntry(responseId: string): AffinityEntry | null {

@@ -23,6 +23,10 @@ interface CacheUsageHint {
   reusedInputTokensUpperBound?: number;
 }
 
+interface ResponseMetadata {
+  functionCallIds?: string[];
+}
+
 function resolveCacheUsage(
   inputTokens: number,
   cachedTokens: number | undefined,
@@ -61,6 +65,7 @@ export async function* streamCodexToAnthropic(
   onResponseId?: (id: string) => void,
   wantThinking?: boolean,
   usageHint?: CacheUsageHint,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): AsyncGenerator<string> {
   const msgId = `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   let outputTokens = 0;
@@ -71,6 +76,7 @@ export async function* streamCodexToAnthropic(
   let contentIndex = 0;
   let textBlockStarted = false;
   let thinkingBlockStarted = false;
+  const functionCallIds = new Set<string>();
   const callIdsWithDeltas = new Set<string>();
 
   // Helper: close an open block and advance the index
@@ -170,6 +176,7 @@ export async function* streamCodexToAnthropic(
     if (evt.functionCallStart) {
       hasToolCalls = true;
       hasContent = true;
+      functionCallIds.add(evt.functionCallStart.callId);
 
       yield* closeThinkingIfOpen();
       yield* closeTextIfOpen();
@@ -199,6 +206,7 @@ export async function* streamCodexToAnthropic(
     }
 
     if (evt.functionCallDone) {
+      functionCallIds.add(evt.functionCallDone.callId);
       // Emit full arguments if no deltas were streamed
       if (!callIdsWithDeltas.has(evt.functionCallDone.callId)) {
         yield formatSSE("content_block_delta", {
@@ -268,6 +276,9 @@ export async function* streamCodexToAnthropic(
   // cache_creation_input_tokens: tokens not served from cache (will be cached for next turn)
   // cache_read_input_tokens: tokens served from cache (Codex cached_tokens)
   const { cacheReadTokens, cacheCreationTokens } = resolveCacheUsage(inputTokens, cachedTokens, usageHint);
+  if (functionCallIds.size > 0) {
+    onResponseMetadata?.({ functionCallIds: Array.from(functionCallIds) });
+  }
   yield formatSSE("message_delta", {
     type: "message_delta",
     delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn" },
@@ -295,6 +306,7 @@ export async function collectCodexToAnthropicResponse(
   model: string,
   wantThinking?: boolean,
   usageHint?: CacheUsageHint,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<{
   response: AnthropicMessagesResponse;
   usage: UsageInfo;
@@ -307,6 +319,7 @@ export async function collectCodexToAnthropicResponse(
   let outputTokens = 0;
   let cachedTokens: number | undefined;
   let responseId: string | null = null;
+  const functionCallIds = new Set<string>();
 
   // Collect tool calls
   const toolUseBlocks: AnthropicContentBlock[] = [];
@@ -324,6 +337,7 @@ export async function collectCodexToAnthropicResponse(
       cachedTokens = evt.usage.cached_tokens;
     }
     if (evt.functionCallDone) {
+      functionCallIds.add(evt.functionCallDone.callId);
       let parsedInput: Record<string, unknown> = {};
       try {
         parsedInput = JSON.parse(evt.functionCallDone.arguments) as Record<string, unknown>;
@@ -343,6 +357,9 @@ export async function collectCodexToAnthropicResponse(
   }
 
   const hasToolCalls = toolUseBlocks.length > 0;
+  if (functionCallIds.size > 0) {
+    onResponseMetadata?.({ functionCallIds: Array.from(functionCallIds) });
+  }
   const content: AnthropicContentBlock[] = [];
   // Thinking block comes first if requested and available
   if (wantThinking && fullReasoning) {

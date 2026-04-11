@@ -89,6 +89,16 @@ describe("SessionAffinityMap", () => {
     expect(map.lookupInputTokens("resp_missing")).toBeNull();
   });
 
+  it("looks up stored function call IDs for a response", () => {
+    map = new SessionAffinityMap();
+    map.record("resp_1", "entry_1", "conv_same", undefined, undefined, undefined, [
+      "call_a",
+      "call_b",
+    ]);
+    expect(map.lookupFunctionCallIds("resp_1")).toEqual(["call_a", "call_b"]);
+    expect(map.lookupFunctionCallIds("resp_missing")).toEqual([]);
+  });
+
   it("looks up stored instructions for a response", () => {
     map = new SessionAffinityMap();
     map.record("resp_1", "entry_1", "conv_same", undefined, "system prompt");

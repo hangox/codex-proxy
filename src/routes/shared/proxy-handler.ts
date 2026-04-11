@@ -47,6 +47,10 @@ export interface UsageHint {
   reusedInputTokensUpperBound?: number;
 }
 
+export interface ResponseMetadata {
+  functionCallIds?: string[];
+}
+
 /** Format-specific adapter provided by each route. */
 export interface FormatAdapter {
   tag: string;
@@ -62,6 +66,7 @@ export interface FormatAdapter {
     onResponseId: (id: string) => void,
     tupleSchema?: Record<string, unknown> | null,
     usageHint?: UsageHint,
+    onResponseMetadata?: (metadata: ResponseMetadata) => void,
   ) => AsyncGenerator<string>;
   collectTranslator: (
     api: UpstreamAdapter,
@@ -69,6 +74,7 @@ export interface FormatAdapter {
     model: string,
     tupleSchema?: Record<string, unknown> | null,
     usageHint?: UsageHint,
+    onResponseMetadata?: (metadata: ResponseMetadata) => void,
   ) => Promise<{
     response: unknown;
     usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number };
@@ -90,13 +96,22 @@ export function shouldActivateImplicitResume(opts: {
   acquiredEntryId: string;
   currentInstructions: string | null | undefined;
   storedInstructions: string | null;
+  requiredFunctionCallOutputIds?: string[];
+  storedFunctionCallIds?: string[];
 }): boolean {
+  const storedFunctionCallIds = new Set(opts.storedFunctionCallIds ?? []);
+  const requiredFunctionCallOutputIds = opts.requiredFunctionCallOutputIds ?? [];
+  const hasAllRequiredToolCalls = requiredFunctionCallOutputIds.every((callId) =>
+    storedFunctionCallIds.has(callId),
+  );
+
   return Boolean(
     opts.implicitPrevRespId &&
     opts.continuationInputStart < opts.inputLength &&
     opts.preferredEntryId &&
     opts.acquiredEntryId === opts.preferredEntryId &&
-    normalizeInstructions(opts.currentInstructions) === normalizeInstructions(opts.storedInstructions),
+    normalizeInstructions(opts.currentInstructions) === normalizeInstructions(opts.storedInstructions) &&
+    hasAllRequiredToolCalls,
   );
 }
 
@@ -113,6 +128,13 @@ function getContinuationInputStartIndex(input: CodexResponsesRequest["input"]): 
     }
   }
   return lastModelOutputIndex >= 0 ? lastModelOutputIndex + 1 : 0;
+}
+
+function getFunctionCallOutputIds(input: CodexResponsesRequest["input"]): string[] {
+  return input
+    .filter((item): item is { type: "function_call_output"; call_id: string; output: string } =>
+      !("role" in item) && item.type === "function_call_output")
+    .map((item) => item.call_id);
 }
 
 /** Sleep if this account had a recent request, to stagger upstream traffic. */
@@ -145,6 +167,9 @@ export async function handleProxyRequest(
   proxyPool?: ProxyPool,
 ): Promise<Response> {
   const affinityMap = getSessionAffinityMap();
+  if (!Array.isArray(req.codexRequest.input)) {
+    req.codexRequest.input = [];
+  }
   const originalInput = req.codexRequest.input;
   const originalPreviousResponseId = req.codexRequest.previous_response_id;
   const originalTurnState = req.codexRequest.turnState;
@@ -166,6 +191,16 @@ export async function handleProxyRequest(
   const implicitStoredInstructions = implicitPrevRespId
     ? affinityMap.lookupInstructions(implicitPrevRespId)
     : null;
+  const implicitContinuationInput = req.codexRequest.input.slice(continuationInputStart);
+  const requiredFunctionCallOutputIds = implicitPrevRespId
+    ? getFunctionCallOutputIds(implicitContinuationInput)
+    : [];
+  const implicitStoredFunctionCallIds = implicitPrevRespId
+    ? affinityMap.lookupFunctionCallIds(implicitPrevRespId)
+    : [];
+  const missingFunctionCallOutputIds = requiredFunctionCallOutputIds.filter(
+    (callId) => !implicitStoredFunctionCallIds.includes(callId),
+  );
 
   // Session affinity: prefer the account that created the previous response
   const preferredEntryId =
@@ -202,10 +237,18 @@ export async function handleProxyRequest(
   let modelRetried = false;
   let usageInfo: UsageInfo | undefined;
   let capturedResponseId: string | null = null;
+  const responseFunctionCallIds = new Set<string>();
   let activeUsageHint: UsageHint | undefined;
   let implicitResumeActive = false;
   // Idempotent-release guard: prevents double-release across retry branches
   const released = new Set<string>();
+
+  if (implicitPrevRespId && missingFunctionCallOutputIds.length > 0) {
+    console.warn(
+      `[${fmt.tag}] 隐式续链跳过：上一轮 response 未记录 tool_result 对应的 call_id=` +
+      missingFunctionCallOutputIds.slice(0, 3).join(","),
+    );
+  }
 
   if (shouldActivateImplicitResume({
     implicitPrevRespId,
@@ -215,6 +258,8 @@ export async function handleProxyRequest(
     acquiredEntryId: entryId,
     currentInstructions,
     storedInstructions: implicitStoredInstructions,
+    requiredFunctionCallOutputIds,
+    storedFunctionCallIds: implicitStoredFunctionCallIds,
   })) {
     req.codexRequest.previous_response_id = implicitPrevRespId!;
     req.codexRequest.useWebSocket = true;
@@ -320,6 +365,11 @@ export async function handleProxyRequest(
               req.tupleSchema,
               (id) => { capturedResponseId = id; },
               activeUsageHint,
+              (metadata) => {
+                for (const callId of metadata.functionCallIds ?? []) {
+                  responseFunctionCallIds.add(callId);
+                }
+              },
             );
           } finally {
             abortController.abort();
@@ -331,6 +381,7 @@ export async function handleProxyRequest(
                 upstreamTurnState,
                 req.codexRequest.instructions ?? undefined,
                 usageInfo?.input_tokens,
+                Array.from(responseFunctionCallIds),
               );
             }
             if (usageInfo) {
@@ -437,12 +488,18 @@ async function handleNonStreaming(
 
   for (let attempt = 1; ; attempt++) {
     try {
+      const responseFunctionCallIds = new Set<string>();
       const result = await fmt.collectTranslator(
         currentApi,
         currentRawResponse,
         req.model,
         req.tupleSchema,
         getUsageHint?.(),
+        (metadata) => {
+          for (const callId of metadata.functionCallIds ?? []) {
+            responseFunctionCallIds.add(callId);
+          }
+        },
       );
       if (result.responseId && affinityMap && conversationId) {
         affinityMap.record(
@@ -452,6 +509,7 @@ async function handleNonStreaming(
           turnState,
           req.codexRequest.instructions ?? undefined,
           result.usage.input_tokens,
+          Array.from(responseFunctionCallIds),
         );
       }
       if (result.usage) {

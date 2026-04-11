@@ -8,9 +8,9 @@
 import { timingSafeEqual } from "crypto";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { getConnInfo } from "@hono/node-server/conninfo";
 import { getConfig } from "../config.js";
 import { isLocalhostRequest } from "../utils/is-localhost.js";
+import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { parseSessionCookie } from "../utils/parse-cookie.js";
 import {
   createSession,
@@ -68,7 +68,7 @@ export function createDashboardAuthRoutes(): Hono {
   // POST /auth/dashboard-login — validate proxy_api_key and set session cookie
   app.post("/auth/dashboard-login", async (c) => {
     const config = getConfig();
-    const remoteAddr = getConnInfo(c).remote.address ?? "unknown";
+    const remoteAddr = getRealClientIp(c, config.server.trust_proxy) || "unknown";
 
     // Rate limit check
     if (!checkRateLimit(remoteAddr)) {
@@ -128,7 +128,7 @@ export function createDashboardAuthRoutes(): Hono {
     }
 
     // Localhost → no gate required
-    const remoteAddr = getConnInfo(c).remote.address ?? "";
+    const remoteAddr = getRealClientIp(c, config.server.trust_proxy);
     if (isLocalhostRequest(remoteAddr)) {
       return c.json({ required: false, authenticated: true });
     }

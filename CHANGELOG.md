@@ -8,7 +8,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `server.trust_proxy` config option (default `false`): when enabled, the real client IP is read from `X-Forwarded-For` / `X-Real-IP` headers instead of the raw socket address. Required for users who expose codex-proxy via tunnel software (frp, ngrok, etc.) so that dashboard auth works correctly — previously all tunnel traffic appeared as `127.0.0.1` and bypassed authentication even when `proxy_api_key` was set (#350)
+
 ### Fixed
+
+- `least_used` 策略不再将 `window_reset_at = null` 的新账号（从未收到限速响应头）视为 Infinity 而永久排在已有窗口账号之后；现在两者都进入 `request_count` 比较，新账号（0 请求）可正确轮转到，`__cf_bm` cookie 也能正常写入 (#342)
 
 - 默认不再发送 `reasoning.effort`：移除 `modelInfo.defaultReasoningEffort` 自动兜底，`default_reasoning_effort` 默认改为 `null`，彻底消除简单对话触发 medium 推理导致的 token 暴涨；Dashboard 新增 "Disabled (no reasoning)" 选项，用户可按需开启
 

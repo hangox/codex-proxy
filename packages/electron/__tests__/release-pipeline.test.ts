@@ -68,6 +68,13 @@ describe("release pipeline", () => {
     expect(existsSync(resolve(PKG_DIR, "dist-electron", "server.mjs"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "electron", "assets", "icon.png"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "package.json"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "node_modules", "ws", "package.json"))).toBe(true);
+    expect(
+      existsSync(resolve(PKG_DIR, "node_modules", "https-proxy-agent", "package.json")),
+    ).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "node_modules", "agent-base", "package.json"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "node_modules", "debug", "package.json"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "node_modules", "ms", "package.json"))).toBe(true);
   });
 
   it("version is consistent between root and electron package", () => {

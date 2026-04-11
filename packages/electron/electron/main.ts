@@ -124,7 +124,7 @@ app.on("ready", async () => {
       ? resolve(process.resourcesPath, "bin")
       : resolve(monorepoRoot, "bin");
 
-    // 2. Import the bundled backend server (single ESM file, no node_modules needed)
+    // 2. 导入后端 bundle；少数 external 运行时依赖随 app.asar/node_modules 打包。
     const serverUrl = pathToFileURL(resolve(appRoot, "dist-electron", "server.mjs")).href;
     const { setPaths, startServer, getConfig } = await import(serverUrl);
 

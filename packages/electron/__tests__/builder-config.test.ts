@@ -70,6 +70,16 @@ describe("electron-builder.yml", () => {
     expect(globs).toContain("public/**/*");
   });
 
+  it("files list includes external runtime dependencies", () => {
+    const globs = config.files.filter((f): f is string => typeof f === "string");
+    expect(globs).toContain("node_modules/ws/**/*");
+    expect(globs).toContain("node_modules/https-proxy-agent/**/*");
+    expect(globs).toContain("node_modules/agent-base/**/*");
+    expect(globs).toContain("node_modules/debug/**/*");
+    expect(globs).toContain("node_modules/ms/**/*");
+    expect(globs).not.toContain("!node_modules");
+  });
+
   it("root source directories for prepare-pack actually exist", () => {
     // prepare-pack.mjs copies these from root before packing
     const requiredDirs = ["config", "public", "bin"];

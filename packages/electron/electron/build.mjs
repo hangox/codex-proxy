@@ -3,10 +3,10 @@
  *
  * Output:
  *   dist-electron/main.cjs    — Electron main process (CJS)
- *   dist-electron/server.mjs  — Backend server bundle (ESM, all deps included)
+ *   dist-electron/server.mjs  — Backend server bundle (ESM)
  *
- * The server bundle eliminates the need for node_modules at runtime,
- * solving the ESM+asar module resolution issue.
+ * 大部分依赖会内联进 server bundle；`ws` 这类 CJS/ESM 互操作敏感包
+ * 保持 external，并在 prepare-pack 阶段复制到 app.asar/node_modules。
  */
 
 import { build } from "esbuild";
@@ -26,15 +26,14 @@ await build({
 console.log("[esbuild] dist-electron/main.cjs built successfully");
 
 // 2. Backend server → ESM (dynamically imported by main.cjs)
-//    All npm deps (hono, zod, js-yaml, etc.) are bundled in.
-//    Only Node builtins and optional native modules are external.
+//    大部分 npm 依赖会被打进单文件 bundle；WebSocket 相关运行时包保持 external。
 await build({
   entryPoints: ["src/electron-entry.ts"],
   bundle: true,
   platform: "node",
   format: "esm",
   outfile: "dist-electron/server.mjs",
-  external: [],
+  external: ["ws", "https-proxy-agent"],
   target: "node20",
   sourcemap: true,
   // Mark .node files as external (native addons)

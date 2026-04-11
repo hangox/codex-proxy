@@ -104,6 +104,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare Apple notarization key
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          if [ -z "${APPLE_API_KEY_BASE64:-}" ]; then
+            echo "APPLE_API_KEY_BASE64 is not configured; notarization will be skipped."
+            exit 0
+          fi
+
+          mkdir -p "$RUNNER_TEMP/apple-notary"
+          KEY_PATH="$RUNNER_TEMP/apple-notary/AuthKey_${APPLE_API_KEY_ID}.p8"
+          export KEY_PATH
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["KEY_PATH"]).write_bytes(base64.b64decode(os.environ["APPLE_API_KEY_BASE64"]))
+          PY
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+
       - name: Pack macOS (${{ matrix.arch }})
         if: matrix.platform == 'mac'
         working-directory: packages/electron
@@ -112,7 +137,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
@@ -195,13 +219,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare Apple notarization key
+        shell: bash
+        run: |
+          if [ -z "${APPLE_API_KEY_BASE64:-}" ]; then
+            echo "APPLE_API_KEY_BASE64 is not configured; notarization will be skipped."
+            exit 0
+          fi
+
+          mkdir -p "$RUNNER_TEMP/apple-notary"
+          KEY_PATH="$RUNNER_TEMP/apple-notary/AuthKey_${APPLE_API_KEY_ID}.p8"
+          export KEY_PATH
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["KEY_PATH"]).write_bytes(base64.b64decode(os.environ["APPLE_API_KEY_BASE64"]))
+          PY
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+
       - name: Pack (mac-x64)
         working-directory: packages/electron
         run: npx electron-builder --config electron-builder.yml --mac --x64 --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 

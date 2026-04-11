@@ -358,32 +358,41 @@ export async function handleProxyRequest(
 
         return stream(c, async (s) => {
           s.onAbort(() => abortController.abort());
+          const recordStreamAffinity = (): void => {
+            if (!capturedResponseId) return;
+            affinityMap.record(
+              capturedResponseId,
+              capturedEntryId,
+              chainConversationId,
+              upstreamTurnState,
+              req.codexRequest.instructions ?? undefined,
+              usageInfo?.input_tokens,
+              Array.from(responseFunctionCallIds),
+            );
+          };
           try {
             await streamResponse(
               s, capturedApi, rawResponse, req.model, fmt,
-              (u) => { usageInfo = u; },
+              (u) => {
+                usageInfo = u;
+                recordStreamAffinity();
+              },
               req.tupleSchema,
-              (id) => { capturedResponseId = id; },
+              (id) => {
+                capturedResponseId = id;
+                recordStreamAffinity();
+              },
               activeUsageHint,
               (metadata) => {
                 for (const callId of metadata.functionCallIds ?? []) {
                   responseFunctionCallIds.add(callId);
                 }
+                recordStreamAffinity();
               },
             );
           } finally {
             abortController.abort();
-            if (capturedResponseId) {
-              affinityMap.record(
-                capturedResponseId,
-                capturedEntryId,
-                chainConversationId,
-                upstreamTurnState,
-                req.codexRequest.instructions ?? undefined,
-                usageInfo?.input_tokens,
-                Array.from(responseFunctionCallIds),
-              );
-            }
+            recordStreamAffinity();
             if (usageInfo) {
               const uncached = usageInfo.cached_tokens
                 ? usageInfo.input_tokens - usageInfo.cached_tokens

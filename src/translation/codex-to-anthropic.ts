@@ -79,6 +79,12 @@ export async function* streamCodexToAnthropic(
   const functionCallIds = new Set<string>();
   const callIdsWithDeltas = new Set<string>();
 
+  const publishFunctionCallId = (callId: string): void => {
+    if (functionCallIds.has(callId)) return;
+    functionCallIds.add(callId);
+    onResponseMetadata?.({ functionCallIds: [callId] });
+  };
+
   // Helper: close an open block and advance the index
   function* closeBlock(blockType: "thinking" | "text"): Generator<string> {
     yield formatSSE("content_block_stop", {
@@ -176,7 +182,7 @@ export async function* streamCodexToAnthropic(
     if (evt.functionCallStart) {
       hasToolCalls = true;
       hasContent = true;
-      functionCallIds.add(evt.functionCallStart.callId);
+      publishFunctionCallId(evt.functionCallStart.callId);
 
       yield* closeThinkingIfOpen();
       yield* closeTextIfOpen();
@@ -206,7 +212,7 @@ export async function* streamCodexToAnthropic(
     }
 
     if (evt.functionCallDone) {
-      functionCallIds.add(evt.functionCallDone.callId);
+      publishFunctionCallId(evt.functionCallDone.callId);
       // Emit full arguments if no deltas were streamed
       if (!callIdsWithDeltas.has(evt.functionCallDone.callId)) {
         yield formatSSE("content_block_delta", {
@@ -276,9 +282,6 @@ export async function* streamCodexToAnthropic(
   // cache_creation_input_tokens: tokens not served from cache (will be cached for next turn)
   // cache_read_input_tokens: tokens served from cache (Codex cached_tokens)
   const { cacheReadTokens, cacheCreationTokens } = resolveCacheUsage(inputTokens, cachedTokens, usageHint);
-  if (functionCallIds.size > 0) {
-    onResponseMetadata?.({ functionCallIds: Array.from(functionCallIds) });
-  }
   yield formatSSE("message_delta", {
     type: "message_delta",
     delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn" },

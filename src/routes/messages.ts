@@ -109,7 +109,11 @@ export function createMessagesRoutes(
     const fmt = makeAnthropicFormat(wantThinking);
 
     if (upstreamRouter && !upstreamRouter.isCodexModel(req.model)) {
-      const directReq = { ...proxyReq, codexRequest: { ...codexRequest, model: req.model } };
+      const directReq = {
+        ...proxyReq,
+        model: req.model,
+        codexRequest: { ...codexRequest, model: req.model },
+      };
       return handleDirectRequest(c, upstreamRouter.resolve(req.model), directReq, fmt);
     }
 

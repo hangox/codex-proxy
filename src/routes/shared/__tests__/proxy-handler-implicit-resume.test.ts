@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { shouldActivateImplicitResume } from "../proxy-handler.js";
+import { PreviousResponseWebSocketError } from "../../../proxy/codex-api.js";
+import {
+  shouldActivateImplicitResume,
+  shouldReplayFullInputAfterImplicitResumeError,
+} from "../proxy-handler.js";
 
 describe("shouldActivateImplicitResume", () => {
   it("同账号且 system 未变化时允许隐式续链", () => {
@@ -64,5 +68,11 @@ describe("shouldActivateImplicitResume", () => {
       requiredFunctionCallOutputIds: ["call_missing"],
       storedFunctionCallIds: ["call_ok"],
     })).toBe(false);
+  });
+
+  it("隐式续链 WebSocket 失败时会触发完整历史重放", () => {
+    const err = new PreviousResponseWebSocketError("ws down");
+    expect(shouldReplayFullInputAfterImplicitResumeError(err, true)).toBe(true);
+    expect(shouldReplayFullInputAfterImplicitResumeError(err, false)).toBe(false);
   });
 });

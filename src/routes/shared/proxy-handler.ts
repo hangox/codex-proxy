@@ -12,7 +12,11 @@ import crypto from "crypto";
 import type { Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
 import { stream } from "hono/streaming";
-import { CodexApi, CodexApiError } from "../../proxy/codex-api.js";
+import {
+  CodexApi,
+  CodexApiError,
+  PreviousResponseWebSocketError,
+} from "../../proxy/codex-api.js";
 import type { CodexResponsesRequest } from "../../proxy/codex-api.js";
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
 import { EmptyResponseError } from "../../translation/codex-event-extractor.js";
@@ -113,6 +117,13 @@ export function shouldActivateImplicitResume(opts: {
     normalizeInstructions(opts.currentInstructions) === normalizeInstructions(opts.storedInstructions) &&
     hasAllRequiredToolCalls,
   );
+}
+
+export function shouldReplayFullInputAfterImplicitResumeError(
+  err: unknown,
+  implicitResumeActive: boolean,
+): err is PreviousResponseWebSocketError {
+  return implicitResumeActive && err instanceof PreviousResponseWebSocketError;
 }
 
 function getContinuationInputStartIndex(input: CodexResponsesRequest["input"]): number {
@@ -433,6 +444,14 @@ export async function handleProxyRequest(
       if (!(err instanceof CodexApiError)) {
         releaseAccount(accountPool, entryId, undefined, released);
         throw err;
+      }
+
+      if (shouldReplayFullInputAfterImplicitResumeError(err, implicitResumeActive)) {
+        console.warn(
+          `[${fmt.tag}] 隐式续链 WebSocket 失败，回退为完整历史重放：${err.causeMessage}`,
+        );
+        restoreImplicitResumeRequest();
+        continue;
       }
 
       const decision = handleCodexApiError(

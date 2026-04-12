@@ -99,6 +99,8 @@ import {
   applyBackendModelsForPlan,
 } from "../../models/model-store.js";
 import { extractUserProfile } from "../../auth/jwt-utils.js";
+import { ApiKeyPool } from "../../auth/api-key-pool.js";
+import type { ApiKeyPersistence, ApiKeyEntry } from "../../auth/api-key-pool.js";
 import {
   handleProxyRequest,
   type FormatAdapter,
@@ -107,6 +109,14 @@ import {
 import type { StatusCode } from "hono/utils/http-status";
 import { createModelRoutes } from "../models.js";
 import { triggerImmediateRefresh } from "../../models/model-fetcher.js";
+
+function createApiKeyMemoryPersistence(): ApiKeyPersistence {
+  let stored: ApiKeyEntry[] = [];
+  return {
+    load: () => [...stored],
+    save: (keys) => { stored = [...keys]; },
+  };
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -309,6 +319,52 @@ describe("plan routing through proxy handler", () => {
     expect(res.status).toBe(200);
     // Team account is used (only plan supporting gpt-5.4)
     expect(mockCreateResponse).toHaveBeenCalledOnce();
+  });
+});
+
+describe("GET /v1/models with runtime API keys", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadStaticModels();
+  });
+
+  it("includes active API key models in /v1/models", async () => {
+    const pool = new ApiKeyPool(createApiKeyMemoryPersistence());
+    pool.add({ provider: "openai", model: "gpt-5.4", apiKey: "k1" });
+    pool.add({ provider: "custom", model: "my-runtime-model", apiKey: "k2", baseUrl: "https://example.com/v1" });
+
+    const app = createModelRoutes(pool);
+    const res = await app.request("/v1/models");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.data.some((m: { id: string }) => m.id === "my-runtime-model")).toBe(true);
+    expect(body.data.some((m: { id: string }) => m.id === "gpt-5.4")).toBe(true);
+  });
+
+  it("excludes disabled API key models from /v1/models", async () => {
+    const pool = new ApiKeyPool(createApiKeyMemoryPersistence());
+    const added = pool.add({ provider: "custom", model: "disabled-runtime-model", apiKey: "k1", baseUrl: "https://example.com/v1" });
+    pool.setStatus(added.id, "disabled");
+
+    const app = createModelRoutes(pool);
+    const res = await app.request("/v1/models");
+    const body = await res.json();
+
+    expect(body.data.some((m: { id: string }) => m.id === "disabled-runtime-model")).toBe(false);
+  });
+
+  it("returns runtime API key model from /v1/models/:modelId", async () => {
+    const pool = new ApiKeyPool(createApiKeyMemoryPersistence());
+    pool.add({ provider: "custom", model: "my-runtime-model", apiKey: "k1", baseUrl: "https://example.com/v1" });
+
+    const app = createModelRoutes(pool);
+    const res = await app.request("/v1/models/my-runtime-model");
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.id).toBe("my-runtime-model");
+    expect(body.object).toBe("model");
   });
 });
 

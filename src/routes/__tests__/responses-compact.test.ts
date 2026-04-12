@@ -77,9 +77,11 @@ vi.mock("../../utils/retry.js", () => ({
   withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-// Mock handleProxyRequest (used by regular /v1/responses, not compact)
+// Mock shared proxy handler
+const mockHandleDirectRequest = vi.fn(async (c) => c.json({ ok: true }));
 vi.mock("../shared/proxy-handler.js", () => ({
   handleProxyRequest: vi.fn(async (c) => c.json({ ok: true })),
+  handleDirectRequest: (...args: unknown[]) => mockHandleDirectRequest(...args),
   staggerIfNeeded: vi.fn(async () => {}),
 }));
 
@@ -123,6 +125,7 @@ describe("POST /v1/responses/compact", () => {
     mockCompactResponse = { output: [{ role: "user", content: "compacted" }] };
     mockCompactThrow = null;
     mockConfig.server.proxy_api_key = null;
+    mockHandleDirectRequest.mockImplementation(async (c) => c.json({ ok: true }));
     loadStaticModels();
     pool = new AccountPool();
     pool.addAccount("test-token-1");
@@ -147,6 +150,38 @@ describe("POST /v1/responses/compact", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ output: [{ role: "user", content: "compacted" }] });
+  });
+
+  it("routes compact requests for runtime API-key models to direct upstream", async () => {
+    const upstreamRouter = {
+      isCodexModel: vi.fn((model: string) => model !== "my-custom-model"),
+      resolve: vi.fn(() => ({ tag: "custom-upstream" })),
+    };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+
+    const res = await app.request("/v1/responses/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "my-custom-model",
+        input: [{ role: "user", content: "Hello" }],
+        instructions: "You are helpful",
+        parallel_tool_calls: true,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockHandleDirectRequest).toHaveBeenCalledTimes(1);
+    const [, , directReq] = mockHandleDirectRequest.mock.calls[0] as [unknown, unknown, Record<string, unknown>];
+    expect(directReq.model).toBe("my-custom-model");
+    expect(directReq.isStreaming).toBe(false);
+    expect(directReq.codexRequest).toEqual({
+      model: "my-custom-model",
+      input: [{ role: "user", content: "Hello" }],
+      instructions: "You are helpful",
+      parallel_tool_calls: true,
+    });
+    expect(capturedCompactRequest).toBeNull();
   });
 
   it("sends correct CompactRequest format (no stream/store)", async () => {

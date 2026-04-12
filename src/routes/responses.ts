@@ -317,6 +317,7 @@ async function handleCompact(
   cookieJar: CookieJar | undefined,
   proxyPool: ProxyPool | undefined,
   body: Record<string, unknown>,
+  upstreamRouter?: UpstreamRouter,
 ): Promise<Response> {
   const rawModel = typeof body.model === "string" ? body.model : "codex";
   const parsed = parseModelName(rawModel);
@@ -353,6 +354,25 @@ async function handleCompact(
         ...(typeof body.text.format.strict === "boolean" ? { strict: body.text.format.strict } : {}),
       },
     };
+  }
+
+  if (upstreamRouter && !upstreamRouter.isCodexModel(rawModel)) {
+    const directReq = {
+      codexRequest: {
+        model: rawModel,
+        input: compactRequest.input,
+        instructions: compactRequest.instructions,
+        ...(compactRequest.tools ? { tools: compactRequest.tools } : {}),
+        ...(compactRequest.parallel_tool_calls !== undefined
+          ? { parallel_tool_calls: compactRequest.parallel_tool_calls }
+          : {}),
+        ...(compactRequest.reasoning ? { reasoning: compactRequest.reasoning } : {}),
+        ...(compactRequest.text ? { text: compactRequest.text } : {}),
+      },
+      model: rawModel,
+      isStreaming: false,
+    };
+    return handleDirectRequest(c, upstreamRouter.resolve(rawModel), directReq, PASSTHROUGH_FORMAT);
   }
 
   // Acquire account
@@ -587,7 +607,7 @@ export function createResponsesRoutes(
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
 
-    return handleCompact(c, accountPool, cookieJar, proxyPool, body);
+    return handleCompact(c, accountPool, cookieJar, proxyPool, body, upstreamRouter);
   };
 
   app.post("/v1/responses", responsesHandler);

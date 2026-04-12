@@ -161,7 +161,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.route("/", geminiRoutes);
   app.route("/", responsesRoutes);
   app.route("/", proxyRoutes);
-  app.route("/", createModelRoutes());
+  app.route("/", createModelRoutes(apiKeyPool));
   app.route("/", webRoutes);
 
   // Start server

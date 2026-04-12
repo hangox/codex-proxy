@@ -13,6 +13,7 @@ import {
 } from "../models/model-store.js";
 import { triggerImmediateRefresh } from "../models/model-fetcher.js";
 import { getConfig } from "../config.js";
+import type { ApiKeyPool } from "../auth/api-key-pool.js";
 
 // --- Routes ---
 
@@ -28,24 +29,34 @@ function toOpenAIModel(info: CodexModelInfo): OpenAIModel {
   };
 }
 
-export function createModelRoutes(): Hono {
+function toRuntimeOpenAIModel(id: string): OpenAIModel {
+  return {
+    id,
+    object: "model",
+    created: MODEL_CREATED_TIMESTAMP,
+    owned_by: "openai",
+  };
+}
+
+export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
   const app = new Hono();
 
   app.get("/v1/models", (c) => {
     const catalog = getModelCatalog();
     const aliases = getModelAliases();
+    const modelsById = new Map<string, OpenAIModel>();
 
-    // Include catalog models + aliases as separate entries
-    const models: OpenAIModel[] = catalog.map(toOpenAIModel);
-    for (const alias of Object.keys(aliases)) {
-      models.push({
-        id: alias,
-        object: "model",
-        created: MODEL_CREATED_TIMESTAMP,
-        owned_by: "openai",
-      });
+    for (const model of catalog) {
+      modelsById.set(model.id, toOpenAIModel(model));
     }
-    const response: OpenAIModelList = { object: "list", data: models };
+    for (const alias of Object.keys(aliases)) {
+      modelsById.set(alias, toRuntimeOpenAIModel(alias));
+    }
+    for (const modelId of apiKeyPool?.getActiveModels() ?? []) {
+      modelsById.set(modelId, toRuntimeOpenAIModel(modelId));
+    }
+
+    const response: OpenAIModelList = { object: "list", data: [...modelsById.values()] };
     return c.json(response);
   });
 
@@ -60,19 +71,16 @@ export function createModelRoutes(): Hono {
     const catalog = getModelCatalog();
     const aliases = getModelAliases();
 
-    // Try direct match
     const info = catalog.find((m) => m.id === modelId);
     if (info) return c.json(toOpenAIModel(info));
 
-    // Try alias
     const resolved = aliases[modelId];
     if (resolved) {
-      return c.json({
-        id: modelId,
-        object: "model",
-        created: MODEL_CREATED_TIMESTAMP,
-        owned_by: "openai",
-      });
+      return c.json(toRuntimeOpenAIModel(modelId));
+    }
+
+    if (apiKeyPool?.getActiveModels().includes(modelId)) {
+      return c.json(toRuntimeOpenAIModel(modelId));
     }
 
     c.status(404);

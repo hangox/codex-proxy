@@ -110,6 +110,11 @@ export class ApiKeyPool {
     return this.entries.filter((e) => e.provider === provider && e.status === "active");
   }
 
+  /** Get unique active model IDs from runtime-managed API keys. */
+  getActiveModels(): string[] {
+    return [...new Set(this.entries.filter((e) => e.status === "active").map((e) => e.model))];
+  }
+
   // ── Mutations ──────────────────────────────────────────────────
 
   add(input: {

@@ -126,3 +126,20 @@ export class CodexApiError extends Error {
     super(`Codex API error (${status}): ${detail}`);
   }
 }
+
+/** previous_response_id 只能通过 WebSocket 安全续链，失败后不能降级为 HTTP delta-only。 */
+export class PreviousResponseWebSocketError extends CodexApiError {
+  constructor(public readonly causeMessage: string) {
+    super(
+      0,
+      JSON.stringify({
+        error: {
+          message:
+            "WebSocket failed while using previous_response_id; HTTP SSE fallback would drop server-side history: " +
+            causeMessage,
+        },
+      }),
+    );
+    this.name = "PreviousResponseWebSocketError";
+  }
+}

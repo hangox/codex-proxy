@@ -118,12 +118,23 @@ export const AnthropicMessagesRequestSchema = z.object({
       AnthropicThinkingAdaptiveSchema,
     ])
     .optional(),
-  // Tool-related fields (accepted for compatibility, not forwarded to Codex)
-  tools: z.array(z.object({
-    name: z.string(),
-    description: z.string().optional(),
-    input_schema: z.record(z.unknown()).optional(),
-  }).passthrough()).optional(),
+  // Tool-related fields. Custom tools are converted to Codex function tools;
+  // Anthropic hosted web search is converted to Codex hosted web_search.
+  tools: z.array(z.union([
+    z.object({
+      name: z.string(),
+      description: z.string().optional(),
+      input_schema: z.record(z.unknown()).optional(),
+    }).passthrough(),
+    z.object({
+      type: z.enum(["web_search_20250305", "web_search"]),
+      name: z.string().optional(),
+      max_uses: z.number().int().positive().optional(),
+      allowed_domains: z.array(z.string()).optional(),
+      blocked_domains: z.array(z.string()).optional(),
+      user_location: z.record(z.unknown()).optional(),
+    }).passthrough(),
+  ])).optional(),
   tool_choice: z.union([
     z.object({ type: z.literal("auto") }),
     z.object({ type: z.literal("any") }),

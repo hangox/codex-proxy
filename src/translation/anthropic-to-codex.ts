@@ -14,6 +14,14 @@ import { buildInstructions, budgetToEffort } from "./shared-utils.js";
 import type { ModelConfigOverride } from "./shared-utils.js";
 import { anthropicToolsToCodex, anthropicToolChoiceToCodex } from "./tool-format.js";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasHostedWebSearchTool(tools: unknown[]): boolean {
+  return tools.some((tool) => isRecord(tool) && tool.type === "web_search");
+}
+
 /**
  * Map Anthropic thinking budget_tokens to Codex reasoning effort.
  */
@@ -181,6 +189,7 @@ function contentToInputItems(
 export function translateAnthropicToCodexRequest(
   req: AnthropicMessagesRequest,
   modelConfig?: ModelConfigOverride,
+  options?: { injectHostedWebSearch?: boolean },
 ): CodexResponsesRequest {
   // Extract system instructions
   let userInstructions: string;
@@ -221,6 +230,11 @@ export function translateAnthropicToCodexRequest(
 
   // Convert tools to Codex format
   const codexTools = req.tools?.length ? anthropicToolsToCodex(req.tools) : [];
+  // Claude Code 在非 Anthropic 官方 base URL 下会禁用自身 ToolSearch。
+  // 只有走本地 Codex 后端时才默认交给 Codex hosted web_search。
+  if (options?.injectHostedWebSearch === true && !hasHostedWebSearchTool(codexTools)) {
+    codexTools.push({ type: "web_search" });
+  }
   const codexToolChoice = anthropicToolChoiceToCodex(req.tool_choice);
 
   // Build request

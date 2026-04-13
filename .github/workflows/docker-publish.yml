@@ -3,6 +3,7 @@ name: Publish Docker Image
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   workflow_dispatch:
 
 concurrency:
@@ -21,7 +22,15 @@ jobs:
 
       - name: Read version from package.json
         id: version
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image name
+        id: image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY}"
+          echo "name=${IMAGE,,}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
 
@@ -36,10 +45,13 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/icebear0828/codex-proxy
+          images: ${{ steps.image.outputs.name }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=v${{ steps.version.outputs.version }}
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=tag
 
       - uses: docker/build-push-action@v6
         with:

@@ -140,6 +140,7 @@ curl http://localhost:8080/v1/chat/completions \
 - 自动完成 Chat Completions / Anthropic / Gemini ↔ Codex Responses API 双向协议转换
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）和 Gemini `responseMimeType`
 - **Function Calling** — 原生 `function_call` / `tool_calls` 支持（所有协议）
+- 若使用自定义 API Keys，则仅兼容 OpenAI（`/v1/chat/completions`）格式。
 
 ### 🔐 账号管理与智能轮换
 - **OAuth PKCE 登录** — 浏览器一键授权，无需手动复制 Token

@@ -29,6 +29,7 @@ import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
 import { handleCodexApiError } from "./shared/proxy-error-handler.js";
 import { withRetry } from "../utils/retry.js";
+import { extractCodexError } from "../types/codex-events.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -157,9 +158,9 @@ export async function collectPassthrough(
       }
 
       if (raw.event === "error" || raw.event === "response.failed") {
-        const err = isRecord(data.error) ? data.error : data;
+        const err = extractCodexError(data);
         throw new Error(
-          `Codex API error: ${typeof err.code === "string" ? err.code : "unknown"}: ${typeof err.message === "string" ? err.message : JSON.stringify(data)}`,
+          `Codex API error: ${err.code}: ${err.message}`,
         );
       }
     }

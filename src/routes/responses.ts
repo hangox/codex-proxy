@@ -238,8 +238,9 @@ const PASSTHROUGH_FORMAT: FormatAdapter = {
 function checkAuth(
   c: Context,
   accountPool: AccountPool,
+  allowUnauthenticated: boolean = false,
 ): Response | null {
-  if (!accountPool.isAuthenticated()) {
+  if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
     c.status(401);
     return c.json({
       type: "error",
@@ -356,12 +357,15 @@ async function handleCompact(
     };
   }
 
-  if (upstreamRouter && !upstreamRouter.isCodexModel(rawModel)) {
+  const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
+  if (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter") {
     const directReq = {
       codexRequest: {
         model: rawModel,
         input: compactRequest.input,
         instructions: compactRequest.instructions,
+        stream: true as const,
+        store: false as const,
         ...(compactRequest.tools ? { tools: compactRequest.tools } : {}),
         ...(compactRequest.parallel_tool_calls !== undefined
           ? { parallel_tool_calls: compactRequest.parallel_tool_calls }
@@ -372,7 +376,7 @@ async function handleCompact(
       model: rawModel,
       isStreaming: false,
     };
-    return handleDirectRequest(c, upstreamRouter.resolve(rawModel), directReq, PASSTHROUGH_FORMAT);
+    return handleDirectRequest(c, compactRouteMatch.adapter, directReq, PASSTHROUGH_FORMAT);
   }
 
   // Acquire account
@@ -465,9 +469,6 @@ export function createResponsesRoutes(
   // ── POST /v1/responses — streaming SSE passthrough ──
 
   const responsesHandler = async (c: Context) => {
-    const authErr = checkAuth(c, accountPool);
-    if (authErr) return authErr;
-
     let rawBody: unknown;
     try {
       rawBody = await c.req.json();
@@ -486,8 +487,13 @@ export function createResponsesRoutes(
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
 
-    const config = getConfig();
     const rawModel = typeof body.model === "string" ? body.model : "codex";
+    const routeMatch = upstreamRouter?.resolveMatch(rawModel);
+    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const authErr = checkAuth(c, accountPool, allowUnauthenticated);
+    if (authErr) return authErr;
+
+    const config = getConfig();
     const parsed = parseModelName(rawModel);
     const modelId = resolveModelId(parsed.modelId);
     const displayModel = buildDisplayModelName(parsed);
@@ -574,10 +580,10 @@ export function createResponsesRoutes(
       tupleSchema,
     };
 
-    if (upstreamRouter && !upstreamRouter.isCodexModel(rawModel)) {
+    if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       // Use raw model name so adapter's extractModelId can strip the provider prefix
       const directReq = { ...proxyReq, codexRequest: { ...codexRequest, model: rawModel } };
-      return handleDirectRequest(c, upstreamRouter.resolve(rawModel), directReq, PASSTHROUGH_FORMAT);
+      return handleDirectRequest(c, routeMatch.adapter, directReq, PASSTHROUGH_FORMAT);
     }
 
     return handleProxyRequest(c, accountPool, cookieJar, proxyReq, PASSTHROUGH_FORMAT, proxyPool);
@@ -586,9 +592,6 @@ export function createResponsesRoutes(
   // ── POST /v1/responses/compact — non-streaming JSON proxy ──
 
   const compactHandler = async (c: Context) => {
-    const authErr = checkAuth(c, accountPool);
-    if (authErr) return authErr;
-
     let rawBody: unknown;
     try {
       rawBody = await c.req.json();
@@ -606,6 +609,12 @@ export function createResponsesRoutes(
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
+
+    const rawModel = typeof body.model === "string" ? body.model : "codex";
+    const routeMatch = upstreamRouter?.resolveMatch(rawModel);
+    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const authErr = checkAuth(c, accountPool, allowUnauthenticated);
+    if (authErr) return authErr;
 
     return handleCompact(c, accountPool, cookieJar, proxyPool, body, upstreamRouter);
   };

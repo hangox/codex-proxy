@@ -58,8 +58,30 @@ export function createMessagesRoutes(
   const app = new Hono();
 
   app.post("/v1/messages", async (c) => {
+    // Parse request
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      c.status(400);
+      return c.json(
+        makeError("invalid_request_error", "Invalid JSON in request body"),
+      );
+    }
+    const parsed = AnthropicMessagesRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      c.status(400);
+      return c.json(
+        makeError("invalid_request_error", `Invalid request: ${parsed.error.message}`),
+      );
+    }
+    const req = parsed.data;
+
+    const routeMatch = upstreamRouter?.resolveMatch(req.model);
+    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+
     // Auth check
-    if (!accountPool.isAuthenticated()) {
+    if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
       c.status(401);
       return c.json(
         makeError("authentication_error", "Not authenticated. Please login first at /"),
@@ -80,25 +102,6 @@ export function createMessagesRoutes(
       }
     }
 
-    // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json(
-        makeError("invalid_request_error", "Invalid JSON in request body"),
-      );
-    }
-    const parsed = AnthropicMessagesRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      c.status(400);
-      return c.json(
-        makeError("invalid_request_error", `Invalid request: ${parsed.error.message}`),
-      );
-    }
-    const req = parsed.data;
-
     const codexRequest = translateAnthropicToCodexRequest(req);
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const proxyReq = {
@@ -108,13 +111,13 @@ export function createMessagesRoutes(
     };
     const fmt = makeAnthropicFormat(wantThinking);
 
-    if (upstreamRouter && !upstreamRouter.isCodexModel(req.model)) {
+    if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directReq = {
         ...proxyReq,
         model: req.model,
         codexRequest: { ...codexRequest, model: req.model },
       };
-      return handleDirectRequest(c, upstreamRouter.resolve(req.model), directReq, fmt);
+      return handleDirectRequest(c, routeMatch.adapter, directReq, fmt);
     }
 
     return handleProxyRequest(c, accountPool, cookieJar, proxyReq, fmt, proxyPool);

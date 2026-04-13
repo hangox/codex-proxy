@@ -12,15 +12,39 @@
 
 import type { UpstreamAdapter } from "./upstream-adapter.js";
 import type { ApiKeyPool, ApiKeyEntry } from "../auth/api-key-pool.js";
+import { getModelAliases, getModelInfo } from "../models/model-store.js";
 
 /** Factory that creates an UpstreamAdapter for a given ApiKeyEntry. */
 export type AdapterFactory = (entry: ApiKeyEntry) => UpstreamAdapter;
+
+export type UpstreamRouteMatch =
+  | { kind: "api-key"; adapter: UpstreamAdapter; entry: ApiKeyEntry }
+  | { kind: "adapter"; adapter: UpstreamAdapter }
+  | { kind: "codex"; adapter: UpstreamAdapter }
+  | { kind: "not-found" };
 
 export class UpstreamRouter {
   private apiKeyPool: ApiKeyPool | null = null;
   private adapterFactory: AdapterFactory | null = null;
   /** Cache: apiKeyEntry.id → adapter instance. Invalidated when key changes. */
   private dynamicAdapters = new Map<string, { apiKey: string; adapter: UpstreamAdapter }>();
+
+  private splitExplicitProvider(model: string): { tag: string; bareModel: string } | null {
+    const colonIdx = model.indexOf(":");
+    if (colonIdx <= 0) return null;
+    const tag = model.slice(0, colonIdx);
+    if (!this.adapters.has(tag)) return null;
+    return { tag, bareModel: model.slice(colonIdx + 1) };
+  }
+
+  private resolvePoolModelCandidates(model: string): string[] {
+    const explicitProvider = this.splitExplicitProvider(model);
+    return explicitProvider ? [model, explicitProvider.bareModel] : [model];
+  }
+
+  private getDefaultAdapter(): UpstreamAdapter | undefined {
+    return this.adapters.get(this.defaultTag) ?? this.adapters.values().next().value;
+  }
 
   constructor(
     private readonly adapters: Map<string, UpstreamAdapter>,
@@ -34,52 +58,75 @@ export class UpstreamRouter {
     this.adapterFactory = factory;
   }
 
-  resolve(model: string): UpstreamAdapter {
-    const defaultAdapter = this.adapters.get(this.defaultTag) ?? this.adapters.values().next().value!;
+  resolveMatch(model: string): UpstreamRouteMatch {
+    const defaultAdapter = this.getDefaultAdapter();
+    const explicitProvider = this.splitExplicitProvider(model);
 
-    // Strip provider prefix for pool lookup
-    const colonIdx = model.indexOf(":");
-    const bareModel = colonIdx > 0 ? model.slice(colonIdx + 1) : model;
-
-    // 0. ApiKeyPool — exact model match (highest priority)
     if (this.apiKeyPool && this.adapterFactory) {
-      const entries = this.apiKeyPool.getByModel(bareModel);
-      if (entries.length > 0) {
-        // Round-robin via least-recently-used
-        const entry = pickLeastRecentlyUsed(entries);
-        this.apiKeyPool.markUsed(entry.id);
-        return this.getOrCreateDynamicAdapter(entry);
+      for (const candidate of this.resolvePoolModelCandidates(model)) {
+        const entries = this.apiKeyPool.getByModel(candidate);
+        if (entries.length > 0) {
+          const entry = pickLeastRecentlyUsed(entries);
+          this.apiKeyPool.markUsed(entry.id);
+          return { kind: "api-key", adapter: this.getOrCreateDynamicAdapter(entry), entry };
+        }
       }
     }
 
-    // 1. Explicit provider prefix "provider:model-name"
-    if (colonIdx > 0) {
-      const tag = model.slice(0, colonIdx);
-      const adapter = this.adapters.get(tag);
-      if (adapter) return adapter;
+    if (explicitProvider) {
+      const adapter = this.adapters.get(explicitProvider.tag);
+      if (adapter) return { kind: "adapter", adapter };
     }
 
-    // 2. Explicit config routing table
     const routedTag = this.modelRouting[model];
     if (routedTag) {
       const adapter = this.adapters.get(routedTag);
-      if (adapter) return adapter;
+      if (adapter) return { kind: routedTag === this.defaultTag ? "codex" : "adapter", adapter };
     }
 
-    // 3. Built-in name pattern matching (only if the corresponding adapter exists)
     if (/^claude/i.test(model) && this.adapters.has("anthropic")) {
-      return this.adapters.get("anthropic")!;
+      return { kind: "adapter", adapter: this.adapters.get("anthropic")! };
     }
     if (/^gemini/i.test(model) && this.adapters.has("gemini")) {
-      return this.adapters.get("gemini")!;
+      return { kind: "adapter", adapter: this.adapters.get("gemini")! };
     }
 
-    // 4. Default adapter
-    return defaultAdapter;
+    if (this.isKnownCodexModel(model) && defaultAdapter?.tag === "codex") {
+      return { kind: "codex", adapter: defaultAdapter };
+    }
+
+    return { kind: "not-found" };
+  }
+
+  resolve(model: string): UpstreamAdapter {
+    const match = this.resolveMatch(model);
+    if (match.kind === "not-found") {
+      throw new Error(`No upstream adapter available for model \"${model}\"`);
+    }
+    return match.adapter;
   }
 
   isCodexModel(model: string): boolean {
-    return this.resolve(model).tag === "codex";
+    return this.resolveMatch(model).kind === "codex";
+  }
+
+  hasApiKeyModel(model: string): boolean {
+    return this.resolveMatch(model).kind === "api-key";
+  }
+
+  private isKnownCodexModel(model: string): boolean {
+    const aliases = getModelAliases();
+    const trimmed = model.trim();
+    if (aliases[trimmed]) return true;
+    if (getModelInfo(trimmed)) return true;
+    if (/^(gpt|o\d|codex)/i.test(trimmed)) return true;
+
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx > 0 && !this.adapters.has(trimmed.slice(0, colonIdx))) {
+      return getModelInfo(trimmed) !== undefined;
+    }
+
+    return false;
   }
 
   private getOrCreateDynamicAdapter(entry: ApiKeyEntry): UpstreamAdapter {

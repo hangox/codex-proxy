@@ -107,8 +107,28 @@ export function createGeminiRoutes(
       action === "streamGenerateContent" ||
       c.req.query("alt") === "sse";
 
+    // Parse request
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      c.status(400);
+      return c.json(makeError(400, "Invalid JSON in request body"));
+    }
+    const validationResult = GeminiGenerateContentRequestSchema.safeParse(body);
+    if (!validationResult.success) {
+      c.status(400);
+      return c.json(
+        makeError(400, `Invalid request: ${validationResult.error.message}`),
+      );
+    }
+    const req = validationResult.data;
+
+    const routeMatch = upstreamRouter?.resolveMatch(geminiModel);
+    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+
     // Auth check
-    if (!accountPool.isAuthenticated()) {
+    if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
       c.status(401);
       return c.json(
         makeError(401, "Not authenticated. Please login first at /"),
@@ -130,23 +150,6 @@ export function createGeminiRoutes(
       }
     }
 
-    // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json(makeError(400, "Invalid JSON in request body"));
-    }
-    const validationResult = GeminiGenerateContentRequestSchema.safeParse(body);
-    if (!validationResult.success) {
-      c.status(400);
-      return c.json(
-        makeError(400, `Invalid request: ${validationResult.error.message}`),
-      );
-    }
-    const req = validationResult.data;
-
     const { codexRequest, tupleSchema } = translateGeminiToCodexRequest(
       req,
       geminiModel,
@@ -163,9 +166,9 @@ export function createGeminiRoutes(
       tupleSchema,
     };
 
-    if (upstreamRouter && !upstreamRouter.isCodexModel(geminiModel)) {
+    if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directReq = { ...proxyReq, codexRequest: { ...codexRequest, model: geminiModel } };
-      return handleDirectRequest(c, upstreamRouter.resolve(geminiModel), directReq, GEMINI_FORMAT);
+      return handleDirectRequest(c, routeMatch.adapter, directReq, GEMINI_FORMAT);
     }
 
     return handleProxyRequest(c, accountPool, cookieJar, proxyReq, GEMINI_FORMAT, proxyPool);

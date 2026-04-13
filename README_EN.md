@@ -115,6 +115,7 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - Automatic bidirectional translation between all protocols and Codex Responses API
 - **Structured Outputs** — `response_format` (`json_object` / `json_schema`) and Gemini `responseMimeType`
 - **Function Calling** — native `function_call` / `tool_calls` across all protocols
+- If using custom API Keys, only the OpenAI (`/v1/chat/completions`) format is supported.
 
 ### 2. 🔐 Account Management & Smart Rotation
 - **OAuth PKCE login** — one-click browser auth

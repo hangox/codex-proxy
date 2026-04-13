@@ -123,8 +123,27 @@ export interface CodexOutputItemDoneEvent {
     call_id?: string;
     name?: string;
     arguments?: string;
+    content?: unknown[];
+    actions?: unknown[];
     [key: string]: unknown;
   };
+}
+
+export interface CodexOutputTextAnnotationAddedEvent {
+  type: "response.output_text.annotation.added";
+  outputIndex: number;
+  contentIndex: number;
+  annotationIndex: number;
+  annotation: Record<string, unknown>;
+}
+
+export interface CodexWebSearchCallEvent {
+  type:
+    | "response.web_search_call.in_progress"
+    | "response.web_search_call.searching"
+    | "response.web_search_call.completed";
+  outputIndex: number;
+  itemId: string;
 }
 
 export interface CodexIncompleteEvent {
@@ -165,6 +184,8 @@ export type TypedCodexEvent =
   | CodexCompletedEvent
   | CodexOutputItemAddedEvent
   | CodexOutputItemDoneEvent
+  | CodexOutputTextAnnotationAddedEvent
+  | CodexWebSearchCallEvent
   | CodexContentPartAddedEvent
   | CodexContentPartDoneEvent
   | CodexIncompleteEvent
@@ -291,6 +312,30 @@ export function parseCodexEvent(evt: CodexSSEEvent): TypedCodexEvent {
     case "response.output_text.done": {
       if (isRecord(data) && typeof data.text === "string") {
         return { type: "response.output_text.done", text: data.text };
+      }
+      return { type: "unknown", raw: data };
+    }
+    case "response.output_text.annotation.added": {
+      if (isRecord(data) && isRecord(data.annotation)) {
+        return {
+          type: "response.output_text.annotation.added",
+          outputIndex: typeof data.output_index === "number" ? data.output_index : 0,
+          contentIndex: typeof data.content_index === "number" ? data.content_index : 0,
+          annotationIndex: typeof data.annotation_index === "number" ? data.annotation_index : 0,
+          annotation: data.annotation,
+        };
+      }
+      return { type: "unknown", raw: data };
+    }
+    case "response.web_search_call.in_progress":
+    case "response.web_search_call.searching":
+    case "response.web_search_call.completed": {
+      if (isRecord(data)) {
+        return {
+          type: evt.event,
+          outputIndex: typeof data.output_index === "number" ? data.output_index : 0,
+          itemId: typeof data.item_id === "string" ? data.item_id : "",
+        };
       }
       return { type: "unknown", raw: data };
     }
@@ -429,6 +474,8 @@ export function parseCodexEvent(evt: CodexSSEEvent): TypedCodexEvent {
             ...(typeof data.item.call_id === "string" ? { call_id: data.item.call_id } : {}),
             ...(typeof data.item.name === "string" ? { name: data.item.name } : {}),
             ...(typeof data.item.arguments === "string" ? { arguments: data.item.arguments } : {}),
+            ...(Array.isArray(data.item.content) ? { content: data.item.content } : {}),
+            ...(Array.isArray(data.item.actions) ? { actions: data.item.actions } : {}),
           },
         };
       }

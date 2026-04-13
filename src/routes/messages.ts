@@ -126,7 +126,9 @@ export function createMessagesRoutes(
       c.req.header("x-claude-code-session-id"),
     );
 
-    const codexRequest = translateAnthropicToCodexRequest(req);
+    const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
+      injectHostedWebSearch: !allowUnauthenticated,
+    });
     codexRequest.useWebSocket = true;
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const proxyReq = {

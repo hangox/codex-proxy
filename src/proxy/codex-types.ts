@@ -16,7 +16,7 @@ export interface CodexResponsesRequest {
   /** Optional: tools available to the model */
   tools?: unknown[];
   /** Optional: tool choice strategy */
-  tool_choice?: string | { type: string; name: string };
+  tool_choice?: string | { type: string; name?: string };
   /** Optional: text output format (JSON mode / structured outputs) */
   text?: {
     format: {

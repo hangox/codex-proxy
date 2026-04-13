@@ -347,6 +347,32 @@ describe("translateAnthropicToCodexRequest", () => {
 
       expect(anthropicToolChoiceToCodex).toHaveBeenCalledWith(toolChoice);
     });
+
+    it("does not inject hosted web_search by default", () => {
+      const result = translateAnthropicToCodexRequest(makeRequest());
+
+      expect(result.tools).toEqual([]);
+    });
+
+    it("injects hosted web_search when explicitly requested", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest(),
+        undefined,
+        { injectHostedWebSearch: true },
+      );
+
+      expect(result.tools).toEqual([{ type: "web_search" }]);
+    });
+
+    it("does not duplicate hosted web_search when injected and already present", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ tools: [{ type: "web_search" as const, name: "web_search" }] }),
+        undefined,
+        { injectHostedWebSearch: true },
+      );
+
+      expect(result.tools).toEqual([{ type: "web_search", name: "web_search" }]);
+    });
   });
 
   // ── Fixed fields ─────────────────────────────────────────────────────

@@ -268,6 +268,30 @@ export async function handleProxyRequest(
         modelRetried = true;
       }
 
+      // Early exit: skip acquire overhead when no active accounts remain
+      if (!accountPool.hasAvailableAccounts(triedEntryIds)) {
+        if (!decision.releaseBeforeRetry) {
+          releaseAccount(accountPool, entryId, undefined, released);
+        }
+        const summary = accountPool.getPoolSummary();
+        const parts: string[] = [];
+        if (summary.rate_limited) parts.push(`${summary.rate_limited} rate-limited`);
+        if (summary.expired) parts.push(`${summary.expired} expired`);
+        if (summary.banned) parts.push(`${summary.banned} banned`);
+        if (summary.disabled) parts.push(`${summary.disabled} disabled`);
+        if (summary.quota_exhausted) parts.push(`${summary.quota_exhausted} quota-exhausted`);
+        if (summary.refreshing) parts.push(`${summary.refreshing} refreshing`);
+        const detail = parts.length
+          ? `All accounts exhausted (${parts.join(", ")}). ${decision.message}`
+          : `No accounts available. ${decision.message}`;
+        const status = decision.status as StatusCode;
+        c.status(status);
+        if (decision.useFormat429) {
+          return c.json(fmt.format429(detail));
+        }
+        return c.json(fmt.formatError(status, detail));
+      }
+
       const retry = acquireAccount(accountPool, req.codexRequest.model, triedEntryIds, fmt.tag);
       if (!retry) {
         const status = decision.status as StatusCode;

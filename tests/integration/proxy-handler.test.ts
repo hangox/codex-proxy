@@ -86,6 +86,11 @@ function createMockAccountPool(overrides: Record<string, unknown> = {}) {
     markStatus: vi.fn(),
     getEntry: vi.fn(() => ({ email: "test@test.com" })),
     recordEmptyResponse: vi.fn(),
+    hasAvailableAccounts: vi.fn(() => true),
+    getPoolSummary: vi.fn(() => ({
+      total: 1, active: 0, expired: 0, quota_exhausted: 0,
+      rate_limited: 0, refreshing: 0, disabled: 0, banned: 0,
+    })),
     ...overrides,
   };
 }
@@ -598,5 +603,64 @@ describe("proxy-handler integration", () => {
 
     expect(accountPool.markStatus).toHaveBeenCalledWith("e1", "expired");
     expect(accountPool.release).not.toHaveBeenCalled();
+  });
+
+  // 15. 429 with no available accounts → descriptive "all accounts exhausted" error
+  it("returns descriptive error when 429 and no accounts available for retry", async () => {
+    const body429 = JSON.stringify({
+      error: { type: "usage_limit_reached", message: "Limit reached" },
+    });
+    mockCreateResponse = () =>
+      Promise.reject(new CodexApiError(429, body429));
+
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn()
+        .mockReturnValueOnce({ entryId: "e1", token: "tok", accountId: "acc1" }),
+      hasAvailableAccounts: vi.fn(() => false),
+      getPoolSummary: vi.fn(() => ({
+        total: 2, active: 0, expired: 0, quota_exhausted: 0,
+        rate_limited: 2, refreshing: 0, disabled: 0, banned: 0,
+      })),
+    });
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(429);
+
+    const body = await res.json();
+    // format429 is used for 429 errors
+    expect(fmt.format429).toHaveBeenCalled();
+    const message = fmt.format429.mock.calls[0][0] as string;
+    expect(message).toContain("All accounts exhausted");
+    expect(message).toContain("2 rate-limited");
+  });
+
+  // 16. 403 ban with mixed pool states → descriptive error
+  it("returns descriptive error when banned and remaining accounts disabled/expired", async () => {
+    mockCreateResponse = () =>
+      Promise.reject(new CodexApiError(403, '{"detail": "Account suspended"}'));
+
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn()
+        .mockReturnValueOnce({ entryId: "e1", token: "tok", accountId: "acc1" }),
+      hasAvailableAccounts: vi.fn(() => false),
+      getPoolSummary: vi.fn(() => ({
+        total: 3, active: 0, expired: 1, quota_exhausted: 0,
+        rate_limited: 0, refreshing: 0, disabled: 1, banned: 1,
+      })),
+    });
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(403);
+
+    const body = await res.json();
+    expect(body.error).toBe("api_error");
+    expect(body.message).toContain("All accounts exhausted");
+    expect(body.message).toContain("1 expired");
+    expect(body.message).toContain("1 disabled");
+    expect(body.message).toContain("1 banned");
   });
 });

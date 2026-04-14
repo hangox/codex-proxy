@@ -1,6 +1,6 @@
 import { useMemo } from "preact/hooks";
-import { useT } from "../../shared/i18n/context";
-import { useLogs } from "../../shared/hooks/use-logs";
+import { useT } from "../../../shared/i18n/context";
+import { useLogs } from "../../../shared/hooks/use-logs";
 
 export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const t = useT();

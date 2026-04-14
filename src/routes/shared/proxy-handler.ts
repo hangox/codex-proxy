@@ -268,7 +268,8 @@ export async function handleProxyRequest(
         // ── Non-streaming path (with empty-response retry) ──
         return await handleNonStreaming(
           c, accountPool, cookieJar, req, fmt, proxyPool,
-          codexApi, rawResponse, entryId, abortController, released, affinityMap, conversationId, upstreamTurnState,
+          codexApi, rawResponse, entryId, abortController, released, requestId,
+          affinityMap, conversationId, upstreamTurnState,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Upstream request failed";
@@ -349,6 +350,7 @@ async function handleNonStreaming(
   initialEntryId: string,
   abortController: AbortController,
   released: Set<string>,
+  requestId: string,
   affinityMap?: SessionAffinityMap,
   conversationId?: string,
   turnState?: string,

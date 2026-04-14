@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { logStore, type LogDirection } from "../../logs/store.js";
 
-function parseDirection(raw: string | null): LogDirection | "all" {
+function parseDirection(raw: string | null | undefined): LogDirection | "all" {
   if (raw === "ingress" || raw === "egress" || raw === "all") return raw;
   return "all";
 }

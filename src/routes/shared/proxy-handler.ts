@@ -28,6 +28,8 @@ import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from ".
 import { getConfig } from "../../config.js";
 import { jitterInt } from "../../utils/jitter.js";
 import { getSessionAffinityMap, type SessionAffinityMap } from "../../auth/session-affinity.js";
+import { logStore } from "../../logs/store.js";
+import { randomUUID } from "crypto";
 
 /** Data prepared by each route after parsing and translating the request. */
 export interface ProxyRequest {
@@ -100,6 +102,7 @@ export async function handleProxyRequest(
   const affinityMap = getSessionAffinityMap();
   const prevRespId = req.codexRequest.previous_response_id;
   const preferredEntryId = prevRespId ? affinityMap.lookup(prevRespId) : null;
+  const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
 
   // Conversation ID: inherit from previous response chain, or generate new
   const conversationId = (prevRespId ? affinityMap.lookupConversationId(prevRespId) : null)
@@ -183,68 +186,114 @@ export async function handleProxyRequest(
         }
       };
 
-      const rawResponse = await withRetry(
-        () => codexApi.createResponse(req.codexRequest, abortController.signal, applyRateLimits),
-        { tag: fmt.tag },
-      );
-
-      // Capture upstream turn-state for sticky routing
-      const upstreamTurnState = rawResponse.headers.get("x-codex-turn-state") ?? undefined;
-
-      // Extract rate-limit quota from upstream response headers (passive collection — HTTP path)
-      const rl = parseRateLimitHeaders(rawResponse.headers);
-      if (rl) applyRateLimits(rl);
-
-      // ── Streaming path ──
-      if (req.isStreaming) {
-        c.header("Content-Type", "text/event-stream");
-        c.header("Cache-Control", "no-cache");
-        c.header("Connection", "keep-alive");
-
-        const capturedEntryId = entryId;
-        const capturedApi = codexApi;
-
-        return stream(c, async (s) => {
-          s.onAbort(() => abortController.abort());
-          try {
-            await streamResponse(
-              s, capturedApi, rawResponse, req.model, fmt,
-              (u) => { usageInfo = u; },
-              req.tupleSchema,
-              (id) => { capturedResponseId = id; },
-            );
-          } finally {
-            abortController.abort();
-            if (capturedResponseId) {
-              affinityMap.record(capturedResponseId, capturedEntryId, conversationId, upstreamTurnState);
-            }
-            if (usageInfo) {
-              const uncached = usageInfo.cached_tokens
-                ? usageInfo.input_tokens - usageInfo.cached_tokens
-                : usageInfo.input_tokens;
-              console.log(
-                `[${fmt.tag}] Account ${capturedEntryId} | Usage: in=${usageInfo.input_tokens}` +
-                (usageInfo.cached_tokens ? ` (cached=${usageInfo.cached_tokens} uncached=${uncached})` : "") +
-                ` out=${usageInfo.output_tokens}` +
-                (usageInfo.reasoning_tokens ? ` reasoning=${usageInfo.reasoning_tokens}` : ""),
-              );
-              if (usageInfo.input_tokens > 10_000) {
-                console.warn(
-                  `[${fmt.tag}] ⚠ High input token count: ${usageInfo.input_tokens} tokens` +
-                  (usageInfo.reasoning_tokens ? ` (reasoning=${usageInfo.reasoning_tokens})` : ""),
-                );
-              }
-            }
-            releaseAccount(accountPool, capturedEntryId, usageInfo, released);
-          }
+      const startMs = Date.now();
+      let status: number | null = null;
+      try {
+        const rawResponse = await withRetry(
+          () => codexApi.createResponse(req.codexRequest, abortController.signal, applyRateLimits),
+          { tag: fmt.tag },
+        );
+        status = rawResponse.status;
+        logStore.enqueue({
+          id: randomUUID(),
+          requestId,
+          direction: "egress",
+          ts: new Date().toISOString(),
+          method: "POST",
+          path: "/codex/responses",
+          model: req.model,
+          provider: "codex",
+          status,
+          latencyMs: Date.now() - startMs,
+          stream: req.isStreaming,
+          request: {
+            model: req.codexRequest.model,
+            stream: req.codexRequest.stream,
+            useWebSocket: req.codexRequest.useWebSocket,
+          },
         });
+
+        // Capture upstream turn-state for sticky routing
+        const upstreamTurnState = rawResponse.headers.get("x-codex-turn-state") ?? undefined;
+
+        // Extract rate-limit quota from upstream response headers (passive collection — HTTP path)
+        const rl = parseRateLimitHeaders(rawResponse.headers);
+        if (rl) applyRateLimits(rl);
+
+        // ── Streaming path ──
+        if (req.isStreaming) {
+          c.header("Content-Type", "text/event-stream");
+          c.header("Cache-Control", "no-cache");
+          c.header("Connection", "keep-alive");
+
+          const capturedEntryId = entryId;
+          const capturedApi = codexApi;
+
+          return stream(c, async (s) => {
+            s.onAbort(() => abortController.abort());
+            try {
+              await streamResponse(
+                s, capturedApi, rawResponse, req.model, fmt,
+                (u) => { usageInfo = u; },
+                req.tupleSchema,
+                (id) => { capturedResponseId = id; },
+              );
+            } finally {
+              abortController.abort();
+              if (capturedResponseId) {
+                affinityMap.record(capturedResponseId, capturedEntryId, conversationId, upstreamTurnState);
+              }
+              if (usageInfo) {
+                const uncached = usageInfo.cached_tokens
+                  ? usageInfo.input_tokens - usageInfo.cached_tokens
+                  : usageInfo.input_tokens;
+                console.log(
+                  `[${fmt.tag}] Account ${capturedEntryId} | Usage: in=${usageInfo.input_tokens}` +
+                  (usageInfo.cached_tokens ? ` (cached=${usageInfo.cached_tokens} uncached=${uncached})` : "") +
+                  ` out=${usageInfo.output_tokens}` +
+                  (usageInfo.reasoning_tokens ? ` reasoning=${usageInfo.reasoning_tokens}` : ""),
+                );
+                if (usageInfo.input_tokens > 10_000) {
+                  console.warn(
+                    `[${fmt.tag}] ⚠ High input token count: ${usageInfo.input_tokens} tokens` +
+                    (usageInfo.reasoning_tokens ? ` (reasoning=${usageInfo.reasoning_tokens})` : ""),
+                  );
+                }
+              }
+              releaseAccount(accountPool, capturedEntryId, usageInfo, released);
+            }
+          });
+        }
+
+        // ── Non-streaming path (with empty-response retry) ──
+        return await handleNonStreaming(
+          c, accountPool, cookieJar, req, fmt, proxyPool,
+          codexApi, rawResponse, entryId, abortController, released, affinityMap, conversationId, upstreamTurnState,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Upstream request failed";
+        logStore.enqueue({
+          id: randomUUID(),
+          requestId,
+          direction: "egress",
+          ts: new Date().toISOString(),
+          method: "POST",
+          path: "/codex/responses",
+          model: req.model,
+          provider: "codex",
+          status,
+          latencyMs: Date.now() - startMs,
+          stream: req.isStreaming,
+          error: msg,
+          request: {
+            model: req.codexRequest.model,
+            stream: req.codexRequest.stream,
+            useWebSocket: req.codexRequest.useWebSocket,
+          },
+        });
+        throw err;
       }
 
-      // ── Non-streaming path (with empty-response retry) ──
-      return await handleNonStreaming(
-        c, accountPool, cookieJar, req, fmt, proxyPool,
-        codexApi, rawResponse, entryId, abortController, released, affinityMap, conversationId, upstreamTurnState,
-      );
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
         releaseAccount(accountPool, entryId, undefined, released);
@@ -348,13 +397,52 @@ async function handleNonStreaming(
 
         currentEntryId = newAcquired.entryId;
         currentApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
+        const retryStartMs = Date.now();
         try {
           currentRawResponse = await withRetry(
             () => currentApi.createResponse(req.codexRequest, abortController.signal),
             { tag: fmt.tag },
           );
+          logStore.enqueue({
+            id: randomUUID(),
+            requestId,
+            direction: "egress",
+            ts: new Date().toISOString(),
+            method: "POST",
+            path: "/codex/responses",
+            model: req.model,
+            provider: "codex",
+            status: currentRawResponse.status,
+            latencyMs: Date.now() - retryStartMs,
+            stream: req.isStreaming,
+            request: {
+              model: req.codexRequest.model,
+              stream: req.codexRequest.stream,
+              useWebSocket: req.codexRequest.useWebSocket,
+            },
+          });
         } catch (retryErr) {
           releaseAccount(accountPool, currentEntryId, undefined, released);
+          const msg = retryErr instanceof Error ? retryErr.message : "Upstream request failed";
+          logStore.enqueue({
+            id: randomUUID(),
+            requestId,
+            direction: "egress",
+            ts: new Date().toISOString(),
+            method: "POST",
+            path: "/codex/responses",
+            model: req.model,
+            provider: "codex",
+            status: retryErr instanceof CodexApiError ? retryErr.status : null,
+            latencyMs: Date.now() - retryStartMs,
+            stream: req.isStreaming,
+            error: msg,
+            request: {
+              model: req.codexRequest.model,
+              stream: req.codexRequest.stream,
+              useWebSocket: req.codexRequest.useWebSocket,
+            },
+          });
           if (retryErr instanceof CodexApiError) {
             const code = toErrorStatus(retryErr.status);
             c.status(code);
@@ -398,12 +486,49 @@ export async function handleDirectRequest(
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
+  const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+  const startMs = Date.now();
   let rawResponse: Response;
   try {
     rawResponse = await upstream.createResponse(req.codexRequest, abortController.signal);
+    logStore.enqueue({
+      id: randomUUID(),
+      requestId,
+      direction: "egress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+      model: req.model,
+      provider: upstream.tag,
+      status: rawResponse.status,
+      latencyMs: Date.now() - startMs,
+      stream: req.isStreaming,
+      request: {
+        model: req.codexRequest.model,
+        stream: req.codexRequest.stream,
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Upstream request failed";
     const status = err instanceof CodexApiError ? err.status : 502;
+    logStore.enqueue({
+      id: randomUUID(),
+      requestId,
+      direction: "egress",
+      ts: new Date().toISOString(),
+      method: "POST",
+      path: "/v1/responses",
+      model: req.model,
+      provider: upstream.tag,
+      status,
+      latencyMs: Date.now() - startMs,
+      stream: req.isStreaming,
+      error: msg,
+      request: {
+        model: req.codexRequest.model,
+        stream: req.codexRequest.stream,
+      },
+    });
     if (status === 429) {
       c.status(429);
       return c.json(fmt.format429(msg));

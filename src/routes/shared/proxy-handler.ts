@@ -268,11 +268,10 @@ export async function handleProxyRequest(
         modelRetried = true;
       }
 
-      // Early exit: skip acquire overhead when no active accounts remain
+      // Early exit: skip acquire overhead when no active accounts remain.
+      // Lock already cleared by handleCodexApiError (markRateLimited/markStatus
+      // → clearLock), so no releaseAccount call needed — matches existing !retry path.
       if (!accountPool.hasAvailableAccounts(triedEntryIds)) {
-        if (!decision.releaseBeforeRetry) {
-          releaseAccount(accountPool, entryId, undefined, released);
-        }
         const summary = accountPool.getPoolSummary();
         const parts: string[] = [];
         if (summary.rate_limited) parts.push(`${summary.rate_limited} rate-limited`);

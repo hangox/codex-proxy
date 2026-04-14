@@ -63,7 +63,6 @@ describe("release pipeline", () => {
     // Verify all resources are in place for electron-builder
     expect(existsSync(resolve(PKG_DIR, "config", "default.yaml"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "public", "index.html"))).toBe(true);
-    expect(existsSync(resolve(PKG_DIR, "bin"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "dist-electron", "main.cjs"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "dist-electron", "server.mjs"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "electron", "assets", "icon.png"))).toBe(true);
@@ -101,6 +100,7 @@ describe("release pipeline", () => {
     expect(releaseYml).toContain("electron/build.mjs");
     expect(releaseYml).toContain("prepare-pack.mjs");
     expect(releaseYml).toContain("electron-builder");
+    expect(releaseYml).toContain("CSC_IDENTITY_AUTO_DISCOVERY: false");
   });
 
   it("bump-electron.yml workflow exists", () => {

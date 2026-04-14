@@ -24,7 +24,11 @@ interface BuilderConfig {
   asarUnpack: string[];
   extraResources: Array<{ from: string; to: string; filter?: string[] }>;
   win: { target: Array<{ target: string; arch: string[] }>; icon: string };
-  mac: { target: Array<{ target: string; arch: string[] }>; icon: string };
+  mac: {
+    target: Array<{ target: string; arch?: string[] }>;
+    icon: string;
+    identity: null;
+  };
   linux: { target: Array<{ target: string; arch: string[] }>; icon: string };
 }
 
@@ -55,6 +59,15 @@ describe("electron-builder.yml", () => {
     expect(config.linux.icon).toBe(config.mac.icon);
   });
 
+  it("macOS build produces unsigned DMG artifacts", () => {
+    expect(config.mac.identity).toBeNull();
+    expect(config.mac.target.some((target) => target.target === "dmg")).toBe(true);
+  });
+
+  it("macOS arch is selected by release workflow", () => {
+    expect(config.mac.target.every((target) => target.arch === undefined)).toBe(true);
+  });
+
   it("files list includes dist-electron bundle", () => {
     const hasDistElectron = config.files.some(
       (f) => typeof f === "string" && f.includes("dist-electron"),
@@ -82,7 +95,7 @@ describe("electron-builder.yml", () => {
 
   it("root source directories for prepare-pack actually exist", () => {
     // prepare-pack.mjs copies these from root before packing
-    const requiredDirs = ["config", "public", "bin"];
+    const requiredDirs = ["config", "public"];
     for (const dir of requiredDirs) {
       const rootPath = resolve(ROOT_DIR, dir);
       expect(
@@ -90,19 +103,6 @@ describe("electron-builder.yml", () => {
         `Root directory ${dir}/ should exist at ${rootPath}`,
       ).toBe(true);
     }
-  });
-
-  it("extraResources bin/ maps to correct root directory", () => {
-    const binResource = config.extraResources.find(
-      (r) => r.to === "bin/" || r.to === "bin",
-    );
-    expect(binResource).toBeDefined();
-    // bin/ is copied from root by prepare-pack before packing
-    const rootBin = resolve(ROOT_DIR, "bin");
-    expect(
-      existsSync(rootBin),
-      `Root bin/ directory should exist at ${rootBin}`,
-    ).toBe(true);
   });
 
   it("extraResources native/ maps to correct root directory", () => {

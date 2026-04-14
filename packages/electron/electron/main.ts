@@ -114,7 +114,7 @@ app.on("ready", async () => {
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
     const appRoot = app.getAppPath();
-    // In dev mode, resources (config/, public/, bin/) live at the monorepo root
+    // In dev mode, resources (config/, public/) live at the monorepo root
     const monorepoRoot = resolve(appRoot, "..", "..");
     const distRoot = app.isPackaged
       ? resolve(process.resourcesPath, "app.asar.unpacked")

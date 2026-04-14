@@ -208,6 +208,16 @@ describe("handleCodexApiError", () => {
       expect(result.action).toBe("respond");
       expect(result.status).toBe(502);
     });
+
+    it("includes errorBody from upstream in respond action", () => {
+      const upstreamBody = JSON.stringify({ error: { message: "invalid param", type: "invalid_request_error" } });
+      const err = new CodexApiError(422, upstreamBody);
+
+      const result = handleCodexApiError(err, pool as never, entryId, model, tag, false);
+
+      expect(result.action).toBe("respond");
+      expect(result.errorBody).toBe(upstreamBody);
+    });
   });
 
   // ── ErrorAction shape ──
@@ -234,6 +244,20 @@ describe("handleCodexApiError", () => {
       // Includes fallback info for when no retry account is available
       expect(result.status).toBe(429);
       expect(result.useFormat429).toBe(true);
+    });
+
+    it("retry actions do NOT include errorBody", () => {
+      const cases = [
+        new CodexApiError(429, JSON.stringify({ error: { resets_in_seconds: 30 } })),
+        new CodexApiError(402, JSON.stringify({ detail: "Payment required" })),
+        new CodexApiError(403, JSON.stringify({ error: { message: "banned" } })),
+        new CodexApiError(401, "token revoked"),
+      ];
+      for (const err of cases) {
+        const result = handleCodexApiError(err, pool as never, entryId, model, tag, false);
+        expect(result.action).toBe("retry");
+        expect("errorBody" in result).toBe(false);
+      }
     });
   });
 });

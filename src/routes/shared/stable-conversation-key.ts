@@ -21,7 +21,13 @@ export function extractStableConversationSeed(
       firstUserText = content;
     } else if (Array.isArray(content)) {
       firstUserText = content
-        .filter((part): part is { type: "input_text"; text: string } => part.type === "input_text")
+        .filter((part): part is { type: "input_text"; text: string } =>
+          !!part &&
+          typeof part === "object" &&
+          "type" in part &&
+          part.type === "input_text" &&
+          "text" in part &&
+          typeof part.text === "string")
         .map((part) => part.text)
         .join("");
     }

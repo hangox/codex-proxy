@@ -133,6 +133,32 @@ describe("deriveStableConversationKey 稳定性", () => {
     expect(deriveStableConversationKey(req)).toBeNull();
   });
 
+  it("input 缺失但有 instructions 时仍能生成 key", () => {
+    const req = {
+      model: "gpt-5.4",
+      instructions: "system prompt",
+      stream: true as const,
+      store: false as const,
+    } as CodexResponsesRequest;
+
+    expect(deriveStableConversationKey(req)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it("input 不是数组时不抛异常", () => {
+    const req = {
+      model: "gpt-5.4",
+      instructions: "system prompt",
+      input: "not-an-array",
+      stream: true as const,
+      store: false as const,
+    } as unknown as CodexResponsesRequest;
+
+    expect(() => deriveStableConversationKey(req)).not.toThrow();
+    expect(deriveStableConversationKey(req)).not.toBeNull();
+  });
+
   it("没有 instructions 但有消息时仍能生成 key", () => {
     const req = makeReq({
       messages: [{ role: "user", text: "简单问题" }],

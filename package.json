@@ -15,6 +15,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:local-chat": "vitest run tests/local-chat/chat-completions.test.ts",
     "dev": "tsx watch src/index.ts",
     "dev:web": "cd web && npx vite",
     "build:web": "cd web && npx vite build",

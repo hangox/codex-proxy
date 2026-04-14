@@ -12,7 +12,7 @@ artifactName: "Codex-Proxy-${version}-${os}-${arch}.${ext}"
 directories:
   output: release
 
-# Pre-pack script copies config/, public/, bin/ from monorepo root into
+# Pre-pack script copies config/ and public/ from monorepo root into
 # this directory. Paths here are relative to projectDir.
 files:
   - dist-electron/**/*
@@ -39,10 +39,6 @@ asarUnpack:
 
 # Extra resources (outside asar): cacert.pem, native addon
 extraResources:
-  - from: bin/
-    to: bin/
-    filter:
-      - "**/*"
   - from: native/
     to: native/
     filter:
@@ -63,11 +59,10 @@ nsis:
 mac:
   target:
     - target: dmg
-      arch: [arm64, x64]
     - target: zip
-      arch: [arm64, x64]
   icon: electron/assets/icon.png
   category: public.app-category.developer-tools
+  identity: null
   hardenedRuntime: true
   gatekeeperAssess: false
 

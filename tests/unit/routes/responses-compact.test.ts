@@ -14,7 +14,7 @@ import { Hono } from "hono";
 const mockConfig = {
   server: { proxy_api_key: null as string | null },
   model: {
-    default: "gpt-5.2-codex",
+    default: "gpt-5.3-codex",
     default_reasoning_effort: null,
     default_service_tier: null,
     suppress_desktop_directives: false,
@@ -210,7 +210,7 @@ describe("POST /v1/responses/compact", () => {
     expect(req).not.toHaveProperty("previous_response_id");
 
     // Must have compact fields
-    expect(req.model).toBe("gpt-5.2-codex");
+    expect(req.model).toBe("gpt-5.3-codex");
     expect(req.instructions).toBe("Be concise");
     expect(req.input).toEqual([{ role: "user", content: "Hello" }]);
     expect(req.tools).toEqual([{ type: "function", function: { name: "read_file" } }]);

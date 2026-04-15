@@ -52,7 +52,7 @@ interface MockWs extends EventEmitter {
 
 const BASE_REQUEST: WsCreateRequest = {
   type: "response.create",
-  model: "gpt-5.2-codex",
+  model: "gpt-5.3-codex",
   instructions: "test",
   input: [{ role: "user", content: "hello" }],
 };

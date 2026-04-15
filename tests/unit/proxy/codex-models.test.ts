@@ -30,7 +30,7 @@ describe("fetchModels", () => {
   it("returns models from first successful endpoint", async () => {
     const transport = createMockTransport(vi.fn(async () => ({
       status: 200,
-      body: JSON.stringify({ models: [{ slug: "gpt-5.4" }, { slug: "gpt-5.2-codex" }] }),
+      body: JSON.stringify({ models: [{ slug: "gpt-5.4" }, { slug: "gpt-5.3-codex" }] }),
     })));
 
     const result = await fetchModels({ ...headers }, null, apiConfig, transport);
@@ -72,7 +72,7 @@ describe("fetchModels", () => {
           },
           {
             category: "code",
-            models: [{ slug: "gpt-5.2-codex" }],
+            models: [{ slug: "gpt-5.3-codex" }],
           },
         ],
       }),
@@ -80,7 +80,7 @@ describe("fetchModels", () => {
 
     const result = await fetchModels({ ...headers }, null, apiConfig, transport);
     expect(result).toHaveLength(3);
-    expect(result!.map((m) => m.slug)).toEqual(["gpt-5.4", "gpt-5.2", "gpt-5.2-codex"]);
+    expect(result!.map((m) => m.slug)).toEqual(["gpt-5.4", "gpt-5.2", "gpt-5.3-codex"]);
   });
 
   it("handles sentinel/chat-requirements format", async () => {

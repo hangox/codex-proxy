@@ -79,7 +79,7 @@ describe("usage passthrough", () => {
   describe("OpenAI format", () => {
     it("cached_tokens in prompt_tokens_details", async () => {
       mockEvents = createUsageEvents({ cached_tokens: 30 });
-      const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.2-codex");
+      const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.3-codex");
 
       expect(response.usage.prompt_tokens).toBe(100);
       expect(response.usage.completion_tokens).toBe(50);
@@ -90,7 +90,7 @@ describe("usage passthrough", () => {
 
     it("reasoning_tokens in completion_tokens_details", async () => {
       mockEvents = createUsageEvents({ reasoning_tokens: 20 });
-      const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.2-codex");
+      const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.3-codex");
 
       expect(response.usage.completion_tokens_details).toBeDefined();
       expect(response.usage.completion_tokens_details!.reasoning_tokens).toBe(20);
@@ -98,7 +98,7 @@ describe("usage passthrough", () => {
 
     it("both cached and reasoning tokens together", async () => {
       mockEvents = createUsageEvents({ cached_tokens: 30, reasoning_tokens: 20 });
-      const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.2-codex");
+      const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.3-codex");
 
       expect(response.usage.prompt_tokens_details!.cached_tokens).toBe(30);
       expect(response.usage.completion_tokens_details!.reasoning_tokens).toBe(20);
@@ -109,7 +109,7 @@ describe("usage passthrough", () => {
     it("cache_read_input_tokens from cached_tokens", async () => {
       mockEvents = createUsageEvents({ cached_tokens: 30 });
       const { response } = await collectCodexToAnthropicResponse(
-        fakeCodexApi, fakeResponse, "gpt-5.2-codex",
+        fakeCodexApi, fakeResponse, "gpt-5.3-codex",
       );
 
       expect(response.usage.input_tokens).toBe(100);
@@ -122,7 +122,7 @@ describe("usage passthrough", () => {
     it("cachedContentTokenCount from cached_tokens", async () => {
       mockEvents = createUsageEvents({ cached_tokens: 30 });
       const { response } = await collectCodexToGeminiResponse(
-        fakeCodexApi, fakeResponse, "gpt-5.2-codex",
+        fakeCodexApi, fakeResponse, "gpt-5.3-codex",
       );
 
       expect(response.usageMetadata).toBeDefined();
@@ -138,7 +138,7 @@ describe("usage passthrough", () => {
       mockEvents = createUsageEvents({ cached_tokens: 30, reasoning_tokens: 20 });
       const chunks: string[] = [];
 
-      for await (const chunk of streamCodexToOpenAI(fakeCodexApi, fakeResponse, "gpt-5.2-codex")) {
+      for await (const chunk of streamCodexToOpenAI(fakeCodexApi, fakeResponse, "gpt-5.3-codex")) {
         chunks.push(chunk);
       }
 
@@ -166,13 +166,13 @@ describe("usage passthrough", () => {
       // Non-streaming
       mockEvents = [...events];
       const { response: collectResult } = await collectCodexResponse(
-        fakeCodexApi, fakeResponse, "gpt-5.2-codex",
+        fakeCodexApi, fakeResponse, "gpt-5.3-codex",
       );
 
       // Streaming
       mockEvents = [...events];
       const chunks: string[] = [];
-      for await (const chunk of streamCodexToOpenAI(fakeCodexApi, fakeResponse, "gpt-5.2-codex")) {
+      for await (const chunk of streamCodexToOpenAI(fakeCodexApi, fakeResponse, "gpt-5.3-codex")) {
         chunks.push(chunk);
       }
 

@@ -5,7 +5,7 @@
  *
  * Usage:
  *   npx tsx tests/test-account.ts user@example.com
- *   npx tsx tests/test-account.ts user@example.com gpt-5.2-codex
+ *   npx tsx tests/test-account.ts user@example.com gpt-5.3-codex
  *   npx tsx tests/test-account.ts --all              # test all accounts
  *   npx tsx tests/test-account.ts --all --parallel 5  # 5 concurrent
  */
@@ -43,7 +43,7 @@ const TIMEOUT_MS = 30_000;
 
 function parseArgs(): { emails: string[]; model: string; all: boolean; parallel: number } {
   const args = process.argv.slice(2);
-  let model = "gpt-5.2-codex";
+  let model = "gpt-5.3-codex";
   let all = false;
   let parallel = 3;
   const emails: string[] = [];

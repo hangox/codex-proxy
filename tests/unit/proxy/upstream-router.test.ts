@@ -62,7 +62,7 @@ describe("UpstreamRouter", () => {
   });
 
   it("routes known codex models to codex", () => {
-    expect(router.resolveMatch("gpt-5.2-codex").kind).toBe("codex");
+    expect(router.resolveMatch("gpt-5.3-codex").kind).toBe("codex");
     expect(router.resolveMatch("o3").kind).toBe("codex");
   });
 
@@ -71,7 +71,7 @@ describe("UpstreamRouter", () => {
   });
 
   it("isCodexModel returns true only for codex-routed models", () => {
-    expect(router.isCodexModel("gpt-5.2-codex")).toBe(true);
+    expect(router.isCodexModel("gpt-5.3-codex")).toBe(true);
     expect(router.isCodexModel("claude-3-5-sonnet-20241022")).toBe(false);
     expect(router.isCodexModel("openai:gpt-4o")).toBe(false);
   });
@@ -91,7 +91,7 @@ describe("UpstreamRouter", () => {
   });
 
   it("classifies known codex-looking models as codex", () => {
-    expect(router.resolveMatch("gpt-5.2-codex").kind).toBe("codex");
+    expect(router.resolveMatch("gpt-5.3-codex").kind).toBe("codex");
     expect(router.resolveMatch("o3").kind).toBe("codex");
   });
 

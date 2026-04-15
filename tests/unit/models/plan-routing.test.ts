@@ -58,21 +58,21 @@ describe("plan-based model routing", () => {
 
   it("applyBackendModelsForPlan registers models for a plan", () => {
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
     ]);
 
-    expect(getModelPlanTypes("gpt-5.2-codex")).toContain("free");
+    expect(getModelPlanTypes("gpt-5.3-codex")).toContain("free");
     expect(getModelPlanTypes("gpt-5.4")).toContain("free");
   });
 
   it("models available in both plans return both plan types", () => {
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
     ]);
     applyBackendModelsForPlan("team", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
       makeModel("gpt-5.4-mini"),
     ]);
@@ -81,17 +81,17 @@ describe("plan-based model routing", () => {
     expect(plans54).toContain("free");
     expect(plans54).toContain("team");
 
-    const plansCodex = getModelPlanTypes("gpt-5.2-codex");
+    const plansCodex = getModelPlanTypes("gpt-5.3-codex");
     expect(plansCodex).toContain("free");
     expect(plansCodex).toContain("team");
   });
 
   it("model only in team plan does not include free", () => {
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
     ]);
     applyBackendModelsForPlan("team", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
     ]);
 
@@ -102,31 +102,31 @@ describe("plan-based model routing", () => {
 
   it("replacing a plan's models updates the index", () => {
     // Initially free doesn't have gpt-5.4
-    applyBackendModelsForPlan("free", [makeModel("gpt-5.2-codex")]);
+    applyBackendModelsForPlan("free", [makeModel("gpt-5.3-codex")]);
     expect(getModelPlanTypes("gpt-5.4")).not.toContain("free");
 
     // Backend now returns gpt-5.4 for free → re-fetch
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
     ]);
     expect(getModelPlanTypes("gpt-5.4")).toContain("free");
   });
 
   it("unknown model returns empty plan list", () => {
-    applyBackendModelsForPlan("free", [makeModel("gpt-5.2-codex")]);
+    applyBackendModelsForPlan("free", [makeModel("gpt-5.3-codex")]);
     expect(getModelPlanTypes("nonexistent-model")).toEqual([]);
   });
 
   it("all backend model slugs are admitted (no client-side filtering)", () => {
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("research"),
       makeModel("gpt-5-2"),
       makeModel("some-internal-slug"),
     ]);
 
-    expect(getModelPlanTypes("gpt-5.2-codex")).toContain("free");
+    expect(getModelPlanTypes("gpt-5.3-codex")).toContain("free");
     expect(getModelPlanTypes("research")).toContain("free");
     expect(getModelPlanTypes("gpt-5-2")).toContain("free");
     expect(getModelPlanTypes("some-internal-slug")).toContain("free");
@@ -144,7 +144,7 @@ describe("plan-based model routing", () => {
 
   it("planMap in store info reflects current state", () => {
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
     ]);
     applyBackendModelsForPlan("team", [
@@ -152,9 +152,9 @@ describe("plan-based model routing", () => {
     ]);
 
     const info = getModelStoreDebug();
-    expect(info.planMap.free).toContain("gpt-5.2-codex");
+    expect(info.planMap.free).toContain("gpt-5.3-codex");
     expect(info.planMap.free).toContain("gpt-5.4");
     expect(info.planMap.team).toContain("gpt-5.4");
-    expect(info.planMap.team).not.toContain("gpt-5.2-codex");
+    expect(info.planMap.team).not.toContain("gpt-5.3-codex");
   });
 });

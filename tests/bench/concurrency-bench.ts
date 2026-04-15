@@ -11,7 +11,7 @@
 const N = parseInt(process.argv[2] || "3", 10);
 const BASE_URL = process.argv[3] || "http://localhost:8080";
 const API_KEY = "pwd";
-const MODEL = "gpt-5.2-codex";
+const MODEL = "gpt-5.3-codex";
 const TIMEOUT_MS = 120_000;
 
 interface TimingResult {

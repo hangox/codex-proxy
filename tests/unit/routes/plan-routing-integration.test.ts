@@ -14,7 +14,7 @@ import { Hono } from "hono";
 
 const mockConfig = {
   server: { proxy_api_key: null as string | null },
-  model: { default: "gpt-5.2-codex" },
+  model: { default: "gpt-5.3-codex" },
   auth: {
     jwt_token: undefined as string | undefined,
     rotation_strategy: "least_used" as const,
@@ -194,9 +194,9 @@ describe("plan routing through proxy handler", () => {
     pool.addAccount("free-token-1");
     applyBackendModelsForPlan("team", [
       makeModel("gpt-5.4"),
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
     ]);
-    applyBackendModelsForPlan("free", [makeModel("gpt-5.2-codex")]);
+    applyBackendModelsForPlan("free", [makeModel("gpt-5.3-codex")]);
 
     const app = new Hono();
     app.post("/test", (c) =>
@@ -219,11 +219,11 @@ describe("plan routing through proxy handler", () => {
     pool.addAccount("free-token-1");
     applyBackendModelsForPlan("free", [
       makeModel("gpt-5.4"),
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
     ]);
     applyBackendModelsForPlan("team", [
       makeModel("gpt-5.4"),
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
     ]);
 
     const app = new Hono();
@@ -244,7 +244,7 @@ describe("plan routing through proxy handler", () => {
   it("plan map update → previously blocked request now succeeds", async () => {
     pool.addAccount("free-token-1");
     applyBackendModelsForPlan("team", [makeModel("gpt-5.4")]);
-    applyBackendModelsForPlan("free", [makeModel("gpt-5.2-codex")]);
+    applyBackendModelsForPlan("free", [makeModel("gpt-5.3-codex")]);
 
     const app = new Hono();
     app.post("/test", (c) =>
@@ -263,7 +263,7 @@ describe("plan routing through proxy handler", () => {
 
     // Backend refresh: free now has gpt-5.4
     applyBackendModelsForPlan("free", [
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
       makeModel("gpt-5.4"),
     ]);
 
@@ -276,9 +276,9 @@ describe("plan routing through proxy handler", () => {
     pool.addAccount("team-token-1");
     applyBackendModelsForPlan("team", [
       makeModel("gpt-5.4"),
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
     ]);
-    applyBackendModelsForPlan("free", [makeModel("gpt-5.2-codex")]);
+    applyBackendModelsForPlan("free", [makeModel("gpt-5.3-codex")]);
 
     const app = new Hono();
     app.post("/test", (c) =>
@@ -300,9 +300,9 @@ describe("plan routing through proxy handler", () => {
     pool.addAccount("team-token-1");
     applyBackendModelsForPlan("team", [
       makeModel("gpt-5.4"),
-      makeModel("gpt-5.2-codex"),
+      makeModel("gpt-5.3-codex"),
     ]);
-    applyBackendModelsForPlan("free", [makeModel("gpt-5.2-codex")]);
+    applyBackendModelsForPlan("free", [makeModel("gpt-5.3-codex")]);
 
     const app = new Hono();
     app.post("/test", (c) =>

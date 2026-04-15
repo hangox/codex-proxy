@@ -88,12 +88,12 @@ async function sendCodexRequest(
 }
 
 describe("free account model access", () => {
-  it("free + gpt-5.2-codex (should succeed)", async () => {
+  it("free + gpt-5.3-codex (should succeed)", async () => {
     if (!ready || !freeAccount) return; // skip gracefully
-    const { status, body } = await sendCodexRequest(freeAccount, "gpt-5.2-codex");
-    console.log("[free + gpt-5.2-codex] status:", status, "body:", body.slice(0, 300));
+    const { status, body } = await sendCodexRequest(freeAccount, "gpt-5.3-codex");
+    console.log("[free + gpt-5.3-codex] status:", status, "body:", body.slice(0, 300));
     if (status === 401) {
-      console.warn("[free + gpt-5.2-codex] token expired, skipping");
+      console.warn("[free + gpt-5.3-codex] token expired, skipping");
       return;
     }
     expect(status).toBe(200);
@@ -120,10 +120,10 @@ describe("team account model access", () => {
     expect(status).toBe(200);
   }, 60_000);
 
-  it("team + gpt-5.2-codex (should succeed)", async () => {
+  it("team + gpt-5.3-codex (should succeed)", async () => {
     if (!ready || !teamAccount) return;
-    const { status, body } = await sendCodexRequest(teamAccount, "gpt-5.2-codex");
-    console.log("[team + gpt-5.2-codex] status:", status, "body:", body.slice(0, 300));
+    const { status, body } = await sendCodexRequest(teamAccount, "gpt-5.3-codex");
+    console.log("[team + gpt-5.3-codex] status:", status, "body:", body.slice(0, 300));
     expect(status).toBe(200);
   }, 60_000);
 });

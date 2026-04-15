@@ -10,6 +10,8 @@
 
 ### Added
 
+- `auth.tier_priority` 配置项：按 plan 类型排序账号选择优先级（如 `["plus", "pro", "team", "free"]`），高优先级 tier 的账号在有可用时始终优先选择；默认 `null`（不启用），与所有轮转策略兼容 (#348)
+
 - `server.trust_proxy` config option (default `false`): when enabled, the real client IP is read from `X-Forwarded-For` / `X-Real-IP` headers instead of the raw socket address. Required for users who expose codex-proxy via tunnel software (frp, ngrok, etc.) so that dashboard auth works correctly — previously all tunnel traffic appeared as `127.0.0.1` and bypassed authentication even when `proxy_api_key` was set (#350)
 
 ### Fixed

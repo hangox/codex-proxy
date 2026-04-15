@@ -22,7 +22,7 @@ export function toErrorStatus(status: number): StatusCode {
 }
 
 export type ErrorAction =
-  | { action: "respond"; status: number; message: string }
+  | { action: "respond"; status: number; message: string; errorBody?: string }
   | {
       action: "retry";
       releaseBeforeRetry?: boolean;
@@ -127,7 +127,7 @@ export function handleCodexApiError(
     return { action: "retry", status: 401, message: err.message };
   }
 
-  // 6. Generic error — return to client
+  // 6. Generic error — return to client (preserve original body for passthrough)
   const status = toErrorStatus(err.status);
-  return { action: "respond", status, message: err.message };
+  return { action: "respond", status, message: err.message, errorBody: err.body };
 }

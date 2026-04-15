@@ -245,6 +245,19 @@ export class AccountRegistry {
     return false;
   }
 
+  /** Fast check: is there at least one active account not in the exclude list? */
+  hasAvailableAccounts(excludeIds?: string[]): boolean {
+    const now = new Date();
+    const excludeSet = excludeIds?.length ? new Set(excludeIds) : null;
+    for (const entry of this.accounts.values()) {
+      this.refreshStatus(entry, now);
+      if (entry.status === "active" && (!excludeSet || !excludeSet.has(entry.id))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   getUserInfo(): { email?: string; accountId?: string; planType?: string } | null {
     const first = [...this.accounts.values()].find((a) => a.status === "active");
     if (!first) return null;

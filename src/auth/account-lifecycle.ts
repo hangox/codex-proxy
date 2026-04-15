@@ -100,6 +100,22 @@ export class AccountLifecycle {
       }
     }
 
+    // Tier-based filtering: when configured, restrict to the highest available tier
+    const tierPriority = getConfig().auth.tier_priority;
+    if (tierPriority && tierPriority.length > 0) {
+      const tierOrder = new Map(tierPriority.map((t, i) => [t, i]));
+      let bestIdx = Infinity;
+      for (const c of candidates) {
+        const idx = c.planType != null ? (tierOrder.get(c.planType) ?? Infinity) : Infinity;
+        if (idx < bestIdx) bestIdx = idx;
+      }
+      if (bestIdx < Infinity) {
+        const bestTier = tierPriority[bestIdx];
+        const tierFiltered = candidates.filter((c) => c.planType === bestTier);
+        if (tierFiltered.length > 0) candidates = tierFiltered;
+      }
+    }
+
     // Session affinity: prefer the account that owns the conversation
     let selected: AccountEntry;
     if (options?.preferredEntryId) {

@@ -9,6 +9,9 @@ import { requestId } from "./middleware/request-id.js";
 import { logger } from "./middleware/logger.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { dashboardAuth } from "./middleware/dashboard-auth.js";
+import { logCapture } from "./middleware/log-capture.js";
+
+import type { UpstreamAdapter } from "./proxy/upstream-adapter.js";
 import { createAuthRoutes } from "./routes/auth.js";
 import { createAccountRoutes } from "./routes/accounts.js";
 import { createChatRoutes } from "./routes/chat.js";
@@ -97,6 +100,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.use("*", logger);
   app.use("*", errorHandler);
   app.use("*", dashboardAuth);
+  app.use("*", logCapture);
 
   // Build upstream router from config
   const cfg = getConfig();

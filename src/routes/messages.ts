@@ -115,7 +115,7 @@ export function createMessagesRoutes(
     };
     const fmt = makeAnthropicFormat(wantThinking);
 
-    const requestId = (c.req.header("x-request-id") ?? randomUUID().slice(0, 8));
+    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
       requestId,
       direction: "ingress",

@@ -1,12 +1,11 @@
-import { useState, useEffect, useCallback } from "preact/hooks";
+import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 
-export type LogRecordDirection = "ingress" | "egress";
-export type LogFilterDirection = LogRecordDirection | "all";
+export type LogFilterDirection = "ingress" | "egress" | "all";
 
 export interface LogRecord {
   id: string;
   requestId: string;
-  direction: LogRecordDirection;
+  direction: "ingress" | "egress";
   ts: string;
   method: string;
   path: string;
@@ -36,14 +35,17 @@ export function useLogs(refreshIntervalMs = 1500) {
   const [loading, setLoading] = useState(true);
   const [state, setState] = useState<LogState | null>(null);
   const [selected, setSelected] = useState<LogRecord | null>(null);
+  const [page, setPage] = useState(0);
+  const pageSize = 50;
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (nextPage = page) => {
     try {
       const params = new URLSearchParams({
         direction,
         search: search.trim(),
-        limit: "50",
-        offset: "0",
+        limit: String(pageSize),
+        offset: String(nextPage * pageSize),
       });
       const resp = await fetch(`/admin/logs?${params.toString()}`);
       if (resp.ok) {
@@ -53,7 +55,7 @@ export function useLogs(refreshIntervalMs = 1500) {
       }
     } catch { /* ignore */ }
     setLoading(false);
-  }, [direction, search]);
+  }, [direction, search, page, pageSize]);
 
   const loadState = useCallback(async () => {
     try {
@@ -62,16 +64,36 @@ export function useLogs(refreshIntervalMs = 1500) {
     } catch { /* ignore */ }
   }, []);
 
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     setLoading(true);
-    load();
+    load(page);
     loadState();
-    const id = setInterval(() => {
-      load();
-      loadState();
-    }, refreshIntervalMs);
-    return () => clearInterval(id);
-  }, [load, loadState, refreshIntervalMs]);
+    clearTimer();
+
+    const tick = () => {
+      if (!document.hidden) {
+        load(page);
+        loadState();
+      }
+    };
+
+    timerRef.current = setInterval(tick, refreshIntervalMs);
+    const onVisibility = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [load, loadState, page, refreshIntervalMs, clearTimer]);
 
   const setLogState = useCallback(async (patch: Partial<Pick<LogState, "enabled" | "paused">>) => {
     const resp = await fetch("/admin/logs/state", {
@@ -89,6 +111,13 @@ export function useLogs(refreshIntervalMs = 1500) {
     } catch { /* ignore */ }
   }, []);
 
+  const nextPage = useCallback(() => setPage((p) => p + 1), []);
+  const prevPage = useCallback(() => setPage((p) => Math.max(0, p - 1)), []);
+
+  useEffect(() => {
+    load(page);
+  }, [page, load]);
+
   return {
     direction,
     setDirection,
@@ -101,5 +130,11 @@ export function useLogs(refreshIntervalMs = 1500) {
     setLogState,
     selected,
     selectLog,
+    page,
+    pageSize,
+    nextPage,
+    prevPage,
+    hasNext: (page + 1) * pageSize < total,
+    hasPrev: page > 0,
   };
 }

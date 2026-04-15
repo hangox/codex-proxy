@@ -7,11 +7,15 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const logs = useLogs();
 
   const list = useMemo(() => {
-    return [...logs.records].reverse().map((r) => ({
+    return logs.records.map((r) => ({
       ...r,
       time: new Date(r.ts).toLocaleTimeString(),
     }));
   }, [logs.records]);
+
+  const pageStart = logs.total === 0 ? 0 : logs.page * logs.pageSize + 1;
+  const pageEnd = logs.total === 0 ? 0 : Math.min(logs.total, (logs.page + 1) * logs.pageSize);
+  const pageInfo = `${pageStart}-${pageEnd}`;
 
   return (
     <div class={`flex flex-col gap-4 ${embedded ? "" : "p-6"}`}>
@@ -90,15 +94,17 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
             </div>
             <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500">
               <button
-                class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark"
-                disabled={true}
+                class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
+                disabled={!logs.hasPrev}
+                onClick={logs.prevPage}
               >
                 Prev
               </button>
-              <span>{logs.total} total</span>
+              <span>{logs.total} total · {pageInfo}</span>
               <button
-                class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark"
-                disabled={true}
+                class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
+                disabled={!logs.hasNext}
+                onClick={logs.nextPage}
               >
                 Next
               </button>

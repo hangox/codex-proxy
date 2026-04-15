@@ -41,8 +41,12 @@
         <sub>☕ 赞赏</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat-group.jpg" width="180" alt="微信交流群"><br>
-        <sub>💬 交流群</sub>
+        <img src="./.github/assets/wechat.png" width="180" alt="微信交流群"><br>
+        <sub>💬 微信群</sub>
+      </td>
+      <td align="center">
+        <img src="./.github/assets/tgimage.png" width="180" alt="Telegram 群"><br>
+        <sub>💬 Telegram</sub>
       </td>
     </tr>
   </table>
@@ -228,6 +232,8 @@ curl http://localhost:8080/v1/chat/completions \
 > **后缀**：任意模型名后追加 `-fast` 启用 Fast 模式，`-high`/`-low` 切换推理等级。例如：`codex-fast`、`gpt-5.2-codex-high-fast`。
 >
 > **Plan Routing**：不同 plan（free/plus/team/business）的账号自动路由到各自支持的模型。模型列表由后端动态获取，自动同步。
+>
+> **前端模型选择 ≠ 配置文件**：Dashboard 中切换模型只影响前端展示和 API 示例中的模型名，**不会修改** `config/default.yaml` 或 `data/local.yaml` 中的 `model.default`。实际使用哪个模型取决于客户端请求中的 `model` 字段（如 Cursor、Claude Code 等自行指定），配置文件中的 `model.default` 仅在客户端未指定模型时作为兜底。
 
 ## 🔗 客户端接入
 
@@ -549,15 +555,16 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 ### [Unreleased]
 
 **Added**
+- `auth.tier_priority` 配置项：按 plan 类型排序账号选择优先级（如 `["plus", "pro", "team", "free"]`），高优先级 tier 的账号在有可用时始终优先选择；默认 `null`（不启用），与所有轮转策略兼容 (#348)
 - `server.trust_proxy` config option (default `false`): when enabled, the real client IP is read from `X-Forwarded-For` / `X-Real-IP` headers instead of the raw socket address. Required for users who expose codex-proxy via tunnel software (frp, ngrok, etc.) so that dashboard auth works correctly — previously all tunnel traffic appeared as `127.0.0.1` and bypassed authentication even when `proxy_api_key` was set (#350)
 **Changed**
 - Dashboard session 默认 TTL 从 1 小时延长至 24 小时
 **Fixed**
+- 无可用账号时不再执行无意义的重试，直接返回描述性错误信息（含各状态账号计数：rate-limited / expired / banned / disabled）(#362)
+- API Key 路由（OpenAI/Anthropic/Gemini）上游返回错误时，透传原始 JSON 响应体，而非包装为代理自有格式；Codex 账号路由仍使用代理格式 (#367)
 - `least_used` 策略不再将 `window_reset_at = null` 的新账号（从未收到限速响应头）视为 Infinity 而永久排在已有窗口账号之后；现在两者都进入 `request_count` 比较，新账号（0 请求）可正确轮转到，`__cf_bm` cookie 也能正常写入 (#342)
 - 默认不再发送 `reasoning.effort`：移除 `modelInfo.defaultReasoningEffort` 自动兜底，`default_reasoning_effort` 默认改为 `null`，彻底消除简单对话触发 medium 推理导致的 token 暴涨；Dashboard 新增 "Disabled (no reasoning)" 选项，用户可按需开启
 - 上游 401 时立即触发 RT→AT 刷新，而非等待定时器（修复 token 被提前作废后账号一直显示 expired 的问题）
-- Dashboard session 滑动窗口续期：每次有效请求自动延长过期时间，不再固定 TTL 后断连
-- Dashboard 前端全局 401 拦截：session 过期后自动跳回登录页，不再卡死在空白页
 - ...（[查看全部](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24

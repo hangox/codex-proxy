@@ -31,7 +31,7 @@ vi.mock("@src/config.js", () => ({
       rate_limit_backoff_seconds: 60,
     },
     model: {
-      default: "gpt-5.2-codex",
+      default: "gpt-5.3-codex",
       default_reasoning_effort: null,
       default_service_tier: null,
     },
@@ -72,7 +72,7 @@ describe("account-routing integration", () => {
         rate_limit_backoff_seconds: 60,
       },
       model: {
-        default: "gpt-5.2-codex",
+        default: "gpt-5.3-codex",
         default_reasoning_effort: null,
         default_service_tier: null,
       },
@@ -123,7 +123,7 @@ describe("account-routing integration", () => {
     vi.mocked(getModelPlanTypes).mockReturnValue([]);
 
     // When no plan constraint, any account is a candidate
-    const acquired = pool.acquire({ model: "gpt-5.2-codex" });
+    const acquired = pool.acquire({ model: "gpt-5.3-codex" });
     expect(acquired).not.toBeNull();
   });
 
@@ -165,7 +165,7 @@ describe("account-routing integration", () => {
         rate_limit_backoff_seconds: 60,
       },
       model: {
-        default: "gpt-5.2-codex",
+        default: "gpt-5.3-codex",
         default_reasoning_effort: null,
         default_service_tier: null,
       },

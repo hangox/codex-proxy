@@ -19,6 +19,7 @@ const mockConfig = {
   },
   auth: { rotation_strategy: "least_used", refresh_enabled: true, refresh_margin_seconds: 300, refresh_concurrency: 2, max_concurrent_per_account: 3 as number | null, request_interval_ms: 50 as number | null },
   update: { auto_update: true },
+  logs: { enabled: false, capacity: 2000, capture_body: false },
 };
 
 vi.mock("../../config.js", () => ({

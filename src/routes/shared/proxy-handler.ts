@@ -28,7 +28,7 @@ import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from ".
 import { getConfig } from "../../config.js";
 import { jitterInt } from "../../utils/jitter.js";
 import { getSessionAffinityMap, type SessionAffinityMap } from "../../auth/session-affinity.js";
-import { logStore } from "../../logs/store.js";
+import { enqueueLogEntry } from "../../logs/entry.js";
 import { randomUUID } from "crypto";
 
 /** Data prepared by each route after parsing and translating the request. */
@@ -194,11 +194,9 @@ export async function handleProxyRequest(
           { tag: fmt.tag },
         );
         status = rawResponse.status;
-        logStore.enqueue({
-          id: randomUUID(),
+        enqueueLogEntry({
           requestId,
           direction: "egress",
-          ts: new Date().toISOString(),
           method: "POST",
           path: "/codex/responses",
           model: req.model,
@@ -273,11 +271,9 @@ export async function handleProxyRequest(
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Upstream request failed";
-        logStore.enqueue({
-          id: randomUUID(),
+        enqueueLogEntry({
           requestId,
           direction: "egress",
-          ts: new Date().toISOString(),
           method: "POST",
           path: "/codex/responses",
           model: req.model,
@@ -405,11 +401,9 @@ async function handleNonStreaming(
             () => currentApi.createResponse(req.codexRequest, abortController.signal),
             { tag: fmt.tag },
           );
-          logStore.enqueue({
-            id: randomUUID(),
+          enqueueLogEntry({
             requestId,
             direction: "egress",
-            ts: new Date().toISOString(),
             method: "POST",
             path: "/codex/responses",
             model: req.model,
@@ -426,11 +420,9 @@ async function handleNonStreaming(
         } catch (retryErr) {
           releaseAccount(accountPool, currentEntryId, undefined, released);
           const msg = retryErr instanceof Error ? retryErr.message : "Upstream request failed";
-          logStore.enqueue({
-            id: randomUUID(),
+          enqueueLogEntry({
             requestId,
             direction: "egress",
-            ts: new Date().toISOString(),
             method: "POST",
             path: "/codex/responses",
             model: req.model,
@@ -493,11 +485,9 @@ export async function handleDirectRequest(
   let rawResponse: Response;
   try {
     rawResponse = await upstream.createResponse(req.codexRequest, abortController.signal);
-    logStore.enqueue({
-      id: randomUUID(),
+    enqueueLogEntry({
       requestId,
       direction: "egress",
-      ts: new Date().toISOString(),
       method: "POST",
       path: "/v1/responses",
       model: req.model,
@@ -513,11 +503,9 @@ export async function handleDirectRequest(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Upstream request failed";
     const status = err instanceof CodexApiError ? err.status : 502;
-    logStore.enqueue({
-      id: randomUUID(),
+    enqueueLogEntry({
       requestId,
       direction: "egress",
-      ts: new Date().toISOString(),
       method: "POST",
       path: "/v1/responses",
       model: req.model,

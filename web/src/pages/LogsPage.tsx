@@ -7,7 +7,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const logs = useLogs();
 
   const list = useMemo(() => {
-    return logs.records.map((r) => ({
+    return [...logs.records].reverse().map((r) => ({
       ...r,
       time: new Date(r.ts).toLocaleTimeString(),
     }));
@@ -87,6 +87,21 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                   <div class="col-span-2">{row.latencyMs ? `${row.latencyMs}ms` : "-"}</div>
                 </button>
               ))}
+            </div>
+            <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500">
+              <button
+                class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark"
+                disabled={true}
+              >
+                Prev
+              </button>
+              <span>{logs.total} total</span>
+              <button
+                class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark"
+                disabled={true}
+              >
+                Next
+              </button>
             </div>
           </div>
         </div>

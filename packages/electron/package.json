@@ -1,10 +1,6 @@
 {
   "name": "@codex-proxy/electron",
-<<<<<<< HEAD
   "version": "2.0.61",
-=======
-  "version": "2.0.37",
->>>>>>> 5c532c6 (chore: bump version to 2.0.37 [skip ci])
   "description": "Codex Proxy desktop app (Electron shell)",
   "private": true,
   "main": "dist-electron/main.cjs",

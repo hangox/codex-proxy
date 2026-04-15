@@ -13,7 +13,8 @@ import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { CodexApi, CodexApiError } from "../proxy/codex-api.js";
 import type { CodexResponsesRequest, CodexCompactRequest, CodexInputItem } from "../proxy/codex-api.js";
-import { logStore } from "../logs/store.js";
+import { enqueueLogEntry } from "../logs/entry.js";
+import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { randomUUID } from "crypto";
 import type { UpstreamAdapter } from "../proxy/upstream-adapter.js";
@@ -584,20 +585,17 @@ export function createResponsesRoutes(
     };
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
-    logStore.enqueue({
-      id: randomUUID(),
+    enqueueLogEntry({
       requestId,
       direction: "ingress",
-      ts: new Date().toISOString(),
       method: c.req.method,
       path: c.req.path,
       model: rawModel,
       stream: clientWantsStream,
-      request: {
-        ip: getRealClientIp(c, getConfig().server.trust_proxy),
+      request: summarizeRequestForLog("responses", body, {
+        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
         headers: Object.fromEntries(c.req.raw.headers.entries()),
-        body,
-      },
+      }),
     });
 
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
@@ -637,20 +635,17 @@ export function createResponsesRoutes(
     if (authErr) return authErr;
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
-    logStore.enqueue({
-      id: randomUUID(),
+    enqueueLogEntry({
       requestId,
       direction: "ingress",
-      ts: new Date().toISOString(),
       method: c.req.method,
       path: c.req.path,
       model: rawModel,
       stream: false,
-      request: {
-        ip: getRealClientIp(c, getConfig().server.trust_proxy),
+      request: summarizeRequestForLog("responses", body, {
+        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
         headers: Object.fromEntries(c.req.raw.headers.entries()),
-        body,
-      },
+      }),
     });
 
     return handleCompact(c, accountPool, cookieJar, proxyPool, body, upstreamRouter);

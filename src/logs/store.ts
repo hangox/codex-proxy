@@ -101,7 +101,7 @@ export class LogStore {
     const total = results.length;
     const limit = Math.min(Math.max(1, query.limit ?? 50), 200);
     const offset = Math.max(0, query.offset ?? 0);
-    const sliced = results.slice(offset, offset + limit);
+    const sliced = results.slice(offset, offset + limit).reverse();
 
     return { records: sliced, total, offset, limit };
   }

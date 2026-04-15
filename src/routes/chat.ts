@@ -10,7 +10,7 @@ import {
 } from "../translation/codex-to-openai.js";
 import { getConfig } from "../config.js";
 import { parseModelName, buildDisplayModelName, getModelAliases, getModelInfo } from "../models/model-store.js";
-import { logStore } from "../logs/store.js";
+import { enqueueLogEntry } from "../logs/entry.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { randomUUID } from "crypto";
 import {
@@ -19,6 +19,7 @@ import {
   type FormatAdapter,
 } from "./shared/proxy-handler.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
+import { summarizeRequestForLog } from "../logs/request-summary.js";
 
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
@@ -130,20 +131,17 @@ export function createChatRoutes(
     };
 
     const requestId = (c.req.header("x-request-id") ?? randomUUID().slice(0, 8));
-    logStore.enqueue({
-      id: randomUUID(),
+    enqueueLogEntry({
       requestId,
       direction: "ingress",
-      ts: new Date().toISOString(),
       method: c.req.method,
       path: c.req.path,
       model: req.model,
       stream: !!req.stream,
-      request: {
-        ip: getRealClientIp(c, getConfig().server.trust_proxy),
+      request: summarizeRequestForLog("chat", req, {
+        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
         headers: Object.fromEntries(c.req.raw.headers.entries()),
-        body: req,
-      },
+      }),
     });
 
     if (routeMatch.kind === "api-key" || routeMatch.kind === "adapter") {

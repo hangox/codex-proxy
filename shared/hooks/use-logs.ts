@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 
-export type LogDirection = "ingress" | "egress" | "all";
+export type LogRecordDirection = "ingress" | "egress";
+export type LogFilterDirection = LogRecordDirection | "all";
 
 export interface LogRecord {
   id: string;
   requestId: string;
-  direction: LogDirection;
+  direction: LogRecordDirection;
   ts: string;
   method: string;
   path: string;
@@ -28,7 +29,7 @@ export interface LogState {
 }
 
 export function useLogs(refreshIntervalMs = 1500) {
-  const [direction, setDirection] = useState<LogDirection>("all");
+  const [direction, setDirection] = useState<LogFilterDirection>("all");
   const [search, setSearch] = useState("");
   const [records, setRecords] = useState<LogRecord[]>([]);
   const [total, setTotal] = useState(0);

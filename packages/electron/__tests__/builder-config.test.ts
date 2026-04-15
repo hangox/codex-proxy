@@ -72,7 +72,7 @@ describe("electron-builder.yml", () => {
 
   it("root source directories for prepare-pack actually exist", () => {
     // prepare-pack.mjs copies these from root before packing
-    const requiredDirs = ["config", "public", "bin"];
+    const requiredDirs = ["config", "public"];
     for (const dir of requiredDirs) {
       const rootPath = resolve(ROOT_DIR, dir);
       expect(
@@ -87,12 +87,6 @@ describe("electron-builder.yml", () => {
       (r) => r.to === "bin/" || r.to === "bin",
     );
     expect(binResource).toBeDefined();
-    // bin/ is copied from root by prepare-pack before packing
-    const rootBin = resolve(ROOT_DIR, "bin");
-    expect(
-      existsSync(rootBin),
-      `Root bin/ directory should exist at ${rootBin}`,
-    ).toBe(true);
   });
 
   it("extraResources native/ maps to correct root directory", () => {

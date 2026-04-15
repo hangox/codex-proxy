@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- 无可用账号时不再执行无意义的重试，直接返回描述性错误信息（含各状态账号计数：rate-limited / expired / banned / disabled）(#362)
+
 - `least_used` 策略不再将 `window_reset_at = null` 的新账号（从未收到限速响应头）视为 Infinity 而永久排在已有窗口账号之后；现在两者都进入 `request_count` 比较，新账号（0 请求）可正确轮转到，`__cf_bm` cookie 也能正常写入 (#342)
 
 - 默认不再发送 `reasoning.effort`：移除 `modelInfo.defaultReasoningEffort` 自动兜底，`default_reasoning_effort` 默认改为 `null`，彻底消除简单对话触发 medium 推理导致的 token 暴涨；Dashboard 新增 "Disabled (no reasoning)" 选项，用户可按需开启

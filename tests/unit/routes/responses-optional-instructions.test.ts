@@ -11,7 +11,7 @@ import { Hono } from "hono";
 const mockConfig = {
   server: { proxy_api_key: null as string | null },
   model: {
-    default: "gpt-5.2-codex",
+    default: "gpt-5.3-codex",
     default_reasoning_effort: null,
     default_service_tier: null,
     suppress_desktop_directives: false,

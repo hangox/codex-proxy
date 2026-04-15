@@ -11,7 +11,7 @@ vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({
     server: { proxy_api_key: null },
     model: {
-      default: "gpt-5.2-codex",
+      default: "gpt-5.3-codex",
       default_reasoning_effort: null,
       default_service_tier: null,
       suppress_desktop_directives: false,

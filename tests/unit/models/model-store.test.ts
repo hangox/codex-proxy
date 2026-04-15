@@ -21,7 +21,7 @@ vi.mock("@src/paths.js", () => ({
 vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({
     model: {
-      default: "gpt-5.2-codex",
+      default: "gpt-5.3-codex",
       default_reasoning_effort: null,
       default_service_tier: null,
     },
@@ -131,7 +131,7 @@ describe("ModelStore", () => {
     });
 
     it("falls back to config default for unknown model", () => {
-      expect(resolveModelId("unknown-model")).toBe("gpt-5.2-codex");
+      expect(resolveModelId("unknown-model")).toBe("gpt-5.3-codex");
     });
   });
 
@@ -184,7 +184,7 @@ describe("ModelStore", () => {
 
     it("falls back to config default for fully unknown name", () => {
       const result = parseModelName("totally-unknown");
-      expect(result.modelId).toBe("gpt-5.2-codex");
+      expect(result.modelId).toBe("gpt-5.3-codex");
     });
 
     it("strips -xhigh suffix as reasoning_effort", () => {

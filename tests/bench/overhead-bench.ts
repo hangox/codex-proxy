@@ -63,7 +63,7 @@ bench("buildHeadersWithContentType()", () => {
 
 bench("JSON.stringify (request body)", () => {
   JSON.stringify({
-    model: "gpt-5.2-codex",
+    model: "gpt-5.3-codex",
     instructions: "",
     input: [{ role: "user", content: "Say hi" }],
     stream: true,

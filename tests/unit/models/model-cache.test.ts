@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({
     server: {},
-    model: { default: "gpt-5.2-codex" },
+    model: { default: "gpt-5.3-codex" },
     api: { base_url: "https://chatgpt.com/backend-api" },
     client: { app_version: "1.0.0" },
   })),

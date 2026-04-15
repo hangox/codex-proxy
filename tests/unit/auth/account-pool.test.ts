@@ -243,10 +243,10 @@ describe("AccountPool", () => {
       it("acquires normally for models available to free", () => {
         pool.addAccount("token-free-1");
 
-        // gpt-5.2-codex available for free
+        // gpt-5.3-codex available for free
         vi.mocked(getModelPlanTypes).mockReturnValue(["free", "team"]);
 
-        const acquired = pool.acquire({ model: "gpt-5.2-codex" });
+        const acquired = pool.acquire({ model: "gpt-5.3-codex" });
         expect(acquired).not.toBeNull();
         expect(acquired!.token).toBe("token-free-1");
       });
@@ -277,7 +277,7 @@ describe("AccountPool", () => {
 
         vi.mocked(getModelPlanTypes).mockReturnValue(["free", "team"]);
 
-        const acquired = pool.acquire({ model: "gpt-5.2-codex" });
+        const acquired = pool.acquire({ model: "gpt-5.3-codex" });
         expect(acquired).not.toBeNull();
       });
     });
@@ -299,7 +299,7 @@ describe("AccountPool", () => {
       it("can use either account for shared models", () => {
         vi.mocked(getModelPlanTypes).mockReturnValue(["free", "team"]);
 
-        const acquired = pool.acquire({ model: "gpt-5.2-codex" });
+        const acquired = pool.acquire({ model: "gpt-5.3-codex" });
         expect(acquired).not.toBeNull();
         // Both are eligible, least_used picks one
       });
@@ -335,7 +335,7 @@ describe("AccountPool", () => {
 
         // Now request a shared model — free should serve it
         vi.mocked(getModelPlanTypes).mockReturnValue(["free", "team"]);
-        const free = pool.acquire({ model: "gpt-5.2-codex" });
+        const free = pool.acquire({ model: "gpt-5.3-codex" });
         expect(free).not.toBeNull();
         expect(free!.token).toBe("token-free-x");
       });
@@ -374,7 +374,7 @@ describe("AccountPool", () => {
 
         const tokens: string[] = [];
         for (let i = 0; i < 3; i++) {
-          const a = pool.acquire({ model: "gpt-5.2-codex" })!;
+          const a = pool.acquire({ model: "gpt-5.3-codex" })!;
           tokens.push(a.token);
           pool.release(a.entryId);
         }

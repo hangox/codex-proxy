@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockConfig = {
   server: { port: 8080, proxy_api_key: null as string | null },
   tls: { proxy_url: null as string | null, force_http11: false },
-  model: { default: "gpt-5.2-codex", default_reasoning_effort: null as string | null, inject_desktop_context: false, suppress_desktop_directives: true },
+  model: { default: "gpt-5.3-codex", default_reasoning_effort: null as string | null, inject_desktop_context: false, suppress_desktop_directives: true },
   quota: {
     refresh_interval_minutes: 5,
     warning_thresholds: { primary: [80, 90], secondary: [80, 90] },
@@ -113,7 +113,7 @@ describe("GET /admin/general-settings", () => {
       force_http11: false,
       inject_desktop_context: false,
       suppress_desktop_directives: true,
-      default_model: "gpt-5.2-codex",
+      default_model: "gpt-5.3-codex",
       default_reasoning_effort: null,
       refresh_enabled: true,
       refresh_margin_seconds: 300,

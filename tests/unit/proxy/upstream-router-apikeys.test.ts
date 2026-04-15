@@ -97,7 +97,7 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     const router = new UpstreamRouter(adapters, {}, "codex");
     router.setApiKeyPool(pool, mockFactory);
 
-    const match = router.resolveMatch("gpt-5.2-codex");
+    const match = router.resolveMatch("gpt-5.3-codex");
     expect(match.kind).toBe("codex");
   });
 

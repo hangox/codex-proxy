@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({
-    model: { default: "gpt-5.2-codex" },
+    model: { default: "gpt-5.3-codex" },
   })),
 }));
 

@@ -150,7 +150,7 @@ describe("codex-api headers", () => {
     });
 
     it("previous_response_id 场景下 WebSocket 失败不会降级成 HTTP delta-only", async () => {
-      const { PreviousResponseWebSocketError } = await import("../codex-api.js");
+      const { PreviousResponseWebSocketError } = await import("@src/proxy/codex-api.js");
       mockCreateWebSocketResponse.mockRejectedValue(new Error("ws down"));
 
       const api = await createApi();

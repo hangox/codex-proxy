@@ -505,6 +505,43 @@ describe("hosted web_search tool conversion", () => {
     });
   });
 
+  it("converts Anthropic Claude Code WebSearch tool_choice to hosted web_search", () => {
+    expect(anthropicToolChoiceToCodex({ type: "tool", name: "WebSearch" })).toEqual({
+      type: "web_search",
+    });
+  });
+
+  it("converts Anthropic hosted web_search tool_choice to hosted web_search", () => {
+    expect(
+      anthropicToolChoiceToCodex(
+        { type: "tool", name: "web_search" },
+        [{ type: "web_search_20250305", name: "web_search" }],
+      ),
+    ).toEqual({ type: "web_search" });
+  });
+
+  it("preserves Anthropic lowercase custom web_search tool_choice as function tool", () => {
+    expect(
+      anthropicToolChoiceToCodex(
+        { type: "tool", name: "web_search" },
+        [
+          {
+            name: "web_search",
+            description: "Project-local search implementation",
+            input_schema: { type: "object", properties: { query: { type: "string" } } },
+          },
+        ],
+      ),
+    ).toEqual({ type: "function", name: "web_search" });
+  });
+
+  it("preserves Anthropic custom tool_choice as function tool", () => {
+    expect(anthropicToolChoiceToCodex({ type: "tool", name: "lookup" })).toEqual({
+      type: "function",
+      name: "lookup",
+    });
+  });
+
   it("converts Anthropic hosted web search to Codex hosted web_search", () => {
     const tools = [
       {

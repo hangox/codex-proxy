@@ -345,7 +345,17 @@ describe("translateAnthropicToCodexRequest", () => {
       const toolChoice = { type: "auto" as const };
       translateAnthropicToCodexRequest(makeRequest({ tool_choice: toolChoice }));
 
-      expect(anthropicToolChoiceToCodex).toHaveBeenCalledWith(toolChoice);
+      expect(anthropicToolChoiceToCodex).toHaveBeenCalledWith(toolChoice, undefined);
+    });
+
+    it("passes tools context when converting tool_choice", () => {
+      const tools = [
+        { name: "web_search", description: "Custom search", input_schema: {} },
+      ];
+      const toolChoice = { type: "tool" as const, name: "web_search" };
+      translateAnthropicToCodexRequest(makeRequest({ tools, tool_choice: toolChoice }));
+
+      expect(anthropicToolChoiceToCodex).toHaveBeenCalledWith(toolChoice, tools);
     });
 
     it("does not inject hosted web_search by default", () => {

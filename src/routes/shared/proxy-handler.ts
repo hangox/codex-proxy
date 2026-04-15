@@ -425,15 +425,24 @@ export async function handleDirectRequest(
   try {
     rawResponse = await upstream.createResponse(req.codexRequest, abortController.signal);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Upstream request failed";
-    const status = err instanceof CodexApiError ? err.status : 502;
-    if (status === 429) {
-      c.status(429);
-      return c.json(fmt.format429(msg));
+    if (err instanceof CodexApiError) {
+      const code = toErrorStatus(err.status) as StatusCode;
+      c.status(code);
+      // For API-key upstreams, forward the raw upstream error body transparently
+      try {
+        const parsed: unknown = JSON.parse(err.body);
+        if (parsed && typeof parsed === "object") {
+          return c.json(parsed);
+        }
+      } catch { /* non-JSON body — fall through */ }
+      if (code === 429) {
+        return c.json(fmt.format429(err.message));
+      }
+      return c.json(fmt.formatError(code, err.message));
     }
-    const code = toErrorStatus(status) as StatusCode;
-    c.status(code);
-    return c.json(fmt.formatError(code, msg));
+    const msg = err instanceof Error ? err.message : "Upstream request failed";
+    c.status(502);
+    return c.json(fmt.formatError(502, msg));
   }
 
   if (req.isStreaming) {

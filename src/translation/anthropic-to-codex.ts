@@ -235,7 +235,7 @@ export function translateAnthropicToCodexRequest(
   if (options?.injectHostedWebSearch === true && !hasHostedWebSearchTool(codexTools)) {
     codexTools.push({ type: "web_search" });
   }
-  const codexToolChoice = anthropicToolChoiceToCodex(req.tool_choice);
+  const codexToolChoice = anthropicToolChoiceToCodex(req.tool_choice, req.tools);
 
   // Build request
   const request: CodexResponsesRequest = {

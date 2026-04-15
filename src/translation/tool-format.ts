@@ -75,6 +75,21 @@ function isAnthropicHostedSearchTool(tool: Record<string, unknown>): boolean {
   return tool.name === "WebSearch";
 }
 
+function hasAnthropicHostedSearchToolChoice(
+  choiceName: string,
+  tools: AnthropicMessagesRequest["tools"],
+): boolean {
+  if (choiceName === "WebSearch") return true;
+  if (!tools) return false;
+  return tools.some((tool) => {
+    if (!isRecord(tool)) return false;
+    if (tool.type !== "web_search_20250305" && tool.type !== "web_search") {
+      return false;
+    }
+    return typeof tool.name !== "string" || tool.name === choiceName;
+  });
+}
+
 // ── OpenAI → Codex ──────────────────────────────────────────────
 
 export function openAIToolsToCodex(
@@ -160,7 +175,8 @@ export function anthropicToolsToCodex(
 
 export function anthropicToolChoiceToCodex(
   choice: AnthropicMessagesRequest["tool_choice"],
-): string | { type: "function"; name: string } | undefined {
+  tools?: AnthropicMessagesRequest["tools"],
+): string | { type: "function"; name: string } | { type: "web_search" } | undefined {
   if (!choice) return undefined;
   switch (choice.type) {
     case "auto":
@@ -168,6 +184,9 @@ export function anthropicToolChoiceToCodex(
     case "any":
       return "required";
     case "tool":
+      if (hasAnthropicHostedSearchToolChoice(choice.name, tools)) {
+        return { type: "web_search" };
+      }
       return { type: "function", name: choice.name };
     default:
       return undefined;

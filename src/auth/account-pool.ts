@@ -80,6 +80,11 @@ export class AccountPool {
     this.lifecycle.releaseWithoutCounting(entryId);
   }
 
+  /** Fast check: is there at least one active account not in the exclude list? */
+  hasAvailableAccounts(excludeIds?: string[]): boolean {
+    return this.registry.hasAvailableAccounts(excludeIds);
+  }
+
   setRotationStrategy(name: "least_used" | "round_robin" | "sticky"): void {
     this.lifecycle.setRotationStrategy(name);
   }

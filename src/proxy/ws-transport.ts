@@ -17,12 +17,19 @@
 import type { CodexInputItem } from "./codex-api.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
+import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
 
 /** Cached ws module — loaded once on first use. */
 let _WS: typeof import("ws").default | undefined;
 
+type ProxyAgent =
+  | InstanceType<typeof import("https-proxy-agent").HttpsProxyAgent>
+  | InstanceType<typeof import("socks-proxy-agent").SocksProxyAgent>;
+
+const SOCKS_PROXY_PROTOCOLS = new Set(["socks:", "socks4:", "socks4a:", "socks5:", "socks5h:"]);
+
 /** Cached proxy agents keyed by URL — avoids creating a new TCP connection per request. */
-const _agentCache = new Map<string, InstanceType<typeof import("https-proxy-agent").HttpsProxyAgent>>();
+const _agentCache = new Map<string, ProxyAgent>();
 
 /** Lazily load the `ws` package. */
 async function getWS(): Promise<typeof import("ws").default> {
@@ -31,6 +38,17 @@ async function getWS(): Promise<typeof import("ws").default> {
     _WS = mod.default;
   }
   return _WS;
+}
+
+async function createProxyAgent(proxyUrl: string): Promise<ProxyAgent> {
+  const protocol = new URL(proxyUrl).protocol.toLowerCase();
+  if (SOCKS_PROXY_PROTOCOLS.has(protocol)) {
+    const { SocksProxyAgent } = await import("socks-proxy-agent");
+    return new SocksProxyAgent(proxyUrl);
+  }
+
+  const { HttpsProxyAgent } = await import("https-proxy-agent");
+  return new HttpsProxyAgent(proxyUrl);
 }
 
 /** Flat WebSocket message format expected by the Codex backend. */
@@ -76,12 +94,12 @@ export async function createWebSocketResponse(
 
   // Lazy-import proxy agent only when needed; cache by URL to reuse connections
   const wsOpts: ConstructorParameters<typeof WS>[2] = { headers };
-  if (proxyUrl) {
-    let agent = _agentCache.get(proxyUrl);
+  const effectiveProxyUrl = resolveEffectiveProxyUrl(proxyUrl);
+  if (effectiveProxyUrl) {
+    let agent = _agentCache.get(effectiveProxyUrl);
     if (!agent) {
-      const { HttpsProxyAgent } = await import("https-proxy-agent");
-      agent = new HttpsProxyAgent(proxyUrl);
-      _agentCache.set(proxyUrl, agent);
+      agent = await createProxyAgent(effectiveProxyUrl);
+      _agentCache.set(effectiveProxyUrl, agent);
     }
     wsOpts.agent = agent;
   }

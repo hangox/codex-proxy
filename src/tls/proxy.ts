@@ -93,6 +93,12 @@ export function getProxyUrl(): string | null {
   return _proxyUrl ?? null;
 }
 
+export function resolveEffectiveProxyUrl(proxyUrl: string | null | undefined): string | null {
+  if (proxyUrl === null) return null;
+  if (proxyUrl !== undefined) return proxyUrl;
+  return getProxyUrl();
+}
+
 /**
  * Reset the cached proxy state (for testing).
  */

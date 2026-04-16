@@ -87,9 +87,13 @@ describe("electron-builder.yml", () => {
     const globs = config.files.filter((f): f is string => typeof f === "string");
     expect(globs).toContain("node_modules/ws/**/*");
     expect(globs).toContain("node_modules/https-proxy-agent/**/*");
+    expect(globs).toContain("node_modules/socks-proxy-agent/**/*");
     expect(globs).toContain("node_modules/agent-base/**/*");
     expect(globs).toContain("node_modules/debug/**/*");
+    expect(globs).toContain("node_modules/ip-address/**/*");
     expect(globs).toContain("node_modules/ms/**/*");
+    expect(globs).toContain("node_modules/smart-buffer/**/*");
+    expect(globs).toContain("node_modules/socks/**/*");
     expect(globs).not.toContain("!node_modules");
   });
 

@@ -5,6 +5,8 @@
 import { EventEmitter } from "node:events";
 
 const wsInstances = vi.hoisted(() => [] as EventEmitter[]);
+const proxyAgentUrls = vi.hoisted(() => [] as string[]);
+const socksProxyAgentUrls = vi.hoisted(() => [] as string[]);
 
 vi.mock("ws", () => {
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
@@ -38,9 +40,38 @@ vi.mock("ws", () => {
   return { default: MockWebSocket };
 });
 
+vi.mock("https-proxy-agent", () => {
+  class MockHttpsProxyAgent {
+    proxyUrl: string;
+
+    constructor(proxyUrl: string) {
+      this.proxyUrl = proxyUrl;
+      proxyAgentUrls.push(proxyUrl);
+    }
+  }
+
+  return { HttpsProxyAgent: MockHttpsProxyAgent };
+});
+
+vi.mock("socks-proxy-agent", () => {
+  class MockSocksProxyAgent {
+    proxyUrl: string;
+
+    constructor(proxyUrl: string) {
+      this.proxyUrl = proxyUrl;
+      socksProxyAgentUrls.push(proxyUrl);
+    }
+  }
+
+  return { SocksProxyAgent: MockSocksProxyAgent };
+});
+
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { createWebSocketResponse, type WsCreateRequest } from "@src/proxy/ws-transport.js";
+import { resetConfigForTesting, setConfigForTesting } from "@src/config.js";
+import { initProxy, resetProxyCache } from "@src/tls/proxy.js";
+import { createMockConfig } from "@helpers/config.js";
 
 interface MockWs extends EventEmitter {
   url: string;
@@ -48,6 +79,10 @@ interface MockWs extends EventEmitter {
   sentMessages: string[];
   readyState: number;
   close(code?: number, reason?: string): void;
+}
+
+interface MockProxyAgent {
+  proxyUrl: string;
 }
 
 const BASE_REQUEST: WsCreateRequest = {
@@ -77,6 +112,10 @@ async function readStream(response: Response): Promise<string> {
 describe("createWebSocketResponse", () => {
   beforeEach(() => {
     wsInstances.length = 0;
+    proxyAgentUrls.length = 0;
+    socksProxyAgentUrls.length = 0;
+    resetProxyCache();
+    resetConfigForTesting();
   });
 
   it("connects and sends the request message", async () => {
@@ -88,6 +127,48 @@ describe("createWebSocketResponse", () => {
     expect((ws.opts?.headers as Record<string, string>)?.auth).toBe("bearer");
     expect(ws.sentMessages).toHaveLength(1);
     expect(JSON.parse(ws.sentMessages[0])).toEqual(BASE_REQUEST);
+
+    ws.close();
+  });
+
+  it("uses the global proxy when proxyUrl is undefined", async () => {
+    const globalProxyUrl = "http://global-proxy.local:8080";
+    setConfigForTesting(createMockConfig({ tls: { proxy_url: globalProxyUrl } }));
+    await initProxy();
+
+    await createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+
+    const ws = lastWs();
+    expect(proxyAgentUrls).toEqual([globalProxyUrl]);
+    expect((ws.opts?.agent as MockProxyAgent | undefined)?.proxyUrl).toBe(globalProxyUrl);
+
+    ws.close();
+  });
+
+  it("uses a SOCKS agent when the global proxy is socks", async () => {
+    const globalProxyUrl = "socks5://global-proxy.local:1080";
+    setConfigForTesting(createMockConfig({ tls: { proxy_url: globalProxyUrl } }));
+    await initProxy();
+
+    await createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+
+    const ws = lastWs();
+    expect(proxyAgentUrls).toEqual([]);
+    expect(socksProxyAgentUrls).toEqual([globalProxyUrl]);
+    expect((ws.opts?.agent as MockProxyAgent | undefined)?.proxyUrl).toBe(globalProxyUrl);
+
+    ws.close();
+  });
+
+  it("keeps null proxyUrl as direct even when a global proxy exists", async () => {
+    setConfigForTesting(createMockConfig({ tls: { proxy_url: "http://global-proxy.local:8080" } }));
+    await initProxy();
+
+    await createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, undefined, null);
+
+    const ws = lastWs();
+    expect(proxyAgentUrls).toEqual([]);
+    expect(ws.opts?.agent).toBeUndefined();
 
     ws.close();
   });

@@ -68,7 +68,7 @@ if (isClean) {
 
 // Electron 的后端 bundle 是 ESM，`ws` 这类 CJS 包不能被 esbuild 安全内联。
 // 这里把被 external 的运行时依赖从 workspace 根 node_modules 复制进 app 包。
-const RUNTIME_PACKAGES = ["ws", "https-proxy-agent"];
+const RUNTIME_PACKAGES = ["ws", "https-proxy-agent", "socks-proxy-agent"];
 const RUNTIME_COPY_MARKER = ".codex-proxy-runtime-copy";
 
 function packageDest(pkgName) {
@@ -132,7 +132,7 @@ function removeRuntimePackage(pkgName) {
   }
 }
 
-const runtimePackages = [...collectRuntimePackages("ws"), ...collectRuntimePackages("https-proxy-agent")]
+const runtimePackages = RUNTIME_PACKAGES.flatMap((pkgName) => [...collectRuntimePackages(pkgName)])
   .filter((pkgName, index, all) => all.indexOf(pkgName) === index);
 
 if (isClean) {

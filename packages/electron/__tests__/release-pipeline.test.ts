@@ -74,9 +74,15 @@ describe("release pipeline", () => {
       expect(
         existsSync(resolve(PKG_DIR, "node_modules", "https-proxy-agent", "package.json")),
       ).toBe(true);
+      expect(
+        existsSync(resolve(PKG_DIR, "node_modules", "socks-proxy-agent", "package.json")),
+      ).toBe(true);
       expect(existsSync(resolve(PKG_DIR, "node_modules", "agent-base", "package.json"))).toBe(true);
       expect(existsSync(resolve(PKG_DIR, "node_modules", "debug", "package.json"))).toBe(true);
+      expect(existsSync(resolve(PKG_DIR, "node_modules", "ip-address", "package.json"))).toBe(true);
       expect(existsSync(resolve(PKG_DIR, "node_modules", "ms", "package.json"))).toBe(true);
+      expect(existsSync(resolve(PKG_DIR, "node_modules", "smart-buffer", "package.json"))).toBe(true);
+      expect(existsSync(resolve(PKG_DIR, "node_modules", "socks", "package.json"))).toBe(true);
     });
   });
 

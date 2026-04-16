@@ -11,7 +11,7 @@
 import { resolve } from "path";
 import { existsSync } from "fs";
 import type { TlsTransport, TlsTransportResponse } from "./transport.js";
-import { getProxyUrl } from "./proxy.js";
+import { resolveEffectiveProxyUrl } from "./proxy.js";
 import { getConfig } from "../config.js";
 import { getBinDir } from "../paths.js";
 
@@ -58,13 +58,6 @@ interface NativeBindings {
   ): Promise<NativeStreamMeta>;
 }
 
-/** Resolve the effective proxy URL for a request. */
-function resolveProxy(proxyUrl: string | null | undefined): string | null {
-  if (proxyUrl === null) return null; // explicit direct
-  if (proxyUrl !== undefined) return proxyUrl; // explicit proxy
-  return getProxyUrl(); // global default
-}
-
 export class NativeTransport implements TlsTransport {
   private bindings: NativeBindings;
 
@@ -88,7 +81,7 @@ export class NativeTransport implements TlsTransport {
       throw new Error("Request aborted");
     }
 
-    const proxy = resolveProxy(proxyUrl);
+    const proxy = resolveEffectiveProxyUrl(proxyUrl);
 
     // Set up a ReadableStream that receives chunks from the Rust callback
     let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -154,7 +147,7 @@ export class NativeTransport implements TlsTransport {
     timeoutSec?: number,
     proxyUrl?: string | null,
   ): Promise<{ status: number; body: string }> {
-    const proxy = resolveProxy(proxyUrl);
+    const proxy = resolveEffectiveProxyUrl(proxyUrl);
     const h11 = getConfig().tls.force_http11;
     const result = await this.bindings.httpGet(url, headers, timeoutSec, proxy, h11);
     return { status: result.status, body: result.body };
@@ -166,7 +159,7 @@ export class NativeTransport implements TlsTransport {
     timeoutSec?: number,
     proxyUrl?: string | null,
   ): Promise<{ status: number; body: string; setCookieHeaders: string[] }> {
-    const proxy = resolveProxy(proxyUrl);
+    const proxy = resolveEffectiveProxyUrl(proxyUrl);
     return this.bindings.httpGet(url, headers, timeoutSec, proxy, getConfig().tls.force_http11);
   }
 
@@ -177,7 +170,7 @@ export class NativeTransport implements TlsTransport {
     timeoutSec?: number,
     proxyUrl?: string | null,
   ): Promise<{ status: number; body: string }> {
-    const proxy = resolveProxy(proxyUrl);
+    const proxy = resolveEffectiveProxyUrl(proxyUrl);
     return this.bindings.httpPost(url, headers, body, timeoutSec, proxy, getConfig().tls.force_http11);
   }
 }

@@ -20,9 +20,13 @@ files:
   - public/**/*
   - node_modules/ws/**/*
   - node_modules/https-proxy-agent/**/*
+  - node_modules/socks-proxy-agent/**/*
   - node_modules/agent-base/**/*
   - node_modules/debug/**/*
+  - node_modules/ip-address/**/*
   - node_modules/ms/**/*
+  - node_modules/smart-buffer/**/*
+  - node_modules/socks/**/*
   - electron/assets/**/*
   - package.json
   - "!node_modules/.bin/**/*"

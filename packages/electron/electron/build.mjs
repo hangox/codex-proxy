@@ -33,7 +33,7 @@ await build({
   platform: "node",
   format: "esm",
   outfile: "dist-electron/server.mjs",
-  external: ["ws", "https-proxy-agent"],
+  external: ["ws", "https-proxy-agent", "socks-proxy-agent"],
   target: "node20",
   sourcemap: true,
   // Mark .node files as external (native addons)

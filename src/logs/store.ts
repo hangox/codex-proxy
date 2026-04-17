@@ -30,6 +30,12 @@ export interface LogState {
   capacity: number;
 }
 
+interface LogStateUpdate {
+  enabled?: boolean;
+  paused?: boolean;
+  capacity?: number;
+}
+
 export interface LogQuery {
   direction?: LogDirection | "all";
   search?: string | null;
@@ -53,7 +59,7 @@ function normalizeOffset(offset: number | undefined): number {
 
 export class LogStore {
   private records: LogRecord[] = [];
-  private readonly capacity: number;
+  private capacity: number;
   private enabled = true;
   private paused = false;
   private dropped = 0;
@@ -74,9 +80,16 @@ export class LogStore {
     };
   }
 
-  setState(next: Partial<Pick<LogState, "enabled" | "paused">>): LogState {
-    if (typeof next.enabled === "boolean") this.enabled = next.enabled;
+  setState(next: LogStateUpdate): LogState {
+    if (typeof next.enabled === "boolean") {
+      this.enabled = next.enabled;
+      if (next.enabled) this.paused = false;
+    }
     if (typeof next.paused === "boolean") this.paused = next.paused;
+    if (typeof next.capacity === "number" && Number.isFinite(next.capacity)) {
+      this.capacity = Math.max(1, Math.trunc(next.capacity));
+      this.trimToCapacity();
+    }
     return this.getState();
   }
 
@@ -137,11 +150,14 @@ export class LogStore {
       this.records.push(redacted);
     }
 
-    if (this.records.length > this.capacity) {
-      const over = this.records.length - this.capacity;
-      this.records.splice(0, over);
-      this.dropped += over;
-    }
+    this.trimToCapacity();
+  }
+
+  private trimToCapacity(): void {
+    if (this.records.length <= this.capacity) return;
+    const over = this.records.length - this.capacity;
+    this.records.splice(0, over);
+    this.dropped += over;
   }
 }
 

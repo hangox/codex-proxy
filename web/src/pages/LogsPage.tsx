@@ -36,8 +36,15 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
           {logs.state?.enabled ? t("logsEnabled") : t("logsDisabled")}
         </button>
         <button
-          class={`px-3 py-1.5 rounded-lg text-xs font-medium ${logs.state?.paused ? "bg-amber-100 text-amber-700" : "bg-slate-200 text-slate-600"}`}
-          onClick={() => logs.setLogState({ paused: !logs.state?.paused })}
+          class={`px-3 py-1.5 rounded-lg text-xs font-medium ${
+            !logs.state?.enabled
+              ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+              : logs.state?.paused
+                ? "bg-amber-100 text-amber-700"
+                : "bg-slate-200 text-slate-600"
+          }`}
+          onClick={() => logs.state?.enabled && logs.setLogState({ paused: !logs.state?.paused })}
+          disabled={!logs.state?.enabled}
         >
           {logs.state?.paused ? t("logsPaused") : t("logsRunning")}
         </button>
@@ -105,7 +112,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                   </div>
                   <div class="col-span-4 truncate">{row.path}</div>
                   <div class="col-span-2">{row.status ?? "-"}</div>
-                  <div class="col-span-2">{row.latencyMs ? `${row.latencyMs}ms` : "-"}</div>
+                  <div class="col-span-2">{row.latencyMs != null ? `${row.latencyMs}ms` : "-"}</div>
                 </button>
               ))}
             </div>

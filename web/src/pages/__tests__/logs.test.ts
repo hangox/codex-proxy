@@ -90,6 +90,7 @@ describe("LogsPage", () => {
 
     render(<LogsPage embedded />);
 
+    expect(screen.getByText("1 logs")).toBeTruthy();
     expect(screen.getByText("1 total · 1-1")).toBeTruthy();
     fireEvent.click(screen.getByText("Next"));
     expect(nextPage).toHaveBeenCalledTimes(1);
@@ -109,6 +110,34 @@ describe("LogsPage", () => {
     mockLogs.useLogs.mockReturnValue(makeLogsState({ selected: null }));
     rerender(<LogsPage embedded />);
     expect(screen.getByText("logsSelectHint")).toBeTruthy();
+  });
+
+  it("renders zero latency as 0ms", () => {
+    mockT.useT.mockImplementation(() => (key: string, vars?: Record<string, unknown>) => {
+      if (key === "logsCount") return `${vars?.count ?? 0} logs`;
+      return key;
+    });
+    mockLogs.useLogs.mockReturnValue(
+      makeLogsState({
+        records: [
+          {
+            id: "1",
+            requestId: "r1",
+            direction: "ingress",
+            ts: "2026-04-15T00:00:01.000Z",
+            method: "GET",
+            path: "/v1/models",
+            status: 200,
+            latencyMs: 0,
+          },
+        ],
+      }),
+    );
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    render(<LogsPage embedded />);
+
+    expect(screen.getByText("0ms")).toBeTruthy();
   });
 
   it("renders and toggles the logs mode button", () => {

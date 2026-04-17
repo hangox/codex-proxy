@@ -136,4 +136,20 @@ describe("log routes", () => {
     expect(mockConfig.reloadAllConfigs).toHaveBeenCalledOnce();
     expect(store.setState).toHaveBeenCalledWith({ enabled: false, paused: true });
   });
+
+  it("resets paused when enabling logs", async () => {
+    store.setState.mockReturnValue({ enabled: true, paused: false, dropped: 0, size: 0, capacity: 2000 });
+
+    const app = new Hono();
+    app.route("/", createLogRoutes());
+
+    const res = await app.request("/admin/logs/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, paused: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.setState).toHaveBeenCalledWith({ enabled: true, paused: true });
+  });
 });

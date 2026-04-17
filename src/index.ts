@@ -38,7 +38,6 @@ import { UpstreamRouter } from "./proxy/upstream-router.js";
 import { OpenAIUpstream } from "./proxy/openai-upstream.js";
 import { AnthropicUpstream } from "./proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "./proxy/gemini-upstream.js";
-import type { UpstreamAdapter } from "./proxy/upstream-adapter.js";
 import { ApiKeyPool } from "./auth/api-key-pool.js";
 import { createApiKeyRoutes } from "./routes/api-keys.js";
 import { createAdapterForEntry } from "./proxy/adapter-factory.js";

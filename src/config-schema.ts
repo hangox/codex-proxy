@@ -48,6 +48,7 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     capacity: z.number().int().min(1).default(2000),
     capture_body: z.boolean().default(false),
+    llm_only: z.boolean().default(true),
   }).default({}),
   session: z.object({
     ttl_minutes: z.number().min(1).default(1440),

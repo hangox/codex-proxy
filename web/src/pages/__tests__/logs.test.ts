@@ -9,8 +9,24 @@ const mockT = vi.hoisted(() => ({
   useT: vi.fn(),
 }));
 
+const mockSettings = vi.hoisted(() => ({
+  useSettings: vi.fn(() => ({ apiKey: null })),
+}));
+
+const mockGeneralSettings = vi.hoisted(() => ({
+  useGeneralSettings: vi.fn(),
+}));
+
 vi.mock("../../../shared/hooks/use-logs", () => ({
   useLogs: mockLogs.useLogs,
+}));
+
+vi.mock("../../../shared/hooks/use-settings", () => ({
+  useSettings: mockSettings.useSettings,
+}));
+
+vi.mock("../../../shared/hooks/use-general-settings", () => ({
+  useGeneralSettings: mockGeneralSettings.useGeneralSettings,
 }));
 
 vi.mock("../../../shared/i18n/context", () => ({
@@ -18,6 +34,15 @@ vi.mock("../../../shared/i18n/context", () => ({
 }));
 
 import { LogsPage } from "../LogsPage";
+
+function makeGeneralSettings(overrides: Record<string, unknown> = {}) {
+  return {
+    data: { logs_llm_only: true },
+    saving: false,
+    save: vi.fn(),
+    ...overrides,
+  };
+}
 
 function makeLogsState(overrides: Partial<ReturnType<typeof mockLogs.useLogs>> = {}) {
   return {
@@ -61,6 +86,7 @@ describe("LogsPage", () => {
       return key;
     });
     mockLogs.useLogs.mockReturnValue(makeLogsState({ nextPage, hasNext: true }));
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
 
     render(<LogsPage embedded />);
 
@@ -74,6 +100,7 @@ describe("LogsPage", () => {
       if (key === "logsCount") return `${vars?.count ?? 0} logs`;
       return key;
     });
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
 
     mockLogs.useLogs.mockReturnValue(makeLogsState({ selected: { id: "1", path: "/v1/messages" } }));
     const { rerender } = render(<LogsPage embedded />);
@@ -82,5 +109,20 @@ describe("LogsPage", () => {
     mockLogs.useLogs.mockReturnValue(makeLogsState({ selected: null }));
     rerender(<LogsPage embedded />);
     expect(screen.getByText("logsSelectHint")).toBeTruthy();
+  });
+
+  it("renders and toggles the logs mode button", () => {
+    const save = vi.fn();
+    mockT.useT.mockImplementation(() => (key: string, vars?: Record<string, unknown>) => {
+      if (key === "logsCount") return `${vars?.count ?? 0} logs`;
+      return key;
+    });
+    mockLogs.useLogs.mockReturnValue(makeLogsState());
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings({ save }));
+
+    render(<LogsPage embedded />);
+
+    fireEvent.click(screen.getByText("logsModeLlmOnlyToggle"));
+    expect(save).toHaveBeenCalledWith({ logs_llm_only: false });
   });
 });

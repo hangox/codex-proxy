@@ -98,6 +98,8 @@ export async function handleProxyRequest(
   fmt: FormatAdapter,
   proxyPool?: ProxyPool,
 ): Promise<Response> {
+  c.set("logForwarded", true);
+
   // Session affinity: prefer the account that created the previous response
   const affinityMap = getSessionAffinityMap();
   const prevRespId = req.codexRequest.previous_response_id;

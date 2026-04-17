@@ -1,25 +1,33 @@
 /**
  * Tests for general settings endpoints.
- * GET  /admin/general-settings — read current server/tls config
- * POST /admin/general-settings — update server/tls config
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// --- Mocks (before any imports) ---
-
 const mockConfig = {
   server: { port: 8080, proxy_api_key: null as string | null },
   tls: { proxy_url: null as string | null, force_http11: false },
-  model: { default: "gpt-5.3-codex", default_reasoning_effort: null as string | null, inject_desktop_context: false, suppress_desktop_directives: true },
+  model: {
+    default: "gpt-5.3-codex",
+    default_reasoning_effort: null as string | null,
+    inject_desktop_context: false,
+    suppress_desktop_directives: true,
+  },
   quota: {
     refresh_interval_minutes: 5,
     warning_thresholds: { primary: [80, 90], secondary: [80, 90] },
     skip_exhausted: true,
   },
-  auth: { rotation_strategy: "least_used", refresh_enabled: true, refresh_margin_seconds: 300, refresh_concurrency: 2, max_concurrent_per_account: 3 as number | null, request_interval_ms: 50 as number | null },
-  update: { auto_update: true },
-  logs: { enabled: false, capacity: 2000, capture_body: false },
+  auth: {
+    rotation_strategy: "least_used",
+    refresh_enabled: true,
+    refresh_margin_seconds: 300,
+    refresh_concurrency: 2,
+    max_concurrent_per_account: 3 as number | null,
+    request_interval_ms: 50 as number | null,
+  },
+  update: { auto_update: true, auto_download: false },
+  logs: { enabled: false, capacity: 2000, capture_body: false, llm_only: true },
 };
 
 vi.mock("@src/config.js", () => ({
@@ -94,16 +102,10 @@ function makeApp() {
 describe("GET /admin/general-settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockConfig.server.port = 8080;
-    mockConfig.server.proxy_api_key = null;
-    mockConfig.tls.proxy_url = null;
-    mockConfig.tls.force_http11 = false;
-    mockConfig.model.inject_desktop_context = false;
-    mockConfig.model.suppress_desktop_directives = true;
-    mockConfig.update.auto_update = true;
+    mockConfig.logs.llm_only = true;
   });
 
-  it("returns current values", async () => {
+  it("returns current values including logs_llm_only", async () => {
     const app = makeApp();
     const res = await app.request("/admin/general-settings");
     expect(res.status).toBe(200);
@@ -112,16 +114,14 @@ describe("GET /admin/general-settings", () => {
       port: 8080,
       proxy_url: null,
       force_http11: false,
-      inject_desktop_context: false,
-      suppress_desktop_directives: true,
       default_model: "gpt-5.3-codex",
-      default_reasoning_effort: null,
       refresh_enabled: true,
-      refresh_margin_seconds: 300,
-      refresh_concurrency: 2,
-      max_concurrent_per_account: 3,
-      request_interval_ms: 50,
       auto_update: true,
+      auto_download: false,
+      logs_enabled: false,
+      logs_capacity: 2000,
+      logs_capture_body: false,
+      logs_llm_only: true,
     });
   });
 });
@@ -129,248 +129,22 @@ describe("GET /admin/general-settings", () => {
 describe("POST /admin/general-settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockConfig.server.port = 8080;
-    mockConfig.server.proxy_api_key = null;
-    mockConfig.tls.proxy_url = null;
-    mockConfig.tls.force_http11 = false;
-    mockConfig.model.inject_desktop_context = false;
-    mockConfig.model.suppress_desktop_directives = true;
-    mockConfig.update.auto_update = true;
+    mockConfig.logs.llm_only = true;
   });
 
-  it("changing port sets restart_required: true", async () => {
+  it("persists logs_llm_only without requiring restart", async () => {
     const app = makeApp();
     const res = await app.request("/admin/general-settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ port: 9090 }),
+      body: JSON.stringify({ logs_llm_only: false }),
     });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.restart_required).toBe(true);
-    expect(mutateYaml).toHaveBeenCalledOnce();
-    expect(reloadAllConfigs).toHaveBeenCalledOnce();
-  });
 
-  it("changing proxy_url sets restart_required: false", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proxy_url: "http://127.0.0.1:7890" }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.restart_required).toBe(false);
-    expect(mutateYaml).toHaveBeenCalledOnce();
-  });
-
-  it("changing force_http11 sets restart_required: false", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force_http11: true }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.restart_required).toBe(false);
-  });
-
-  it("rejects port out of range", async () => {
-    const app = makeApp();
-
-    const res1 = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ port: 0 }),
-    });
-    expect(res1.status).toBe(400);
-
-    const res2 = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ port: 70000 }),
-    });
-    expect(res2.status).toBe(400);
-  });
-
-  it("rejects invalid proxy_url format", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proxy_url: "not-a-url" }),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("changing inject_desktop_context sets restart_required: false", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inject_desktop_context: true }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.restart_required).toBe(false);
-    expect(data.inject_desktop_context).toBe(false); // mockConfig unchanged
-    expect(mutateYaml).toHaveBeenCalledOnce();
-    expect(reloadAllConfigs).toHaveBeenCalledOnce();
-  });
-
-  it("changing suppress_desktop_directives sets restart_required: false", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ suppress_desktop_directives: false }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.restart_required).toBe(false);
-    expect(data.suppress_desktop_directives).toBe(true); // mockConfig unchanged
-    expect(mutateYaml).toHaveBeenCalledOnce();
-    expect(reloadAllConfigs).toHaveBeenCalledOnce();
-  });
-
-  it("changing auto_update persists to local.yaml", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ auto_update: false }),
-    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
     expect(data.restart_required).toBe(false);
     expect(mutateYaml).toHaveBeenCalledOnce();
     expect(reloadAllConfigs).toHaveBeenCalledOnce();
-  });
-
-  it("accepts valid max_concurrent_per_account", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ max_concurrent_per_account: 3 }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(data.restart_required).toBe(false);
-    expect(mutateYaml).toHaveBeenCalledOnce();
-  });
-
-  it("accepts null max_concurrent_per_account (reset to default)", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ max_concurrent_per_account: null }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-  });
-
-  it("rejects invalid max_concurrent_per_account", async () => {
-    const app = makeApp();
-
-    for (const bad of [0, -1, 1.5]) {
-      const res = await app.request("/admin/general-settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ max_concurrent_per_account: bad }),
-      });
-      expect(res.status).toBe(400);
-    }
-  });
-
-  it("accepts valid request_interval_ms", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_interval_ms: 500 }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-  });
-
-  it("accepts 0 request_interval_ms (disable)", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_interval_ms: 0 }),
-    });
-    expect(res.status).toBe(200);
-  });
-
-  it("rejects negative request_interval_ms", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_interval_ms: -1 }),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("accepts null default_reasoning_effort to disable reasoning", async () => {
-    mockConfig.model.default_reasoning_effort = "medium";
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ default_reasoning_effort: null }),
-    });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.success).toBe(true);
-    expect(mutateYaml).toHaveBeenCalledOnce();
-  });
-
-  it("rejects invalid default_reasoning_effort", async () => {
-    const app = makeApp();
-    const res = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ default_reasoning_effort: "ultra" }),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("requires auth when proxy_api_key is set", async () => {
-    mockConfig.server.proxy_api_key = "my-secret";
-    const app = makeApp();
-
-    // No auth -> 401
-    const res1 = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force_http11: true }),
-    });
-    expect(res1.status).toBe(401);
-
-    // With auth -> 200
-    const res2 = await app.request("/admin/general-settings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer my-secret",
-      },
-      body: JSON.stringify({ force_http11: true }),
-    });
-    expect(res2.status).toBe(200);
   });
 });

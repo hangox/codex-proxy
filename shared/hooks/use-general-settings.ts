@@ -17,6 +17,7 @@ export interface GeneralSettingsData {
   logs_enabled: boolean;
   logs_capacity: number;
   logs_capture_body: boolean;
+  logs_llm_only: boolean;
 }
 
 interface GeneralSettingsSaveResponse extends GeneralSettingsData {
@@ -78,6 +79,7 @@ export function useGeneralSettings(apiKey: string | null) {
         logs_enabled: result.logs_enabled,
         logs_capacity: result.logs_capacity,
         logs_capture_body: result.logs_capture_body,
+        logs_llm_only: result.logs_llm_only,
       });
       setRestartRequired(result.restart_required);
       setSaved(true);

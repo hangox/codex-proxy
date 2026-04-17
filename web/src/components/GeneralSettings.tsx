@@ -25,6 +25,7 @@ export function GeneralSettings() {
   const [draftLogsEnabled, setDraftLogsEnabled] = useState<boolean | null>(null);
   const [draftLogsCapacity, setDraftLogsCapacity] = useState<string | null>(null);
   const [draftLogsCaptureBody, setDraftLogsCaptureBody] = useState<boolean | null>(null);
+  const [draftLogsLlmOnly, setDraftLogsLlmOnly] = useState<boolean | null>(null);
   const [collapsed, setCollapsed] = useState(true);
 
   const currentPort = gs.data?.port ?? 8080;
@@ -44,6 +45,8 @@ export function GeneralSettings() {
   const currentLogsEnabled = gs.data?.logs_enabled ?? false;
   const currentLogsCapacity = gs.data?.logs_capacity ?? 2000;
   const currentLogsCaptureBody = gs.data?.logs_capture_body ?? false;
+  const currentLogsLlmOnly = gs.data?.logs_llm_only ?? true;
+
 
   const displayPort = draftPort ?? String(currentPort);
   const displayProxyUrl = draftProxyUrl ?? currentProxyUrl;
@@ -62,6 +65,7 @@ export function GeneralSettings() {
   const displayLogsEnabled = draftLogsEnabled ?? currentLogsEnabled;
   const displayLogsCapacity = draftLogsCapacity ?? String(currentLogsCapacity);
   const displayLogsCaptureBody = draftLogsCaptureBody ?? currentLogsCaptureBody;
+  const displayLogsLlmOnly = draftLogsLlmOnly ?? currentLogsLlmOnly;
 
   const isDirty =
     draftPort !== null ||
@@ -80,7 +84,8 @@ export function GeneralSettings() {
     draftAutoDownload !== null ||
     draftLogsEnabled !== null ||
     draftLogsCapacity !== null ||
-    draftLogsCaptureBody !== null;
+    draftLogsCaptureBody !== null ||
+    draftLogsLlmOnly !== null;
 
   const handleSave = useCallback(async () => {
     const patch: Record<string, unknown> = {};
@@ -165,6 +170,10 @@ export function GeneralSettings() {
       patch.logs_capture_body = draftLogsCaptureBody;
     }
 
+    if (draftLogsLlmOnly !== null) {
+      patch.logs_llm_only = draftLogsLlmOnly;
+    }
+
     await gs.save(patch);
     setDraftPort(null);
     setDraftProxyUrl(null);
@@ -183,7 +192,8 @@ export function GeneralSettings() {
     setDraftLogsEnabled(null);
     setDraftLogsCapacity(null);
     setDraftLogsCaptureBody(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftAutoUpdate, draftAutoDownload, draftLogsEnabled, draftLogsCapacity, draftLogsCaptureBody, gs]);
+    setDraftLogsLlmOnly(null);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftAutoUpdate, draftAutoDownload, draftLogsEnabled, draftLogsCapacity, draftLogsCaptureBody, draftLogsLlmOnly, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -297,6 +307,22 @@ export function GeneralSettings() {
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("logsCaptureBodyHint")}</p>
+          </div>
+
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="logs-llm-only"
+                checked={displayLogsLlmOnly}
+                onChange={(e) => setDraftLogsLlmOnly((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="logs-llm-only" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("logsLlmOnly")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("logsLlmOnlyHint")}</p>
           </div>
 
           {/* Server Port */}

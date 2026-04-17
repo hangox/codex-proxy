@@ -112,6 +112,7 @@ export function createSettingsRoutes(): Hono {
       logs_enabled: config.logs.enabled,
       logs_capacity: config.logs.capacity,
       logs_capture_body: config.logs.capture_body,
+      logs_llm_only: config.logs.llm_only,
     });
   });
 
@@ -146,6 +147,7 @@ export function createSettingsRoutes(): Hono {
       logs_enabled?: boolean;
       logs_capacity?: number;
       logs_capture_body?: boolean;
+      logs_llm_only?: boolean;
     };
 
     // --- validation ---
@@ -283,6 +285,10 @@ export function createSettingsRoutes(): Hono {
         if (!data.logs) data.logs = {};
         (data.logs as Record<string, unknown>).capture_body = body.logs_capture_body;
       }
+      if (body.logs_llm_only !== undefined) {
+        if (!data.logs) data.logs = {};
+        (data.logs as Record<string, unknown>).llm_only = body.logs_llm_only;
+      }
     });
     reloadAllConfigs();
 
@@ -309,6 +315,7 @@ export function createSettingsRoutes(): Hono {
       logs_enabled: updated.logs?.enabled ?? false,
       logs_capacity: updated.logs?.capacity ?? 2000,
       logs_capture_body: updated.logs?.capture_body ?? false,
+      logs_llm_only: updated.logs?.llm_only ?? true,
       restart_required: restartRequired,
     });
   });

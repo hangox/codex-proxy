@@ -1,10 +1,19 @@
 import { useMemo } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useLogs } from "../../../shared/hooks/use-logs";
+import { useSettings } from "../../../shared/hooks/use-settings";
+import { useGeneralSettings } from "../../../shared/hooks/use-general-settings";
 
 export function LogsPage({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
   const logs = useLogs();
+  const settings = useSettings();
+  const gs = useGeneralSettings(settings.apiKey);
+  const logsLlmOnly = gs.data?.logs_llm_only ?? true;
+
+  const toggleLogsMode = async () => {
+    await gs.save({ logs_llm_only: !logsLlmOnly });
+  };
 
   const list = useMemo(() => {
     return logs.records.map((r) => ({
@@ -44,6 +53,14 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
             </button>
           ))}
         </div>
+
+        <button
+          class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-200 text-slate-700 hover:bg-slate-300"
+          onClick={toggleLogsMode}
+          disabled={gs.saving}
+        >
+          {logsLlmOnly ? t("logsModeLlmOnlyToggle") : t("logsModeAllToggle")}
+        </button>
 
         <input
           class="px-2.5 py-1 rounded-md text-xs bg-white dark:bg-bg-dark border border-slate-200 dark:border-border-dark"

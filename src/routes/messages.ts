@@ -128,8 +128,11 @@ export function createMessagesRoutes(
 
     const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
       injectHostedWebSearch: !allowUnauthenticated,
+      mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
     });
-    codexRequest.useWebSocket = true;
+    if (!allowUnauthenticated) {
+      codexRequest.useWebSocket = true;
+    }
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const proxyReq = {
       codexRequest,

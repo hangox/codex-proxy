@@ -31,6 +31,27 @@ describe("LogStore", () => {
     expect(result.records.map((r) => r.id)).toEqual(["2", "1"]);
   });
 
+  it("paginates from newest records first across pages", async () => {
+    for (const id of ["1", "2", "3", "4"]) {
+      store.enqueue({
+        id,
+        requestId: `r${id}`,
+        direction: "ingress",
+        ts: new Date().toISOString(),
+        method: "POST",
+        path: `/${id}`,
+      });
+    }
+
+    await Promise.resolve();
+
+    const page0 = store.list({ limit: 2, offset: 0 });
+    const page1 = store.list({ limit: 2, offset: 2 });
+
+    expect(page0.records.map((r) => r.id)).toEqual(["4", "3"]);
+    expect(page1.records.map((r) => r.id)).toEqual(["2", "1"]);
+  });
+
   it("filters by direction and search", async () => {
     store.enqueue({
       id: "1",

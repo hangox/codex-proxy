@@ -1,3 +1,4 @@
+import { getConfig } from "../config.js";
 import { redactJson } from "./redact.js";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -10,6 +11,22 @@ function toCount(value: unknown): number | undefined {
 
 function summarizeHeaders(headers: Record<string, unknown>): Record<string, unknown> {
   return redactJson(headers) as Record<string, unknown>;
+}
+
+function shouldCaptureBody(): boolean {
+  try {
+    return getConfig().logs.capture_body;
+  } catch {
+    return false;
+  }
+}
+
+function withBodyOrSummary(summary: Record<string, unknown>, body: unknown): Record<string, unknown> {
+  if (!shouldCaptureBody()) return summary;
+  return {
+    ...summary,
+    body: redactJson(body),
+  };
 }
 
 export function summarizeRequestForLog(route: string, body: unknown, meta: Record<string, unknown> = {}): Record<string, unknown> {
@@ -28,7 +45,7 @@ export function summarizeRequestForLog(route: string, body: unknown, meta: Recor
       summary.previous_response_id = typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
       summary.headers = isRecord(meta.headers) ? summarizeHeaders(meta.headers) : undefined;
     }
-    return summary;
+    return withBodyOrSummary(summary, body);
   }
 
   if (route === "messages") {
@@ -42,7 +59,7 @@ export function summarizeRequestForLog(route: string, body: unknown, meta: Recor
       summary.tools = toCount(body.tools);
       summary.headers = isRecord(meta.headers) ? summarizeHeaders(meta.headers) : undefined;
     }
-    return summary;
+    return withBodyOrSummary(summary, body);
   }
 
   if (route === "responses") {
@@ -57,8 +74,8 @@ export function summarizeRequestForLog(route: string, body: unknown, meta: Recor
       summary.text_format = isRecord(body.text) && isRecord(body.text.format) ? body.text.format.type : undefined;
       summary.headers = isRecord(meta.headers) ? summarizeHeaders(meta.headers) : undefined;
     }
-    return summary;
+    return withBodyOrSummary(summary, body);
   }
 
-  return redactJson(summary) as Record<string, unknown>;
+  return withBodyOrSummary(redactJson(summary) as Record<string, unknown>, body);
 }

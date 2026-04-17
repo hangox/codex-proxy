@@ -113,7 +113,8 @@ export class LogStore {
     const total = results.length;
     const limit = normalizeLimit(query.limit);
     const offset = normalizeOffset(query.offset);
-    const sliced = results.slice(offset, offset + limit).reverse();
+    const newestFirst = results.toReversed();
+    const sliced = newestFirst.slice(offset, offset + limit);
 
     return { records: sliced, total, offset, limit };
   }

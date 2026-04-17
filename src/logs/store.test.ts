@@ -115,4 +115,27 @@ describe("LogStore", () => {
       nested: { token: "***" },
     });
   });
+
+  it("trims existing records when capacity is lowered", async () => {
+    for (const id of ["1", "2", "3", "4"]) {
+      store.enqueue({
+        id,
+        requestId: `r${id}`,
+        direction: "ingress",
+        ts: new Date().toISOString(),
+        method: "POST",
+        path: `/${id}`,
+      });
+    }
+
+    await Promise.resolve();
+
+    const state = store.setState({ capacity: 2 });
+    const result = store.list({ limit: 10, offset: 0 });
+
+    expect(state.capacity).toBe(2);
+    expect(state.size).toBe(2);
+    expect(state.dropped).toBe(2);
+    expect(result.records.map((r) => r.id)).toEqual(["4", "3"]);
+  });
 });

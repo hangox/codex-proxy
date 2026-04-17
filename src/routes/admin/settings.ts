@@ -293,8 +293,11 @@ export function createSettingsRoutes(): Hono {
     });
     reloadAllConfigs();
 
-    if (body.logs_enabled !== undefined) {
-      logStore.setState({ enabled: body.logs_enabled });
+    if (body.logs_enabled !== undefined || body.logs_capacity !== undefined) {
+      logStore.setState({
+        enabled: body.logs_enabled,
+        capacity: body.logs_capacity,
+      });
     }
 
     const updated = getConfig();

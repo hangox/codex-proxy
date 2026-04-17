@@ -39,6 +39,10 @@ export interface CodexHostedWebSearchTool {
 
 export type CodexTool = CodexToolDefinition | CodexHostedWebSearchTool;
 
+export interface AnthropicToolConversionOptions {
+  mapClaudeCodeWebSearch?: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -68,21 +72,41 @@ function hasGeminiHostedSearch(tool: Record<string, unknown>): boolean {
   return isRecord(tool.googleSearch) || isRecord(tool.googleSearchRetrieval);
 }
 
-function isAnthropicHostedSearchTool(tool: Record<string, unknown>): boolean {
+function looksLikeClaudeCodeWebSearchTool(tool: Record<string, unknown>): boolean {
+  if (tool.name !== "WebSearch") return false;
+
+  const description = typeof tool.description === "string" ? tool.description.toLowerCase() : "";
+  if (!description.includes("search") || !description.includes("web")) return false;
+
+  if (!isRecord(tool.input_schema)) return false;
+  const properties = isRecord(tool.input_schema.properties) ? tool.input_schema.properties : null;
+  return isRecord(properties?.query);
+}
+
+function isAnthropicHostedSearchTool(
+  tool: Record<string, unknown>,
+  options?: AnthropicToolConversionOptions,
+): boolean {
   if (tool.type === "web_search_20250305" || tool.type === "web_search") return true;
-  // Claude Code 内置工具名是 WebSearch；这里改走 Codex hosted search，
-  // 避免把搜索降级成需要客户端执行的普通 function tool。
-  return tool.name === "WebSearch";
+  return options?.mapClaudeCodeWebSearch === true && looksLikeClaudeCodeWebSearchTool(tool);
 }
 
 function hasAnthropicHostedSearchToolChoice(
   choiceName: string,
   tools: AnthropicMessagesRequest["tools"],
+  options?: AnthropicToolConversionOptions,
 ): boolean {
-  if (choiceName === "WebSearch") return true;
+  if (choiceName === "WebSearch" && !tools) return options?.mapClaudeCodeWebSearch === true;
   if (!tools) return false;
   return tools.some((tool) => {
     if (!isRecord(tool)) return false;
+    if (
+      choiceName === "WebSearch" &&
+      options?.mapClaudeCodeWebSearch === true &&
+      looksLikeClaudeCodeWebSearchTool(tool)
+    ) {
+      return true;
+    }
     if (tool.type !== "web_search_20250305" && tool.type !== "web_search") {
       return false;
     }
@@ -153,10 +177,11 @@ export function openAIFunctionsToCodex(
 
 export function anthropicToolsToCodex(
   tools: NonNullable<AnthropicMessagesRequest["tools"]>,
+  options?: AnthropicToolConversionOptions,
 ): CodexTool[] {
   const defs: CodexTool[] = [];
   for (const t of tools) {
-    if (isRecord(t) && isAnthropicHostedSearchTool(t)) {
+    if (isRecord(t) && isAnthropicHostedSearchTool(t, options)) {
       defs.push({ type: "web_search" });
       continue;
     }
@@ -176,6 +201,7 @@ export function anthropicToolsToCodex(
 export function anthropicToolChoiceToCodex(
   choice: AnthropicMessagesRequest["tool_choice"],
   tools?: AnthropicMessagesRequest["tools"],
+  options?: AnthropicToolConversionOptions,
 ): string | { type: "function"; name: string } | { type: "web_search" } | undefined {
   if (!choice) return undefined;
   switch (choice.type) {
@@ -184,7 +210,7 @@ export function anthropicToolChoiceToCodex(
     case "any":
       return "required";
     case "tool":
-      if (hasAnthropicHostedSearchToolChoice(choice.name, tools)) {
+      if (hasAnthropicHostedSearchToolChoice(choice.name, tools, options)) {
         return { type: "web_search" };
       }
       return { type: "function", name: choice.name };

@@ -358,6 +358,28 @@ describe("translateAnthropicToCodexRequest", () => {
       expect(anthropicToolChoiceToCodex).toHaveBeenCalledWith(toolChoice, tools);
     });
 
+    it("passes Claude Code WebSearch mapping option when requested", () => {
+      const tools = [
+        { name: "WebSearch", description: "Search the web", input_schema: {} },
+      ];
+      const toolChoice = { type: "tool" as const, name: "WebSearch" };
+      translateAnthropicToCodexRequest(
+        makeRequest({ tools, tool_choice: toolChoice }),
+        undefined,
+        { mapClaudeCodeWebSearch: true },
+      );
+
+      expect(anthropicToolsToCodex).toHaveBeenCalledWith(
+        tools,
+        { mapClaudeCodeWebSearch: true },
+      );
+      expect(anthropicToolChoiceToCodex).toHaveBeenCalledWith(
+        toolChoice,
+        tools,
+        { mapClaudeCodeWebSearch: true },
+      );
+    });
+
     it("does not inject hosted web_search by default", () => {
       const result = translateAnthropicToCodexRequest(makeRequest());
 

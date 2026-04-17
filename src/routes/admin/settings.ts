@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { getConfig, getLocalConfigPath, reloadAllConfigs, ROTATION_STRATEGIES } from "../../config.js";
+import { logStore } from "../../logs/store.js";
 import { mutateYaml } from "../../utils/yaml-mutate.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
 
@@ -291,6 +292,10 @@ export function createSettingsRoutes(): Hono {
       }
     });
     reloadAllConfigs();
+
+    if (body.logs_enabled !== undefined) {
+      logStore.setState({ enabled: body.logs_enabled });
+    }
 
     const updated = getConfig();
     const restartRequired =

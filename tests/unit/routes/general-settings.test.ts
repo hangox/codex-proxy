@@ -46,8 +46,16 @@ vi.mock("@src/paths.js", () => ({
   isEmbedded: vi.fn(() => false),
 }));
 
+const mockLogStore = vi.hoisted(() => ({
+  setState: vi.fn(),
+}));
+
 vi.mock("@src/utils/yaml-mutate.js", () => ({
   mutateYaml: vi.fn(),
+}));
+
+vi.mock("@src/logs/store.js", () => ({
+  logStore: mockLogStore,
 }));
 
 vi.mock("@src/tls/transport.js", () => ({
@@ -146,5 +154,17 @@ describe("POST /admin/general-settings", () => {
     expect(data.restart_required).toBe(false);
     expect(mutateYaml).toHaveBeenCalledOnce();
     expect(reloadAllConfigs).toHaveBeenCalledOnce();
+  });
+
+  it("syncs log store when logs_enabled changes", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ logs_enabled: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockLogStore.setState).toHaveBeenCalledWith({ enabled: true });
   });
 });

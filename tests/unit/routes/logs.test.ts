@@ -1,11 +1,29 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 
+const mockConfig = vi.hoisted(() => ({
+  getLocalConfigPath: vi.fn(() => "/tmp/test/local.yaml"),
+  reloadAllConfigs: vi.fn(),
+}));
+
+const mockYaml = vi.hoisted(() => ({
+  mutateYaml: vi.fn(),
+}));
+
 const store = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
   clear: vi.fn(),
   setState: vi.fn(),
+}));
+
+vi.mock("../../config.js", () => ({
+  getLocalConfigPath: mockConfig.getLocalConfigPath,
+  reloadAllConfigs: mockConfig.reloadAllConfigs,
+}));
+
+vi.mock("../../utils/yaml-mutate.js", () => ({
+  mutateYaml: mockYaml.mutateYaml,
 }));
 
 vi.mock("../../logs/store.js", () => ({
@@ -20,6 +38,10 @@ describe("log routes", () => {
     store.get.mockReset();
     store.clear.mockReset();
     store.setState.mockReset();
+    mockConfig.getLocalConfigPath.mockReset();
+    mockConfig.getLocalConfigPath.mockReturnValue("/tmp/test/local.yaml");
+    mockConfig.reloadAllConfigs.mockReset();
+    mockYaml.mutateYaml.mockReset();
   });
 
   it("returns paginated logs", async () => {
@@ -95,5 +117,23 @@ describe("log routes", () => {
     const res = await app.request("/admin/logs/abc");
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ id: "abc", path: "/health" });
+  });
+
+  it("persists enabled state changes while keeping paused in memory", async () => {
+    store.setState.mockReturnValue({ enabled: false, paused: true, dropped: 0, size: 0, capacity: 2000 });
+
+    const app = new Hono();
+    app.route("/", createLogRoutes());
+
+    const res = await app.request("/admin/logs/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, paused: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockYaml.mutateYaml).toHaveBeenCalledOnce();
+    expect(mockConfig.reloadAllConfigs).toHaveBeenCalledOnce();
+    expect(store.setState).toHaveBeenCalledWith({ enabled: false, paused: true });
   });
 });

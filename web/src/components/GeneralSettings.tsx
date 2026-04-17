@@ -22,10 +22,6 @@ export function GeneralSettings() {
   const [draftRequestInterval, setDraftRequestInterval] = useState<string | null>(null);
   const [draftAutoUpdate, setDraftAutoUpdate] = useState<boolean | null>(null);
   const [draftAutoDownload, setDraftAutoDownload] = useState<boolean | null>(null);
-  const [draftLogsEnabled, setDraftLogsEnabled] = useState<boolean | null>(null);
-  const [draftLogsCapacity, setDraftLogsCapacity] = useState<string | null>(null);
-  const [draftLogsCaptureBody, setDraftLogsCaptureBody] = useState<boolean | null>(null);
-  const [draftLogsLlmOnly, setDraftLogsLlmOnly] = useState<boolean | null>(null);
   const [collapsed, setCollapsed] = useState(true);
 
   const currentPort = gs.data?.port ?? 8080;
@@ -42,11 +38,6 @@ export function GeneralSettings() {
   const currentRequestInterval = gs.data?.request_interval_ms ?? 50;
   const currentAutoUpdate = gs.data?.auto_update ?? true;
   const currentAutoDownload = gs.data?.auto_download ?? false;
-  const currentLogsEnabled = gs.data?.logs_enabled ?? false;
-  const currentLogsCapacity = gs.data?.logs_capacity ?? 2000;
-  const currentLogsCaptureBody = gs.data?.logs_capture_body ?? false;
-  const currentLogsLlmOnly = gs.data?.logs_llm_only ?? true;
-
 
   const displayPort = draftPort ?? String(currentPort);
   const displayProxyUrl = draftProxyUrl ?? currentProxyUrl;
@@ -62,10 +53,6 @@ export function GeneralSettings() {
   const displayRequestInterval = draftRequestInterval ?? String(currentRequestInterval);
   const displayAutoUpdate = draftAutoUpdate ?? currentAutoUpdate;
   const displayAutoDownload = draftAutoDownload ?? currentAutoDownload;
-  const displayLogsEnabled = draftLogsEnabled ?? currentLogsEnabled;
-  const displayLogsCapacity = draftLogsCapacity ?? String(currentLogsCapacity);
-  const displayLogsCaptureBody = draftLogsCaptureBody ?? currentLogsCaptureBody;
-  const displayLogsLlmOnly = draftLogsLlmOnly ?? currentLogsLlmOnly;
 
   const isDirty =
     draftPort !== null ||
@@ -81,11 +68,7 @@ export function GeneralSettings() {
     draftMaxConcurrent !== null ||
     draftRequestInterval !== null ||
     draftAutoUpdate !== null ||
-    draftAutoDownload !== null ||
-    draftLogsEnabled !== null ||
-    draftLogsCapacity !== null ||
-    draftLogsCaptureBody !== null ||
-    draftLogsLlmOnly !== null;
+    draftAutoDownload !== null;
 
   const handleSave = useCallback(async () => {
     const patch: Record<string, unknown> = {};
@@ -156,24 +139,6 @@ export function GeneralSettings() {
       patch.auto_download = draftAutoDownload;
     }
 
-    if (draftLogsEnabled !== null) {
-      patch.logs_enabled = draftLogsEnabled;
-    }
-
-    if (draftLogsCapacity !== null) {
-      const val = parseInt(draftLogsCapacity, 10);
-      if (isNaN(val) || val < 1) return;
-      patch.logs_capacity = val;
-    }
-
-    if (draftLogsCaptureBody !== null) {
-      patch.logs_capture_body = draftLogsCaptureBody;
-    }
-
-    if (draftLogsLlmOnly !== null) {
-      patch.logs_llm_only = draftLogsLlmOnly;
-    }
-
     await gs.save(patch);
     setDraftPort(null);
     setDraftProxyUrl(null);
@@ -189,11 +154,7 @@ export function GeneralSettings() {
     setDraftRequestInterval(null);
     setDraftAutoUpdate(null);
     setDraftAutoDownload(null);
-    setDraftLogsEnabled(null);
-    setDraftLogsCapacity(null);
-    setDraftLogsCaptureBody(null);
-    setDraftLogsLlmOnly(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftAutoUpdate, draftAutoDownload, draftLogsEnabled, draftLogsCapacity, draftLogsCaptureBody, draftLogsLlmOnly, gs]);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftAutoUpdate, draftAutoDownload, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -260,69 +221,6 @@ export function GeneralSettings() {
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsAutoDownloadHint")}</p>
-          </div>
-
-          {/* Logs */}
-          <div class="space-y-1">
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="logs-enabled"
-                checked={displayLogsEnabled}
-                onChange={(e) => setDraftLogsEnabled((e.target as HTMLInputElement).checked)}
-                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
-              />
-              <label for="logs-enabled" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
-                {t("logsEnabled")}
-              </label>
-            </div>
-            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("logsEnabledHint")}</p>
-          </div>
-
-          <div class="space-y-1.5">
-            <label class="text-xs font-semibold text-slate-700 dark:text-text-main">
-              {t("logsCapacity")}
-            </label>
-            <p class="text-xs text-slate-400 dark:text-text-dim">{t("logsCapacityHint")}</p>
-            <input
-              type="number"
-              min="1"
-              class={`${inputCls} max-w-[160px]`}
-              value={displayLogsCapacity}
-              onInput={(e) => setDraftLogsCapacity((e.target as HTMLInputElement).value)}
-            />
-          </div>
-
-          <div class="space-y-1">
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="logs-capture-body"
-                checked={displayLogsCaptureBody}
-                onChange={(e) => setDraftLogsCaptureBody((e.target as HTMLInputElement).checked)}
-                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
-              />
-              <label for="logs-capture-body" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
-                {t("logsCaptureBody")}
-              </label>
-            </div>
-            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("logsCaptureBodyHint")}</p>
-          </div>
-
-          <div class="space-y-1">
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="logs-llm-only"
-                checked={displayLogsLlmOnly}
-                onChange={(e) => setDraftLogsLlmOnly((e.target as HTMLInputElement).checked)}
-                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
-              />
-              <label for="logs-llm-only" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
-                {t("logsLlmOnly")}
-              </label>
-            </div>
-            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("logsLlmOnlyHint")}</p>
           </div>
 
           {/* Server Port */}

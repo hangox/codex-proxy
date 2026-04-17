@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { getLocalConfigPath, reloadAllConfigs } from "../../config.js";
 import { logStore, type LogDirection } from "../../logs/store.js";
+import { mutateYaml } from "../../utils/yaml-mutate.js";
 
 const ListLogsQuerySchema = z.object({
   limit: z.preprocess((value) => value === undefined ? undefined : Number(value), z.number().int().min(1).max(200).optional()),
@@ -44,6 +46,15 @@ export function createLogRoutes(): Hono {
     const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
     const enabled = typeof body.enabled === "boolean" ? body.enabled : undefined;
     const paused = typeof body.paused === "boolean" ? body.paused : undefined;
+
+    if (enabled !== undefined) {
+      mutateYaml(getLocalConfigPath(), (data) => {
+        if (!data.logs) data.logs = {};
+        (data.logs as Record<string, unknown>).enabled = enabled;
+      });
+      reloadAllConfigs();
+    }
+
     return c.json(logStore.setState({ enabled, paused }));
   });
 

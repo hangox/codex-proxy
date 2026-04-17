@@ -10,12 +10,16 @@ import {
 } from "../translation/codex-to-openai.js";
 import { getConfig } from "../config.js";
 import { parseModelName, buildDisplayModelName, getModelAliases, getModelInfo } from "../models/model-store.js";
+import { enqueueLogEntry } from "../logs/entry.js";
+import { getRealClientIp } from "../utils/get-real-client-ip.js";
+import { randomUUID } from "crypto";
 import {
   handleProxyRequest,
   handleDirectRequest,
   type FormatAdapter,
 } from "./shared/proxy-handler.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
+import { summarizeRequestForLog } from "../logs/request-summary.js";
 
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
@@ -125,6 +129,20 @@ export function createChatRoutes(
       isStreaming: req.stream,
       tupleSchema,
     };
+
+    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+    enqueueLogEntry({
+      requestId,
+      direction: "ingress",
+      method: c.req.method,
+      path: c.req.path,
+      model: req.model,
+      stream: !!req.stream,
+      request: summarizeRequestForLog("chat", req, {
+        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
+        headers: Object.fromEntries(c.req.raw.headers.entries()),
+      }),
+    });
 
     if (routeMatch.kind === "api-key" || routeMatch.kind === "adapter") {
       const directReq = {

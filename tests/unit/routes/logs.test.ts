@@ -17,20 +17,20 @@ const store = vi.hoisted(() => ({
   setState: vi.fn(),
 }));
 
-vi.mock("../../config.js", () => ({
+vi.mock("@src/config.js", () => ({
   getLocalConfigPath: mockConfig.getLocalConfigPath,
   reloadAllConfigs: mockConfig.reloadAllConfigs,
 }));
 
-vi.mock("../../utils/yaml-mutate.js", () => ({
+vi.mock("@src/utils/yaml-mutate.js", () => ({
   mutateYaml: mockYaml.mutateYaml,
 }));
 
-vi.mock("../../logs/store.js", () => ({
+vi.mock("@src/logs/store.js", () => ({
   logStore: store,
 }));
 
-import { createLogRoutes } from "../admin/logs.js";
+import { createLogRoutes } from "@src/routes/admin/logs.js";
 
 describe("log routes", () => {
   beforeEach(() => {

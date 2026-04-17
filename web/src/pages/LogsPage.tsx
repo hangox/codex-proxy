@@ -122,15 +122,15 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                 disabled={!logs.hasPrev}
                 onClick={logs.prevPage}
               >
-                Prev
+                {t("logsPrev")}
               </button>
-              <span>{logs.total} total · {pageInfo}</span>
+              <span>{t("logsPageSummary", { total: logs.total, range: pageInfo })}</span>
               <button
                 class="px-2 py-1 rounded bg-slate-100 dark:bg-border-dark disabled:opacity-50"
                 disabled={!logs.hasNext}
                 onClick={logs.nextPage}
               >
-                Next
+                {t("logsNext")}
               </button>
             </div>
           </div>

@@ -2,6 +2,7 @@ import { useState, useCallback } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useOllamaSettings } from "../../../shared/hooks/use-ollama-settings";
 import { useSettings } from "../../../shared/hooks/use-settings";
+import { isNetworkExposedHost } from "../../../shared/utils/host";
 
 export function OllamaBridgeSettings() {
   const t = useT();
@@ -27,7 +28,7 @@ export function OllamaBridgeSettings() {
   const displayPort = draftPort ?? String(currentPort);
   const displayVersion = draftVersion ?? currentVersion;
   const displayDisableVision = draftDisableVision ?? currentDisableVision;
-  const exposesNetwork = displayHost === "0.0.0.0" || displayHost === "::";
+  const exposesNetwork = isNetworkExposedHost(displayHost);
 
   const isDirty =
     draftEnabled !== null ||

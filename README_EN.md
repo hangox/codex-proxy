@@ -402,6 +402,8 @@ For Docker deployments that need host access to `11434`:
 2. Uncomment the `127.0.0.1:${OLLAMA_BRIDGE_PORT:-11434}:11434` port mapping in `docker-compose.yml`.
 3. Keep the host binding on `127.0.0.1` unless you intentionally want to expose an unauthenticated Ollama API.
 
+Browser CORS access is limited to loopback origins such as `localhost`, `127.x.x.x`, and `::1`; non-local web origins are not allowed to read bridge responses.
+
 ### Environment Variable Overrides
 
 | Variable | Overrides |

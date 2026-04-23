@@ -84,6 +84,8 @@ The optional bridge runs on a separate listener, defaulting to `http://127.0.0.1
 It is disabled by default and can be controlled through Dashboard settings or the admin
 API. Ollama endpoints are intentionally unauthenticated; keep the listener bound to
 localhost unless you explicitly trust the network.
+Browser CORS access is restricted to loopback origins (`localhost`, `127.x.x.x`,
+and `::1`) so non-local web pages cannot read bridge responses by default.
 
 | Method | Path | Description |
 |--------|------|-------------|

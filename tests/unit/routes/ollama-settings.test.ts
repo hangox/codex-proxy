@@ -238,6 +238,29 @@ describe("Ollama admin settings routes", () => {
     expect(restartOllamaBridge).not.toHaveBeenCalled();
   });
 
+  it("returns 400 for malformed or non-object JSON bodies", async () => {
+    const app = createApp();
+
+    const malformed = await app.request("/admin/ollama-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ error: "Invalid JSON body" });
+
+    const nonObject = await app.request("/admin/ollama-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(["enabled"]),
+    });
+    expect(nonObject.status).toBe(400);
+    expect(await nonObject.json()).toEqual({ error: "JSON body must be an object" });
+
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(restartOllamaBridge).not.toHaveBeenCalled();
+  });
+
   it("returns restart errors in the status payload", async () => {
     state.restartError = "listen EADDRINUSE: address already in use";
     const app = createApp();

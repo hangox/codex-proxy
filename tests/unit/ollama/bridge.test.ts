@@ -37,24 +37,41 @@ describe("Ollama bridge routes", () => {
     vi.unstubAllGlobals();
   });
 
-  it("returns the configured Ollama version and CORS headers", async () => {
+  it("returns the configured Ollama version without wildcard CORS by default", async () => {
     const app = createApp();
 
     const res = await app.request("/api/version");
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
     expect(await res.json()).toEqual({ version: "0.18.3-test" });
   });
 
-  it("returns CORS preflight responses", async () => {
+  it("only permits CORS for loopback origins", async () => {
     const app = createApp();
 
-    const res = await app.request("/api/chat", { method: "OPTIONS" });
+    const localhost = await app.request("/api/version", {
+      headers: { Origin: "http://localhost:3000" },
+    });
+    expect(localhost.status).toBe(200);
+    expect(localhost.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
+    expect(localhost.headers.get("vary")).toBe("Origin");
 
-    expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-methods")).toContain("POST");
-    expect(res.headers.get("access-control-allow-headers")).toContain("Authorization");
+    const loopbackPreflight = await app.request("/api/chat", {
+      method: "OPTIONS",
+      headers: { Origin: "http://127.0.0.1:5173" },
+    });
+    expect(loopbackPreflight.status).toBe(204);
+    expect(loopbackPreflight.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5173");
+    expect(loopbackPreflight.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(loopbackPreflight.headers.get("access-control-allow-headers")).toContain("Authorization");
+
+    const externalPreflight = await app.request("/api/chat", {
+      method: "OPTIONS",
+      headers: { Origin: "https://example.com" },
+    });
+    expect(externalPreflight.status).toBe(403);
+    expect(externalPreflight.headers.get("access-control-allow-origin")).toBeNull();
   });
 
   it("maps the model catalog to Ollama tags", async () => {
@@ -287,7 +304,7 @@ describe("Ollama bridge routes", () => {
     fetchMock.mockResolvedValueOnce(json({ id: "ok" }, 201, { "Cache-Control": "no-store" }));
     const app = createApp();
 
-    const res = await app.request("/v1/chat/completions", {
+    const res = await app.request("/v1/chat/completions?timeout=10&trace=yes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -299,7 +316,7 @@ describe("Ollama bridge routes", () => {
     expect(res.status).toBe(201);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await res.json()).toEqual({ id: "ok" });
-    expect(fetchMock).toHaveBeenCalledWith("http://upstream.test/v1/chat/completions", expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith("http://upstream.test/v1/chat/completions?timeout=10&trace=yes", expect.any(Object));
     const init = fetchMock.mock.calls[0][1]!;
     const headers = new Headers(init.headers);
     expect(init.method).toBe("POST");
@@ -341,5 +358,25 @@ describe("Ollama bridge routes", () => {
 
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: "model unavailable" });
+  });
+
+  it("aborts malformed upstream SSE when the pending buffer grows too large", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(`data: ${"x".repeat(10 * 1024 * 1024)}`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+    const app = createApp();
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.4-mini",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.text()).rejects.toThrow("SSE buffer exceeded");
   });
 });

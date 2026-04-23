@@ -54,3 +54,9 @@ quota:
   skip_exhausted: true
 update:
   auto_update: true
+ollama:
+  enabled: false
+  host: 127.0.0.1
+  port: 11434
+  version: "0.18.3"
+  disable_vision: false

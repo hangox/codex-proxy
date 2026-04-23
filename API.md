@@ -78,6 +78,49 @@ Native Codex Responses API passthrough (WebSocket transport).
 - Streaming: SSE with `response.created`, `response.output_text.delta`, `response.completed`
 - Non-streaming: `{ response, usage, responseId }`
 
+### Ollama-Compatible Bridge
+
+The optional bridge runs on a separate listener, defaulting to `http://127.0.0.1:11434`.
+It is disabled by default and can be controlled through Dashboard settings or the admin
+API. Ollama endpoints are intentionally unauthenticated; keep the listener bound to
+localhost unless you explicitly trust the network.
+Browser CORS access is restricted to loopback origins (`localhost`, `127.x.x.x`,
+and `::1`) so non-local web pages cannot read bridge responses by default. The
+bridge injects the configured Codex Proxy API key for `/v1/*` passthrough
+requests, so exposing it beyond localhost also exposes the main proxy API
+without requiring clients to know that key.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/version` | Version probe → `{ version }` |
+| GET | `/api/tags` | Model list in Ollama format |
+| POST | `/api/show` | Model metadata and capabilities |
+| POST | `/api/chat` | Chat completions, streaming as NDJSON by default |
+| Any | `/v1/*` | OpenAI-compatible passthrough to the main proxy |
+
+```jsonc
+// POST http://127.0.0.1:11434/api/chat
+{
+  "model": "codex",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "stream": true,
+  "think": "medium"  // optional: false | true | low | medium | high | xhigh
+}
+```
+
+Supported request mappings:
+
+| Ollama field | Upstream OpenAI field |
+|--------------|-----------------------|
+| `messages[].images` | `content[].image_url` data URLs |
+| `tools` | `tools` |
+| `think` | `reasoning_effort` |
+| `format: "json"` | `response_format: { type: "json_object" }` |
+| `format: { ... }` | strict JSON schema response format |
+| `options.temperature` | `temperature` |
+| `options.top_p` | `top_p` |
+| `options.num_predict` | `max_tokens` |
+
 ---
 
 ## Models
@@ -216,6 +259,9 @@ Native Codex Responses API passthrough (WebSocket transport).
 | POST | `/admin/rotation-settings` | Set rotation strategy |
 | GET | `/admin/quota-settings` | Get quota settings |
 | POST | `/admin/quota-settings` | Set quota settings |
+| GET | `/admin/ollama-settings` | Get Ollama Bridge settings plus runtime status |
+| POST | `/admin/ollama-settings` | Persist Ollama Bridge settings and restart the bridge |
+| GET | `/admin/ollama-status` | Get Ollama Bridge runtime status |
 
 ### Diagnostics
 

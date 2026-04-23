@@ -44,6 +44,13 @@ describe("ConfigSchema", () => {
     expect(result.quota.skip_exhausted).toBe(true);
     expect(result.update.auto_update).toBe(true);
     expect(result.session.ttl_minutes).toBe(1440);
+    expect(result.ollama).toEqual({
+      enabled: false,
+      host: "127.0.0.1",
+      port: 11434,
+      version: "0.18.3",
+      disable_vision: false,
+    });
   });
 
   it("respects overridden values", () => {
@@ -57,6 +64,13 @@ describe("ConfigSchema", () => {
       tls: { force_http11: true },
       quota: { skip_exhausted: false },
       update: { auto_update: false },
+      ollama: {
+        enabled: true,
+        host: "0.0.0.0",
+        port: 11435,
+        version: "0.20.1",
+        disable_vision: true,
+      },
     });
 
     expect(result.api.timeout_seconds).toBe(120);
@@ -69,6 +83,13 @@ describe("ConfigSchema", () => {
     expect(result.tls.force_http11).toBe(true);
     expect(result.quota.skip_exhausted).toBe(false);
     expect(result.update.auto_update).toBe(false);
+    expect(result.ollama).toEqual({
+      enabled: true,
+      host: "0.0.0.0",
+      port: 11435,
+      version: "0.20.1",
+      disable_vision: true,
+    });
   });
 
   it("rejects port out of range", () => {
@@ -81,6 +102,35 @@ describe("ConfigSchema", () => {
       api: {}, client: {}, model: {}, auth: {}, server: { port: 70000 }, session: {},
     });
     expect(result2.success).toBe(false);
+  });
+
+  it("rejects Ollama bridge port out of range", () => {
+    const result = ConfigSchema.safeParse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { port: 0 },
+    });
+    expect(result.success).toBe(false);
+
+    const result2 = ConfigSchema.safeParse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { port: 70000 },
+    });
+    expect(result2.success).toBe(false);
+  });
+
+  it("trims and validates Ollama bridge version", () => {
+    const result = ConfigSchema.parse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { version: " 0.20.1 " },
+    });
+    expect(result.ollama.version).toBe("0.20.1");
+
+    const empty = ConfigSchema.safeParse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { version: "   " },
+    });
+    expect(empty.success).toBe(false);
+
+    const tooLong = ConfigSchema.safeParse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { version: "x".repeat(65) },
+    });
+    expect(tooLong.success).toBe(false);
   });
 
   it("rejects invalid rotation strategy", () => {

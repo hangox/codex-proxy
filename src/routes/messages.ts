@@ -17,6 +17,9 @@ import {
 } from "../translation/codex-to-anthropic.js";
 import { getConfig } from "../config.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
+import { enqueueLogEntry } from "../logs/entry.js";
+import { getRealClientIp } from "../utils/get-real-client-ip.js";
+import { randomUUID } from "crypto";
 import {
   handleProxyRequest,
   handleDirectRequest,
@@ -26,6 +29,7 @@ import {
 } from "./shared/proxy-handler.js";
 import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
+import { summarizeRequestForLog } from "../logs/request-summary.js";
 
 function makeError(
   type: AnthropicErrorType,
@@ -128,8 +132,11 @@ export function createMessagesRoutes(
 
     const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
       injectHostedWebSearch: !allowUnauthenticated,
+      mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
     });
-    codexRequest.useWebSocket = true;
+    if (!allowUnauthenticated) {
+      codexRequest.useWebSocket = true;
+    }
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const proxyReq = {
       codexRequest,
@@ -138,6 +145,20 @@ export function createMessagesRoutes(
       clientConversationId: clientConversationId ?? undefined,
     };
     const fmt = makeAnthropicFormat(wantThinking);
+
+    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+    enqueueLogEntry({
+      requestId,
+      direction: "ingress",
+      method: c.req.method,
+      path: c.req.path,
+      model: req.model,
+      stream: !!req.stream,
+      request: summarizeRequestForLog("messages", req, {
+        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
+        headers: Object.fromEntries(c.req.raw.headers.entries()),
+      }),
+    });
 
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directReq = {

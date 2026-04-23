@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { getConfig, getLocalConfigPath, reloadAllConfigs, ROTATION_STRATEGIES } from "../../config.js";
+import { logStore } from "../../logs/store.js";
 import { mutateYaml } from "../../utils/yaml-mutate.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
 
@@ -109,6 +110,10 @@ export function createSettingsRoutes(): Hono {
       request_interval_ms: config.auth.request_interval_ms,
       auto_update: config.update.auto_update,
       auto_download: config.update.auto_download,
+      logs_enabled: config.logs.enabled,
+      logs_capacity: config.logs.capacity,
+      logs_capture_body: config.logs.capture_body,
+      logs_llm_only: config.logs.llm_only,
     });
   });
 
@@ -140,6 +145,10 @@ export function createSettingsRoutes(): Hono {
       request_interval_ms?: number | null;
       auto_update?: boolean;
       auto_download?: boolean;
+      logs_enabled?: boolean;
+      logs_capacity?: number;
+      logs_capture_body?: boolean;
+      logs_llm_only?: boolean;
     };
 
     // --- validation ---
@@ -195,6 +204,13 @@ export function createSettingsRoutes(): Hono {
       if (!Number.isInteger(body.request_interval_ms) || body.request_interval_ms < 0) {
         c.status(400);
         return c.json({ error: "request_interval_ms must be an integer >= 0 or null" });
+      }
+    }
+
+    if (body.logs_capacity !== undefined) {
+      if (!Number.isInteger(body.logs_capacity) || body.logs_capacity < 1) {
+        c.status(400);
+        return c.json({ error: "logs_capacity must be an integer >= 1" });
       }
     }
 
@@ -258,8 +274,31 @@ export function createSettingsRoutes(): Hono {
         if (!data.update) data.update = {};
         (data.update as Record<string, unknown>).auto_download = body.auto_download;
       }
+      if (body.logs_enabled !== undefined) {
+        if (!data.logs) data.logs = {};
+        (data.logs as Record<string, unknown>).enabled = body.logs_enabled;
+      }
+      if (body.logs_capacity !== undefined) {
+        if (!data.logs) data.logs = {};
+        (data.logs as Record<string, unknown>).capacity = body.logs_capacity;
+      }
+      if (body.logs_capture_body !== undefined) {
+        if (!data.logs) data.logs = {};
+        (data.logs as Record<string, unknown>).capture_body = body.logs_capture_body;
+      }
+      if (body.logs_llm_only !== undefined) {
+        if (!data.logs) data.logs = {};
+        (data.logs as Record<string, unknown>).llm_only = body.logs_llm_only;
+      }
     });
     reloadAllConfigs();
+
+    if (body.logs_enabled !== undefined || body.logs_capacity !== undefined) {
+      logStore.setState({
+        enabled: body.logs_enabled,
+        capacity: body.logs_capacity,
+      });
+    }
 
     const updated = getConfig();
     const restartRequired =
@@ -281,6 +320,10 @@ export function createSettingsRoutes(): Hono {
       request_interval_ms: updated.auth.request_interval_ms,
       auto_update: updated.update.auto_update,
       auto_download: updated.update.auto_download,
+      logs_enabled: updated.logs?.enabled ?? false,
+      logs_capacity: updated.logs?.capacity ?? 2000,
+      logs_capture_body: updated.logs?.capture_body ?? false,
+      logs_llm_only: updated.logs?.llm_only ?? true,
       restart_required: restartRequired,
     });
   });

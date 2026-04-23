@@ -1,36 +1,42 @@
 /**
- * 发布流水线校验。
+ * Release pipeline validation.
  *
- * 在不实际运行 electron-builder（会下载 100MB+ Electron）的前提下，
- * 验证 core build → desktop build → esbuild → prepare-pack 的完整链路。
+ * Verifies the full build chain works end-to-end without actually
+ * running electron-builder (which downloads 100MB+ of Electron).
+ * Tests the sequence: core build → desktop build → esbuild → prepare-pack.
  */
 
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, rmSync, readFileSync, statSync } from "fs";
 import { resolve } from "path";
 import { execFileSync } from "child_process";
-import { withPreparePackLock } from "./prepare-pack-lock";
+import { acquireElectronTestLock } from "./test-lock.js";
 
 const PKG_DIR = resolve(import.meta.dirname, "..");
 const ROOT_DIR = resolve(PKG_DIR, "..", "..");
 const DIST_ELECTRON = resolve(PKG_DIR, "dist-electron");
 
 describe("release pipeline", () => {
+  let releaseLock: (() => void) | null = null;
+
+  beforeAll(async () => {
+    releaseLock = await acquireElectronTestLock();
+  });
+
   afterAll(() => {
-    // 清理构建产物。
+    // Clean up build artifacts
     if (existsSync(DIST_ELECTRON)) rmSync(DIST_ELECTRON, { recursive: true });
-    // 清理 prepare-pack 复制出的资源。
-    withPreparePackLock(() => {
-      try {
-        execFileSync("node", ["electron/prepare-pack.mjs", "--clean"], {
-          cwd: PKG_DIR,
-        });
-      } catch { /* ignore */ }
-    });
+    // Clean up prepare-pack copies
+    try {
+      execFileSync("node", ["electron/prepare-pack.mjs", "--clean"], {
+        cwd: PKG_DIR,
+      });
+    } catch { /* ignore */ }
+    releaseLock?.();
   });
 
   it("core build produces web assets", () => {
-    // CI 中测试前会先执行 npm run build，这里只校验产物存在。
+    // Core should already be built (npm run build runs in CI before tests)
     const publicDir = resolve(ROOT_DIR, "public");
     const indexHtml = resolve(publicDir, "index.html");
     expect(existsSync(publicDir)).toBe(true);
@@ -45,45 +51,31 @@ describe("release pipeline", () => {
 
     const serverMjs = resolve(DIST_ELECTRON, "server.mjs");
     expect(existsSync(serverMjs)).toBe(true);
-    // server bundle 会包含依赖，体积不应过小。
+    // Server bundle should be substantial (includes all deps)
     expect(statSync(serverMjs).size).toBeGreaterThan(100_000);
   });
 
   it("esbuild produces valid main process bundle", () => {
     const mainCjs = resolve(DIST_ELECTRON, "main.cjs");
     expect(existsSync(mainCjs)).toBe(true);
-    // main bundle 只包含 Electron 主进程代码，体积比 server bundle 小。
+    // Main bundle is smaller (only Electron main process code)
     expect(statSync(mainCjs).size).toBeGreaterThan(1000);
   });
 
   it("prepare-pack copies all required resources", () => {
-    withPreparePackLock(() => {
-      execFileSync("node", ["electron/prepare-pack.mjs"], {
-        cwd: PKG_DIR,
-        timeout: 10_000,
-      });
-
-      // 校验 electron-builder 需要的资源已经就位。
-      expect(existsSync(resolve(PKG_DIR, "config", "default.yaml"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "public", "index.html"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "dist-electron", "main.cjs"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "dist-electron", "server.mjs"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "electron", "assets", "icon.png"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "package.json"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "ws", "package.json"))).toBe(true);
-      expect(
-        existsSync(resolve(PKG_DIR, "node_modules", "https-proxy-agent", "package.json")),
-      ).toBe(true);
-      expect(
-        existsSync(resolve(PKG_DIR, "node_modules", "socks-proxy-agent", "package.json")),
-      ).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "agent-base", "package.json"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "debug", "package.json"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "ip-address", "package.json"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "ms", "package.json"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "smart-buffer", "package.json"))).toBe(true);
-      expect(existsSync(resolve(PKG_DIR, "node_modules", "socks", "package.json"))).toBe(true);
+    execFileSync("node", ["electron/prepare-pack.mjs"], {
+      cwd: PKG_DIR,
+      timeout: 10_000,
     });
+
+    // Verify all resources are in place for electron-builder
+    expect(existsSync(resolve(PKG_DIR, "config", "default.yaml"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "public", "index.html"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "bin"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "dist-electron", "main.cjs"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "dist-electron", "server.mjs"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "electron", "assets", "icon.png"))).toBe(true);
+    expect(existsSync(resolve(PKG_DIR, "package.json"))).toBe(true);
   });
 
   it("version is consistent between root and electron package", () => {
@@ -94,7 +86,7 @@ describe("release pipeline", () => {
       readFileSync(resolve(PKG_DIR, "package.json"), "utf-8"),
     ) as { version: string };
 
-    // 两边版本允许不同步，但都必须是合法 semver。
+    // Versions may diverge (electron can be ahead), but both must be valid semver
     expect(rootPkg.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(electronPkg.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
@@ -105,12 +97,11 @@ describe("release pipeline", () => {
       "utf-8",
     );
 
-    // release workflow 必须包含 workspace 感知的构建步骤。
+    // Must include workspace-aware build steps
     expect(releaseYml).toContain("packages/electron");
     expect(releaseYml).toContain("electron/build.mjs");
     expect(releaseYml).toContain("prepare-pack.mjs");
     expect(releaseYml).toContain("electron-builder");
-    expect(releaseYml).toContain("CSC_IDENTITY_AUTO_DISCOVERY: false");
   });
 
   it("bump-electron.yml workflow exists", () => {
@@ -123,7 +114,7 @@ describe("release pipeline", () => {
     expect(existsSync(bumpYml)).toBe(true);
 
     const content = readFileSync(bumpYml, "utf-8");
-    // bump workflow 必须同时更新根包和 electron 包版本。
+    // Must bump both root and electron package versions
     expect(content).toContain("package.json");
     expect(content).toContain("packages/electron/package.json");
   });

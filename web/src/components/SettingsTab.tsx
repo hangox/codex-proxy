@@ -1,4 +1,5 @@
 import { GeneralSettings } from "./GeneralSettings";
+import { LogsSettings } from "./LogsSettings";
 import { QuotaSettings } from "./QuotaSettings";
 import { RotationSettings } from "./RotationSettings";
 import { SettingsPanel } from "./SettingsPanel";
@@ -24,6 +25,7 @@ export function SettingsTab(props: SettingsTabProps) {
   return (
     <div class="flex flex-col gap-6">
       <GeneralSettings />
+      <LogsSettings />
       <QuotaSettings />
       <RotationSettings />
       <SettingsPanel />

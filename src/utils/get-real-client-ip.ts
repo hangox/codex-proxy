@@ -10,8 +10,16 @@ import { getConnInfo } from "@hono/node-server/conninfo";
  * address if no header is present.
  */
 export function getRealClientIp(c: Context, trustProxy: boolean): string {
+  const socketAddress = (() => {
+    try {
+      return getConnInfo(c).remote.address ?? "";
+    } catch {
+      return "";
+    }
+  })();
+
   if (!trustProxy) {
-    return getConnInfo(c).remote.address ?? "";
+    return socketAddress;
   }
 
   // X-Forwarded-For: client, proxy1, proxy2 — take leftmost (original client)

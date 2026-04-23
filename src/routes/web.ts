@@ -9,6 +9,7 @@ import { createUpdateRoutes } from "./admin/update.js";
 import { createConnectionRoutes } from "./admin/connection.js";
 import { createSettingsRoutes } from "./admin/settings.js";
 import { createUsageStatsRoutes } from "./admin/usage-stats.js";
+import { createLogRoutes } from "./admin/logs.js";
 import type { UsageStatsStore } from "../auth/usage-stats.js";
 
 export function createWebRoutes(accountPool: AccountPool, usageStats: UsageStatsStore): Hono {
@@ -45,6 +46,7 @@ export function createWebRoutes(accountPool: AccountPool, usageStats: UsageStats
   app.route("/", createConnectionRoutes(accountPool));
   app.route("/", createSettingsRoutes());
   app.route("/", createUsageStatsRoutes(accountPool, usageStats));
+  app.route("/", createLogRoutes());
 
   return app;
 }

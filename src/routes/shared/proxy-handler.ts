@@ -32,6 +32,8 @@ import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from ".
 import { getConfig } from "../../config.js";
 import { jitterInt } from "../../utils/jitter.js";
 import { getSessionAffinityMap, type SessionAffinityMap } from "../../auth/session-affinity.js";
+import { enqueueLogEntry } from "../../logs/entry.js";
+import { randomUUID } from "crypto";
 import { deriveStableConversationKey } from "./stable-conversation-key.js";
 
 /** Data prepared by each route after parsing and translating the request. */
@@ -177,7 +179,10 @@ export async function handleProxyRequest(
   fmt: FormatAdapter,
   proxyPool?: ProxyPool,
 ): Promise<Response> {
+  c.set("logForwarded", true);
+
   const affinityMap = getSessionAffinityMap();
+  const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
   if (!Array.isArray(req.codexRequest.input)) {
     req.codexRequest.input = [];
   }
@@ -346,10 +351,28 @@ export async function handleProxyRequest(
         }
       };
 
+      const startMs = Date.now();
       const rawResponse = await withRetry(
         () => codexApi.createResponse(req.codexRequest, abortController.signal, applyRateLimits),
         { tag: fmt.tag },
       );
+      const status: number | null = rawResponse.status;
+      enqueueLogEntry({
+        requestId,
+        direction: "egress",
+        method: "POST",
+        path: "/codex/responses",
+        model: req.model,
+        provider: "codex",
+        status,
+        latencyMs: Date.now() - startMs,
+        stream: req.isStreaming,
+        request: {
+          model: req.codexRequest.model,
+          stream: req.codexRequest.stream,
+          useWebSocket: req.codexRequest.useWebSocket,
+        },
+      });
 
       // Capture upstream turn-state for sticky routing
       const upstreamTurnState = rawResponse.headers.get("x-codex-turn-state") ?? undefined;
@@ -428,12 +451,18 @@ export async function handleProxyRequest(
 
       // ── Non-streaming path (with empty-response retry) ──
       return await handleNonStreaming(
-        c, accountPool, cookieJar, req, fmt, proxyPool,
+        c,
+        accountPool,
+        cookieJar,
+        req,
+        fmt,
+        proxyPool,
         codexApi,
         rawResponse,
         entryId,
         abortController,
         released,
+        requestId,
         affinityMap,
         chainConversationId,
         upstreamTurnState,
@@ -527,6 +556,7 @@ async function handleNonStreaming(
   initialEntryId: string,
   abortController: AbortController,
   released: Set<string>,
+  requestId: string,
   affinityMap?: SessionAffinityMap,
   conversationId?: string,
   turnState?: string,
@@ -596,13 +626,48 @@ async function handleNonStreaming(
 
         currentEntryId = newAcquired.entryId;
         currentApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
+        const retryStartMs = Date.now();
         try {
           currentRawResponse = await withRetry(
             () => currentApi.createResponse(req.codexRequest, abortController.signal),
             { tag: fmt.tag },
           );
+          enqueueLogEntry({
+            requestId,
+            direction: "egress",
+            method: "POST",
+            path: "/codex/responses",
+            model: req.model,
+            provider: "codex",
+            status: currentRawResponse.status,
+            latencyMs: Date.now() - retryStartMs,
+            stream: req.isStreaming,
+            request: {
+              model: req.codexRequest.model,
+              stream: req.codexRequest.stream,
+              useWebSocket: req.codexRequest.useWebSocket,
+            },
+          });
         } catch (retryErr) {
           releaseAccount(accountPool, currentEntryId, undefined, released);
+          const msg = retryErr instanceof Error ? retryErr.message : "Upstream request failed";
+          enqueueLogEntry({
+            requestId,
+            direction: "egress",
+            method: "POST",
+            path: "/codex/responses",
+            model: req.model,
+            provider: "codex",
+            status: retryErr instanceof CodexApiError ? retryErr.status : null,
+            latencyMs: Date.now() - retryStartMs,
+            stream: req.isStreaming,
+            error: msg,
+            request: {
+              model: req.codexRequest.model,
+              stream: req.codexRequest.stream,
+              useWebSocket: req.codexRequest.useWebSocket,
+            },
+          });
           if (retryErr instanceof CodexApiError) {
             const code = toErrorStatus(retryErr.status);
             c.status(code);
@@ -646,10 +711,45 @@ export async function handleDirectRequest(
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
 
+  const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+  const startMs = Date.now();
   let rawResponse: Response;
   try {
     rawResponse = await upstream.createResponse(req.codexRequest, abortController.signal);
+    enqueueLogEntry({
+      requestId,
+      direction: "egress",
+      method: "POST",
+      path: "/v1/responses",
+      model: req.model,
+      provider: upstream.tag,
+      status: rawResponse.status,
+      latencyMs: Date.now() - startMs,
+      stream: req.isStreaming,
+      request: {
+        model: req.codexRequest.model,
+        stream: req.codexRequest.stream,
+      },
+    });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : "Upstream request failed";
+    const status = err instanceof CodexApiError ? err.status : 502;
+    enqueueLogEntry({
+      requestId,
+      direction: "egress",
+      method: "POST",
+      path: "/v1/responses",
+      model: req.model,
+      provider: upstream.tag,
+      status,
+      latencyMs: Date.now() - startMs,
+      stream: req.isStreaming,
+      error: msg,
+      request: {
+        model: req.codexRequest.model,
+        stream: req.codexRequest.stream,
+      },
+    });
     if (err instanceof CodexApiError) {
       const code = toErrorStatus(err.status) as StatusCode;
       c.status(code);
@@ -665,7 +765,6 @@ export async function handleDirectRequest(
       }
       return c.json(fmt.formatError(code, err.message));
     }
-    const msg = err instanceof Error ? err.message : "Upstream request failed";
     c.status(502);
     return c.json(fmt.formatError(502, msg));
   }

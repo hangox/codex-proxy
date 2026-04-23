@@ -14,6 +14,7 @@ import { ApiKeyManager } from "./components/ApiKeyManager";
 import { ProxySettings } from "./pages/ProxySettings";
 import { AccountManagement } from "./pages/AccountManagement";
 import { UsageStats } from "./pages/UsageStats";
+import { LogsPage } from "./pages/LogsPage";
 import { useAccounts } from "../../shared/hooks/use-accounts";
 import { useProxies } from "../../shared/hooks/use-proxies";
 import { useStatus } from "../../shared/hooks/use-status";
@@ -59,6 +60,7 @@ const TABS: Array<{ hash: string; label: TranslationKey }> = [
   { hash: "#/api-keys", label: "apiKeys" },
   { hash: "#/proxies", label: "proxySettings" },
   { hash: "#/usage-stats", label: "usageStats" },
+  { hash: "#/logs", label: "logs" },
   { hash: "#/settings", label: "settings" },
 ];
 
@@ -182,6 +184,10 @@ function Dashboard() {
 
           {activeTab === "#/usage-stats" && (
             <UsageStats embedded />
+          )}
+
+          {activeTab === "#/logs" && (
+            <LogsPage embedded />
           )}
 
           {activeTab === "#/settings" && (

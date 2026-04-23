@@ -29,6 +29,11 @@ server:
   port: 8080
   proxy_api_key: null
   trust_proxy: false
+logs:
+  enabled: false
+  capacity: 2000
+  capture_body: false
+  llm_only: true
 session:
   ttl_minutes: 60
   cleanup_interval_minutes: 5

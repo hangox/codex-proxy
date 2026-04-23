@@ -139,6 +139,66 @@ describe("upstream direct routing without Codex auth", () => {
     pool.destroy();
   });
 
+  it("keeps Anthropic direct routing free of Codex websocket and hosted search rewrites", async () => {
+    const pool = new AccountPool();
+    const app = createMessagesRoutes(pool, undefined, undefined, {
+      resolveMatch: vi.fn(() => ({ kind: "adapter", adapter: { tag: "custom-upstream" } })),
+    } as never);
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-6",
+        max_tokens: 16,
+        messages: [{ role: "user", content: "hello" }],
+        tools: [
+          {
+            name: "WebSearch",
+            description: "Project-local lookup implementation",
+            input_schema: {
+              type: "object",
+              properties: { query: { type: "string" } },
+            },
+          },
+        ],
+        tool_choice: { type: "tool", name: "WebSearch" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockHandleDirectRequest).toHaveBeenCalledTimes(1);
+    const [, , directReq] = mockHandleDirectRequest.mock.calls[0] as [
+      unknown,
+      unknown,
+      {
+        codexRequest: {
+          useWebSocket?: boolean;
+          tools?: unknown[];
+          tool_choice?: unknown;
+        };
+      },
+      unknown,
+    ];
+    expect(directReq.codexRequest.useWebSocket).toBeUndefined();
+    expect(directReq.codexRequest.tools).toEqual([
+      {
+        type: "function",
+        name: "WebSearch",
+        description: "Project-local lookup implementation",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" } },
+        },
+      },
+    ]);
+    expect(directReq.codexRequest.tool_choice).toEqual({ type: "function", name: "WebSearch" });
+    pool.destroy();
+  });
+
   it("allows Gemini direct upstream routing without local accounts", async () => {
     const pool = new AccountPool();
     const app = createGeminiRoutes(pool, undefined, undefined, {

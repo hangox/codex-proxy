@@ -44,6 +44,12 @@ export const ConfigSchema = z.object({
     proxy_api_key: z.string().nullable().default(null),
     trust_proxy: z.boolean().default(false),
   }),
+  logs: z.object({
+    enabled: z.boolean().default(false),
+    capacity: z.number().int().min(1).default(2000),
+    capture_body: z.boolean().default(false),
+    llm_only: z.boolean().default(true),
+  }).default({}),
   session: z.object({
     ttl_minutes: z.number().min(1).default(1440),
     cleanup_interval_minutes: z.number().min(1).default(5),

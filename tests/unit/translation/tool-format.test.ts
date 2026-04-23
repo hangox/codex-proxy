@@ -467,6 +467,7 @@ describe("anthropicToolsToCodex additional edge cases", () => {
     expect(result[0].parameters).toEqual({ type: "object", properties: {} });
   });
 });
+// ── hosted web_search tool conversion ───────────────────────────────
 
 describe("hosted web_search tool conversion", () => {
   it("converts OpenAI hosted web_search_preview to Codex hosted web_search", () => {
@@ -506,9 +507,13 @@ describe("hosted web_search tool conversion", () => {
   });
 
   it("converts Anthropic Claude Code WebSearch tool_choice to hosted web_search", () => {
-    expect(anthropicToolChoiceToCodex({ type: "tool", name: "WebSearch" })).toEqual({
-      type: "web_search",
-    });
+    expect(
+      anthropicToolChoiceToCodex(
+        { type: "tool", name: "WebSearch" },
+        undefined,
+        { mapClaudeCodeWebSearch: true },
+      ),
+    ).toEqual({ type: "web_search" });
   });
 
   it("converts Anthropic hosted web_search tool_choice to hosted web_search", () => {
@@ -540,6 +545,24 @@ describe("hosted web_search tool conversion", () => {
       type: "function",
       name: "lookup",
     });
+  });
+
+  it("preserves uppercase custom WebSearch tool_choice as function tool", () => {
+    const tools = [
+      {
+        name: "WebSearch",
+        description: "Project-local lookup implementation",
+        input_schema: { type: "object", properties: { query: { type: "string" } } },
+      },
+    ] satisfies NonNullable<AnthropicMessagesRequest["tools"]>;
+
+    expect(
+      anthropicToolChoiceToCodex(
+        { type: "tool", name: "WebSearch" },
+        tools,
+        { mapClaudeCodeWebSearch: true },
+      ),
+    ).toEqual({ type: "function", name: "WebSearch" });
   });
 
   it("converts Anthropic hosted web search to Codex hosted web_search", () => {
@@ -577,8 +600,33 @@ describe("hosted web_search tool conversion", () => {
       },
     ] satisfies NonNullable<AnthropicMessagesRequest["tools"]>;
 
-    expect(anthropicToolsToCodex(tools)).toEqual([
+    expect(anthropicToolsToCodex(tools, { mapClaudeCodeWebSearch: true })).toEqual([
       { type: "web_search" },
+    ]);
+  });
+
+  it("preserves uppercase custom WebSearch tool as a function tool", () => {
+    const tools = [
+      {
+        name: "WebSearch",
+        description: "Project-local lookup implementation",
+        input_schema: {
+          type: "object",
+          properties: { query: { type: "string" } },
+        },
+      },
+    ] satisfies NonNullable<AnthropicMessagesRequest["tools"]>;
+
+    expect(anthropicToolsToCodex(tools, { mapClaudeCodeWebSearch: true })).toEqual([
+      {
+        type: "function",
+        name: "WebSearch",
+        description: "Project-local lookup implementation",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" } },
+        },
+      },
     ]);
   });
 

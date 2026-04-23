@@ -82,3 +82,6 @@ Runtime behavior:
   `GET /api/version`, `GET /api/tags`, and `POST /api/show`.
 - 2026-04-23: Started comprehensive Phase 2 hardening: protocol tests,
   listener lifecycle tests, admin/config tests, Docker guidance, and public docs.
+- 2026-04-23: Addressed PR review hardening items: loopback-only browser CORS,
+  broader non-loopback host warnings, malformed admin JSON handling, bounded SSE
+  buffering, and `/v1/*` query-string preservation.

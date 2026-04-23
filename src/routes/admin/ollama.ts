@@ -11,6 +11,10 @@ interface OllamaSettingsBody {
   disable_vision?: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function checkApiKey(authHeader: string | undefined): boolean {
   const currentKey = getConfig().server.proxy_api_key;
   if (!currentKey) return true;
@@ -66,7 +70,19 @@ export function createOllamaAdminRoutes(): Hono {
       return c.json({ error: "Invalid current API key" });
     }
 
-    const body = await c.req.json() as OllamaSettingsBody;
+    let parsedBody: unknown;
+    try {
+      parsedBody = await c.req.json();
+    } catch {
+      c.status(400);
+      return c.json({ error: "Invalid JSON body" });
+    }
+    if (!isRecord(parsedBody)) {
+      c.status(400);
+      return c.json({ error: "JSON body must be an object" });
+    }
+
+    const body = parsedBody as OllamaSettingsBody;
     const validationError = validateBody(body);
     if (validationError) {
       c.status(400);

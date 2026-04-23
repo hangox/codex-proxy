@@ -62,6 +62,7 @@ const CONTEXT_WINDOW_OVERRIDES = new Map<string, number>([
 ]);
 
 const encoder = new TextEncoder();
+const MAX_SSE_BUFFER = 10 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -73,6 +74,43 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function getString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "");
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (normalized === "localhost" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
+    return true;
+  }
+  const parts = normalized.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return false;
+  const octets = parts.map((part) => Number(part));
+  return octets[0] === 127 && octets.every((octet) => octet >= 0 && octet <= 255);
+}
+
+function getAllowedCorsOrigin(request?: Request): string | null {
+  const origin = request?.headers.get("Origin");
+  if (!origin) return null;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return isLoopbackHostname(url.hostname) ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function responseHeaders(init: HeadersInit, request?: Request): Headers {
+  const headers = new Headers(init);
+  const origin = getAllowedCorsOrigin(request);
+  if (origin) {
+    headers.set("Access-Control-Allow-Origin", origin);
+    headers.set("Vary", "Origin");
+  }
+  return headers;
 }
 
 function inferFamily(modelId: string): string {
@@ -113,38 +151,38 @@ function synthesizeCapabilities(info: ModelInfo, disableVision: boolean): string
   return [...capabilities];
 }
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(status: number, body: unknown, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
+    headers: responseHeaders({
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
+    }, request),
   });
 }
 
-function textResponse(status: number, body: string): Response {
+function textResponse(status: number, body: string, request?: Request): Response {
   return new Response(body, {
     status,
-    headers: {
+    headers: responseHeaders({
       "Content-Type": "text/plain; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
-    },
+    }, request),
   });
 }
 
-function errorResponse(status: number, message: string): Response {
-  return jsonResponse(status, { error: message });
+function errorResponse(status: number, message: string, request?: Request): Response {
+  return jsonResponse(status, { error: message }, request);
 }
 
-function corsNoContent(): Response {
+function corsNoContent(request: Request): Response {
+  const headers = responseHeaders({}, request);
+  if (request.headers.has("Origin") && !headers.has("Access-Control-Allow-Origin")) {
+    return new Response(null, { status: 403 });
+  }
+  headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   return new Response(null, {
     status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    },
+    headers,
   });
 }
 
@@ -444,9 +482,10 @@ function enqueueJson(controller: ReadableStreamDefaultController<Uint8Array>, va
 async function streamOllamaChat(
   upstreamResponse: Response,
   body: Record<string, unknown>,
+  request: Request,
 ): Promise<Response> {
   if (!upstreamResponse.body) {
-    return errorResponse(502, "Upstream response body is empty");
+    return errorResponse(502, "Upstream response body is empty", request);
   }
 
   const model = getString(body.model) ?? "unknown";
@@ -466,6 +505,9 @@ async function streamOllamaChat(
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
+          if (buffer.length > MAX_SSE_BUFFER) {
+            throw new Error(`SSE buffer exceeded ${MAX_SSE_BUFFER} bytes`);
+          }
           while (true) {
             const boundary = buffer.indexOf("\n\n");
             if (boundary < 0) break;
@@ -555,21 +597,21 @@ async function streamOllamaChat(
 
   return new Response(stream, {
     status: 200,
-    headers: {
+    headers: responseHeaders({
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
-    },
+    }, request),
   });
 }
 
 async function handleChat(
   body: Record<string, unknown>,
   upstreamFetch: ReturnType<typeof makeUpstreamFetch>,
+  request: Request,
 ): Promise<Response> {
   if (typeof body.model !== "string" || !Array.isArray(body.messages)) {
-    return errorResponse(400, "Missing required fields: model, messages");
+    return errorResponse(400, "Missing required fields: model, messages", request);
   }
 
   const openAIRequest = buildOpenAIRequest(body);
@@ -580,7 +622,7 @@ async function handleChat(
 
   if (!upstreamResponse.ok || !upstreamResponse.body) {
     const text = await upstreamResponse.text();
-    return errorResponse(upstreamResponse.status || 502, text || "Upstream request failed");
+    return errorResponse(upstreamResponse.status || 502, text || "Upstream request failed", request);
   }
 
   if (body.stream === false) {
@@ -609,14 +651,14 @@ async function handleChat(
       prompt_eval_duration: 0,
       eval_count: typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0,
       eval_duration: 0,
-    });
+    }, request);
   }
 
-  return streamOllamaChat(upstreamResponse, body);
+  return streamOllamaChat(upstreamResponse, body, request);
 }
 
-async function copyUpstreamResponse(upstreamResponse: Response): Promise<Response> {
-  const headers = new Headers({ "Access-Control-Allow-Origin": "*" });
+async function copyUpstreamResponse(upstreamResponse: Response, request: Request): Promise<Response> {
+  const headers = responseHeaders({}, request);
   const contentType = upstreamResponse.headers.get("content-type");
   if (contentType) headers.set("Content-Type", contentType);
   const cacheControl = upstreamResponse.headers.get("cache-control");
@@ -645,7 +687,7 @@ async function proxyOpenAIRequest(
     headers,
     body: rawBody && rawBody.length > 0 ? rawBody : undefined,
   });
-  return copyUpstreamResponse(upstreamResponse);
+  return copyUpstreamResponse(upstreamResponse, request);
 }
 
 export function createOllamaBridgeApp(options: OllamaBridgeOptions): Hono {
@@ -653,42 +695,43 @@ export function createOllamaBridgeApp(options: OllamaBridgeOptions): Hono {
   const upstreamFetch = makeUpstreamFetch(options);
   const startedAt = new Date().toISOString();
 
-  app.options("*", () => corsNoContent());
+  app.options("*", (c) => corsNoContent(c.req.raw));
 
-  app.get("/api/version", () => jsonResponse(200, { version: options.version }));
+  app.get("/api/version", (c) => jsonResponse(200, { version: options.version }, c.req.raw));
 
   app.all("/v1/*", async (c) => {
-    return proxyOpenAIRequest(c.req.raw, c.req.path.slice(3), upstreamFetch);
+    const search = new URL(c.req.raw.url).search;
+    return proxyOpenAIRequest(c.req.raw, `${c.req.path.slice(3)}${search}`, upstreamFetch);
   });
 
-  app.get("/api/tags", async () => {
+  app.get("/api/tags", async (c) => {
     const catalog = await getCatalog(upstreamFetch);
-    return jsonResponse(200, { models: catalog.map((info) => toOllamaTag(info, startedAt)) });
+    return jsonResponse(200, { models: catalog.map((info) => toOllamaTag(info, startedAt)) }, c.req.raw);
   });
 
   app.post("/api/show", async (c) => {
     const body = await readJsonBody(c.req.raw);
     const model = getString(body.model)?.trim();
-    if (!model) return errorResponse(400, "Missing model");
+    if (!model) return errorResponse(400, "Missing model", c.req.raw);
     const info = await getModelInfo(upstreamFetch, model);
-    return jsonResponse(200, toShowResponse(model, info, startedAt, options.disableVision));
+    return jsonResponse(200, toShowResponse(model, info, startedAt, options.disableVision), c.req.raw);
   });
 
   app.post("/api/chat", async (c) => {
     const body = await readJsonBody(c.req.raw);
-    return handleChat(body, upstreamFetch);
+    return handleChat(body, upstreamFetch, c.req.raw);
   });
 
-  app.get("/", () => textResponse(200, "codex-proxy ollama bridge"));
+  app.get("/", (c) => textResponse(200, "codex-proxy ollama bridge", c.req.raw));
 
-  app.notFound((c) => errorResponse(404, `Unsupported path: ${c.req.path}`));
+  app.notFound((c) => errorResponse(404, `Unsupported path: ${c.req.path}`, c.req.raw));
 
-  app.onError((error) => {
+  app.onError((error, c) => {
     if (error instanceof OllamaBridgeError) {
-      return errorResponse(error.status, error.message);
+      return errorResponse(error.status, error.message, c.req.raw);
     }
     const message = error instanceof Error ? error.message : String(error);
-    return errorResponse(500, message);
+    return errorResponse(500, message, c.req.raw);
   });
 
   return app;

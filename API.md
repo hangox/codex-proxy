@@ -85,7 +85,10 @@ It is disabled by default and can be controlled through Dashboard settings or th
 API. Ollama endpoints are intentionally unauthenticated; keep the listener bound to
 localhost unless you explicitly trust the network.
 Browser CORS access is restricted to loopback origins (`localhost`, `127.x.x.x`,
-and `::1`) so non-local web pages cannot read bridge responses by default.
+and `::1`) so non-local web pages cannot read bridge responses by default. The
+bridge injects the configured Codex Proxy API key for `/v1/*` passthrough
+requests, so exposing it beyond localhost also exposes the main proxy API
+without requiring clients to know that key.
 
 | Method | Path | Description |
 |--------|------|-------------|

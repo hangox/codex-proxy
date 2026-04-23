@@ -116,6 +116,23 @@ describe("ConfigSchema", () => {
     expect(result2.success).toBe(false);
   });
 
+  it("trims and validates Ollama bridge version", () => {
+    const result = ConfigSchema.parse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { version: " 0.20.1 " },
+    });
+    expect(result.ollama.version).toBe("0.20.1");
+
+    const empty = ConfigSchema.safeParse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { version: "   " },
+    });
+    expect(empty.success).toBe(false);
+
+    const tooLong = ConfigSchema.safeParse({
+      api: {}, client: {}, model: {}, auth: {}, server: {}, session: {}, ollama: { version: "x".repeat(65) },
+    });
+    expect(tooLong.success).toBe(false);
+  });
+
   it("rejects invalid rotation strategy", () => {
     const result = ConfigSchema.safeParse({
       api: {}, client: {}, model: {}, auth: { rotation_strategy: "random" }, server: {}, session: {},

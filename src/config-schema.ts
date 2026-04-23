@@ -75,7 +75,7 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     host: z.string().default("127.0.0.1"),
     port: z.number().min(1).max(65535).default(11434),
-    version: z.string().default("0.18.3"),
+    version: z.string().trim().min(1).max(64).default("0.18.3"),
     disable_vision: z.boolean().default(false),
   }).default({}),
   /** Third-party API provider keys for multi-backend routing. */

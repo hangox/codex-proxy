@@ -154,7 +154,7 @@ describe("Ollama admin settings routes", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         enabled: true,
-        host: "0.0.0.0",
+        host: " 0.0.0.0 ",
         port: 11435,
         version: " 0.20.1 ",
         disable_vision: true,
@@ -172,7 +172,9 @@ describe("Ollama admin settings routes", () => {
       version: "0.20.1",
       disable_vision: true,
     });
-    expect(await res.json()).toMatchObject({
+    const responseText = await res.text();
+    expect(responseText.match(/"status":/g)).toHaveLength(1);
+    expect(JSON.parse(responseText) as Record<string, unknown>).toMatchObject({
       success: true,
       enabled: true,
       host: "0.0.0.0",

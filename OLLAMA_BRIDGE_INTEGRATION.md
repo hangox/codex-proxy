@@ -85,3 +85,6 @@ Runtime behavior:
 - 2026-04-23: Addressed PR review hardening items: loopback-only browser CORS,
   broader non-loopback host warnings, malformed admin JSON handling, bounded SSE
   buffering, and `/v1/*` query-string preservation.
+- 2026-04-23: Addressed follow-up review items: explicit `/v1/*` API-key
+  passthrough warning, trimmed admin validation, non-duplicated settings response
+  status, and schema-level `ollama.version` bounds.

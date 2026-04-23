@@ -24,7 +24,8 @@ function checkApiKey(authHeader: string | undefined): boolean {
 
 function validateBody(body: OllamaSettingsBody): string | null {
   if (body.host !== undefined) {
-    if (!body.host.trim() || /\s/.test(body.host)) {
+    const host = body.host.trim();
+    if (!host || /\s/.test(host)) {
       return "host must be a non-empty hostname or IP address";
     }
   }
@@ -34,14 +35,15 @@ function validateBody(body: OllamaSettingsBody): string | null {
     }
   }
   if (body.version !== undefined) {
-    if (!body.version.trim() || body.version.length > 64) {
+    const version = body.version.trim();
+    if (!version || version.length > 64) {
       return "version must be a non-empty string up to 64 characters";
     }
   }
   return null;
 }
 
-function currentPayload() {
+function currentSettingsPayload() {
   const config = getConfig();
   return {
     enabled: config.ollama.enabled,
@@ -49,6 +51,13 @@ function currentPayload() {
     port: config.ollama.port,
     version: config.ollama.version,
     disable_vision: config.ollama.disable_vision,
+  };
+}
+
+function currentPayload() {
+  const config = getConfig();
+  return {
+    ...currentSettingsPayload(),
     status: getOllamaBridgeStatus(config),
   };
 }
@@ -103,7 +112,7 @@ export function createOllamaAdminRoutes(): Hono {
 
     return c.json({
       success: true,
-      ...currentPayload(),
+      ...currentSettingsPayload(),
       status,
     });
   });

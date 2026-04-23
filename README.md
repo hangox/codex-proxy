@@ -63,7 +63,7 @@
 
 ---
 
-**Codex Proxy** 是一个轻量级本地中转服务，将 [Codex Desktop](https://openai.com/codex) 的 Responses API 转换为多种标准协议接口（OpenAI `/v1/chat/completions`、Anthropic `/v1/messages`、Gemini、Codex `/v1/responses` 直通）。通过本项目，您可以在 Cursor、Claude Code、Continue 等任何兼容上述协议的客户端中直接使用 Codex 编程模型。
+**Codex Proxy** 是一个轻量级本地中转服务，将 [Codex Desktop](https://openai.com/codex) 的 Responses API 转换为多种标准协议接口（OpenAI `/v1/chat/completions`、Anthropic `/v1/messages`、Gemini、Codex `/v1/responses` 直通，以及可选 Ollama `/api/chat` 兼容桥接）。通过本项目，您可以在 Cursor、Claude Code、Continue 等任何兼容上述协议的客户端中直接使用 Codex 编程模型。
 
 只需一个 ChatGPT 账号（或接入第三方 API 中转站），配合本代理即可在本地搭建一个专属的 AI 编程助手网关。
 
@@ -98,7 +98,7 @@ docker compose up -d
 
 > 账号数据保存在 `data/` 文件夹，重启不丢失。其他容器连本服务用宿主机 IP（如 `192.168.x.x:8080`），不要用 `localhost`。
 
-取消 `docker-compose.yml` 中 Watchtower 的注释即可自动更新。
+取消 `docker-compose.yml` 中 Watchtower 的注释即可自动更新。若要在 Docker 中启用 Ollama 兼容桥接，请参考下方 [Ollama Bridge 配置](#ollama-bridge-配置)。
 
 ### 方式三：源码运行
 
@@ -140,6 +140,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ### 🔌 全协议兼容
 - 兼容 `/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、Gemini 格式及 `/v1/responses`（Codex 直通）
+- 内置可选 Ollama 兼容桥接，默认监听 `http://127.0.0.1:11434`
 - SSE 流式输出，可直接对接所有 OpenAI / Anthropic SDK 和客户端
 - 自动完成 Chat Completions / Anthropic / Gemini ↔ Codex Responses API 双向协议转换
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）和 Gemini `responseMimeType`
@@ -351,6 +352,26 @@ aider --model openai/codex
 4. **API Key**: 你的 API Key
 5. 添加模型 `codex`
 
+### Ollama 兼容客户端
+
+在 Dashboard → Settings → **Ollama Bridge** 中启用后，可使用 Ollama 默认地址：
+
+| 设置项 | 值 |
+|--------|-----|
+| Base URL | `http://localhost:11434` |
+| API Key | 不需要，Bridge 内部会使用 Codex Proxy 的密钥访问主服务 |
+| Model | `codex`（或其他模型 ID） |
+
+```bash
+curl http://localhost:11434/api/tags
+
+curl http://localhost:11434/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"codex","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+```
+
+> Ollama API 本身没有鉴权。默认仅监听 `127.0.0.1`，不建议暴露到公网或未信任的局域网。
+
 ### 通用 OpenAI 兼容客户端
 
 任何支持自定义 OpenAI API Base 的客户端均可接入：
@@ -404,6 +425,7 @@ for await (const chunk of stream) {
 | `tls` | `proxy_url`, `force_http11` | TLS 代理与 HTTP 版本 |
 | `quota` | `refresh_interval_minutes`, `warning_thresholds`, `skip_exhausted` | 额度刷新与预警 |
 | `session` | `ttl_minutes`, `cleanup_interval_minutes` | Dashboard session 管理 |
+| `ollama` | `enabled`, `host`, `port`, `version`, `disable_vision` | Ollama 兼容桥接 |
 
 ### 局域网访问
 
@@ -444,6 +466,35 @@ server:
 
 当前密钥始终显示在控制面板的 API Configuration 区域。
 
+### Ollama Bridge 配置
+
+```yaml
+ollama:
+  enabled: false          # true = 启动内置 Ollama 兼容监听器
+  host: 127.0.0.1         # 默认仅本机可访问
+  port: 11434             # Ollama 默认端口
+  version: "0.18.3"       # /api/version 返回值
+  disable_vision: false   # true = /api/show 不声明 vision 能力
+```
+
+支持的 Ollama 端点：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `http://localhost:11434/api/version` | GET | Ollama 版本探测 |
+| `http://localhost:11434/api/tags` | GET | 模型列表 |
+| `http://localhost:11434/api/show` | POST | 模型元数据 |
+| `http://localhost:11434/api/chat` | POST | 聊天补全，支持流式 NDJSON |
+| `http://localhost:11434/v1/*` | 任意 | OpenAI `/v1` 直通 |
+
+Docker 部署时，如果希望宿主机访问 `11434`：
+
+1. 在 Dashboard 或 `data/local.yaml` 中设置 `ollama.enabled: true` 和 `ollama.host: 0.0.0.0`。
+2. 取消 `docker-compose.yml` 中 `127.0.0.1:${OLLAMA_BRIDGE_PORT:-11434}:11434` 端口映射的注释。
+3. 保持宿主机绑定 `127.0.0.1`，除非你明确知道自己要把无鉴权 Ollama API 暴露到网络。
+
+浏览器 CORS 访问仅允许 `localhost`、`127.x.x.x`、`::1` 等 loopback origin；非本机网页来源不能读取桥接响应。Bridge 会为 `/v1/*` 直通请求注入已配置的 Codex Proxy API Key，因此暴露到 localhost 之外时，相当于也把主代理 API 以无鉴权方式暴露出去。
+
 ### 环境变量覆盖
 
 | 环境变量 | 覆盖配置 |
@@ -452,6 +503,11 @@ server:
 | `CODEX_PLATFORM` | `client.platform` |
 | `CODEX_ARCH` | `client.arch` |
 | `HTTPS_PROXY` | `tls.proxy_url` |
+| `OLLAMA_BRIDGE_ENABLED` | `ollama.enabled` |
+| `OLLAMA_BRIDGE_HOST` | `ollama.host` |
+| `OLLAMA_BRIDGE_PORT` | `ollama.port` |
+| `OLLAMA_BRIDGE_VERSION` | `ollama.version` |
+| `OLLAMA_BRIDGE_DISABLE_VISION` | `ollama.disable_vision` |
 
 ## 📡 API 端点
 
@@ -466,6 +522,7 @@ server:
 | `/v1/responses` | POST | Codex Responses API 直通 |
 | `/v1/messages` | POST | Anthropic 格式聊天补全 |
 | `/v1/models` | GET | 可用模型列表 |
+| `:11434/api/chat` | POST | Ollama 兼容聊天补全（需启用 Ollama Bridge） |
 
 **账号与认证**
 
@@ -517,6 +574,8 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 |------|------|------|
 | `/admin/rotation-settings` | GET/POST | 轮换策略配置 |
 | `/admin/quota-settings` | GET/POST | 额度刷新与预警配置 |
+| `/admin/ollama-settings` | GET/POST | Ollama Bridge 配置 |
+| `/admin/ollama-status` | GET | Ollama Bridge 运行状态 |
 | `/admin/refresh-models` | POST | 手动刷新模型列表 |
 | `/admin/usage-stats/summary` | GET | 用量统计汇总 |
 | `/admin/usage-stats/history` | GET | 用量时间序列 |

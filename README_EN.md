@@ -44,7 +44,7 @@
 
 ---
 
-**Codex Proxy** is a lightweight local gateway that translates the [Codex Desktop](https://openai.com/codex) Responses API into multiple standard protocol endpoints — OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini, and Codex `/v1/responses` passthrough. Use Codex coding models directly in Cursor, Claude Code, Continue, or any compatible client.
+**Codex Proxy** is a lightweight local gateway that translates the [Codex Desktop](https://openai.com/codex) Responses API into multiple standard protocol endpoints — OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini, Codex `/v1/responses` passthrough, and an optional Ollama-compatible `/api/chat` bridge. Use Codex coding models directly in Cursor, Claude Code, Continue, or any compatible client.
 
 Just a ChatGPT account (or a third-party API relay) and this proxy — your own personal AI coding assistant gateway, running locally.
 
@@ -73,7 +73,7 @@ docker compose up -d
 # Open http://localhost:8080 to log in
 ```
 
-> Data persists in `data/`. Cross-container access: use host LAN IP (e.g. `192.168.x.x:8080`), not `localhost`. Uncomment Watchtower in `docker-compose.yml` for auto-updates.
+> Data persists in `data/`. Cross-container access: use host LAN IP (e.g. `192.168.x.x:8080`), not `localhost`. Uncomment Watchtower in `docker-compose.yml` for auto-updates. To enable the Ollama-compatible bridge in Docker, see [Ollama Bridge configuration](#ollama-bridge-configuration).
 
 ### From Source
 
@@ -111,6 +111,7 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 
 ### 1. 🔌 Full Protocol Compatibility
 - Compatible with `/v1/chat/completions` (OpenAI), `/v1/messages` (Anthropic), Gemini, and `/v1/responses` (Codex passthrough)
+- Optional built-in Ollama-compatible bridge, defaulting to `http://127.0.0.1:11434`
 - SSE streaming, works with all OpenAI / Anthropic SDKs and clients
 - Automatic bidirectional translation between all protocols and Codex Responses API
 - **Structured Outputs** — `response_format` (`json_object` / `json_schema`) and Gemini `responseMimeType`
@@ -303,6 +304,26 @@ aider --openai-api-base http://localhost:8080/v1 \
 4. **API Key**: your API key
 5. Add model `codex`
 
+### Ollama-Compatible Clients
+
+Enable it in Dashboard → Settings → **Ollama Bridge**, then use the default Ollama base URL:
+
+| Setting | Value |
+|---------|-------|
+| Base URL | `http://localhost:11434` |
+| API Key | Not required; the bridge uses the Codex Proxy key internally |
+| Model | `codex` (or any model ID) |
+
+```bash
+curl http://localhost:11434/api/tags
+
+curl http://localhost:11434/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"codex","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+```
+
+> The Ollama API has no authentication. The bridge listens on `127.0.0.1` by default; do not expose it to the public internet or untrusted LANs.
+
 ### Any OpenAI-Compatible Client
 
 | Setting | Value |
@@ -352,6 +373,36 @@ All configuration in `config/default.yaml`:
 | `tls` | `proxy_url`, `force_http11` | TLS proxy and HTTP version |
 | `quota` | `refresh_interval_minutes`, `warning_thresholds`, `skip_exhausted` | Quota refresh and warnings |
 | `session` | `ttl_minutes`, `cleanup_interval_minutes` | Dashboard session management |
+| `ollama` | `enabled`, `host`, `port`, `version`, `disable_vision` | Ollama-compatible bridge |
+
+### Ollama Bridge Configuration
+
+```yaml
+ollama:
+  enabled: false          # true = start the built-in Ollama-compatible listener
+  host: 127.0.0.1         # localhost-only by default
+  port: 11434             # Ollama default port
+  version: "0.18.3"       # value returned by /api/version
+  disable_vision: false   # true = do not advertise vision in /api/show
+```
+
+Supported Ollama endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `http://localhost:11434/api/version` | GET | Ollama version probe |
+| `http://localhost:11434/api/tags` | GET | Model list |
+| `http://localhost:11434/api/show` | POST | Model metadata |
+| `http://localhost:11434/api/chat` | POST | Chat completions with streaming NDJSON |
+| `http://localhost:11434/v1/*` | Any | OpenAI `/v1` passthrough |
+
+For Docker deployments that need host access to `11434`:
+
+1. Set `ollama.enabled: true` and `ollama.host: 0.0.0.0` in the Dashboard or `data/local.yaml`.
+2. Uncomment the `127.0.0.1:${OLLAMA_BRIDGE_PORT:-11434}:11434` port mapping in `docker-compose.yml`.
+3. Keep the host binding on `127.0.0.1` unless you intentionally want to expose an unauthenticated Ollama API.
+
+Browser CORS access is limited to loopback origins such as `localhost`, `127.x.x.x`, and `::1`; non-local web origins are not allowed to read bridge responses. The bridge injects the configured Codex Proxy API key for `/v1/*` passthrough requests, so exposing it beyond localhost effectively grants unauthenticated access to the main proxy API.
 
 ### Environment Variable Overrides
 
@@ -361,6 +412,11 @@ All configuration in `config/default.yaml`:
 | `CODEX_PLATFORM` | `client.platform` |
 | `CODEX_ARCH` | `client.arch` |
 | `HTTPS_PROXY` | `tls.proxy_url` |
+| `OLLAMA_BRIDGE_ENABLED` | `ollama.enabled` |
+| `OLLAMA_BRIDGE_HOST` | `ollama.host` |
+| `OLLAMA_BRIDGE_PORT` | `ollama.port` |
+| `OLLAMA_BRIDGE_VERSION` | `ollama.version` |
+| `OLLAMA_BRIDGE_DISABLE_VISION` | `ollama.disable_vision` |
 
 ## 📡 API Endpoints
 
@@ -375,6 +431,7 @@ All configuration in `config/default.yaml`:
 | `/v1/responses` | POST | Codex Responses API passthrough |
 | `/v1/messages` | POST | Anthropic format chat completions |
 | `/v1/models` | GET | List available models |
+| `:11434/api/chat` | POST | Ollama-compatible chat completions (requires Ollama Bridge) |
 
 **Auth & Accounts**
 
@@ -426,6 +483,8 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 |----------|--------|-------------|
 | `/admin/rotation-settings` | GET/POST | Rotation strategy config |
 | `/admin/quota-settings` | GET/POST | Quota refresh & warning config |
+| `/admin/ollama-settings` | GET/POST | Ollama Bridge config |
+| `/admin/ollama-status` | GET | Ollama Bridge runtime status |
 | `/admin/refresh-models` | POST | Trigger manual model list refresh |
 | `/admin/usage-stats/summary` | GET | Usage stats summary |
 | `/admin/usage-stats/history` | GET | Usage time series |

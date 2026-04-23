@@ -71,6 +71,13 @@ export const ConfigSchema = z.object({
     auto_update: z.boolean().default(true),
     auto_download: z.boolean().default(false),
   }).default({}),
+  ollama: z.object({
+    enabled: z.boolean().default(false),
+    host: z.string().default("127.0.0.1"),
+    port: z.number().min(1).max(65535).default(11434),
+    version: z.string().trim().min(1).max(64).default("0.18.3"),
+    disable_vision: z.boolean().default(false),
+  }).default({}),
   /** Third-party API provider keys for multi-backend routing. */
   providers: z.object({
     openai: z.object({

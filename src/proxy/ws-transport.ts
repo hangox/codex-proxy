@@ -17,7 +17,7 @@
 import type { CodexInputItem } from "./codex-api.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
-import { CodexApiError } from "./codex-types.js";
+import { CodexApiError, PreviousResponseWebSocketError } from "./codex-types.js";
 import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
 
 /**
@@ -29,7 +29,11 @@ import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
  * errors, validation errors, etc.) — those keep the SSE pass-through
  * behavior so the client sees the real reason.
  */
-function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } | null {
+type WsErrorClassification =
+  | { kind: "api"; status: number }
+  | { kind: "previous_response_not_found"; message: string };
+
+function classifyWsErrorEvent(msg: Record<string, unknown>): WsErrorClassification | null {
   const type = typeof msg.type === "string" ? msg.type : "";
   if (type !== "error" && type !== "response.failed") return null;
   const errorObj = typeof msg.error === "object" && msg.error !== null
@@ -41,16 +45,21 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } 
     (typeof errorObj.type === "string" ? errorObj.type : null) ??
     "";
   const lower = codeRaw.toLowerCase();
-  if (lower.includes("usage_limit") || lower.includes("rate_limit")) return { status: 429 };
-  if (lower.includes("quota_exhausted") || lower.includes("payment_required")) return { status: 402 };
+  const messageRaw = errorObj.message;
+  const message = typeof messageRaw === "string" ? messageRaw : JSON.stringify(errorObj);
+  if (lower.includes("previous_response_not_found")) {
+    return { kind: "previous_response_not_found", message };
+  }
+  if (lower.includes("usage_limit") || lower.includes("rate_limit")) return { kind: "api", status: 429 };
+  if (lower.includes("quota_exhausted") || lower.includes("payment_required")) return { kind: "api", status: 402 };
   if (
     lower.includes("unauthorized") ||
     lower.includes("token_invalid") ||
     lower.includes("deactivated")
   ) {
-    return { status: 401 };
+    return { kind: "api", status: 401 };
   }
-  if (lower.includes("forbidden") || lower.includes("banned")) return { status: 403 };
+  if (lower.includes("forbidden") || lower.includes("banned")) return { kind: "api", status: 403 };
   return null;
 }
 
@@ -241,7 +250,11 @@ export async function createWebSocketResponse(
         if (msg) {
           const classified = classifyWsErrorEvent(msg);
           if (classified) {
-            reject(new CodexApiError(classified.status, JSON.stringify(msg)));
+            reject(
+              classified.kind === "previous_response_not_found"
+                ? new PreviousResponseWebSocketError(classified.message)
+                : new CodexApiError(classified.status, JSON.stringify(msg)),
+            );
             try { ws.close(1000, "early upstream error"); } catch { /* already closing */ }
             return;
           }

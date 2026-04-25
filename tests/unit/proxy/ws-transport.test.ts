@@ -187,9 +187,7 @@ describe("createWebSocketResponse", () => {
     setConfigForTesting(createMockConfig({ tls: { proxy_url: globalProxyUrl } }));
     await initProxy();
 
-    await createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
-
-    const ws = lastWs();
+    const { ws } = await connect();
     expect(proxyAgentUrls).toEqual([globalProxyUrl]);
     expect((ws.opts?.agent as MockProxyAgent | undefined)?.proxyUrl).toBe(globalProxyUrl);
 
@@ -201,9 +199,7 @@ describe("createWebSocketResponse", () => {
     setConfigForTesting(createMockConfig({ tls: { proxy_url: globalProxyUrl } }));
     await initProxy();
 
-    await createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
-
-    const ws = lastWs();
+    const { ws } = await connect();
     expect(proxyAgentUrls).toEqual([]);
     expect(socksProxyAgentUrls).toEqual([globalProxyUrl]);
     expect((ws.opts?.agent as MockProxyAgent | undefined)?.proxyUrl).toBe(globalProxyUrl);
@@ -215,9 +211,12 @@ describe("createWebSocketResponse", () => {
     setConfigForTesting(createMockConfig({ tls: { proxy_url: "http://global-proxy.local:8080" } }));
     await initProxy();
 
-    await createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, undefined, null);
-
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, undefined, null);
+    promise.catch(() => { /* test-controlled */ });
+    await waitForOpen();
     const ws = lastWs();
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_init" } }));
+    await promise;
     expect(proxyAgentUrls).toEqual([]);
     expect(ws.opts?.agent).toBeUndefined();
 

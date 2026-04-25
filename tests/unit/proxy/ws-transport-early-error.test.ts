@@ -45,7 +45,7 @@ vi.mock("ws", () => {
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { createWebSocketResponse, type WsCreateRequest } from "@src/proxy/ws-transport.js";
-import { CodexApiError } from "@src/proxy/codex-types.js";
+import { CodexApiError, PreviousResponseWebSocketError } from "@src/proxy/codex-types.js";
 import { extractRetryAfterSec } from "@src/proxy/error-classification.js";
 
 interface MockWs extends EventEmitter {
@@ -139,6 +139,26 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
       expect(err).toBeInstanceOf(CodexApiError);
       expect((err as CodexApiError).status).toBe(402);
     }
+  });
+
+  it("rejects with PreviousResponseWebSocketError when first frame is previous_response_not_found", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, {
+      ...BASE_REQUEST,
+      previous_response_id: "resp_missing",
+    });
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: {
+        type: "api_error",
+        code: "previous_response_not_found",
+        message: "previous_response_not_found: Previous response with id 'resp_missing' not found.",
+      },
+    }));
+
+    await expect(promise).rejects.toBeInstanceOf(PreviousResponseWebSocketError);
   });
 
   it("resolves normally when first frame is an error with an unmapped code", async () => {

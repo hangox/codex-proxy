@@ -41,6 +41,7 @@ import { GeminiUpstream } from "./proxy/gemini-upstream.js";
 import { ApiKeyPool } from "./auth/api-key-pool.js";
 import { createApiKeyRoutes } from "./routes/api-keys.js";
 import { createAdapterForEntry } from "./proxy/adapter-factory.js";
+import { startOllamaBridge, stopOllamaBridge } from "./ollama/server.js";
 
 export interface ServerHandle {
   close: () => Promise<void>;
@@ -50,6 +51,12 @@ export interface ServerHandle {
 export interface StartOptions {
   host?: string;
   port?: number;
+}
+
+function urlHostForLocalRequest(host: string): string {
+  if (host === "0.0.0.0" || host === "::") return "127.0.0.1";
+  if (host.includes(":") && !host.startsWith("[")) return `[${host}]`;
+  return host;
 }
 
 /**
@@ -226,8 +233,11 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   // Resolve actual port (may differ from requested when port=0)
   const addr = server.address();
   const actualPort = (addr && typeof addr === "object") ? addr.port : port;
+  const upstreamBaseUrl = `http://${urlHostForLocalRequest(host)}:${actualPort}`;
+  await startOllamaBridge(getConfig(), { upstreamBaseUrl });
 
-  const close = (): Promise<void> => {
+  const close = async (): Promise<void> => {
+    await stopOllamaBridge();
     return new Promise((resolve) => {
       server.close(() => {
         stopUpdateChecker();

@@ -125,6 +125,11 @@ describe("applyEnvOverrides", () => {
     savedEnv.PORT = process.env.PORT;
     savedEnv.HTTPS_PROXY = process.env.HTTPS_PROXY;
     savedEnv.https_proxy = process.env.https_proxy;
+    savedEnv.OLLAMA_BRIDGE_ENABLED = process.env.OLLAMA_BRIDGE_ENABLED;
+    savedEnv.OLLAMA_BRIDGE_HOST = process.env.OLLAMA_BRIDGE_HOST;
+    savedEnv.OLLAMA_BRIDGE_PORT = process.env.OLLAMA_BRIDGE_PORT;
+    savedEnv.OLLAMA_BRIDGE_VERSION = process.env.OLLAMA_BRIDGE_VERSION;
+    savedEnv.OLLAMA_BRIDGE_DISABLE_VISION = process.env.OLLAMA_BRIDGE_DISABLE_VISION;
     // Clear
     delete process.env.CODEX_JWT_TOKEN;
     delete process.env.CODEX_PLATFORM;
@@ -132,6 +137,11 @@ describe("applyEnvOverrides", () => {
     delete process.env.PORT;
     delete process.env.HTTPS_PROXY;
     delete process.env.https_proxy;
+    delete process.env.OLLAMA_BRIDGE_ENABLED;
+    delete process.env.OLLAMA_BRIDGE_HOST;
+    delete process.env.OLLAMA_BRIDGE_PORT;
+    delete process.env.OLLAMA_BRIDGE_VERSION;
+    delete process.env.OLLAMA_BRIDGE_DISABLE_VISION;
   });
 
   afterEach(() => {
@@ -192,5 +202,44 @@ describe("applyEnvOverrides", () => {
     applyEnvOverrides(raw, null);
     expect((raw.client as Record<string, unknown>).platform).toBe("linux");
     expect((raw.client as Record<string, unknown>).arch).toBe("x86_64");
+  });
+
+  it("applies Ollama bridge env overrides", () => {
+    process.env.OLLAMA_BRIDGE_ENABLED = " yes ";
+    process.env.OLLAMA_BRIDGE_HOST = " 0.0.0.0 ";
+    process.env.OLLAMA_BRIDGE_PORT = " 11435 ";
+    process.env.OLLAMA_BRIDGE_VERSION = " 0.20.1 ";
+    process.env.OLLAMA_BRIDGE_DISABLE_VISION = " true ";
+    const raw = { auth: {}, server: {}, client: {}, ollama: {} } as Record<string, unknown>;
+
+    applyEnvOverrides(raw, null);
+
+    expect(raw.ollama).toEqual({
+      enabled: true,
+      host: "0.0.0.0",
+      port: 11435,
+      version: "0.20.1",
+      disable_vision: true,
+    });
+  });
+
+  it("applies false Ollama bridge booleans and ignores invalid Ollama port", () => {
+    process.env.OLLAMA_BRIDGE_ENABLED = "false";
+    process.env.OLLAMA_BRIDGE_PORT = "abc";
+    process.env.OLLAMA_BRIDGE_DISABLE_VISION = "0";
+    const raw = {
+      auth: {},
+      server: {},
+      client: {},
+      ollama: { enabled: true, port: 11434, disable_vision: true },
+    } as Record<string, unknown>;
+
+    applyEnvOverrides(raw, null);
+
+    expect(raw.ollama).toEqual({
+      enabled: false,
+      port: 11434,
+      disable_vision: false,
+    });
   });
 });

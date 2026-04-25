@@ -78,6 +78,106 @@ Native Codex Responses API passthrough (WebSocket transport).
 - Streaming: SSE with `response.created`, `response.output_text.delta`, `response.completed`
 - Non-streaming: `{ response, usage, responseId }`
 
+#### image_generation tool
+
+Declare `{"type": "image_generation", ...}` in `tools[]` to let the model invoke
+the server-side image generation backend (`gpt-image-2`). Requires a **ChatGPT
+Plus or higher** account — free plans have the tool silently stripped upstream
+and the model falls back to returning SVG text.
+
+**Supported fields** (all optional except `type`):
+
+| Field | Enum / range | Default | Notes |
+|---|---|---|---|
+| `size` | `1024x1024`, `1024x1536`, `1536x1024`, `2048x2048`, `2048x3072`, `3072x2048`, `3840x2160` (4K UHD), `2160x3840` (4K portrait), `2304x3072` (3:4), `auto` | `auto` | Width and height must both be divisible by 16. Longest edge ≤ 3840 px. Total pixel budget ≈ 8 MP (`3072x3072` rejected). Resolutions below 1024 px also rejected (min pixel budget) |
+| `output_format` | `png` / `jpeg` / `webp` | `png` | `gif` is rejected |
+| `output_compression` | integer 0–100 | `100` | **jpeg / webp only** — PNG rejects any non-100 |
+| `background` | `auto` / `opaque` | `auto` | `transparent` is rejected for this model |
+| `moderation` | `auto` / `low` | `auto` | other enums rejected |
+| `partial_images` | integer 0–3 | 0 | `>3` rejected |
+
+**Silently rewritten / hard-rejected fields**:
+
+- `model` — whatever you send, upstream forces `gpt-image-2`.
+- `quality` — any value is echoed back as `auto`; the user-supplied value has no effect.
+- `n` — rejected (`unknown_parameter`); one image per call.
+- `input_image`, `mask`, `input_fidelity`, `style`, `response_format` — rejected.
+
+**Event stream order** (when the model invokes the tool):
+
+1. `response.created` — echoes `tools[]` with upstream-normalized fields.
+2. `response.output_item.added` — `{type: "image_generation_call", ...}`.
+3. `response.image_generation_call.in_progress` → `.generating` → (optional) `.partial_image` × N.
+4. `response.output_item.done` — the completed `image_generation_call` with:
+   - `result` — base64-encoded image bytes (PNG / JPEG / WebP by `output_format`).
+   - `revised_prompt` — the final prompt the model actually used.
+5. `response.completed`.
+
+**Edit mode** (supply a reference image): put an `input_image` block in the user
+message content. `data:` URLs and HTTPS URLs both work.
+
+```jsonc
+{
+  "model": "gpt-5.5",
+  "stream": true,
+  "input": [{
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "Make this sky a sunset."},
+      {"type": "input_image", "image_url": "data:image/png;base64,AAA...", "detail": "high"}
+    ]
+  }],
+  "tools": [{"type": "image_generation", "size": "1024x1024"}]
+}
+```
+
+Legal content-part types (from upstream enum validation): `input_text`,
+`input_image`, `output_text`, `refusal`, `input_file`, `computer_screenshot`,
+`summary_text`.
+
+### Ollama-Compatible Bridge
+
+The optional bridge runs on a separate listener, defaulting to `http://127.0.0.1:11434`.
+It is disabled by default and can be controlled through Dashboard settings or the admin
+API. Ollama endpoints are intentionally unauthenticated; keep the listener bound to
+localhost unless you explicitly trust the network.
+Browser CORS access is restricted to loopback origins (`localhost`, `127.x.x.x`,
+and `::1`) so non-local web pages cannot read bridge responses by default. The
+bridge injects the configured Codex Proxy API key for `/v1/*` passthrough
+requests, so exposing it beyond localhost also exposes the main proxy API
+without requiring clients to know that key.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/version` | Version probe → `{ version }` |
+| GET | `/api/tags` | Model list in Ollama format |
+| POST | `/api/show` | Model metadata and capabilities |
+| POST | `/api/chat` | Chat completions, streaming as NDJSON by default |
+| Any | `/v1/*` | OpenAI-compatible passthrough to the main proxy |
+
+```jsonc
+// POST http://127.0.0.1:11434/api/chat
+{
+  "model": "codex",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "stream": true,
+  "think": "medium"  // optional: false | true | low | medium | high | xhigh
+}
+```
+
+Supported request mappings:
+
+| Ollama field | Upstream OpenAI field |
+|--------------|-----------------------|
+| `messages[].images` | `content[].image_url` data URLs |
+| `tools` | `tools` |
+| `think` | `reasoning_effort` |
+| `format: "json"` | `response_format: { type: "json_object" }` |
+| `format: { ... }` | strict JSON schema response format |
+| `options.temperature` | `temperature` |
+| `options.top_p` | `top_p` |
+| `options.num_predict` | `max_tokens` |
+
 ---
 
 ## Models
@@ -216,6 +316,9 @@ Native Codex Responses API passthrough (WebSocket transport).
 | POST | `/admin/rotation-settings` | Set rotation strategy |
 | GET | `/admin/quota-settings` | Get quota settings |
 | POST | `/admin/quota-settings` | Set quota settings |
+| GET | `/admin/ollama-settings` | Get Ollama Bridge settings plus runtime status |
+| POST | `/admin/ollama-settings` | Persist Ollama Bridge settings and restart the bridge |
+| GET | `/admin/ollama-status` | Get Ollama Bridge runtime status |
 
 ### Diagnostics
 

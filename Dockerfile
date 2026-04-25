@@ -57,7 +57,7 @@ RUN date -u +%Y-%m-%dT%H:%M:%SZ > /app/.docker-build-time
 # 7) Prune dev deps, re-add tsx (needed at runtime by update-checker fork())
 RUN npm prune --omit=dev && npm install --no-save tsx
 
-EXPOSE 8080
+EXPOSE 8080 11434
 
 # Ensure data dir exists in the image (bind mount may override at runtime)
 RUN mkdir -p /app/data

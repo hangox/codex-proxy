@@ -8,6 +8,7 @@ import { createHealthRoutes } from "./admin/health.js";
 import { createUpdateRoutes } from "./admin/update.js";
 import { createConnectionRoutes } from "./admin/connection.js";
 import { createSettingsRoutes } from "./admin/settings.js";
+import { createOllamaAdminRoutes } from "./admin/ollama.js";
 import { createUsageStatsRoutes } from "./admin/usage-stats.js";
 import { createLogRoutes } from "./admin/logs.js";
 import type { UsageStatsStore } from "../auth/usage-stats.js";
@@ -45,6 +46,7 @@ export function createWebRoutes(accountPool: AccountPool, usageStats: UsageStats
   app.route("/", createUpdateRoutes());
   app.route("/", createConnectionRoutes(accountPool));
   app.route("/", createSettingsRoutes());
+  app.route("/", createOllamaAdminRoutes());
   app.route("/", createUsageStatsRoutes(accountPool, usageStats));
   app.route("/", createLogRoutes());
 

@@ -141,6 +141,31 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     }
   });
 
+  it("rejects with CodexApiError(502) when first frame is generic upstream server_error", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: {
+        type: "api_error",
+        message:
+          "server_error: An error occurred while processing your request. Please include the request ID req_123.",
+      },
+    }));
+
+    try {
+      await promise;
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexApiError);
+      const apiErr = err as CodexApiError;
+      expect(apiErr.status).toBe(502);
+      expect(apiErr.body).toContain("req_123");
+    }
+  });
+
   it("rejects with PreviousResponseWebSocketError when first frame is previous_response_not_found", async () => {
     const promise = createWebSocketResponse("wss://test/ws", {}, {
       ...BASE_REQUEST,
@@ -171,6 +196,26 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     const errorFrame = {
       type: "error",
       error: { code: "model_not_supported_in_plan", message: "nope" },
+    };
+    ws.emit("message", JSON.stringify(errorFrame));
+
+    const response = await promise;
+    expect(response.status).toBe(200);
+    const text = await readAll(response);
+    expect(text).toContain("event: error");
+    expect(text).toContain("model_not_supported_in_plan");
+  });
+
+  it("passes through non-server errors even when the message mentions processing the request", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    const ws = await waitForOpen();
+
+    const errorFrame = {
+      type: "error",
+      error: {
+        code: "model_not_supported_in_plan",
+        message: "error processing your request: model not supported",
+      },
     };
     ws.emit("message", JSON.stringify(errorFrame));
 

@@ -634,11 +634,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 ### [Unreleased]
 
 **Added**
+- 发版流程引入 `dev` 分支 + beta channel：`bump-electron-beta.yml` 在 dev push 时打 `vX.Y.Z-beta.SHA` tag 出预发布包；`promote-dev-to-master.yml` 每天 14:00 UTC 检查 dev soak ≥24h + CI 绿后 fast-forward 到 master，再由现有 `bump-electron.yml` 出 stable tag (`.github/workflows/`)
+- `update.allow_prerelease` 配置项（默认 `false`）：开启后本地 Electron 通过 electron-updater 接收 beta channel 推送的预发布版本，便于自己的安装实测 dev 改动 (`src/config-schema.ts`、`packages/electron/electron/auto-updater.ts`、`config/default.yaml`)
 - `config/models.yaml`: `gpt-5.5` (Plus-only general-purpose chat) and `gpt-image-2` (Plus-only image-generation backend) entered the static catalog
 - `CodexModelInfo.outputModalities` optional field on the model catalog interface to flag image-gen models apart from chat models (`src/models/model-store.ts`, `BackendModelEntry.output_modalities` also added for backend passthrough). `/v1/models/catalog` defaults missing values to `["text"]` so API output matches the documented contract.
 - README 新增图像生成小节 + 模型表 Output 列；`API.md` / `API_CN.md` 补 `image_generation` 工具参数矩阵、事件流、编辑模式文档
-- Dashboard: new Logs tab to inspect ingress/egress requests, with enable/pause controls, filters, search, and details panel.
-- 控制台新增日志页面：支持启用/暂停、方向筛选、搜索与详情查看，便于排查请求流向。
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
 - Default model switched from `gpt-5.3-codex` → `gpt-5.4` (`config/default.yaml`, `config/models.yaml.isDefault`, Zod schema default in `src/config-schema.ts`). Removed the `codex` alias — clients must use full model IDs. Sonnet mapping in Anthropic preset/README 推荐表保持 `gpt-5.3-codex` 不变（编程场景更贴位）

@@ -645,11 +645,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 - Static `isDefault` and `outputModalities` on `config/models.yaml` entries now survive the backend dynamic fetch merge (previously the spread of normalized `undefined`/`false` silently clobbered YAML-declared values)
 - Dashboard session 默认 TTL 从 1 小时延长至 24 小时
 **Fixed**
+- WebSocket 路径首帧若为上游 `usage_limit_reached` / `rate_limit*` / `quota_exhausted` / 鉴权类终止错误，转换为 `CodexApiError` 抛出，复用 HTTP 路径已有的账号轮转逻辑；恢复 2.0.62 的"智能切换"行为（`src/proxy/ws-transport.ts`）。错误若发生在已有内容流出之后，仍按当前行为透传给客户端
 - 无可用账号时不再执行无意义的重试，直接返回描述性错误信息（含各状态账号计数：rate-limited / expired / banned / disabled）(#362)
 - API Key 路由（OpenAI/Anthropic/Gemini）上游返回错误时，透传原始 JSON 响应体，而非包装为代理自有格式；Codex 账号路由仍使用代理格式 (#367)
 - `least_used` 策略不再将 `window_reset_at = null` 的新账号（从未收到限速响应头）视为 Infinity 而永久排在已有窗口账号之后；现在两者都进入 `request_count` 比较，新账号（0 请求）可正确轮转到，`__cf_bm` cookie 也能正常写入 (#342)
 - 默认不再发送 `reasoning.effort`：移除 `modelInfo.defaultReasoningEffort` 自动兜底，`default_reasoning_effort` 默认改为 `null`，彻底消除简单对话触发 medium 推理导致的 token 暴涨；Dashboard 新增 "Disabled (no reasoning)" 选项，用户可按需开启
-- 上游 401 时立即触发 RT→AT 刷新，而非等待定时器（修复 token 被提前作废后账号一直显示 expired 的问题）
 - ...（[查看全部](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24

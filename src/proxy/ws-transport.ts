@@ -47,6 +47,7 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): WsErrorClassificati
   const lower = codeRaw.toLowerCase();
   const messageRaw = errorObj.message;
   const message = typeof messageRaw === "string" ? messageRaw : JSON.stringify(errorObj);
+  const lowerMessage = message.toLowerCase();
   if (lower.includes("previous_response_not_found")) {
     return { kind: "previous_response_not_found", message };
   }
@@ -60,6 +61,15 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): WsErrorClassificati
     return { kind: "api", status: 401 };
   }
   if (lower.includes("forbidden") || lower.includes("banned")) return { kind: "api", status: 403 };
+  if (
+    lower.includes("server_error") ||
+    lower.includes("internal_error") ||
+    lower.includes("internal_server_error") ||
+    lowerMessage.includes("server_error") ||
+    lowerMessage.includes("internal server error")
+  ) {
+    return { kind: "api", status: 502 };
+  }
   return null;
 }
 

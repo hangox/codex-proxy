@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { PreviousResponseWebSocketError } from "@src/proxy/codex-api.js";
 import {
+  getMissingExplicitFunctionCallOutputIds,
   shouldActivateImplicitResume,
   shouldReplayFullInputAfterImplicitResumeError,
 } from "@src/routes/shared/proxy-handler.js";
@@ -74,5 +75,21 @@ describe("shouldActivateImplicitResume", () => {
     const err = new PreviousResponseWebSocketError("ws down");
     expect(shouldReplayFullInputAfterImplicitResumeError(err, true)).toBe(true);
     expect(shouldReplayFullInputAfterImplicitResumeError(err, false)).toBe(false);
+  });
+});
+
+describe("getMissingExplicitFunctionCallOutputIds", () => {
+  it("显式 previous_response_id 已带齐 tool output 时返回空", () => {
+    expect(getMissingExplicitFunctionCallOutputIds(
+      ["call_1"],
+      [{ type: "function_call_output", call_id: "call_1", output: "{\"ok\":true}" }],
+    )).toEqual([]);
+  });
+
+  it("显式 previous_response_id 缺少 tool output 时返回缺失 call_id", () => {
+    expect(getMissingExplicitFunctionCallOutputIds(
+      ["call_1", "call_2"],
+      [{ role: "user", content: "继续" }],
+    )).toEqual(["call_1", "call_2"]);
   });
 });

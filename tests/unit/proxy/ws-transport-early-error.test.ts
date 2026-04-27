@@ -226,6 +226,31 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     expect(text).toContain("model_not_supported_in_plan");
   });
 
+  it("rejects missing tool output errors as CodexApiError(400)", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, {
+      ...BASE_REQUEST,
+      previous_response_id: "resp_prev",
+    });
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "invalid_request_error: No tool output found for function call call_123.",
+      },
+    }));
+
+    try {
+      await promise;
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect((err as CodexApiError).status).toBe(400);
+    }
+  });
+
   it("treats codex.rate_limits as internal — does not flip the early-decision flag", async () => {
     // Sequence: rate-limits frame → usage_limit_reached error.
     // The rate-limits frame must be consumed via onRateLimits and must NOT

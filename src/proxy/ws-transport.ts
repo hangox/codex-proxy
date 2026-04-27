@@ -51,6 +51,9 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): WsErrorClassificati
   if (lower.includes("previous_response_not_found")) {
     return { kind: "previous_response_not_found", message };
   }
+  if (lowerMessage.includes("no tool output found for function call")) {
+    return { kind: "api", status: 400 };
+  }
   if (lower.includes("usage_limit") || lower.includes("rate_limit")) return { kind: "api", status: 429 };
   if (lower.includes("quota_exhausted") || lower.includes("payment_required")) return { kind: "api", status: 402 };
   if (

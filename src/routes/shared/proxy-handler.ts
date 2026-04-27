@@ -57,6 +57,11 @@ export interface ResponseMetadata {
   functionCallIds?: string[];
 }
 
+export interface InvalidRequestDetails {
+  message: string;
+  code?: string;
+}
+
 /** Format-specific adapter provided by each route. */
 export interface FormatAdapter {
   tag: string;
@@ -64,6 +69,8 @@ export interface FormatAdapter {
   formatNoAccount: () => unknown;
   format429: (message: string) => unknown;
   formatError: (status: number, message: string) => unknown;
+  invalidRequestStatus?: StatusCode;
+  formatInvalidRequest?: (details: InvalidRequestDetails) => unknown;
   streamTranslator: (
     api: UpstreamAdapter,
     response: Response,
@@ -126,6 +133,15 @@ export function shouldReplayFullInputAfterImplicitResumeError(
   implicitResumeActive: boolean,
 ): err is PreviousResponseWebSocketError {
   return implicitResumeActive && err instanceof PreviousResponseWebSocketError;
+}
+
+export function getMissingExplicitFunctionCallOutputIds(
+  storedFunctionCallIds: string[],
+  input: CodexResponsesRequest["input"],
+): string[] {
+  if (storedFunctionCallIds.length === 0) return [];
+  const providedFunctionCallOutputIds = new Set(getFunctionCallOutputIds(input));
+  return storedFunctionCallIds.filter((callId) => !providedFunctionCallOutputIds.has(callId));
 }
 
 function getContinuationInputStartIndex(input: CodexResponsesRequest["input"]): number {
@@ -207,12 +223,18 @@ export async function handleProxyRequest(
   const implicitStoredInstructions = implicitPrevRespId
     ? affinityMap.lookupInstructions(implicitPrevRespId)
     : null;
+  const explicitStoredFunctionCallIds = explicitPrevRespId
+    ? affinityMap.lookupFunctionCallIds(explicitPrevRespId)
+    : [];
   const implicitContinuationInput = req.codexRequest.input.slice(continuationInputStart);
   const requiredFunctionCallOutputIds = implicitPrevRespId
     ? getFunctionCallOutputIds(implicitContinuationInput)
     : [];
   const implicitStoredFunctionCallIds = implicitPrevRespId
     ? affinityMap.lookupFunctionCallIds(implicitPrevRespId)
+    : [];
+  const missingExplicitFunctionCallOutputIds = explicitPrevRespId
+    ? getMissingExplicitFunctionCallOutputIds(explicitStoredFunctionCallIds, req.codexRequest.input)
     : [];
   const missingFunctionCallOutputIds = requiredFunctionCallOutputIds.filter(
     (callId) => !implicitStoredFunctionCallIds.includes(callId),
@@ -234,6 +256,23 @@ export async function handleProxyRequest(
   // Turn state: sticky routing token from upstream, echoed back on subsequent requests
   const explicitTurnState = explicitPrevRespId ? affinityMap.lookupTurnState(explicitPrevRespId) : null;
   if (explicitTurnState) req.codexRequest.turnState = explicitTurnState;
+
+  if (explicitPrevRespId && missingExplicitFunctionCallOutputIds.length > 0) {
+    const missingPreview = missingExplicitFunctionCallOutputIds.slice(0, 3).join(",");
+    const msg =
+      `previous_response_id=${explicitPrevRespId} 对应的上一轮工具调用尚未提交结果；` +
+      `缺少 function_call_output.call_id=${missingPreview}` +
+      (missingExplicitFunctionCallOutputIds.length > 3 ? " 等" : "") +
+      "。请先回传对应 tool output，再继续该会话。";
+    console.warn(`[${fmt.tag}] 显式续链拦截：${msg}`);
+    c.status(fmt.invalidRequestStatus ?? 400);
+    return c.json(
+      fmt.formatInvalidRequest?.({
+        message: msg,
+        code: "missing_tool_output",
+      }) ?? fmt.formatError(400, msg),
+    );
+  }
 
   // Set include for reasoning-enabled requests (matches Codex CLI behavior)
   if (req.codexRequest.reasoning && !req.codexRequest.include?.length) {

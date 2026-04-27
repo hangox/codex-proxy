@@ -27,6 +27,7 @@ import {
   handleProxyRequest,
   handleDirectRequest,
   staggerIfNeeded,
+  type ResponseMetadata,
   type FormatAdapter,
 } from "./shared/proxy-handler.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
@@ -64,6 +65,33 @@ function syncOutputTextFromOutput(response: Record<string, unknown>): void {
   if (outputText) response.output_text = outputText;
 }
 
+function extractFunctionCallIdsFromItem(item: unknown): string[] {
+  if (!isRecord(item)) return [];
+  if (item.type !== "function_call" || typeof item.call_id !== "string") return [];
+  return [item.call_id];
+}
+
+function extractFunctionCallIdsFromOutput(output: unknown): string[] {
+  if (!Array.isArray(output)) return [];
+  return output.flatMap((item) => extractFunctionCallIdsFromItem(item));
+}
+
+function emitFunctionCallMetadata(
+  callIds: string[],
+  seenCallIds: Set<string>,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
+): void {
+  if (!onResponseMetadata || callIds.length === 0) return;
+  const newCallIds = callIds.filter((callId) => {
+    if (seenCallIds.has(callId)) return false;
+    seenCallIds.add(callId);
+    return true;
+  });
+  if (newCallIds.length > 0) {
+    onResponseMetadata({ functionCallIds: newCallIds });
+  }
+}
+
 // ── Passthrough stream translator ──────────────────────────────────
 
 async function* streamPassthrough(
@@ -73,13 +101,27 @@ async function* streamPassthrough(
   onUsage: (u: { input_tokens: number; output_tokens: number }) => void,
   onResponseId: (id: string) => void,
   tupleSchema?: Record<string, unknown> | null,
+  _usageHint?: unknown,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): AsyncGenerator<string> {
   // When tupleSchema is present, buffer text deltas and reconvert on completion.
   // This means the client receives zero incremental text — all text arrives at once
   // after response.completed. This is a known tradeoff for tuple reconversion correctness.
   let tupleTextBuffer = tupleSchema ? "" : null;
+  const seenFunctionCallIds = new Set<string>();
 
   for await (const raw of api.parseStream(response)) {
+    if (
+      (raw.event === "response.output_item.added" || raw.event === "response.output_item.done") &&
+      isRecord(raw.data)
+    ) {
+      emitFunctionCallMetadata(
+        extractFunctionCallIdsFromItem(raw.data.item),
+        seenFunctionCallIds,
+        onResponseMetadata,
+      );
+    }
+
     // Buffer text deltas when tuple reconversion is active
     if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
       const data = raw.data;
@@ -139,6 +181,13 @@ async function* streamPassthrough(
       const data = raw.data;
       if (isRecord(data) && isRecord(data.response)) {
         const resp = data.response;
+        if (raw.event === "response.completed") {
+          emitFunctionCallMetadata(
+            extractFunctionCallIdsFromOutput(resp.output),
+            seenFunctionCallIds,
+            onResponseMetadata,
+          );
+        }
         if (typeof resp.id === "string") onResponseId(resp.id);
         if (raw.event === "response.completed" && isRecord(resp.usage)) {
           onUsage({
@@ -158,6 +207,8 @@ export async function collectPassthrough(
   response: Response,
   _model: string,
   tupleSchema?: Record<string, unknown> | null,
+  _usageHint?: unknown,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<{
   response: unknown;
   usage: { input_tokens: number; output_tokens: number };
@@ -168,6 +219,7 @@ export async function collectPassthrough(
   let responseId: string | null = null;
   const outputItems: unknown[] = [];
   let textDeltas = "";
+  const seenFunctionCallIds = new Set<string>();
 
   try {
     for await (const raw of api.parseStream(response)) {
@@ -185,6 +237,11 @@ export async function collectPassthrough(
 
       if (raw.event === "response.output_item.done" && isRecord(data.item)) {
         outputItems.push(data.item);
+        emitFunctionCallMetadata(
+          extractFunctionCallIdsFromItem(data.item),
+          seenFunctionCallIds,
+          onResponseMetadata,
+        );
       }
 
       if (raw.event === "response.completed" && resp) {
@@ -205,6 +262,11 @@ export async function collectPassthrough(
         if (typeof resp.output_text !== "string" || !resp.output_text) {
           syncOutputTextFromOutput(resp);
         }
+        emitFunctionCallMetadata(
+          extractFunctionCallIdsFromOutput(resp.output),
+          seenFunctionCallIds,
+          onResponseMetadata,
+        );
         finalResponse = resp;
         if (typeof resp.id === "string") responseId = resp.id;
         if (isRecord(resp.usage)) {
@@ -291,10 +353,19 @@ const PASSTHROUGH_FORMAT: FormatAdapter = {
       message: msg,
     },
   }),
-  streamTranslator: (api, response, model, onUsage, onResponseId, tupleSchema) =>
-    streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema),
-  collectTranslator: (api, response, model, tupleSchema) =>
-    collectPassthrough(api, response, model, tupleSchema),
+  invalidRequestStatus: 400,
+  formatInvalidRequest: ({ message, code }) => ({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      code: code ?? "invalid_request",
+      message,
+    },
+  }),
+  streamTranslator: (api, response, model, onUsage, onResponseId, tupleSchema, usageHint, onResponseMetadata) =>
+    streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema, usageHint, onResponseMetadata),
+  collectTranslator: (api, response, model, tupleSchema, usageHint, onResponseMetadata) =>
+    collectPassthrough(api, response, model, tupleSchema, usageHint, onResponseMetadata),
 };
 
 // ── Shared auth check ─────────────────────────────────────────────

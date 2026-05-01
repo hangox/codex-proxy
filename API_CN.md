@@ -112,6 +112,18 @@ Google Gemini 兼容接口。
    - `revised_prompt` — 模型实际使用的最终提示词。
 5. `response.completed`。
 
+**Token 计费**：`response.completed.response.usage` 是主模型的 token；图像工具
+的 token 单独走 `response.completed.response.tool_usage.image_gen.{input_tokens,
+output_tokens, total_tokens}`。代理两边都原样透传，并且在仪表盘里把图像 token
+单列为 `total_image_input_tokens` / `total_image_output_tokens`，不会和主模型的
+token 混到一起。
+
+**请求计数**：代理同时分别统计图像生成的成功 / 失败次数。`total_image_request_count`
+在上游返回真实图像（`tool_usage.image_gen.output_tokens > 0`）时 +1；
+`total_image_request_failed_count` 在工具被静默剥（Free 账号）、上游错误、空响应等
+任何失败路径下 +1。两者都通过 `/admin/usage-stats/summary` 暴露，Dashboard 的
+「Image Requests」卡片直接展示 `N ok · M failed`。
+
 **编辑模式**（带参考图）：在 user message 的 content 数组里加 `input_image`
 块，`data:` URL 和 HTTPS URL 都支持。
 

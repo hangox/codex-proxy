@@ -17,7 +17,7 @@
 import type { CodexInputItem } from "./codex-api.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
-import { CodexApiError, PreviousResponseWebSocketError } from "./codex-types.js";
+import { CodexApiError } from "./codex-types.js";
 import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
 
 /**
@@ -28,12 +28,40 @@ import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
  * Returns null for events we don't want to rotate on (genuine model
  * errors, validation errors, etc.) — those keep the SSE pass-through
  * behavior so the client sees the real reason.
+ *
+ * Why exact-match: a substring rule like `includes("rate_limit")` would
+ * also match codes such as `soft_rate_limit_warning` and incorrectly
+ * trigger account rotation. We allowlist concrete codes and fall through
+ * for everything else (unknown codes stream as SSE — safer default).
  */
-type WsErrorClassification =
-  | { kind: "api"; status: number }
-  | { kind: "previous_response_not_found"; message: string };
+const ROTATABLE_ERROR_CODES: Readonly<Record<string, number>> = {
+  // 429 — weekly/primary cap
+  usage_limit_reached: 429,
+  rate_limit_exceeded: 429,
+  rate_limit_reached: 429,
+  // 402 — plan/credit exhausted
+  quota_exhausted: 402,
+  payment_required: 402,
+  // 401 — credential rejected upstream
+  unauthorized: 401,
+  token_invalid: 401,
+  token_expired: 401,
+  account_deactivated: 401,
+  // 403 — account banned
+  forbidden: 403,
+  account_banned: 403,
+  banned: 403,
+  // 400 — stale previous_response_id (account doesn't recognise it; let
+  // proxy-handler strip the ID and retry on the same account)
+  previous_response_not_found: 400,
+  // 502 — upstream transient server failures. These are retryable through the
+  // existing proxy-handler flow.
+  server_error: 502,
+  internal_error: 502,
+  internal_server_error: 502,
+};
 
-function classifyWsErrorEvent(msg: Record<string, unknown>): WsErrorClassification | null {
+function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } | null {
   const type = typeof msg.type === "string" ? msg.type : "";
   if (type !== "error" && type !== "response.failed") return null;
   const errorObj = typeof msg.error === "object" && msg.error !== null
@@ -44,35 +72,25 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): WsErrorClassificati
     (typeof errorObj.code === "string" ? errorObj.code : null) ??
     (typeof errorObj.type === "string" ? errorObj.type : null) ??
     "";
-  const lower = codeRaw.toLowerCase();
+  const lowerCode = codeRaw.toLowerCase();
   const messageRaw = errorObj.message;
   const message = typeof messageRaw === "string" ? messageRaw : JSON.stringify(errorObj);
   const lowerMessage = message.toLowerCase();
-  if (lower.includes("previous_response_not_found")) {
-    return { kind: "previous_response_not_found", message };
-  }
+
+  const status = ROTATABLE_ERROR_CODES[lowerCode];
+  if (status) return { status };
+
   if (lowerMessage.includes("no tool output found for function call")) {
-    return { kind: "api", status: 400 };
+    return { status: 400 };
   }
-  if (lower.includes("usage_limit") || lower.includes("rate_limit")) return { kind: "api", status: 429 };
-  if (lower.includes("quota_exhausted") || lower.includes("payment_required")) return { kind: "api", status: 402 };
+
   if (
-    lower.includes("unauthorized") ||
-    lower.includes("token_invalid") ||
-    lower.includes("deactivated")
-  ) {
-    return { kind: "api", status: 401 };
-  }
-  if (lower.includes("forbidden") || lower.includes("banned")) return { kind: "api", status: 403 };
-  if (
-    lower.includes("server_error") ||
-    lower.includes("internal_error") ||
-    lower.includes("internal_server_error") ||
     lowerMessage.includes("server_error") ||
     lowerMessage.includes("internal server error")
   ) {
-    return { kind: "api", status: 502 };
+    return { status: 502 };
   }
+
   return null;
 }
 
@@ -263,11 +281,7 @@ export async function createWebSocketResponse(
         if (msg) {
           const classified = classifyWsErrorEvent(msg);
           if (classified) {
-            reject(
-              classified.kind === "previous_response_not_found"
-                ? new PreviousResponseWebSocketError(classified.message)
-                : new CodexApiError(classified.status, JSON.stringify(msg)),
-            );
+            reject(new CodexApiError(classified.status, JSON.stringify(msg)));
             try { ws.close(1000, "early upstream error"); } catch { /* already closing */ }
             return;
           }

@@ -26,6 +26,7 @@ import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import { withRetry } from "../../utils/retry.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError, toErrorStatus } from "./proxy-error-handler.js";
+import { isPreviousResponseNotFoundError } from "../../proxy/error-classification.js";
 import { streamResponse } from "./response-processor.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from "../../proxy/rate-limit-headers.js";
@@ -47,6 +48,10 @@ export interface ProxyRequest {
   tupleSchema?: Record<string, unknown> | null;
   /** Whether this is a new conversation (no previous_response_id) — used for cache reporting. */
   isNewConversation?: boolean;
+  /** True iff the request declared `tools: [{type: "image_generation"}]`.
+   *  Used to attribute success/failure to the image_generation request counters
+   *  even when the upstream call fails before any SSE arrives. */
+  expectsImageGen?: boolean;
 }
 
 export interface UsageHint {
@@ -75,7 +80,7 @@ export interface FormatAdapter {
     api: UpstreamAdapter,
     response: Response,
     model: string,
-    onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number }) => void,
+    onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
     onResponseId: (id: string) => void,
     tupleSchema?: Record<string, unknown> | null,
     usageHint?: UsageHint,
@@ -90,7 +95,7 @@ export interface FormatAdapter {
     onResponseMetadata?: (metadata: ResponseMetadata) => void,
   ) => Promise<{
     response: unknown;
-    usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number };
+    usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number; image_input_tokens?: number; image_output_tokens?: number };
     responseId: string | null;
   }>;
 }
@@ -99,6 +104,26 @@ const MAX_EMPTY_RETRIES = 2;
 
 function normalizeInstructions(instructions: string | null | undefined): string {
   return instructions ?? "";
+}
+
+/** Annotate a usage payload with image_generation attempt outcome before
+ *  releasing the account, so `recordUsage` can split it into success vs failed
+ *  counters. Synthesizes a usage object when the failure path has none. */
+function annotateImageGenOutcome(
+  usage: UsageInfo | undefined,
+  expectsImageGen: boolean | undefined,
+): UsageInfo | undefined {
+  if (!expectsImageGen) return usage;
+  const succeeded = (usage?.image_output_tokens ?? 0) > 0;
+  if (usage) {
+    return { ...usage, image_request_attempted: true, image_request_succeeded: succeeded };
+  }
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    image_request_attempted: true,
+    image_request_succeeded: false,
+  };
 }
 
 export function shouldActivateImplicitResume(opts: {
@@ -290,6 +315,7 @@ export async function handleProxyRequest(
   let codexApi = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
   const triedEntryIds: string[] = [entryId];
   let modelRetried = false;
+  let prevRespNotFoundRetried = false;
   let usageInfo: UsageInfo | undefined;
   let capturedResponseId: string | null = null;
   const responseFunctionCallIds = new Set<string>();
@@ -470,11 +496,14 @@ export async function handleProxyRequest(
               const uncached = usageInfo.cached_tokens
                 ? usageInfo.input_tokens - usageInfo.cached_tokens
                 : usageInfo.input_tokens;
+              const imgIn = usageInfo.image_input_tokens ?? 0;
+              const imgOut = usageInfo.image_output_tokens ?? 0;
               console.log(
                 `[${fmt.tag}] Account ${capturedEntryId} | Usage: in=${usageInfo.input_tokens}` +
                 (usageInfo.cached_tokens ? ` (cached=${usageInfo.cached_tokens} uncached=${uncached})` : "") +
                 ` out=${usageInfo.output_tokens}` +
-                (usageInfo.reasoning_tokens ? ` reasoning=${usageInfo.reasoning_tokens}` : ""),
+                (usageInfo.reasoning_tokens ? ` reasoning=${usageInfo.reasoning_tokens}` : "") +
+                (imgIn || imgOut ? ` image=${imgIn}/${imgOut}` : ""),
               );
               if (usageInfo.input_tokens > 10_000) {
                 console.warn(
@@ -483,7 +512,7 @@ export async function handleProxyRequest(
                 );
               }
             }
-            releaseAccount(accountPool, capturedEntryId, usageInfo, released);
+            releaseAccount(accountPool, capturedEntryId, annotateImageGenOutcome(usageInfo, req.expectsImageGen), released);
           }
         });
       }
@@ -510,7 +539,7 @@ export async function handleProxyRequest(
       );
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
-        releaseAccount(accountPool, entryId, undefined, released);
+        releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
         throw err;
       }
 
@@ -522,18 +551,36 @@ export async function handleProxyRequest(
         continue;
       }
 
+      // previous_response_id stale (account doesn't recognise it / map lost on
+      // restart / cross-account routing): drop the ID and retry once on the
+      // same account. For implicit-resume requests this also restores the
+      // full input history; for explicit ones the client's own input is sent
+      // verbatim (server-side history is lost but the request still completes).
+      if (!prevRespNotFoundRetried && isPreviousResponseNotFoundError(err)) {
+        prevRespNotFoundRetried = true;
+        const staleId = req.codexRequest.previous_response_id;
+        console.warn(
+          `[${fmt.tag}] Account ${entryId} | previous_response_not_found (id=${staleId ?? "?"}), stripping and retrying same account`,
+        );
+        if (staleId) affinityMap.forget(staleId);
+        restoreImplicitResumeRequest();
+        req.codexRequest.previous_response_id = undefined;
+        req.codexRequest.turnState = undefined;
+        continue;
+      }
+
       const decision = handleCodexApiError(
         err, accountPool, entryId, req.codexRequest.model, fmt.tag, modelRetried,
       );
 
       if (decision.action === "respond") {
-        releaseAccount(accountPool, entryId, undefined, released);
+        releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
         c.status(decision.status as StatusCode);
         return c.json(fmt.formatError(decision.status, decision.message));
       }
 
       if (decision.releaseBeforeRetry) {
-        releaseAccount(accountPool, entryId, undefined, released);
+        releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
       }
       restoreImplicitResumeRequest();
       if (decision.markModelRetried) {
@@ -645,7 +692,7 @@ async function handleNonStreaming(
           console.warn(`[${fmt.tag}] ⚠ High input token count: ${u.input_tokens} tokens`);
         }
       }
-      releaseAccount(accountPool, currentEntryId, result.usage, released);
+      releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(result.usage, req.expectsImageGen), released);
       return c.json(result.response);
     } catch (collectErr) {
       if (collectErr instanceof EmptyResponseError && attempt <= MAX_EMPTY_RETRIES) {
@@ -654,7 +701,7 @@ async function handleNonStreaming(
           `[${fmt.tag}] Account ${currentEntryId} (${email}) | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), switching account...`,
         );
         accountPool.recordEmptyResponse(currentEntryId);
-        releaseAccount(accountPool, currentEntryId, collectErr.usage, released);
+        releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen), released);
         restoreImplicitResumeRequest?.();
 
         const newAcquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag);
@@ -688,7 +735,7 @@ async function handleNonStreaming(
             },
           });
         } catch (retryErr) {
-          releaseAccount(accountPool, currentEntryId, undefined, released);
+          releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
           const msg = retryErr instanceof Error ? retryErr.message : "Upstream request failed";
           enqueueLogEntry({
             requestId,
@@ -717,7 +764,7 @@ async function handleNonStreaming(
         continue;
       }
 
-      releaseAccount(accountPool, currentEntryId, undefined, released);
+      releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
       if (collectErr instanceof EmptyResponseError) {
         const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
         console.warn(

@@ -35,7 +35,8 @@ const mockYaml = vi.hoisted(() => ({
 }));
 
 const mockOllamaServer = vi.hoisted(() => ({
-  getOllamaBridgeStatus: vi.fn(),
+  getOllamaBridgeRuntimeStatus: vi.fn(),
+  getOllamaBridgeStatusForConfig: vi.fn(),
   restartOllamaBridge: vi.fn(),
 }));
 
@@ -50,14 +51,19 @@ vi.mock("@src/utils/yaml-mutate.js", () => ({
 }));
 
 vi.mock("@src/ollama/server.js", () => ({
-  getOllamaBridgeStatus: mockOllamaServer.getOllamaBridgeStatus,
+  getOllamaBridgeRuntimeStatus: mockOllamaServer.getOllamaBridgeRuntimeStatus,
+  getOllamaBridgeStatusForConfig: mockOllamaServer.getOllamaBridgeStatusForConfig,
   restartOllamaBridge: mockOllamaServer.restartOllamaBridge,
 }));
 
 import { createOllamaAdminRoutes } from "@src/routes/admin/ollama.js";
 import { mutateYaml } from "@src/utils/yaml-mutate.js";
 import { reloadAllConfigs } from "@src/config.js";
-import { getOllamaBridgeStatus, restartOllamaBridge } from "@src/ollama/server.js";
+import {
+  getOllamaBridgeRuntimeStatus,
+  getOllamaBridgeStatusForConfig,
+  restartOllamaBridge,
+} from "@src/ollama/server.js";
 
 function endpointHost(host: string): string {
   if (host === "0.0.0.0" || host === "::") return "127.0.0.1";
@@ -101,7 +107,21 @@ describe("Ollama admin settings routes", () => {
       },
     };
     state.restartError = null;
-    mockOllamaServer.getOllamaBridgeStatus.mockImplementation((config) => statusFor(config));
+    mockOllamaServer.getOllamaBridgeStatusForConfig.mockImplementation((config) => statusFor(config));
+    // Runtime status: when bridge isn't running, the raw runtime reflects the
+    // "stopped" baseline (running=false, port=0, etc.) — independent of config.
+    mockOllamaServer.getOllamaBridgeRuntimeStatus.mockReturnValue({
+      enabled: false,
+      running: false,
+      host: "127.0.0.1",
+      port: 0,
+      endpoint: "http://127.0.0.1:0",
+      version: "0.18.3",
+      disable_vision: false,
+      upstream_base_url: null,
+      started_at: null,
+      error: null,
+    });
     mockOllamaServer.restartOllamaBridge.mockImplementation(async (config) => {
       if (state.restartError) {
         return statusFor(config, { running: false, error: state.restartError, started_at: null });
@@ -129,10 +149,15 @@ describe("Ollama admin settings routes", () => {
         endpoint: "http://127.0.0.1:11434",
       },
     });
-    expect(getOllamaBridgeStatus).toHaveBeenCalledOnce();
+    expect(getOllamaBridgeStatusForConfig).toHaveBeenCalledOnce();
   });
 
-  it("returns runtime status directly", async () => {
+  it("returns raw runtime status (not config-merged) on /admin/ollama-status", async () => {
+    // Config says port=11434 (the default), but the runtime reports port=0
+    // because the bridge is stopped. The endpoint must echo the runtime,
+    // not overlay config — that's the contract that distinguishes it from
+    // /admin/ollama-settings.
+    state.config.ollama.port = 11434;
     const app = createApp();
 
     const res = await app.request("/admin/ollama-status");
@@ -142,8 +167,11 @@ describe("Ollama admin settings routes", () => {
       enabled: false,
       running: false,
       host: "127.0.0.1",
-      port: 11434,
+      port: 0, // ← raw runtime, NOT config's 11434
+      endpoint: "http://127.0.0.1:0",
     });
+    expect(getOllamaBridgeRuntimeStatus).toHaveBeenCalledOnce();
+    expect(getOllamaBridgeStatusForConfig).not.toHaveBeenCalled();
   });
 
   it("persists settings, reloads config, and restarts the bridge", async () => {
@@ -188,31 +216,10 @@ describe("Ollama admin settings routes", () => {
     });
   });
 
-  it("requires the proxy API key for updates when configured", async () => {
-    state.config.server.proxy_api_key = "secret";
-    const app = createApp();
-
-    const unauthenticated = await app.request("/admin/ollama-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: true }),
-    });
-    expect(unauthenticated.status).toBe(401);
-
-    const wrongKey = await app.request("/admin/ollama-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer wrong" },
-      body: JSON.stringify({ enabled: true }),
-    });
-    expect(wrongKey.status).toBe(401);
-
-    const valid = await app.request("/admin/ollama-settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer secret" },
-      body: JSON.stringify({ enabled: true }),
-    });
-    expect(valid.status).toBe(200);
-  });
+  // Auth removed from the route itself — `/admin/*` is now uniformly gated by
+  // the dashboardAuth middleware, matching the other admin POSTs (quota /
+  // rotation / general settings). Middleware-level auth is covered by
+  // `tests/unit/middleware/dashboard-auth.test.ts`.
 
   it("validates host, port, and version before writing config", async () => {
     const app = createApp();

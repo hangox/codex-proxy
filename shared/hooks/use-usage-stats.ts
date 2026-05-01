@@ -7,6 +7,15 @@ import { useState, useEffect, useCallback } from "preact/hooks";
 export interface UsageSummary {
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cached_tokens: number;
+  /** image_generation tool tokens (gpt-image-2). Tracked separately from host-model tokens. */
+  total_image_input_tokens: number;
+  total_image_output_tokens: number;
+  /** image_generation request counts. Success = upstream returned image bytes;
+   *  failed = silent strip (Free plan), upstream error, or empty-response on
+   *  a request that declared the tool. */
+  total_image_request_count: number;
+  total_image_request_failed_count: number;
   total_request_count: number;
   total_accounts: number;
   active_accounts: number;
@@ -16,6 +25,11 @@ export interface UsageDataPoint {
   timestamp: string;
   input_tokens: number;
   output_tokens: number;
+  cached_tokens: number;
+  image_input_tokens: number;
+  image_output_tokens: number;
+  image_request_count: number;
+  image_request_failed_count: number;
   request_count: number;
 }
 

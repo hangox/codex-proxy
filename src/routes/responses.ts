@@ -22,7 +22,7 @@ import { getConfig } from "../config.js";
 import { prepareSchema } from "../translation/shared-utils.js";
 import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { parseModelName, resolveModelId, getModelInfo, buildDisplayModelName } from "../models/model-store.js";
-import { EmptyResponseError } from "../translation/codex-event-extractor.js";
+import { EmptyResponseError, type UsageInfo } from "../translation/codex-event-extractor.js";
 import {
   handleProxyRequest,
   handleDirectRequest,
@@ -94,11 +94,37 @@ function emitFunctionCallMetadata(
 
 // ── Passthrough stream translator ──────────────────────────────────
 
+/** Extract usage from a response.completed payload, including cached_tokens
+ *  (nested in input_tokens_details per the OpenAI Responses API contract). */
+export function extractResponseUsage(usage: Record<string, unknown>): { input_tokens: number; output_tokens: number; cached_tokens?: number } {
+  const result: { input_tokens: number; output_tokens: number; cached_tokens?: number } = {
+    input_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    output_tokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+  };
+  const inputDetails = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : null;
+  if (inputDetails && typeof inputDetails.cached_tokens === "number") {
+    result.cached_tokens = inputDetails.cached_tokens;
+  }
+  return result;
+}
+
+/** Extract image_generation tool tokens from a response payload's tool_usage.image_gen
+ *  block. Returns undefined when no image generation occurred (or counts are zero). */
+export function extractImageGenUsage(response: Record<string, unknown>): { image_input_tokens: number; image_output_tokens: number } | undefined {
+  if (!isRecord(response.tool_usage)) return undefined;
+  const img = response.tool_usage.image_gen;
+  if (!isRecord(img)) return undefined;
+  const image_input_tokens = typeof img.input_tokens === "number" ? img.input_tokens : 0;
+  const image_output_tokens = typeof img.output_tokens === "number" ? img.output_tokens : 0;
+  if (image_input_tokens === 0 && image_output_tokens === 0) return undefined;
+  return { image_input_tokens, image_output_tokens };
+}
+
 async function* streamPassthrough(
   api: UpstreamAdapter,
   response: Response,
   _model: string,
-  onUsage: (u: { input_tokens: number; output_tokens: number }) => void,
+  onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
   onResponseId: (id: string) => void,
   tupleSchema?: Record<string, unknown> | null,
   _usageHint?: unknown,
@@ -190,10 +216,8 @@ async function* streamPassthrough(
         }
         if (typeof resp.id === "string") onResponseId(resp.id);
         if (raw.event === "response.completed" && isRecord(resp.usage)) {
-          onUsage({
-            input_tokens: typeof resp.usage.input_tokens === "number" ? resp.usage.input_tokens : 0,
-            output_tokens: typeof resp.usage.output_tokens === "number" ? resp.usage.output_tokens : 0,
-          });
+          const imgUsage = extractImageGenUsage(resp);
+          onUsage({ ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) });
         }
       }
     }
@@ -211,11 +235,11 @@ export async function collectPassthrough(
   onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<{
   response: unknown;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number };
   responseId: string | null;
 }> {
   let finalResponse: unknown = null;
-  let usage = { input_tokens: 0, output_tokens: 0 };
+  let usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number } = { input_tokens: 0, output_tokens: 0 };
   let responseId: string | null = null;
   const outputItems: unknown[] = [];
   let textDeltas = "";
@@ -270,10 +294,8 @@ export async function collectPassthrough(
         finalResponse = resp;
         if (typeof resp.id === "string") responseId = resp.id;
         if (isRecord(resp.usage)) {
-          usage = {
-            input_tokens: typeof resp.usage.input_tokens === "number" ? resp.usage.input_tokens : 0,
-            output_tokens: typeof resp.usage.output_tokens === "number" ? resp.usage.output_tokens : 0,
-          };
+          const imgUsage = extractImageGenUsage(resp);
+          usage = { ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) };
         }
       }
 
@@ -468,6 +490,14 @@ async function handleCompact(
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     compactRequest.tools = body.tools;
   }
+  // Compact responses don't surface tool_usage.image_gen, so any image_generation
+  // tool sent here can only be classified as failed regardless of upstream outcome.
+  // Counting it still catches accidental misuse on the dashboard.
+  const compactExpectsImageGen = Array.isArray(body.tools)
+    && body.tools.some((t): t is Record<string, unknown> => isRecord(t) && t.type === "image_generation");
+  const compactImageFailedUsage: UsageInfo | undefined = compactExpectsImageGen
+    ? { input_tokens: 0, output_tokens: 0, image_request_attempted: true, image_request_succeeded: false }
+    : undefined;
   if (typeof body.parallel_tool_calls === "boolean") {
     compactRequest.parallel_tool_calls = body.parallel_tool_calls;
   }
@@ -542,11 +572,11 @@ async function handleCompact(
         { tag: TAG },
       );
 
-      releaseAccount(accountPool, entryId, undefined, released);
+      releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
       return c.json(result);
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
-        releaseAccount(accountPool, entryId, undefined, released);
+        releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
         throw err;
       }
 
@@ -555,13 +585,13 @@ async function handleCompact(
       );
 
       if (decision.action === "respond") {
-        releaseAccount(accountPool, entryId, undefined, released);
+        releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
         c.status(decision.status as StatusCode);
         return c.json(formatResponsesError(decision.status, decision.message));
       }
 
       if (decision.releaseBeforeRetry) {
-        releaseAccount(accountPool, entryId, undefined, released);
+        releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
       }
 
       const retry = acquireAccount(accountPool, modelId, triedEntryIds, TAG);
@@ -680,6 +710,12 @@ export function createResponsesRoutes(
       codexRequest.tool_choice = body.tool_choice as CodexResponsesRequest["tool_choice"];
     }
 
+    // Detect image_generation tool at request time so we can classify the
+    // outcome on release (success / failed / silently stripped) regardless
+    // of whether the response actually arrived.
+    const expectsImageGen = Array.isArray(body.tools)
+      && body.tools.some((t): t is Record<string, unknown> => isRecord(t) && t.type === "image_generation");
+
     // Text format (JSON mode / structured outputs)
     let tupleSchema: Record<string, unknown> | null = null;
     if (
@@ -713,6 +749,7 @@ export function createResponsesRoutes(
       model: displayModel,
       isStreaming: clientWantsStream,
       tupleSchema,
+      expectsImageGen,
     };
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);

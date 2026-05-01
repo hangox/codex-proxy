@@ -104,20 +104,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pack macOS (${{ matrix.arch }})
-        if: matrix.platform == 'mac'
+      - name: Pack (${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }})
         working-directory: packages/electron
-        run: npx electron-builder --config electron-builder.yml --mac --${{ matrix.arch }} --publish always
+        # shell: bash needed so the Windows runner uses Git Bash instead of pwsh
+        # (pwsh doesn't handle backslash line continuations the same way).
+        shell: bash
+        run: |
+          # Drive electron-builder version from the tag, not package.json. Required
+          # so beta tags (vX.Y.Z-beta.SHA, where bump-electron-beta.yml deliberately
+          # does NOT touch package.json) publish to the correct GitHub release and
+          # are detected as prerelease by electron-builder's semver suffix check.
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          npx electron-builder --config electron-builder.yml \
+            --${{ matrix.platform }} ${{ matrix.arch && format('--{0}', matrix.arch) || '' }} \
+            --config.extraMetadata.version="$VERSION" \
+            --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-
-      - name: Pack (${{ matrix.platform }})
-        if: matrix.platform != 'mac'
-        working-directory: packages/electron
-        run: npx electron-builder --config electron-builder.yml --${{ matrix.platform }} --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # macOS x64 runs AFTER arm64 to avoid release asset upload collisions
   # (shared files like latest-mac.yml don't include arch in the name)
@@ -193,7 +198,14 @@ jobs:
 
       - name: Pack (mac-x64)
         working-directory: packages/electron
-        run: npx electron-builder --config electron-builder.yml --mac --x64 --publish never
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          npx electron-builder --config electron-builder.yml \
+            --mac --x64 \
+            --config.extraMetadata.version="$VERSION" \
+            --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
@@ -266,7 +278,14 @@ jobs:
             fi
           fi
           echo "$BODY" > /tmp/release-notes.md
-          gh release edit "$TAG" --draft=false --notes-file /tmp/release-notes.md 2>/dev/null || \
-            gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
+
+          # Tag like v1.2.3-beta.SHA → mark as prerelease (semver convention).
+          # Defensive: electron-builder normally does this, but the create fallback
+          # below would miss it when electron-builder's draft creation didn't fire.
+          PRERELEASE_FLAG=""
+          case "$TAG" in *-*) PRERELEASE_FLAG="--prerelease" ;; esac
+
+          gh release edit "$TAG" --draft=false $PRERELEASE_FLAG --notes-file /tmp/release-notes.md 2>/dev/null || \
+            gh release create "$TAG" --title "$TAG" $PRERELEASE_FLAG --notes-file /tmp/release-notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

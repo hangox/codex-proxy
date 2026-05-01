@@ -4,6 +4,9 @@ import { AccountCard } from "./AccountCard";
 import { AccountImportExport } from "./AccountImportExport";
 import type { Account, ProxyEntry, QuotaWarning } from "../../../shared/types";
 
+const STATUS_FILTER_STORAGE_KEY = "codex-proxy-account-list-status-filter";
+const EXPAND_ALL_STORAGE_KEY = "codex-proxy-account-list-expand-all";
+
 interface AccountListProps {
   accounts: Account[];
   loading: boolean;
@@ -26,10 +29,16 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
   const { lang } = useI18n();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [warnings, setWarnings] = useState<QuotaWarning[]>([]);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [visibleCount, setVisibleCount] = useState(() => {
+    if (typeof localStorage === "undefined") return PAGE_SIZE;
+    return localStorage.getItem(EXPAND_ALL_STORAGE_KEY) === "true" ? Number.MAX_SAFE_INTEGER : PAGE_SIZE;
+  });
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthResult, setHealthResult] = useState<{ alive: number; dead: number; skipped: number } | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    if (typeof localStorage === "undefined") return "all";
+    return localStorage.getItem(STATUS_FILTER_STORAGE_KEY) ?? "all";
+  });
   const [refreshingExpired, setRefreshingExpired] = useState(false);
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
 
@@ -109,6 +118,45 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(STATUS_FILTER_STORAGE_KEY, statusFilter);
+  }, [statusFilter]);
+
+  useEffect(() => {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(EXPAND_ALL_STORAGE_KEY, String(visibleCount > PAGE_SIZE));
+  }, [visibleCount]);
+
+  const statusCounts: Record<string, number> = {};
+  for (const a of accounts) statusCounts[a.status] = (statusCounts[a.status] ?? 0) + 1;
+
+  const displayAccounts = statusFilter === "all"
+    ? accounts
+    : accounts.filter((a) => a.status === statusFilter);
+
+  useEffect(() => {
+    if (statusFilter !== "all" && !statusCounts[statusFilter]) {
+      setStatusFilter("all");
+    }
+  }, [statusCounts, statusFilter]);
+
+  useEffect(() => {
+    if (visibleCount <= PAGE_SIZE) return;
+    if (displayAccounts.length <= PAGE_SIZE) {
+      setVisibleCount(PAGE_SIZE);
+      return;
+    }
+    setVisibleCount((current) => Math.max(current, displayAccounts.length));
+  }, [displayAccounts.length, visibleCount]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = new Set([...prev].filter((id) => accounts.some((a) => a.id === id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [accounts]);
+
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -134,13 +182,6 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
   const isInvalid = (a: Account) => a.status === "expired" || a.status === "banned";
   const invalidCount = accounts.filter(isInvalid).length;
   const expiredCount = accounts.filter((a) => a.status === "expired").length;
-
-  const statusCounts: Record<string, number> = {};
-  for (const a of accounts) statusCounts[a.status] = (statusCounts[a.status] ?? 0) + 1;
-
-  const displayAccounts = statusFilter === "all"
-    ? accounts
-    : accounts.filter((a) => a.status === statusFilter);
 
   return (
     <section class="flex flex-col gap-4">

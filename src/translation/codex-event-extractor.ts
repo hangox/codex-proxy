@@ -17,6 +17,13 @@ export interface UsageInfo {
   output_tokens: number;
   cached_tokens?: number;
   reasoning_tokens?: number;
+  /** Tokens billed by the image_generation tool (gpt-image-2). Separate from host-model usage. */
+  image_input_tokens?: number;
+  image_output_tokens?: number;
+  /** Set by the route handler when the request declared the image_generation tool.
+   *  Drives the success/failure split in `recordUsage`. */
+  image_request_attempted?: boolean;
+  image_request_succeeded?: boolean;
 }
 
 export interface FunctionCallStart {

@@ -45,7 +45,7 @@ vi.mock("ws", () => {
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { createWebSocketResponse, type WsCreateRequest } from "@src/proxy/ws-transport.js";
-import { CodexApiError, PreviousResponseWebSocketError } from "@src/proxy/codex-types.js";
+import { CodexApiError } from "@src/proxy/codex-types.js";
 import { extractRetryAfterSec } from "@src/proxy/error-classification.js";
 
 interface MockWs extends EventEmitter {
@@ -121,6 +121,34 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     }
   });
 
+  it("rejects with CodexApiError(400) when first frame is previous_response_not_found", async () => {
+    // The proxy maintains a per-response affinity map in memory. When the map
+    // is lost (process restart, 4h TTL expiry) or a request is forced onto a
+    // different account (rate-limit / ban / quota), the upstream rejects with
+    // `previous_response_not_found`. We treat this as rotatable so the
+    // proxy-handler can strip the stale ID and retry.
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: {
+        code: "previous_response_not_found",
+        message: "Previous response with id 'resp_xxx' not found.",
+      },
+    }));
+
+    try {
+      await promise;
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect((err as CodexApiError).status).toBe(400);
+      expect((err as CodexApiError).body).toContain("previous_response_not_found");
+    }
+  });
+
   it("rejects with CodexApiError(402) when first frame is response.failed quota_exhausted", async () => {
     const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
     promise.catch(() => { /* asserted below */ });
@@ -166,26 +194,6 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     }
   });
 
-  it("rejects with PreviousResponseWebSocketError when first frame is previous_response_not_found", async () => {
-    const promise = createWebSocketResponse("wss://test/ws", {}, {
-      ...BASE_REQUEST,
-      previous_response_id: "resp_missing",
-    });
-    promise.catch(() => { /* asserted below */ });
-    const ws = await waitForOpen();
-
-    ws.emit("message", JSON.stringify({
-      type: "error",
-      error: {
-        type: "api_error",
-        code: "previous_response_not_found",
-        message: "previous_response_not_found: Previous response with id 'resp_missing' not found.",
-      },
-    }));
-
-    await expect(promise).rejects.toBeInstanceOf(PreviousResponseWebSocketError);
-  });
-
   it("resolves normally when first frame is an error with an unmapped code", async () => {
     // Genuine model errors (e.g. invalid request, model_not_supported_in_plan)
     // must NOT trigger rotation — they keep the SSE pass-through behavior so
@@ -224,6 +232,26 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     const text = await readAll(response);
     expect(text).toContain("event: error");
     expect(text).toContain("model_not_supported_in_plan");
+  });
+
+  it("does NOT rotate on substring-only matches like soft_rate_limit_warning", async () => {
+    // Regression: previously the classifier used `lower.includes("rate_limit")`
+    // which would have classified `soft_rate_limit_warning` as a terminal 429
+    // and triggered account rotation. The exact-match allowlist must let this
+    // fall through to SSE pass-through.
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: { code: "soft_rate_limit_warning", message: "approaching cap" },
+    }));
+
+    const response = await promise;
+    expect(response.status).toBe(200);
+    const text = await readAll(response);
+    expect(text).toContain("event: error");
+    expect(text).toContain("soft_rate_limit_warning");
   });
 
   it("rejects missing tool output errors as CodexApiError(400)", async () => {

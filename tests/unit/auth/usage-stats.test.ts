@@ -33,6 +33,11 @@ function createMockPool(entries: Array<{
   input_tokens: number;
   output_tokens: number;
   request_count: number;
+  cached_tokens?: number;
+  image_input_tokens?: number;
+  image_output_tokens?: number;
+  image_request_count?: number;
+  image_request_failed_count?: number;
 }>): AccountPool {
   return {
     getAllEntries: () =>
@@ -42,6 +47,11 @@ function createMockPool(entries: Array<{
         usage: {
           input_tokens: e.input_tokens,
           output_tokens: e.output_tokens,
+          cached_tokens: e.cached_tokens ?? 0,
+          image_input_tokens: e.image_input_tokens ?? 0,
+          image_output_tokens: e.image_output_tokens ?? 0,
+          image_request_count: e.image_request_count ?? 0,
+          image_request_failed_count: e.image_request_failed_count ?? 0,
           request_count: e.request_count,
         },
       })),
@@ -75,6 +85,11 @@ describe("UsageStatsStore", () => {
       expect(saved[0].totals).toEqual({
         input_tokens: 1800,
         output_tokens: 350,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
         request_count: 10,
         active_accounts: 2,
       });
@@ -88,9 +103,25 @@ describe("UsageStatsStore", () => {
       expect(persistence.saved[0].totals).toEqual({
         input_tokens: 0,
         output_tokens: 0,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
         request_count: 0,
         active_accounts: 0,
       });
+    });
+
+    it("includes cached_tokens in snapshot totals", () => {
+      const pool = createMockPool([
+        { status: "active", input_tokens: 1000, output_tokens: 200, request_count: 5, cached_tokens: 600 },
+        { status: "active", input_tokens: 500, output_tokens: 100, request_count: 3, cached_tokens: 200 },
+      ]);
+
+      store.recordSnapshot(pool);
+
+      expect(persistence.saved[0].totals.cached_tokens).toBe(800);
     });
   });
 
@@ -105,10 +136,31 @@ describe("UsageStatsStore", () => {
       expect(summary).toEqual({
         total_input_tokens: 1500,
         total_output_tokens: 300,
+        total_cached_tokens: 0,
+        total_image_input_tokens: 0,
+        total_image_output_tokens: 0,
+        total_image_request_count: 0,
+        total_image_request_failed_count: 0,
         total_request_count: 8,
         total_accounts: 2,
         active_accounts: 1,
       });
+    });
+
+    it("aggregates total_cached_tokens across pool + baseline", () => {
+      persistence = createMockPersistence([], {
+        input_tokens: 0,
+        output_tokens: 0,
+        request_count: 0,
+        cached_tokens: 4000,
+      });
+      store = new UsageStatsStore(persistence);
+
+      const pool = createMockPool([
+        { status: "active", input_tokens: 0, output_tokens: 0, request_count: 0, cached_tokens: 1500 },
+      ]);
+
+      expect(store.getSummary(pool).total_cached_tokens).toBe(5500);
     });
 
     it("includes baseline in summary totals", () => {
@@ -127,6 +179,29 @@ describe("UsageStatsStore", () => {
       expect(summary.total_input_tokens).toBe(10500);
       expect(summary.total_output_tokens).toBe(2050);
       expect(summary.total_request_count).toBe(105);
+    });
+
+    it("aggregates total_image_request_count and total_image_request_failed_count across pool", () => {
+      const pool = createMockPool([
+        { status: "active", input_tokens: 0, output_tokens: 0, request_count: 0,
+          image_request_count: 3, image_request_failed_count: 1 },
+        { status: "active", input_tokens: 0, output_tokens: 0, request_count: 0,
+          image_request_count: 5, image_request_failed_count: 2 },
+      ]);
+      const summary = store.getSummary(pool);
+      expect(summary.total_image_request_count).toBe(8);
+      expect(summary.total_image_request_failed_count).toBe(3);
+    });
+
+    it("includes image_request counters in snapshot totals", () => {
+      const pool = createMockPool([
+        { status: "active", input_tokens: 0, output_tokens: 0, request_count: 0,
+          image_input_tokens: 100, image_output_tokens: 500,
+          image_request_count: 4, image_request_failed_count: 1 },
+      ]);
+      store.recordSnapshot(pool);
+      expect(persistence.saved[0].totals.image_request_count).toBe(4);
+      expect(persistence.saved[0].totals.image_request_failed_count).toBe(1);
     });
   });
 
@@ -153,6 +228,11 @@ describe("UsageStatsStore", () => {
         input_tokens: 9500,
         output_tokens: 1950,
         request_count: 95,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
       });
 
       const lastSnapshot = persistence.saved[persistence.saved.length - 1];
@@ -212,6 +292,11 @@ describe("UsageStatsStore", () => {
         input_tokens: 0,
         output_tokens: 0,
         request_count: 0,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
       });
     });
 
@@ -237,6 +322,11 @@ describe("UsageStatsStore", () => {
         input_tokens: 4900,
         output_tokens: 490,
         request_count: 49,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
       });
     });
 
@@ -250,7 +340,15 @@ describe("UsageStatsStore", () => {
       persistence = createMockPersistence([], baseline);
       store = new UsageStatsStore(persistence);
 
-      expect(store.currentBaseline).toEqual(baseline);
+      // Constructor backfills missing image/cached fields with 0.
+      expect(store.currentBaseline).toEqual({
+        ...baseline,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
+      });
 
       const pool = createMockPool([
         { status: "active", input_tokens: 100, output_tokens: 10, request_count: 1 },
@@ -433,6 +531,11 @@ describe("UsageStatsStore", () => {
         input_tokens: 9_900_000,
         output_tokens: 1_998_000,
         request_count: 4950,
+        cached_tokens: 0,
+        image_input_tokens: 0,
+        image_output_tokens: 0,
+        image_request_count: 0,
+        image_request_failed_count: 0,
       });
     });
 

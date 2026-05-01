@@ -137,7 +137,15 @@ export class AccountLifecycle {
 
   release(
     entryId: string,
-    usage?: { input_tokens?: number; output_tokens?: number },
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cached_tokens?: number;
+      image_input_tokens?: number;
+      image_output_tokens?: number;
+      image_request_attempted?: boolean;
+      image_request_succeeded?: boolean;
+    },
   ): void {
     this.popSlot(entryId);
     this.registry.recordUsage(entryId, usage);

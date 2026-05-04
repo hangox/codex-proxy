@@ -1,10 +1,7 @@
 name: Bump beta + release (dev)
 
 on:
-  schedule:
-    # UTC 04:00 / 12:00 = 北京时间 12:00 / 20:00，每天两次聚合 dev 上的改动
-    # 错开 promote-dev-to-master (14:00 UTC) 和 bump-electron stable (16:00 UTC)
-    - cron: "0 4,12 * * *"
+  # fork 内不要定时打 beta tag，需要发布时手动触发。
   workflow_dispatch:
 
 concurrency:

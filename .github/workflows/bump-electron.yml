@@ -1,8 +1,7 @@
 name: Bump version + release
 
 on:
-  schedule:
-    - cron: "0 16 * * *"   # UTC 16:00 = 北京时间 00:00，每天最多一个版本
+  # fork 内不要定时改 master，需要发布时手动触发。
   workflow_dispatch:
 
 concurrency:
@@ -24,16 +23,16 @@ jobs:
       - name: Check for new commits since last tag
         id: check
         run: |
-          # Read major.minor from package.json (source of truth for version series)
+          # package.json 是版本系列来源；最终 bump 基准取 package.json 和最新 stable tag 的较大值。
           PKG_VERSION=$(node -e "console.log(require('./package.json').version)")
           IFS='.' read -r PKG_MAJOR PKG_MINOR _PKG_PATCH <<< "$PKG_VERSION"
           SERIES="${PKG_MAJOR}.${PKG_MINOR}"
 
-          # Find latest stable tag in this series (e.g. v2.0.x). Excludes
-          # prerelease tags like v2.0.67-beta.SHA produced by bump-electron-beta.yml.
+          # 只匹配当前系列的 stable tag，排除 beta tag。
           LAST_TAG=$(git tag --sort=-v:refname | grep -E "^v${SERIES}\.[0-9]+$" | head -1 || echo "")
           if [ -z "$LAST_TAG" ]; then
-            # First release in this series — use any previous stable tag for commit check
+            BASE_VERSION="$PKG_VERSION"
+            # 新系列第一次发布时，用任意旧 stable tag 做改动检查。
             LAST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "")
             if [ -z "$LAST_TAG" ]; then
               echo "No previous tag, skipping"
@@ -45,10 +44,25 @@ jobs:
             echo "new_series=true" >> "$GITHUB_OUTPUT"
             echo "series=$SERIES" >> "$GITHUB_OUTPUT"
             echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+            echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Count commits that affect runtime behavior (skip chore/docs/ci/test/refactor/style)
+          TAG_VERSION="${LAST_TAG#v}"
+          BASE_VERSION=$(node -e "
+            const [pkg, tag] = process.argv.slice(1);
+            const cmp = (a, b) => {
+              const pa = a.split('.').map(Number);
+              const pb = b.split('.').map(Number);
+              for (let i = 0; i < 3; i++) {
+                if (pa[i] !== pb[i]) return pa[i] - pb[i];
+              }
+              return 0;
+            };
+            console.log(cmp(pkg, tag) >= 0 ? pkg : tag);
+          " "$PKG_VERSION" "$TAG_VERSION")
+
+          # 只统计影响运行行为的提交，跳过文档、CI、测试和纯重构。
           NEW_COMMITS=$(git log "${LAST_TAG}..HEAD" --no-merges \
             --pretty=format:"%s" | grep -cvE "^(chore|docs|ci|test|refactor|style)" || true)
           if [ "$NEW_COMMITS" -eq 0 ]; then
@@ -61,6 +75,7 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
           echo "series=$SERIES" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Bump version + tag
         id: bump
@@ -71,10 +86,9 @@ jobs:
 
           SERIES="${{ steps.check.outputs.series }}"
           if [ "${{ steps.check.outputs.new_series }}" = "true" ]; then
-            NEW_VERSION="${SERIES}.0"
+            NEW_VERSION="${{ steps.check.outputs.base_version }}"
           else
-            LAST_TAG="${{ steps.check.outputs.last_tag }}"
-            CURRENT="${LAST_TAG#v}"
+            CURRENT="${{ steps.check.outputs.base_version }}"
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
             NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
@@ -86,7 +100,7 @@ jobs:
             exit 0
           fi
 
-          # Bump both root and electron package versions
+          # 同步根包和 Electron 包版本。
           node -e "
             const fs = require('fs');
             for (const p of ['package.json', 'packages/electron/package.json']) {
@@ -97,7 +111,7 @@ jobs:
           "
 
           git add package.json packages/electron/package.json
-          # If version already matches (e.g. first tag in a new series), skip the commit
+          # 版本已经一致时只打 tag。
           if git diff --cached --quiet; then
             echo "package.json already at ${NEW_VERSION}, tagging without version commit"
           else
@@ -105,7 +119,7 @@ jobs:
           fi
           git tag -a "$NEW_TAG" -m "Release ${NEW_TAG}"
 
-          # Retry push with rebase on conflict (other workflows may push concurrently)
+          # push 冲突时 rebase 后重试。
           for i in 1 2 3; do
             if git push origin master --follow-tags; then
               echo "Bumped to $NEW_VERSION, tagged $NEW_TAG"
@@ -123,16 +137,14 @@ jobs:
 
       - name: Sync bump commit back to dev (FF)
         if: steps.bump.outputs.new_tag
-        # Without this, every stable bump leaves dev behind master by one commit.
-        # The next promote run would then fail FF check ("manual rebase needed")
-        # and stay stuck until someone manually rebases dev.
+        # 如果仓库真的有 dev 分支，把 stable bump 同步回去，避免下一次 promote 卡住。
         run: |
-          if ! git ls-remote --exit-code --heads origin dev >/dev/null 2>&1; then
+          if ! git ls-remote --exit-code --heads origin refs/heads/dev >/dev/null 2>&1; then
             echo "dev branch does not exist, skipping sync"
             exit 0
           fi
-          git fetch origin dev:refs/remotes/origin/dev
-          if git push origin master:dev; then
+          git fetch origin refs/heads/dev:refs/remotes/origin/dev
+          if git push origin master:refs/heads/dev; then
             echo "Synced master ($(git rev-parse master)) to dev (FF)"
           else
             echo "::warning::FF push master:dev refused (dev moved during bump window). Manual sync needed."

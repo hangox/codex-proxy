@@ -1,8 +1,7 @@
 name: Promote dev → master
 
 on:
-  schedule:
-    - cron: "0 14 * * *"   # UTC 14:00 = PRC 22:00 (2h before bump-electron stable run)
+  # fork 内不要定时提升 dev 到 master，需要时手动触发。
   workflow_dispatch:
 
 concurrency:
@@ -25,7 +24,7 @@ jobs:
       - name: Guard — dev branch must exist
         id: dev_exists
         run: |
-          if git ls-remote --exit-code --heads origin dev >/dev/null 2>&1; then
+          if git ls-remote --exit-code --heads origin refs/heads/dev >/dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::dev branch does not exist yet, nothing to promote"
@@ -36,7 +35,7 @@ jobs:
         if: steps.dev_exists.outputs.ok == 'true'
         run: |
           git fetch origin master:refs/remotes/origin/master --tags
-          git fetch origin dev:refs/remotes/origin/dev
+          git fetch origin refs/heads/dev:refs/remotes/origin/dev
 
       - name: Check ahead-count
         id: ahead

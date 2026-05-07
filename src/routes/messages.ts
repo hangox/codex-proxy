@@ -134,7 +134,8 @@ export function createMessagesRoutes(
       injectHostedWebSearch: !allowUnauthenticated,
       mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
     });
-    if (!allowUnauthenticated) {
+    // CODEX_PROXY_DISABLE_WS=1 临时绕开 ws 路径上游阻断（incident 2026-05-07）
+    if (!allowUnauthenticated && process.env.CODEX_PROXY_DISABLE_WS !== "1") {
       codexRequest.useWebSocket = true;
     }
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";

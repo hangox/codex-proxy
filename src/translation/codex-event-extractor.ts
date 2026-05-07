@@ -106,32 +106,55 @@ export async function preflightContentfulStream(
   let terminalResponseId: string | null = null;
   let terminalUsage: UsageInfo | undefined;
 
-  while (true) {
-    const next = await iterator.next();
-    if (next.done) {
-      throw new EmptyResponseError(terminalResponseId, terminalUsage);
-    }
+  // Best-effort iterator close. Backed by the SSE reader's lock, so leaking
+  // it pins the upstream Response body — call this on every exit path that
+  // doesn't hand the iterator off to `replay`.
+  async function closeIterator(): Promise<void> {
+    try { await iterator.return?.(); } catch { /* swallow */ }
+  }
 
-    const evt = next.value;
-    buffered.push(evt);
-    if (evt.responseId) terminalResponseId = evt.responseId;
-    if (evt.usage) terminalUsage = evt.usage;
-
-    if (isContentfulEvent(evt, options)) {
-      async function* replay(): AsyncGenerator<ExtractedEvent> {
-        yield* buffered;
-        while (true) {
-          const tail = await iterator.next();
-          if (tail.done) return;
-          yield tail.value;
-        }
+  try {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) {
+        await closeIterator();
+        throw new EmptyResponseError(terminalResponseId, terminalUsage);
       }
-      return { buffered, stream: replay() };
-    }
 
-    if (isTerminalEvent(evt)) {
-      throw new EmptyResponseError(terminalResponseId, terminalUsage);
+      const evt = next.value;
+      buffered.push(evt);
+      if (evt.responseId) terminalResponseId = evt.responseId;
+      if (evt.usage) terminalUsage = evt.usage;
+
+      if (isContentfulEvent(evt, options)) {
+        // Hand the iterator off to replay; it's responsible for closing.
+        async function* replay(): AsyncGenerator<ExtractedEvent> {
+          try {
+            yield* buffered;
+            while (true) {
+              const tail = await iterator.next();
+              if (tail.done) return;
+              yield tail.value;
+            }
+          } finally {
+            await closeIterator();
+          }
+        }
+        return { buffered, stream: replay() };
+      }
+
+      if (isTerminalEvent(evt)) {
+        await closeIterator();
+        throw new EmptyResponseError(terminalResponseId, terminalUsage);
+      }
     }
+  } catch (err) {
+    if (!(err instanceof EmptyResponseError)) {
+      // Unexpected error before we hand the iterator to replay — make sure
+      // the upstream reader is released regardless of how we exit.
+      await closeIterator();
+    }
+    throw err;
   }
 }
 

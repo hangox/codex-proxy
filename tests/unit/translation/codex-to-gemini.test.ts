@@ -79,12 +79,6 @@ describe("streamCodexToGemini", () => {
     expect(parsed.candidates[0].finishReason).toBe("OTHER");
   });
 
-  it("injects error text for empty response", async () => {
-    const chunks = await collectStreamOutput(emptyStream());
-    const dataChunks = chunks.filter((c) => c.startsWith("data: "));
-    const errorChunk = dataChunks.find((c) => c.includes("empty response"));
-    expect(errorChunk).toBeDefined();
-  });
 });
 
 describe("collectCodexToGeminiResponse", () => {

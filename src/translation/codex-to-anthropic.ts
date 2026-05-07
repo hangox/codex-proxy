@@ -17,7 +17,12 @@ import type {
   AnthropicMessagesResponse,
   AnthropicUsage,
 } from "../types/anthropic.js";
-import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
+import {
+  iterateCodexEvents,
+  EmptyResponseError,
+  type UsageInfo,
+  type ExtractedEvent,
+} from "./codex-event-extractor.js";
 
 interface CacheUsageHint {
   reusedInputTokensUpperBound?: number;
@@ -59,7 +64,7 @@ function formatSSE(eventType: string, data: unknown): string {
  */
 export async function* streamCodexToAnthropic(
   codexApi: UpstreamAdapter,
-  rawResponse: Response,
+  rawResponse: Response | AsyncIterable<ExtractedEvent>,
   model: string,
   onUsage?: (usage: UsageInfo) => void,
   onResponseId?: (id: string) => void,
@@ -73,6 +78,9 @@ export async function* streamCodexToAnthropic(
   let cachedTokens: number | undefined;
   let hasToolCalls = false;
   let hasContent = false;
+  let sawTerminalFailure = false;
+  let lastResponseId: string | null = null;
+  let lastUsage: UsageInfo | undefined;
   let contentIndex = 0;
   let textBlockStarted = false;
   let thinkingBlockStarted = false;
@@ -135,20 +143,32 @@ export async function* streamCodexToAnthropic(
 
   // Don't eagerly open a text block — wait for actual content so thinking can come first
 
+  const eventSource = rawResponse instanceof Response
+    ? iterateCodexEvents(codexApi, rawResponse)
+    : rawResponse;
+
   // 2. Process Codex stream events
-  for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
-    if (evt.responseId) onResponseId?.(evt.responseId);
+  for await (const evt of eventSource) {
+    if (evt.responseId) {
+      lastResponseId = evt.responseId;
+      onResponseId?.(evt.responseId);
+    }
+    if (evt.usage) lastUsage = evt.usage;
 
     // Handle upstream error events
     if (evt.error) {
-      yield* closeThinkingIfOpen();
-      yield* ensureTextBlock();
-      yield formatSSE("content_block_delta", {
-        type: "content_block_delta",
-        index: contentIndex,
-        delta: { type: "text_delta", text: `[Error] ${evt.error.code}: ${evt.error.message}` },
-      });
-      yield* closeBlock("text");
+      sawTerminalFailure = true;
+      if (hasContent) {
+        console.warn(`[codex-to-anthropic] partial stream failed responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantThinking ? "enabled" : "disabled"} error=${evt.error.code}:${evt.error.message}`);
+        yield* closeThinkingIfOpen();
+        yield* ensureTextBlock();
+        yield formatSSE("content_block_delta", {
+          type: "content_block_delta",
+          index: contentIndex,
+          delta: { type: "text_delta", text: `[Error] ${evt.error.code}: ${evt.error.message}` },
+        });
+        yield* closeBlock("text");
+      }
       yield formatSSE("error", {
         type: "error",
         error: { type: "api_error", message: `${evt.error.code}: ${evt.error.message}` },
@@ -260,13 +280,19 @@ export async function* streamCodexToAnthropic(
             reasoning_tokens: evt.usage.reasoning_tokens,
           });
         }
-        // Inject error text if stream completed with no content
-        if (!hasContent) {
+        break;
+      }
+
+      case "response.failed":
+      case "response.incomplete": {
+        sawTerminalFailure = true;
+        if (hasContent) {
+          console.warn(`[codex-to-anthropic] partial stream terminated responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantThinking ? "enabled" : "disabled"} terminal=${evt.typed.type}`);
           yield* ensureTextBlock();
           yield formatSSE("content_block_delta", {
             type: "content_block_delta",
             index: contentIndex,
-            delta: { type: "text_delta", text: "[Error] Codex returned an empty response. Please retry." },
+            delta: { type: "text_delta", text: "[Error] Codex returned an incomplete response. Please retry." },
           });
         }
         break;
@@ -277,6 +303,9 @@ export async function* streamCodexToAnthropic(
   // 3. Close any open blocks
   yield* closeThinkingIfOpen();
   yield* closeTextIfOpen();
+  if (sawTerminalFailure && hasContent) {
+    console.warn(`[codex-to-anthropic] stream finished after terminal failure responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantThinking ? "enabled" : "disabled"}`);
+  }
 
   // 4. message_delta with stop_reason and usage
   // cache_creation_input_tokens: tokens not served from cache (will be cached for next turn)

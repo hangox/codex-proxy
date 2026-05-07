@@ -19,7 +19,7 @@ import {
 } from "../../proxy/codex-api.js";
 import type { CodexResponsesRequest } from "../../proxy/codex-api.js";
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
-import { EmptyResponseError } from "../../translation/codex-event-extractor.js";
+import { EmptyResponseError, iterateCodexEvents, preflightContentfulStream } from "../../translation/codex-event-extractor.js";
 import type { AccountPool } from "../../auth/account-pool.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
@@ -78,7 +78,7 @@ export interface FormatAdapter {
   formatInvalidRequest?: (details: InvalidRequestDetails) => unknown;
   streamTranslator: (
     api: UpstreamAdapter,
-    response: Response,
+    response: Response | AsyncIterable<import("../../translation/codex-event-extractor.js").ExtractedEvent>,
     model: string,
     onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; reasoning_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
     onResponseId: (id: string) => void,
@@ -448,6 +448,8 @@ export async function handleProxyRequest(
 
       // ── Streaming path ──
       if (req.isStreaming) {
+        const preflight = await preflightContentfulStream(iterateCodexEvents(codexApi, rawResponse));
+
         c.header("Content-Type", "text/event-stream");
         c.header("Cache-Control", "no-cache");
         c.header("Connection", "keep-alive");
@@ -471,7 +473,7 @@ export async function handleProxyRequest(
           };
           try {
             await streamResponse(
-              s, capturedApi, rawResponse, req.model, fmt,
+              s, capturedApi, preflight.stream, req.model, fmt,
               (u) => {
                 usageInfo = u;
                 recordStreamAffinity();
@@ -538,6 +540,32 @@ export async function handleProxyRequest(
         restoreImplicitResumeRequest,
       );
     } catch (err) {
+      if (err instanceof EmptyResponseError) {
+        const retryResult = await retryEmptyResponseRequest(
+          accountPool,
+          cookieJar,
+          req,
+          fmt,
+          proxyPool,
+          entryId,
+          released,
+          abortController,
+          requestId,
+          err,
+          restoreImplicitResumeRequest,
+        );
+        if (retryResult instanceof Response) {
+          const status = retryResult.status as StatusCode;
+          c.status(status);
+          const body = await retryResult.json();
+          return c.json(body);
+        }
+        entryId = retryResult.nextEntryId;
+        codexApi = retryResult.nextApi;
+        await staggerIfNeeded(null);
+        continue;
+      }
+
       if (!(err instanceof CodexApiError)) {
         releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
         throw err;
@@ -630,6 +658,91 @@ export async function handleProxyRequest(
   }
 }
 
+async function retryEmptyResponseRequest(
+  accountPool: AccountPool,
+  cookieJar: CookieJar | undefined,
+  req: ProxyRequest,
+  fmt: FormatAdapter,
+  proxyPool: ProxyPool | undefined,
+  currentEntryId: string,
+  released: Set<string>,
+  abortController: AbortController,
+  requestId: string,
+  emptyErr: EmptyResponseError,
+  restoreImplicitResumeRequest?: () => void,
+): Promise<{ nextEntryId: string; nextApi: CodexApi; nextRawResponse: Response } | Response> {
+  const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
+  console.warn(
+    `[${fmt.tag}] Account ${currentEntryId} (${email}) | Empty response, switching account...`,
+  );
+  accountPool.recordEmptyResponse(currentEntryId);
+  releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(emptyErr.usage, req.expectsImageGen), released);
+  restoreImplicitResumeRequest?.();
+
+  const newAcquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag);
+  if (!newAcquired) {
+    return new Response(JSON.stringify(fmt.formatError(502, "Codex returned an empty response and no other accounts are available for retry")), {
+      status: 502,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const nextEntryId = newAcquired.entryId;
+  const nextApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
+  const retryStartMs = Date.now();
+  try {
+    const nextRawResponse = await withRetry(
+      () => nextApi.createResponse(req.codexRequest, abortController.signal),
+      { tag: fmt.tag },
+    );
+    enqueueLogEntry({
+      requestId,
+      direction: "egress",
+      method: "POST",
+      path: "/codex/responses",
+      model: req.model,
+      provider: "codex",
+      status: nextRawResponse.status,
+      latencyMs: Date.now() - retryStartMs,
+      stream: req.isStreaming,
+      request: {
+        model: req.codexRequest.model,
+        stream: req.codexRequest.stream,
+        useWebSocket: req.codexRequest.useWebSocket,
+      },
+    });
+    return { nextEntryId, nextApi, nextRawResponse };
+  } catch (retryErr) {
+    releaseAccount(accountPool, nextEntryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+    const msg = retryErr instanceof Error ? retryErr.message : "Upstream request failed";
+    enqueueLogEntry({
+      requestId,
+      direction: "egress",
+      method: "POST",
+      path: "/codex/responses",
+      model: req.model,
+      provider: "codex",
+      status: retryErr instanceof CodexApiError ? retryErr.status : null,
+      latencyMs: Date.now() - retryStartMs,
+      stream: req.isStreaming,
+      error: msg,
+      request: {
+        model: req.codexRequest.model,
+        stream: req.codexRequest.stream,
+        useWebSocket: req.codexRequest.useWebSocket,
+      },
+    });
+    if (retryErr instanceof CodexApiError) {
+      const code = toErrorStatus(retryErr.status);
+      return new Response(JSON.stringify(fmt.formatError(code, retryErr.message)), {
+        status: code,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw retryErr;
+  }
+}
+
 async function handleNonStreaming(
   c: Context,
   accountPool: AccountPool,
@@ -696,71 +809,30 @@ async function handleNonStreaming(
       return c.json(result.response);
     } catch (collectErr) {
       if (collectErr instanceof EmptyResponseError && attempt <= MAX_EMPTY_RETRIES) {
-        const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
         console.warn(
-          `[${fmt.tag}] Account ${currentEntryId} (${email}) | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), switching account...`,
+          `[${fmt.tag}] Account ${currentEntryId} | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), switching account...`,
         );
-        accountPool.recordEmptyResponse(currentEntryId);
-        releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen), released);
-        restoreImplicitResumeRequest?.();
-
-        const newAcquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag);
-        if (!newAcquired) {
-          c.status(502);
-          return c.json(fmt.formatError(502, "Codex returned an empty response and no other accounts are available for retry"));
+        const retryResult = await retryEmptyResponseRequest(
+          accountPool,
+          cookieJar,
+          req,
+          fmt,
+          proxyPool,
+          currentEntryId,
+          released,
+          abortController,
+          requestId,
+          collectErr,
+          restoreImplicitResumeRequest,
+        );
+        if (retryResult instanceof Response) {
+          c.status(retryResult.status as StatusCode);
+          const body = await retryResult.json();
+          return c.json(body);
         }
-
-        currentEntryId = newAcquired.entryId;
-        currentApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
-        const retryStartMs = Date.now();
-        try {
-          currentRawResponse = await withRetry(
-            () => currentApi.createResponse(req.codexRequest, abortController.signal),
-            { tag: fmt.tag },
-          );
-          enqueueLogEntry({
-            requestId,
-            direction: "egress",
-            method: "POST",
-            path: "/codex/responses",
-            model: req.model,
-            provider: "codex",
-            status: currentRawResponse.status,
-            latencyMs: Date.now() - retryStartMs,
-            stream: req.isStreaming,
-            request: {
-              model: req.codexRequest.model,
-              stream: req.codexRequest.stream,
-              useWebSocket: req.codexRequest.useWebSocket,
-            },
-          });
-        } catch (retryErr) {
-          releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
-          const msg = retryErr instanceof Error ? retryErr.message : "Upstream request failed";
-          enqueueLogEntry({
-            requestId,
-            direction: "egress",
-            method: "POST",
-            path: "/codex/responses",
-            model: req.model,
-            provider: "codex",
-            status: retryErr instanceof CodexApiError ? retryErr.status : null,
-            latencyMs: Date.now() - retryStartMs,
-            stream: req.isStreaming,
-            error: msg,
-            request: {
-              model: req.codexRequest.model,
-              stream: req.codexRequest.stream,
-              useWebSocket: req.codexRequest.useWebSocket,
-            },
-          });
-          if (retryErr instanceof CodexApiError) {
-            const code = toErrorStatus(retryErr.status);
-            c.status(code);
-            return c.json(fmt.formatError(code, retryErr.message));
-          }
-          throw retryErr;
-        }
+        currentEntryId = retryResult.nextEntryId;
+        currentApi = retryResult.nextApi;
+        currentRawResponse = retryResult.nextRawResponse;
         continue;
       }
 

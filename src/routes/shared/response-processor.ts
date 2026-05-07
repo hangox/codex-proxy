@@ -6,7 +6,7 @@
 
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
 import type { FormatAdapter, ResponseMetadata, UsageHint } from "./proxy-handler.js";
-import type { UsageInfo } from "../../translation/codex-event-extractor.js";
+import type { ExtractedEvent, UsageInfo } from "../../translation/codex-event-extractor.js";
 
 /** Minimal subset of Hono's StreamingApi that we actually use. */
 export interface StreamWriter {
@@ -23,7 +23,7 @@ export interface StreamWriter {
 export async function streamResponse(
   s: StreamWriter,
   api: UpstreamAdapter,
-  rawResponse: Response,
+  eventSource: Response | AsyncIterable<ExtractedEvent>,
   model: string,
   adapter: FormatAdapter,
   onUsage: (u: UsageInfo) => void,
@@ -35,7 +35,7 @@ export async function streamResponse(
   try {
     for await (const chunk of adapter.streamTranslator(
       api,
-      rawResponse,
+      eventSource,
       model,
       onUsage,
       onResponseId ?? (() => {}),

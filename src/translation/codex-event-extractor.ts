@@ -54,6 +54,9 @@ export class EmptyResponseError extends Error {
 }
 
 export interface ExtractedEvent {
+  /** Original SSE event name + payload — required for passthrough routes (/v1/responses)
+   *  that re-emit raw events to clients. Translation routes can ignore this. */
+  raw: CodexSSEEvent;
   typed: TypedCodexEvent;
   responseId?: string;
   textDelta?: string;
@@ -63,6 +66,73 @@ export interface ExtractedEvent {
   functionCallStart?: FunctionCallStart;
   functionCallDelta?: FunctionCallDelta;
   functionCallDone?: FunctionCallDone;
+}
+
+export type CodexEventSource = AsyncIterable<ExtractedEvent>;
+
+export interface PreflightResult {
+  buffered: ExtractedEvent[];
+  stream: AsyncGenerator<ExtractedEvent>;
+}
+
+export interface ContentDetectionOptions {
+  includeReasoning?: boolean;
+}
+
+export function isContentfulEvent(
+  evt: ExtractedEvent,
+  options: ContentDetectionOptions = {},
+): boolean {
+  if (evt.textDelta && evt.textDelta.length > 0) return true;
+  if (evt.functionCallStart) return true;
+  if (evt.functionCallDelta) return true;
+  if (evt.functionCallDone) return true;
+  if (options.includeReasoning && evt.reasoningDelta && evt.reasoningDelta.length > 0) return true;
+  return false;
+}
+
+function isTerminalEvent(evt: ExtractedEvent): boolean {
+  return evt.typed.type === "response.completed"
+    || evt.typed.type === "response.failed"
+    || evt.typed.type === "response.incomplete";
+}
+
+export async function preflightContentfulStream(
+  source: CodexEventSource,
+  options: ContentDetectionOptions = {},
+): Promise<PreflightResult> {
+  const iterator = source[Symbol.asyncIterator]();
+  const buffered: ExtractedEvent[] = [];
+  let terminalResponseId: string | null = null;
+  let terminalUsage: UsageInfo | undefined;
+
+  while (true) {
+    const next = await iterator.next();
+    if (next.done) {
+      throw new EmptyResponseError(terminalResponseId, terminalUsage);
+    }
+
+    const evt = next.value;
+    buffered.push(evt);
+    if (evt.responseId) terminalResponseId = evt.responseId;
+    if (evt.usage) terminalUsage = evt.usage;
+
+    if (isContentfulEvent(evt, options)) {
+      async function* replay(): AsyncGenerator<ExtractedEvent> {
+        yield* buffered;
+        while (true) {
+          const tail = await iterator.next();
+          if (tail.done) return;
+          yield tail.value;
+        }
+      }
+      return { buffered, stream: replay() };
+    }
+
+    if (isTerminalEvent(evt)) {
+      throw new EmptyResponseError(terminalResponseId, terminalUsage);
+    }
+  }
 }
 
 /**
@@ -78,7 +148,7 @@ export async function* iterateCodexEvents(
 
   for await (const raw of api.parseStream(rawResponse)) {
     const typed = parseCodexEvent(raw);
-    const extracted: ExtractedEvent = { typed };
+    const extracted: ExtractedEvent = { raw, typed };
 
     // Log unrecognized events to discover new Codex event types
     if (typed.type === "unknown") {

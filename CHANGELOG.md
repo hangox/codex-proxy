@@ -8,6 +8,39 @@
 
 ## [Unreleased]
 
+### Added
+
+- Dashboard 用量页新增「时段命中率（Range Hit Rate）」卡片：基于当前选中时间窗口聚合 `cached_tokens / input_tokens`，与原本的全局累计「Cache Hit Rate」卡并列，方便对比近窗口与历史命中率（`web/src/pages/UsageStats.tsx`、`shared/i18n/translations.ts`）
+- Dashboard 用量页新增独立的「Hit Rate Over Time」图：每个 bucket 渲染命中率折线 + 数据点 dot，hover 可见 `cached / input`；`input=0` 的 bucket 自动跳过（不渲染 0% 假命中），单数据点也用 dot 保证可见性（`web/src/components/UsageChart.tsx`）
+- Usage history `five_min` granularity（5 分钟桶）+ Dashboard 新增「5 min」粒度选项与「Last 1h / 6h」时间窗：snapshot 默认 5 分钟一记，新粒度等同于一桶一快照，方便排查刚发生的请求；旧的 hourly/daily 不变，按 granularity 自动收敛兼容窗口（`src/auth/usage-stats.ts`、`src/routes/admin/usage-stats.ts`、`shared/hooks/use-usage-stats.ts`、`web/src/pages/UsageStats.tsx`）
+- 共享纯函数 `formatHitRate` / `sumWindow` / `formatUsageNumber` 抽到 `shared/utils/usage-stats.ts`，配套 vitest 单测覆盖边界（input=0 → "—"、<0.01% 截断、windowed 求和等），UsageChart 与 UsageStats 复用同一份格式化逻辑（`shared/utils/usage-stats.ts`、`shared/utils/__tests__/usage-stats.test.ts`）
+- WebSocket 连接池新增 keepalive ping + liveness 检测（`src/proxy/ws-pool.ts`）：每个 `PersistentWs` 默认 25 s 发一次 WS ping 帧（`DEFAULT_PING_INTERVAL_MS`），抵消上游 LB / NAT / 防火墙的 idle timeout 静默 RST；同时跟踪 `lastActivityAt`（pong 或任何 message 都算 proof of life），超过 `livenessTimeoutMs`（默认 = 2.5 × ping interval ≈ 62.5 s）无上游信号则主动 `markDead`，避免下次 acquire 复用一个已经"OPEN 但实际死了"的连接。E2E 验证（设备 a → 本机 8080）：单 WS 撑满 10 轮 + 70 s idle gap，turn 6 跨越 gap 后 hit 仍 99.6%（与 turn 5 持平），0 次 `liveness timeout` 误杀。Busy 时跳 ping（streaming data frame 已 keepalive）。`pingIntervalMs: 0` 或 `livenessTimeoutMs: 0` 各自独立可禁用（`tests/unit/proxy/ws-pool.test.ts` 共 11 个新单测覆盖：ping 节奏 / dead 后停 / readyState 守卫 / busy 跳过 / 错误吞咽 / liveness 误杀 / pong 重置 / message 重置 / 默认值边界等）
+- `promote-dev-to-master.yml` 新增 `force_skip_soak` 手动 input（`.github/workflows/promote-dev-to-master.yml`）：原本 soak 检查取的是 dev HEAD 的 commit timestamp ≥ 24 h，正常 merge 节奏下每次新 commit 都会 reset 时钟，导致 master 长期卡死收不到 dev 的更新（实测多个 PR 堵了一周没晋升）。新 input 仅在手动 `workflow_dispatch` 时可用、默认 false（保持原 soak 行为）；schedule cron 走默认 false 不受影响。仅在 sync-back / merge commit "时间新但内容稳定" 的紧急晋升场景使用
+
+### Fixed
+
+- **WebSocket 连接池**（`src/proxy/ws-pool.ts` + `src/proxy/ws-transport.ts` + `src/routes/shared/proxy-handler.ts`）：上游 chatgpt.com 的 WS gateway 按"连接 ID"做负载均衡 hash，过去 codex-proxy 对每个 WS 请求都 `new WebSocket(url)`，导致同一会话同一账号的 prompt cache 命中率在 5%~99% 之间剧烈抖动（同一逻辑会话被路由到不同 backend，每个 backend 各自缓存了不同长度的前缀；实测 cached_tokens 反复出现 1920/2432/24448/40320/47488 等离散"checkpoint"）。引入 per-`(entryId, conversationId)` 的持久 WS 连接池：
+  - 单 WS 上 strict request/response 串行（codex 协议要求），busy 时旁路开新一次性 WS 而非排队（避免死锁）
+  - 无 idle TTL，连接保持开放直到自然死亡 / `max_age_ms`（默认 55 min，留 5 min 缓冲，比 server 60 min 硬限制提前关）/ 账号状态变化（`evictByEntryId`）级联清理
+  - 复用失败（pre-response close）抛 `WsReusedConnectionError`，自动单次 fallback 到一次性新连接；流中段失败保持原语义抛给客户端（不重试，client 已收到部分数据）
+  - account-pool 在 `markRateLimited` / `markStatus(non-active)` / `removeAccount` / `updateToken`（refresh 完成）时级联 `evictByEntryId`，避免老 WS 携带的 access_token 被复用
+  - 新增配置 `ws_pool: { enabled: true, max_age_ms: 3300000, max_per_account: 8 }`；可 `enabled: false` + 重启回滚到旧行为
+  - SIGTERM/SIGINT 进程退出钩子追加 `wsPool.shutdown()` 优雅关闭所有池中连接
+  - 入口日志加 `ws=reuse:<id>` / `ws=new:<id>` / `ws=bypass(<reason>)` / `ws=retry-after-stale-reuse:<id>` 字段，配合 `rid` 可对照 cache 命中率
+  - 集成测：`tests/integration/ws-pool-reuse.test.ts` 起本地 `ws.Server` 验证 5 turn 同会话只触发 1 次 `connection`
+
+### Changed
+
+- `src/routes/shared/proxy-handler.ts` 入口与 Usage 日志补充诊断字段：入口行新增 `rid` / `conv` / `key` / `prev=<src>:<tail8>` / `tools=N` / `resume=on|off:<reason>`（reason 含 `no_pref_entry`/`acct_mismatch`/`instr_diff`/`missing_tool_calls`/`cont_start_eq_len`），Usage 行带 `rid` 与 `hit=X.X%`，便于对照 prompt-cache 命中率为何偏低、或同一会话请求是否落到同一 cache key
+- 上游请求补 `x-codex-installation-id` header 与 body 内 `client_metadata: { "x-codex-installation-id": <uuid> }`（HTTP + WS + compact 三条路径）：对齐真实 Codex CLI（`core/src/client.rs:874`），让上游 LB 能拿到稳定客户端身份做粘性路由提示。优先复用 `~/.codex/installation_id`，没有则在 `data/installation_id` 持久化新生成的 UUID（`src/proxy/installation-id.ts`、`src/proxy/codex-api.ts`、`src/proxy/codex-types.ts`、`src/proxy/ws-transport.ts`、`config/fingerprint.yaml`）
+- `evaluateImplicitResume()` 取代 `shouldActivateImplicitResume()` 内部判定：返回 `{ active, reason }`，便于在拒绝时给出具体原因（`src/routes/shared/proxy-handler.ts`）。原 `shouldActivateImplicitResume()` 保持向后兼容，作为 `.active` 的薄包装
+
+### Fixed
+
+- Self-update 双重安全护栏（`src/self-update.ts`）：`applyProxySelfUpdate` 之前会无条件 `git checkout -- .` + `git pull origin master`，导致 ① 工作目录任何未提交改动被静默丢弃；② 在 `dev` 等非 master 分支上把 master 合进来，破坏 dev→master promote 流程。本地 dev 服跑着的时候每次 tsx watch 重启都会触发：新进程启动 → 10s 后 update check → `auto_update: true` → 把开发者刚保存的代码当垃圾扫掉。修复：进入 `applyProxySelfUpdate` 先校验 ① 当前分支必须是 `master`/`main`，② `git status --porcelain` 必须为空；任一失败立刻 abort 并返回错误，**不再调用** `git checkout -- .`
+- Anthropic → Codex 工具 schema 转换：检测到 `name === "Read"` 时，在 `pages` 字段的 description 末尾追加 "Omit this field entirely for non-PDF files; do not pass an empty string."。上游 gpt-5.x 在生成 Read tool_use 时倾向于把可选 string 字段填成 `""` 而非省略，Claude Code harness 把 `pages: ""` 当作"已传入"走到 PDF 分支报错；改 description 是最轻量的引导（不破坏忠实转发原则、对其他工具零影响），幂等可重复调用
+- `bump-electron.yml`：checkout 时显式 `ref: master`。default branch 切到 `dev` 之后，schedule 触发的 stable bump 落到 dev 工作树，`git push origin master --follow-tags` 报 `src refspec master does not match any` 连续 fail，stable 卡在 v2.0.66（2026-04-24）补不上来。修复后下一次 16:00 UTC 自动续上
+
 ### Changed
 
 - `bump-electron-beta.yml` 触发改为定时 cron（每天 04:00 / 12:00 UTC，北京 12:00 / 20:00），不再随每次 dev push 即时打 beta tag。聚合多个 PR 进同一 beta，避免 beta channel 一天弹多次更新；紧急可手动 `gh workflow run bump-electron-beta.yml`

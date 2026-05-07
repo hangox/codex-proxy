@@ -465,6 +465,85 @@ describe("proxy-handler integration", () => {
     expect(text).not.toContain("Codex returned an empty response");
   });
 
+  it("streaming empty-response retry calls createResponse exactly once per attempt and excludes tried accounts", async () => {
+    // 防回归: streaming 空响应重试不能在外层 for 多打一次 createResponse,
+    // 也不能选回已经试过的账号。
+    let createResponseCallCount = 0;
+    mockCreateResponse = async () => {
+      createResponseCallCount++;
+      return new Response("data: {}\n\n");
+    };
+
+    let preflightCallCount = 0;
+    mockPreflightContentfulStream = async (source: AsyncIterable<unknown>) => {
+      preflightCallCount++;
+      if (preflightCallCount <= 2) {
+        throw new EmptyResponseError(`resp_stream_empty_${preflightCallCount}`, {
+          input_tokens: preflightCallCount,
+          output_tokens: 0,
+        });
+      }
+      return { buffered: [], stream: source };
+    };
+
+    const acquireCalls: Array<{ excludeIds?: string[] }> = [];
+    const acquire = vi.fn((opts?: { excludeIds?: string[] }) => {
+      // snapshot the array — caller mutates it across attempts.
+      acquireCalls.push({ excludeIds: opts?.excludeIds ? [...opts.excludeIds] : undefined });
+      const idx = acquireCalls.length;
+      return { entryId: `e${idx}`, token: `tok${idx}`, accountId: `acc${idx}` };
+    });
+    const accountPool = createMockAccountPool({ acquire });
+    const fmt = createMockFormatAdapter();
+    const req = createStreamingRequest();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    // 3 次尝试 → 恰好 3 次 createResponse（首次 + 2 次重试），不能多。
+    expect(createResponseCallCount).toBe(3);
+    expect(preflightCallCount).toBe(3);
+
+    // 第二次 acquire 排除 e1；第三次排除 e1 + e2。
+    expect(acquireCalls.length).toBe(3);
+    expect(acquireCalls[0].excludeIds ?? []).toEqual([]);
+    expect(acquireCalls[1].excludeIds).toEqual(["e1"]);
+    expect(acquireCalls[2].excludeIds).toEqual(["e1", "e2"]);
+  });
+
+  it("streaming empty-response retries are bounded by MAX_EMPTY_RETRIES", async () => {
+    // 防回归: streaming 路径必须有 retry 上限，不能无限循环。
+    let createResponseCallCount = 0;
+    mockCreateResponse = async () => {
+      createResponseCallCount++;
+      return new Response("data: {}\n\n");
+    };
+
+    mockPreflightContentfulStream = async () => {
+      throw new EmptyResponseError("resp_always_empty", {
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+    };
+
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn((opts?: { excludeIds?: string[] }) => {
+        const idx = (opts?.excludeIds?.length ?? 0) + 1;
+        return { entryId: `e${idx}`, token: `tok${idx}`, accountId: `acc${idx}` };
+      }),
+    });
+    const fmt = createMockFormatAdapter();
+    const req = createStreamingRequest();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(502);
+    // MAX_EMPTY_RETRIES = 2 → 上限 3 次 createResponse，绝不能更多。
+    expect(createResponseCallCount).toBe(3);
+    expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(3);
+  });
+
   // 8. Empty response retry (non-streaming) → account switch, second succeeds
   it("retries with a new account on EmptyResponseError", async () => {
     let callCount = 0;

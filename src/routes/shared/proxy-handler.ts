@@ -448,7 +448,50 @@ export async function handleProxyRequest(
 
       // ── Streaming path ──
       if (req.isStreaming) {
-        const preflight = await preflightContentfulStream(iterateCodexEvents(codexApi, rawResponse));
+        // Inner empty-response retry loop. We must NOT `continue` to the outer
+        // `for (;;)` after retryEmptyResponseRequest because that helper has
+        // already issued a fresh createResponse on the new account — falling
+        // through to the outer loop would issue a duplicate request and
+        // discard the new response. Instead we keep `currentRawResponse`
+        // up-to-date locally and bound the retries by MAX_EMPTY_RETRIES.
+        let currentRawResponse = rawResponse;
+        const triedEntryIds: string[] = [entryId];
+        let preflight: Awaited<ReturnType<typeof preflightContentfulStream>>;
+
+        for (let emptyAttempt = 0; ; emptyAttempt++) {
+          try {
+            preflight = await preflightContentfulStream(iterateCodexEvents(codexApi, currentRawResponse));
+            break;
+          } catch (preflightErr) {
+            if (!(preflightErr instanceof EmptyResponseError)) throw preflightErr;
+            if (emptyAttempt >= MAX_EMPTY_RETRIES) {
+              const email = accountPool.getEntry(entryId)?.email ?? "?";
+              console.warn(
+                `[${fmt.tag}] Account ${entryId} (${email}) | Empty response (attempt ${emptyAttempt + 1}/${MAX_EMPTY_RETRIES + 1}), all retries exhausted`,
+              );
+              accountPool.recordEmptyResponse(entryId);
+              releaseAccount(accountPool, entryId, annotateImageGenOutcome(preflightErr.usage, req.expectsImageGen), released);
+              c.status(502);
+              return c.json(fmt.formatError(502, "Codex returned empty responses across all available accounts"));
+            }
+            const retryResult = await retryEmptyResponseRequest(
+              accountPool, cookieJar, req, fmt, proxyPool, entryId,
+              released, abortController, requestId, preflightErr,
+              restoreImplicitResumeRequest, triedEntryIds,
+            );
+            if (retryResult instanceof Response) {
+              const status = retryResult.status as StatusCode;
+              c.status(status);
+              const body = await retryResult.json();
+              return c.json(body);
+            }
+            entryId = retryResult.nextEntryId;
+            codexApi = retryResult.nextApi;
+            currentRawResponse = retryResult.nextRawResponse;
+            triedEntryIds.push(entryId);
+            await staggerIfNeeded(null);
+          }
+        }
 
         c.header("Content-Type", "text/event-stream");
         c.header("Cache-Control", "no-cache");
@@ -540,32 +583,8 @@ export async function handleProxyRequest(
         restoreImplicitResumeRequest,
       );
     } catch (err) {
-      if (err instanceof EmptyResponseError) {
-        const retryResult = await retryEmptyResponseRequest(
-          accountPool,
-          cookieJar,
-          req,
-          fmt,
-          proxyPool,
-          entryId,
-          released,
-          abortController,
-          requestId,
-          err,
-          restoreImplicitResumeRequest,
-        );
-        if (retryResult instanceof Response) {
-          const status = retryResult.status as StatusCode;
-          c.status(status);
-          const body = await retryResult.json();
-          return c.json(body);
-        }
-        entryId = retryResult.nextEntryId;
-        codexApi = retryResult.nextApi;
-        await staggerIfNeeded(null);
-        continue;
-      }
-
+      // EmptyResponseError 走内部循环（streaming 分支自带；non-streaming
+      // 在 handleNonStreaming 内部已经做了换号并自己消化掉），不会冒泡到这里。
       if (!(err instanceof CodexApiError)) {
         releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
         throw err;
@@ -670,6 +689,7 @@ async function retryEmptyResponseRequest(
   requestId: string,
   emptyErr: EmptyResponseError,
   restoreImplicitResumeRequest?: () => void,
+  excludeEntryIds?: string[],
 ): Promise<{ nextEntryId: string; nextApi: CodexApi; nextRawResponse: Response } | Response> {
   const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
   console.warn(
@@ -679,7 +699,7 @@ async function retryEmptyResponseRequest(
   releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(emptyErr.usage, req.expectsImageGen), released);
   restoreImplicitResumeRequest?.();
 
-  const newAcquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag);
+  const newAcquired = acquireAccount(accountPool, req.codexRequest.model, excludeEntryIds, fmt.tag);
   if (!newAcquired) {
     return new Response(JSON.stringify(fmt.formatError(502, "Codex returned an empty response and no other accounts are available for retry")), {
       status: 502,

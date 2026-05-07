@@ -537,7 +537,7 @@ export async function handleProxyRequest(
             const retryResult = await retryEmptyResponseRequest(
               accountPool, cookieJar, req, fmt, proxyPool, entryId,
               released, abortController, requestId, preflightErr,
-              restoreImplicitResumeRequest, triedEntryIds,
+              restoreImplicitResumeRequest, triedEntryIds, buildPoolCtx,
             );
             if (retryResult instanceof Response) {
               const status = retryResult.status as StatusCode;

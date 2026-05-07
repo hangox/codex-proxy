@@ -683,33 +683,26 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 ### [Unreleased]
 
 **Added**
-- 图像生成请求计数（成功 / 失败分流）：`AccountUsage` 新增 `image_request_count` / `image_request_failed_count`（含 window 维度）。请求时检测 `tools[].type === "image_generation"`，release 时按 `tool_usage.image_gen.output_tokens` 是否 > 0 分流到成功 / 失败计数；Free 账号被静默剥工具、上游 4xx/5xx、EmptyResponse 等失败路径也会写入 failed 计数。`/admin/usage-stats/summary` 新增 `total_image_request_count` / `total_image_request_failed_count`，Dashboard 用量页新增「Image Requests」卡片显示 `N ok · M failed`，AccountCard 在有图像活动时显示窗口请求成功 / 失败行
-- 图像生成 token 独立计数：上游 `tool_usage.image_gen.{input_tokens, output_tokens}`（`gpt-image-2` 单独账）从前一直被丢弃，现在贯穿全链路 —— `parseResponseData` / `extractImageGenUsage` 解析、`AccountUsage` 累加（含 window 维度）、`UsageSnapshot` / `UsageBaseline` 持久化、`/admin/usage-stats/summary` 暴露 `total_image_input_tokens` / `total_image_output_tokens`、Dashboard 用量页新增「Image Tokens (in/out)」卡片，AccountCard 在该账号有图像消费时多显示一行窗口图像 token；老 `usage-history.json` 缺新字段以 0 兜底，向后兼容
-- 图像生成真实压测：`tests/real/image-generation.test.ts`（vitest, `npm run test:real`）跑 `{gpt-5.4-mini, gpt-5.5} × {1024×1024, 3840×2160}` 矩阵，每组合 2 并发 × 2 轮断言 SSE 完整事件链 + 图片 base64 长度阈值 + `tool_usage.image_gen.output_tokens > 0`，最后校验 `/admin/usage-stats/summary` 的 image token 增量；`tests/bench/image-gen-bench.ts` 提供同矩阵的 p50/p95/min/max + 图像与主模型 token 均值 markdown 表
-- Dashboard 用量统计新增「缓存命中率」卡片：聚合所有账号 `cached_tokens / input_tokens` 比例，附带绝对值提示。后端 `AccountUsage` 与 `UsageSnapshot` 持久化 cached tokens（含 window 维度），`/admin/usage-stats/summary` 与 `/history` 同步暴露 `total_cached_tokens` / `cached_tokens` 字段；老数据以 0 兜底
-- 发版流程引入 `dev` 分支 + beta channel：`bump-electron-beta.yml` 在 dev push 时打 `vX.Y.Z-beta.SHA` tag 出预发布包；`promote-dev-to-master.yml` 每天 14:00 UTC 检查 dev soak ≥24h + CI 绿后 fast-forward 到 master，再由现有 `bump-electron.yml` 出 stable tag (`.github/workflows/`)
+- Dashboard 用量页新增「时段命中率（Range Hit Rate）」卡片：基于当前选中时间窗口聚合 `cached_tokens / input_tokens`，与原本的全局累计「Cache Hit Rate」卡并列，方便对比近窗口与历史命中率（`web/src/pages/UsageStats.tsx`、`shared/i18n/translations.ts`）
+- Dashboard 用量页新增独立的「Hit Rate Over Time」图：每个 bucket 渲染命中率折线 + 数据点 dot，hover 可见 `cached / input`；`input=0` 的 bucket 自动跳过（不渲染 0% 假命中），单数据点也用 dot 保证可见性（`web/src/components/UsageChart.tsx`）
+- Usage history `five_min` granularity（5 分钟桶）+ Dashboard 新增「5 min」粒度选项与「Last 1h / 6h」时间窗：snapshot 默认 5 分钟一记，新粒度等同于一桶一快照，方便排查刚发生的请求；旧的 hourly/daily 不变，按 granularity 自动收敛兼容窗口（`src/auth/usage-stats.ts`、`src/routes/admin/usage-stats.ts`、`shared/hooks/use-usage-stats.ts`、`web/src/pages/UsageStats.tsx`）
+- 共享纯函数 `formatHitRate` / `sumWindow` / `formatUsageNumber` 抽到 `shared/utils/usage-stats.ts`，配套 vitest 单测覆盖边界（input=0 → "—"、<0.01% 截断、windowed 求和等），UsageChart 与 UsageStats 复用同一份格式化逻辑（`shared/utils/usage-stats.ts`、`shared/utils/__tests__/usage-stats.test.ts`）
+- WebSocket 连接池新增 keepalive ping + liveness 检测（`src/proxy/ws-pool.ts`）：每个 `PersistentWs` 默认 25 s 发一次 WS ping 帧（`DEFAULT_PING_INTERVAL_MS`），抵消上游 LB / NAT / 防火墙的 idle timeout 静默 RST；同时跟踪 `lastActivityAt`（pong 或任何 message 都算 proof of life），超过 `livenessTimeoutMs`（默认 = 2.5 × ping interval ≈ 62.5 s）无上游信号则主动 `markDead`，避免下次 acquire 复用一个已经"OPEN 但实际死了"的连接。E2E 验证（设备 a → 本机 8080）：单 WS 撑满 10 轮 + 70 s idle gap，turn 6 跨越 gap 后 hit 仍 99.6%（与 turn 5 持平），0 次 `liveness timeout` 误杀。Busy 时跳 ping（streaming data frame 已 keepalive）。`pingIntervalMs: 0` 或 `livenessTimeoutMs: 0` 各自独立可禁用（`tests/unit/proxy/ws-pool.test.ts` 共 11 个新单测覆盖：ping 节奏 / dead 后停 / readyState 守卫 / busy 跳过 / 错误吞咽 / liveness 误杀 / pong 重置 / message 重置 / 默认值边界等）
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
-- `bump-electron-beta.yml` 触发改为定时 cron（每天 04:00 / 12:00 UTC，北京 12:00 / 20:00），不再随每次 dev push 即时打 beta tag。聚合多个 PR 进同一 beta，避免 beta channel 一天弹多次更新；紧急可手动 `gh workflow run bump-electron-beta.yml`
-- Ollama bridge cleanup（#403 review followups, closes #405 #406 #407）：
-  - `src/ollama/bridge.ts` 不再重复实现 `normalizeHostname` / `isLoopbackHostname`，统一从 `src/utils/host.ts` 引入；`shared/utils/host.ts` 改为薄 re-export 以兼容前端的现有 import (#405)
-  - `proxyOpenAIRequest` 转发头扩展到 `Content-Type` / `Accept` / `User-Agent` / `X-Request-Id` / `traceparent` / `tracestate`（#403 review #2）；`/v1/*` 路径剥离改用 `path.replace(/^\/v1/, "")` 替代 `slice(3)`
-  - `MAX_SSE_BUFFER` 重命名为 `MAX_SSE_BUFFER_CHARS` 并补注释，明确比较的是 String 的 UTF-16 code unit 数（#403 review #3）
-  - `src/config-loader.ts` 5 段 `if (!raw.ollama) raw.ollama = {}` 合并为开头一次性兜底（#403 review #4）
-  - `getOllamaBridgeStatus(config?)` 拆成 `getOllamaBridgeRuntimeStatus()` 与 `getOllamaBridgeStatusForConfig(config)`，调用方按需选择（#403 review #5）
-  - `POST /admin/ollama-settings` 移除多余的 `checkApiKey`，与其他 admin POST 一致由 `dashboardAuth` 中间件统一鉴权（#406）
-  - 删除根目录开发日志 `OLLAMA_BRIDGE_INTEGRATION.md`（Phase 1/2 scope 已并入 CHANGELOG，git 历史保留原文）
+- `src/routes/shared/proxy-handler.ts` 入口与 Usage 日志补充诊断字段：入口行新增 `rid` / `conv` / `key` / `prev=<src>:<tail8>` / `tools=N` / `resume=on|off:<reason>`（reason 含 `no_pref_entry`/`acct_mismatch`/`instr_diff`/`missing_tool_calls`/`cont_start_eq_len`），Usage 行带 `rid` 与 `hit=X.X%`，便于对照 prompt-cache 命中率为何偏低、或同一会话请求是否落到同一 cache key
+- 上游请求补 `x-codex-installation-id` header 与 body 内 `client_metadata: { "x-codex-installation-id": <uuid> }`（HTTP + WS + compact 三条路径）：对齐真实 Codex CLI（`core/src/client.rs:874`），让上游 LB 能拿到稳定客户端身份做粘性路由提示。优先复用 `~/.codex/installation_id`，没有则在 `data/installation_id` 持久化新生成的 UUID（`src/proxy/installation-id.ts`、`src/proxy/codex-api.ts`、`src/proxy/codex-types.ts`、`src/proxy/ws-transport.ts`、`config/fingerprint.yaml`）
+- `evaluateImplicitResume()` 取代 `shouldActivateImplicitResume()` 内部判定：返回 `{ active, reason }`，便于在拒绝时给出具体原因（`src/routes/shared/proxy-handler.ts`）。原 `shouldActivateImplicitResume()` 保持向后兼容，作为 `.active` 的薄包装
 **Fixed**
-- 多后端流量的 cache 命中率被低估到 0%：`OpenAI` / `Anthropic` / `Gemini` 上游适配器在合成 `response.completed` 时全都硬编码 `input_tokens_details: {}`,丢掉了上游原本返回的缓存字段。`openai-upstream.ts` 现在抽 `usage.prompt_tokens_details.cached_tokens`,`anthropic-upstream.ts` 抽 `message_start.usage.cache_read_input_tokens`(也兜底从 `message_delta.usage` 读),`gemini-upstream.ts` 抽 `usageMetadata.cachedContentTokenCount`。修复后 `/admin/usage-stats/summary` 的 `total_cached_tokens` 在多后端模式下不再常驻 0,Dashboard 缓存命中率卡片可以正常工作
-- Dashboard 缓存命中率显示精度自适应:`formatHitRate` 在 < 1% 时切两位小数(`0.02%`),< 0.01% 显 `<0.01%`,= 0 显 `0%` —— 以前 `pct.toFixed(1)` 把 < 0.05% 全压成 "0.0%",看不到真实值
-- 上游返回 `previous_response_not_found`(response 由别的账号创建 / `SessionAffinityMap` 过期或重启丢失 / 跨账号轮转)时端到端恢复:
-  - `ws-transport.ts:36` `ROTATABLE_ERROR_CODES` 增补 `previous_response_not_found: 400`，让 WS 首帧 in-stream error 转成 `CodexApiError` reject —— 之前因为不在白名单里直接被流式透传到客户端，绕过了 catch
-  - `proxy-handler.ts` catch 块新增 strip-and-retry：剥掉 `previous_response_id` + `turnState`，在同一账号上重试一次，并把 ID 从 affinity map 清掉防止后续请求继续命中错路由；重试仍失败时降级返回原错误
-  - 隐式续链场景通过已有的 `restoreImplicitResumeRequest()` 路径回放完整 input，无损恢复；显式续链（客户端传 `previous_response_id`）会丢服务端历史，但请求仍能完成
-  - 新增分类器 `isPreviousResponseNotFoundError` + `SessionAffinityMap.forget()`（`src/proxy/error-classification.ts`、`src/auth/session-affinity.ts`、`src/routes/shared/proxy-handler.ts`、`src/proxy/ws-transport.ts`）
-- `release.yml` 让 electron-builder 用 tag 名当版本（`--config.extraMetadata.version="${TAG#v}"`），不再依赖 `package.json`。修复 `bump-electron-beta.yml` 故意不写 `package.json` 时 beta 包被跳过上传的问题（"existing type not compatible with publishing type"）；同步在 `release` job 给 prerelease tag 兜底 `--prerelease` flag (#413)
-- `release.yml` 的 `Pack` 步骤强制 `shell: bash`，让 Windows runner（默认 pwsh）正确解析 bash 多行续行符 `\` (#414)
-- ...（[查看全部](./CHANGELOG.md)）
+- **WebSocket 连接池**（`src/proxy/ws-pool.ts` + `src/proxy/ws-transport.ts` + `src/routes/shared/proxy-handler.ts`）：上游 chatgpt.com 的 WS gateway 按"连接 ID"做负载均衡 hash，过去 codex-proxy 对每个 WS 请求都 `new WebSocket(url)`，导致同一会话同一账号的 prompt cache 命中率在 5%~99% 之间剧烈抖动（同一逻辑会话被路由到不同 backend，每个 backend 各自缓存了不同长度的前缀；实测 cached_tokens 反复出现 1920/2432/24448/40320/47488 等离散"checkpoint"）。引入 per-`(entryId, conversationId)` 的持久 WS 连接池：
+  - 单 WS 上 strict request/response 串行（codex 协议要求），busy 时旁路开新一次性 WS 而非排队（避免死锁）
+  - 无 idle TTL，连接保持开放直到自然死亡 / `max_age_ms`（默认 55 min，留 5 min 缓冲，比 server 60 min 硬限制提前关）/ 账号状态变化（`evictByEntryId`）级联清理
+  - 复用失败（pre-response close）抛 `WsReusedConnectionError`，自动单次 fallback 到一次性新连接；流中段失败保持原语义抛给客户端（不重试，client 已收到部分数据）
+  - account-pool 在 `markRateLimited` / `markStatus(non-active)` / `removeAccount` / `updateToken`（refresh 完成）时级联 `evictByEntryId`，避免老 WS 携带的 access_token 被复用
+  - 新增配置 `ws_pool: { enabled: true, max_age_ms: 3300000, max_per_account: 8 }`；可 `enabled: false` + 重启回滚到旧行为
+  - SIGTERM/SIGINT 进程退出钩子追加 `wsPool.shutdown()` 优雅关闭所有池中连接
+  - 入口日志加 `ws=reuse:<id>` / `ws=new:<id>` / `ws=bypass(<reason>)` / `ws=retry-after-stale-reuse:<id>` 字段，配合 `rid` 可对照 cache 命中率
+  - 集成测：`tests/integration/ws-pool-reuse.test.ts` 起本地 `ws.Server` 验证 5 turn 同会话只触发 1 次 `connection`
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

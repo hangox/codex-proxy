@@ -15,7 +15,12 @@ import type {
   GeminiUsageMetadata,
   GeminiPart,
 } from "../types/gemini.js";
-import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
+import {
+  iterateCodexEvents,
+  EmptyResponseError,
+  type UsageInfo,
+  type ExtractedEvent,
+} from "./codex-event-extractor.js";
 import { reconvertTupleValues } from "./tuple-schema.js";
 
 /**
@@ -24,7 +29,7 @@ import { reconvertTupleValues } from "./tuple-schema.js";
  */
 export async function* streamCodexToGemini(
   codexApi: UpstreamAdapter,
-  rawResponse: Response,
+  rawResponse: Response | AsyncIterable<ExtractedEvent>,
   model: string,
   onUsage?: (usage: UsageInfo) => void,
   onResponseId?: (id: string) => void,
@@ -34,13 +39,28 @@ export async function* streamCodexToGemini(
   let outputTokens = 0;
   let cachedTokens: number | undefined;
   let hasContent = false;
+  let sawTerminalFailure = false;
+  let lastResponseId: string | null = null;
+  let lastUsage: UsageInfo | undefined;
   let tupleTextBuffer = tupleSchema ? "" : null;
 
-  for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
-    if (evt.responseId) onResponseId?.(evt.responseId);
+  const eventSource = rawResponse instanceof Response
+    ? iterateCodexEvents(codexApi, rawResponse)
+    : rawResponse;
+
+  for await (const evt of eventSource) {
+    if (evt.responseId) {
+      lastResponseId = evt.responseId;
+      onResponseId?.(evt.responseId);
+    }
+    if (evt.usage) lastUsage = evt.usage;
 
     // Handle upstream error events
     if (evt.error) {
+      sawTerminalFailure = true;
+      if (hasContent) {
+        console.warn(`[codex-to-gemini] partial stream failed responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} error=${evt.error.code}:${evt.error.message}`);
+      }
       const errorChunk: GeminiGenerateContentResponse = {
         candidates: [
           {
@@ -140,23 +160,6 @@ export async function* streamCodexToGemini(
           onUsage?.({ input_tokens: inputTokens, output_tokens: outputTokens, cached_tokens: cachedTokens, reasoning_tokens: evt.usage.reasoning_tokens });
         }
 
-        // Inject error text if stream completed with no content
-        if (!hasContent) {
-          const emptyErrChunk: GeminiGenerateContentResponse = {
-            candidates: [
-              {
-                content: {
-                  parts: [{ text: "[Error] Codex returned an empty response. Please retry." }],
-                  role: "model",
-                },
-                index: 0,
-              },
-            ],
-            modelVersion: model,
-          };
-          yield `data: ${JSON.stringify(emptyErrChunk)}\n\n`;
-        }
-
         // Final chunk with finishReason and usage
         const finalChunk: GeminiGenerateContentResponse = {
           candidates: [
@@ -178,6 +181,29 @@ export async function* streamCodexToGemini(
           modelVersion: model,
         };
         yield `data: ${JSON.stringify(finalChunk)}\n\n`;
+        break;
+      }
+
+      case "response.failed":
+      case "response.incomplete": {
+        sawTerminalFailure = true;
+        if (hasContent) {
+          console.warn(`[codex-to-gemini] partial stream terminated responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} terminal=${evt.typed.type}`);
+          const incompleteChunk: GeminiGenerateContentResponse = {
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: "[Error] Codex returned an incomplete response. Please retry." }],
+                  role: "model",
+                },
+                finishReason: "OTHER",
+                index: 0,
+              },
+            ],
+            modelVersion: model,
+          };
+          yield `data: ${JSON.stringify(incompleteChunk)}\n\n`;
+        }
         break;
       }
     }

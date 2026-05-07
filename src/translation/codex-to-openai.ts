@@ -18,7 +18,12 @@ import type {
   ChatCompletionToolCall,
   ChatCompletionChunkToolCall,
 } from "../types/openai.js";
-import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
+import {
+  iterateCodexEvents,
+  EmptyResponseError,
+  type UsageInfo,
+  type ExtractedEvent,
+} from "./codex-event-extractor.js";
 import { reconvertTupleValues } from "./tuple-schema.js";
 
 /** Format an SSE chunk for streaming output */
@@ -33,7 +38,7 @@ function formatSSE(chunk: ChatCompletionChunk): string {
  */
 export async function* streamCodexToOpenAI(
   codexApi: UpstreamAdapter,
-  rawResponse: Response,
+  rawResponse: Response | AsyncIterable<ExtractedEvent>,
   model: string,
   onUsage?: (usage: UsageInfo) => void,
   onResponseId?: (id: string) => void,
@@ -44,6 +49,9 @@ export async function* streamCodexToOpenAI(
   const created = Math.floor(Date.now() / 1000);
   let hasToolCalls = false;
   let hasContent = false;
+  let sawTerminalFailure = false;
+  let lastResponseId: string | null = null;
+  let lastUsage: UsageInfo | undefined;
   // When tupleSchema is set, buffer text deltas to reconvert at response.completed
   let tupleTextBuffer = tupleSchema ? "" : null;
   // Track tool call indices by call_id
@@ -67,11 +75,23 @@ export async function* streamCodexToOpenAI(
     ],
   });
 
-  for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
-    if (evt.responseId) onResponseId?.(evt.responseId);
+  const eventSource = rawResponse instanceof Response
+    ? iterateCodexEvents(codexApi, rawResponse)
+    : rawResponse;
+
+  for await (const evt of eventSource) {
+    if (evt.responseId) {
+      lastResponseId = evt.responseId;
+      onResponseId?.(evt.responseId);
+    }
+    if (evt.usage) lastUsage = evt.usage;
 
     // Handle upstream error events
     if (evt.error) {
+      sawTerminalFailure = true;
+      if (hasContent) {
+        console.warn(`[codex-to-openai] partial stream failed responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantReasoning ? "enabled" : "disabled"} error=${evt.error.code}:${evt.error.message}`);
+      }
       yield formatSSE({
         id: chunkId,
         object: "chat.completion.chunk",
@@ -267,22 +287,6 @@ export async function* streamCodexToOpenAI(
         }
 
         if (evt.usage) onUsage?.(evt.usage);
-        // Inject error text if stream completed with no content
-        if (!hasContent) {
-          yield formatSSE({
-            id: chunkId,
-            object: "chat.completion.chunk",
-            created,
-            model,
-            choices: [
-              {
-                index: 0,
-                delta: { content: "[Error] Codex returned an empty response. Please retry." },
-                finish_reason: null,
-              },
-            ],
-          });
-        }
         // Build usage object for final chunk (OpenAI includes usage in last streaming chunk)
         const chunkUsage: ChatCompletionChunk["usage"] = evt.usage
           ? {
@@ -311,6 +315,28 @@ export async function* streamCodexToOpenAI(
           ],
           usage: chunkUsage,
         });
+        break;
+      }
+
+      case "response.failed":
+      case "response.incomplete": {
+        sawTerminalFailure = true;
+        if (hasContent) {
+          console.warn(`[codex-to-openai] partial stream terminated responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantReasoning ? "enabled" : "disabled"} terminal=${evt.typed.type}`);
+          yield formatSSE({
+            id: chunkId,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: { content: "[Error] Codex returned an incomplete response. Please retry." },
+                finish_reason: null,
+              },
+            ],
+          });
+        }
         break;
       }
     }

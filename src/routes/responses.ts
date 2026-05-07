@@ -22,7 +22,8 @@ import { getConfig } from "../config.js";
 import { prepareSchema } from "../translation/shared-utils.js";
 import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { parseModelName, resolveModelId, getModelInfo, buildDisplayModelName } from "../models/model-store.js";
-import { EmptyResponseError, type UsageInfo } from "../translation/codex-event-extractor.js";
+import { EmptyResponseError, type UsageInfo, type ExtractedEvent } from "../translation/codex-event-extractor.js";
+import type { CodexSSEEvent } from "../proxy/codex-api.js";
 import {
   handleProxyRequest,
   handleDirectRequest,
@@ -120,9 +121,16 @@ export function extractImageGenUsage(response: Record<string, unknown>): { image
   return { image_input_tokens, image_output_tokens };
 }
 
+function isExtractedEventStream(
+  source: Response | AsyncIterable<ExtractedEvent>,
+): source is AsyncIterable<ExtractedEvent> {
+  return typeof (source as AsyncIterable<ExtractedEvent>)[Symbol.asyncIterator] === "function"
+    && !(source instanceof Response);
+}
+
 async function* streamPassthrough(
   api: UpstreamAdapter,
-  response: Response,
+  source: Response | AsyncIterable<ExtractedEvent>,
   _model: string,
   onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
   onResponseId: (id: string) => void,
@@ -136,7 +144,18 @@ async function* streamPassthrough(
   let tupleTextBuffer = tupleSchema ? "" : null;
   const seenFunctionCallIds = new Set<string>();
 
-  for await (const raw of api.parseStream(response)) {
+  // Normalize input: callers may pass either a raw upstream Response (legacy / direct
+  // path) or a pre-parsed event stream (proxy-handler preflight path). Both must yield
+  // the original CodexSSEEvent so passthrough re-emits raw event names verbatim.
+  async function* toRawEvents(): AsyncGenerator<CodexSSEEvent> {
+    if (isExtractedEventStream(source)) {
+      for await (const evt of source) yield evt.raw;
+    } else {
+      yield* api.parseStream(source);
+    }
+  }
+
+  for await (const raw of toRawEvents()) {
     if (
       (raw.event === "response.output_item.added" || raw.event === "response.output_item.done") &&
       isRecord(raw.data)

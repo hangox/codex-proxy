@@ -10,9 +10,11 @@ import { Hono } from "hono";
 import type { ProxyRequest } from "@src/routes/shared/proxy-handler.js";
 import { createMockFormatAdapter } from "@helpers/format-adapter.js";
 
-// ── Module-level control for CodexApi.createResponse ──────────────────
+// ── Module-level control for CodexApi.createResponse / stream preflight ─────
 
 let mockCreateResponse: (() => Promise<Response>) | null = null;
+let mockIterateCodexEvents: (() => AsyncGenerator<unknown>) | null = null;
+let mockPreflightContentfulStream: ((source: AsyncIterable<unknown>) => Promise<{ buffered: unknown[]; stream: AsyncIterable<unknown> }>) | null = null;
 
 vi.mock("@src/proxy/codex-api.js", () => {
   class CodexApiError extends Error {
@@ -68,13 +70,32 @@ vi.mock("@src/translation/codex-event-extractor.js", () => {
       this.usage = usage;
     }
   }
-  return { EmptyResponseError };
+
+  async function* iterateCodexEvents() {
+    if (mockIterateCodexEvents) {
+      yield* mockIterateCodexEvents();
+      return;
+    }
+    yield { typed: { type: "response.output_text.delta", delta: "hi" }, textDelta: "hi" };
+    yield {
+      typed: { type: "response.completed", response: { id: "resp_stream", usage: { input_tokens: 10, output_tokens: 20 } } },
+      responseId: "resp_stream",
+      usage: { input_tokens: 10, output_tokens: 20 },
+    };
+  }
+
+  async function preflightContentfulStream(source: AsyncIterable<unknown>) {
+    if (mockPreflightContentfulStream) return mockPreflightContentfulStream(source);
+    return { buffered: [], stream: source };
+  }
+
+  return { EmptyResponseError, iterateCodexEvents, preflightContentfulStream };
 });
 
 // Import after mocks are set up
 import { handleProxyRequest } from "@src/routes/shared/proxy-handler.js";
 import { CodexApiError } from "@src/proxy/codex-api.js";
-import { EmptyResponseError } from "@src/translation/codex-event-extractor.js";
+import { EmptyResponseError, preflightContentfulStream } from "@src/translation/codex-event-extractor.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -147,6 +168,8 @@ function buildTestApp(opts: {
 describe("proxy-handler integration", () => {
   beforeEach(() => {
     mockCreateResponse = null;
+    mockIterateCodexEvents = null;
+    mockPreflightContentfulStream = null;
     vi.clearAllMocks();
   });
 
@@ -398,6 +421,48 @@ describe("proxy-handler integration", () => {
     // Hono returns 500 for unhandled exceptions
     expect(res.status).toBe(500);
     expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
+  });
+
+  it("retries streaming request when preflight detects empty response", async () => {
+    let preflightCallCount = 0;
+    mockPreflightContentfulStream = async (source: AsyncIterable<unknown>) => {
+      preflightCallCount++;
+      if (preflightCallCount <= 2) {
+        throw new EmptyResponseError(`resp_stream_empty_${preflightCallCount}`, {
+          input_tokens: preflightCallCount,
+          output_tokens: 0,
+        });
+      }
+      return { buffered: [], stream: source };
+    };
+
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn()
+        .mockReturnValueOnce({ entryId: "e1", token: "tok1", accountId: "acc1" })
+        .mockReturnValueOnce({ entryId: "e2", token: "tok2", accountId: "acc2" })
+        .mockReturnValueOnce({ entryId: "e3", token: "tok3", accountId: "acc3" }),
+    });
+    const fmt = createMockFormatAdapter();
+    const req = createStreamingRequest();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(preflightCallCount).toBe(3);
+    expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(2);
+    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(1, "e1");
+    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(2, "e2");
+    expect(accountPool.release).toHaveBeenCalledWith("e1", {
+      input_tokens: 1,
+      output_tokens: 0,
+    });
+    expect(accountPool.release).toHaveBeenCalledWith("e2", {
+      input_tokens: 2,
+      output_tokens: 0,
+    });
+    expect(accountPool.release).toHaveBeenCalledTimes(2);
+    const text = await res.text();
+    expect(text).not.toContain("Codex returned an empty response");
   });
 
   // 8. Empty response retry (non-streaming) → account switch, second succeeds

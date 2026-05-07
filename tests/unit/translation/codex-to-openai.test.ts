@@ -89,11 +89,6 @@ describe("streamCodexToOpenAI", () => {
     expect(errorChunks.length).toBeGreaterThan(0);
   });
 
-  it("injects error text for empty response", async () => {
-    const chunks = await collectStreamOutput(emptyStream());
-    const errorChunks = chunks.filter((c) => c.includes("empty response"));
-    expect(errorChunks.length).toBeGreaterThan(0);
-  });
 });
 
 describe("collectCodexResponse", () => {

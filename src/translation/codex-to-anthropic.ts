@@ -251,7 +251,9 @@ export async function* streamCodexToAnthropic(
     }
 
     switch (evt.typed.type) {
-      case "response.output_text.delta": {
+      case "response.output_text.delta":
+      case "response.output_text.done":
+      case "response.output_item.done": {
         if (evt.textDelta) {
           hasContent = true;
           // Close thinking block if open (transition from thinking → text)
@@ -268,6 +270,16 @@ export async function* streamCodexToAnthropic(
       }
 
       case "response.completed": {
+        if (evt.textDelta) {
+          hasContent = true;
+          yield* closeThinkingIfOpen();
+          yield* ensureTextBlock();
+          yield formatSSE("content_block_delta", {
+            type: "content_block_delta",
+            index: contentIndex,
+            delta: { type: "text_delta", text: evt.textDelta },
+          });
+        }
         if (evt.usage) {
           inputTokens = evt.usage.input_tokens;
           outputTokens = evt.usage.output_tokens;

@@ -5,6 +5,9 @@
  * the same data from Codex events — this module centralizes that logic.
  */
 
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { getDataDir } from "../paths.js";
 import type { UpstreamAdapter } from "../proxy/upstream-adapter.js";
 import type { CodexSSEEvent } from "../proxy/codex-api.js";
 import {
@@ -91,10 +94,127 @@ export function isContentfulEvent(
   return false;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractTextFromContentParts(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!isRecord(part)) return "";
+      if (part.type !== "output_text" && part.type !== "text") return "";
+      return typeof part.text === "string" ? part.text : "";
+    })
+    .join("");
+}
+
+function extractTextFromOutputItem(item: unknown): string {
+  if (!isRecord(item)) return "";
+  if (item.type !== "message") return "";
+  return extractTextFromContentParts(item.content);
+}
+
+function extractTextFromCompletedResponse(data: unknown): string {
+  if (!isRecord(data) || !isRecord(data.response)) return "";
+  if (typeof data.response.output_text === "string" && data.response.output_text.length > 0) {
+    return data.response.output_text;
+  }
+  if (!Array.isArray(data.response.output)) return "";
+  return data.response.output.map(extractTextFromOutputItem).join("");
+}
+
 function isTerminalEvent(evt: ExtractedEvent): boolean {
   return evt.typed.type === "response.completed"
     || evt.typed.type === "response.failed"
     || evt.typed.type === "response.incomplete";
+}
+
+type EmptyResponseDumpKind = "event" | "iterator_done" | "terminal_no_content";
+type EmptyResponseDumpRow = {
+  ts: string;
+  event: string | null;
+  data: unknown;
+  kind: EmptyResponseDumpKind;
+};
+
+const EMPTY_RESPONSE_DUMP_MAX_ROWS = 200;
+const EMPTY_RESPONSE_DUMP_MAX_FILES_PER_DAY = 1000;
+
+function isEmptyResponseDumpEnabled(): boolean {
+  return process.env.DEBUG_DUMP_EMPTY_RESPONSE === "1";
+}
+
+function emptyResponseDumpRoot(): string {
+  return process.env.DEBUG_DUMP_EMPTY_RESPONSE_DIR || resolve(getDataDir(), "empty-response-dumps");
+}
+
+function todayDumpDir(now: Date): string {
+  return now.toISOString().slice(0, 10);
+}
+
+function safeDumpResponseId(responseId: string | null): string {
+  return (responseId || "unknown-rid").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "unknown-rid";
+}
+
+async function pruneOldEmptyResponseDumps(dayDir: string): Promise<void> {
+  const entries = await readdir(dayDir, { withFileTypes: true });
+  const files = await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map(async (entry) => {
+      const path = join(dayDir, entry.name);
+      const stats = await stat(path);
+      return { path, mtimeMs: stats.mtimeMs };
+    }));
+
+  const overflow = files.length - (EMPTY_RESPONSE_DUMP_MAX_FILES_PER_DAY - 1);
+  if (overflow <= 0) return;
+
+  const victims = files
+    .sort((a, b) => a.mtimeMs - b.mtimeMs)
+    .slice(0, overflow);
+  await Promise.all(victims.map((file) => unlink(file.path).catch(() => undefined)));
+}
+
+async function dumpEmptyResponseStream(
+  buffered: ExtractedEvent[],
+  terminalKind: Exclude<EmptyResponseDumpKind, "event">,
+  responseId: string | null,
+): Promise<void> {
+  if (!isEmptyResponseDumpEnabled()) return;
+
+  try {
+    const now = new Date();
+    const dayDir = join(emptyResponseDumpRoot(), todayDumpDir(now));
+    await mkdir(dayDir, { recursive: true });
+    await pruneOldEmptyResponseDumps(dayDir);
+
+    const eventRows: EmptyResponseDumpRow[] = buffered.map((evt, index) => ({
+      ts: new Date(now.getTime() + index).toISOString(),
+      event: evt.raw.event,
+      data: evt.raw.data,
+      kind: "event",
+    }));
+    const rows: EmptyResponseDumpRow[] = [
+      ...eventRows,
+      {
+        ts: new Date(now.getTime() + eventRows.length).toISOString(),
+        event: null,
+        data: null,
+        kind: terminalKind,
+      },
+    ].slice(-EMPTY_RESPONSE_DUMP_MAX_ROWS);
+
+    if (terminalKind === "terminal_no_content" && rows.length > 1) {
+      rows[rows.length - 2] = { ...rows[rows.length - 2], kind: terminalKind };
+      rows.pop();
+    }
+
+    const fileName = `${safeDumpResponseId(responseId)}-${Math.floor(now.getTime() / 1000)}.jsonl`;
+    await writeFile(join(dayDir, fileName), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+  } catch (err) {
+    console.warn("[CodexEvents] Failed to dump empty upstream response", err);
+  }
 }
 
 export async function preflightContentfulStream(
@@ -118,6 +238,7 @@ export async function preflightContentfulStream(
       const next = await iterator.next();
       if (next.done) {
         await closeIterator();
+        await dumpEmptyResponseStream(buffered, "iterator_done", terminalResponseId);
         throw new EmptyResponseError(terminalResponseId, terminalUsage);
       }
 
@@ -145,6 +266,7 @@ export async function preflightContentfulStream(
 
       if (isTerminalEvent(evt)) {
         await closeIterator();
+        await dumpEmptyResponseStream(buffered, "terminal_no_content", terminalResponseId);
         throw new EmptyResponseError(terminalResponseId, terminalUsage);
       }
     }
@@ -168,6 +290,7 @@ export async function* iterateCodexEvents(
 ): AsyncGenerator<ExtractedEvent> {
   // Map item_id → { call_id, name } for resolving delta/done events
   const itemIdToCallInfo = new Map<string, { callId: string; name: string }>();
+  let emittedText = false;
 
   for await (const raw of api.parseStream(rawResponse)) {
     const typed = parseCodexEvent(raw);
@@ -186,6 +309,14 @@ export async function* iterateCodexEvents(
 
       case "response.output_text.delta":
         extracted.textDelta = typed.delta;
+        if (typed.delta.length > 0) emittedText = true;
+        break;
+
+      case "response.output_text.done":
+        if (!emittedText && typed.text.length > 0) {
+          extracted.textDelta = typed.text;
+          emittedText = true;
+        }
         break;
 
       case "response.reasoning_summary_text.delta":
@@ -228,7 +359,16 @@ export async function* iterateCodexEvents(
         break;
       }
 
-      case "response.output_item.done":
+      case "response.output_item.done": {
+        if (!emittedText) {
+          const text = extractTextFromOutputItem(typed.item);
+          if (text.length > 0) {
+            extracted.textDelta = text;
+            emittedText = true;
+          }
+        }
+        break;
+      }
       case "response.content_part.added":
       case "response.content_part.done":
       case "response.output_text.annotation.added":
@@ -252,6 +392,13 @@ export async function* iterateCodexEvents(
       case "response.completed":
         if (typed.response.id) extracted.responseId = typed.response.id;
         if (typed.response.usage) extracted.usage = typed.response.usage;
+        if (!emittedText) {
+          const text = extractTextFromCompletedResponse(raw.data);
+          if (text.length > 0) {
+            extracted.textDelta = text;
+            emittedText = true;
+          }
+        }
         break;
 
       case "error":

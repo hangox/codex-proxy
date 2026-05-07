@@ -72,6 +72,30 @@ describe("streamCodexToAnthropic", () => {
     expect(textDeltas.length).toBeGreaterThan(0);
   });
 
+  it("emits fallback text carried by output_item.done", async () => {
+    const chunks = await collectStreamOutput([
+      {
+        raw: { event: "response.output_item.done", data: {} },
+        typed: {
+          type: "response.output_item.done",
+          outputIndex: 0,
+          item: { type: "message", content: [{ type: "output_text", text: "fallback text" }] },
+        },
+        textDelta: "fallback text",
+      },
+      {
+        raw: { event: "response.completed", data: {} },
+        typed: { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 2 } } },
+        usage: { input_tokens: 1, output_tokens: 2 },
+      },
+    ]);
+    const events = parseSSEEvents(chunks);
+    const textDelta = events.find(
+      (e) => e.event === "content_block_delta" && (e.data.delta as Record<string, unknown>)?.type === "text_delta",
+    );
+    expect((textDelta?.data.delta as Record<string, unknown>)?.text).toBe("fallback text");
+  });
+
   it("emits message_stop at the end", async () => {
     const chunks = await collectStreamOutput(simpleTextStream());
     const events = parseSSEEvents(chunks);

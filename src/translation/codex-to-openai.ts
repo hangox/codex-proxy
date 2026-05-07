@@ -224,7 +224,9 @@ export async function* streamCodexToOpenAI(
     }
 
     switch (evt.typed.type) {
-      case "response.output_text.delta": {
+      case "response.output_text.delta":
+      case "response.output_text.done":
+      case "response.output_item.done": {
         if (evt.textDelta) {
           hasContent = true;
           if (tupleTextBuffer !== null) {
@@ -250,6 +252,26 @@ export async function* streamCodexToOpenAI(
       }
 
       case "response.completed": {
+        if (evt.textDelta) {
+          hasContent = true;
+          if (tupleTextBuffer !== null) {
+            tupleTextBuffer += evt.textDelta;
+          } else {
+            yield formatSSE({
+              id: chunkId,
+              object: "chat.completion.chunk",
+              created,
+              model,
+              choices: [
+                {
+                  index: 0,
+                  delta: { content: evt.textDelta },
+                  finish_reason: null,
+                },
+              ],
+            });
+          }
+        }
         // Flush buffered tuple text as reconverted JSON
         if (tupleTextBuffer !== null && tupleSchema && tupleTextBuffer) {
           try {

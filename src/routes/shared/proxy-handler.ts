@@ -782,6 +782,12 @@ async function retryEmptyResponseRequest(
   }
 
   const nextEntryId = newAcquired.entryId;
+  if (nextEntryId === currentEntryId) {
+    // The first slot was released above. A same-account fallback acquires a
+    // new slot with the same entryId, so allow that new slot to be released
+    // later instead of treating it as a duplicate release.
+    released.delete(nextEntryId);
+  }
   const nextApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
   const retryStartMs = Date.now();
   try {

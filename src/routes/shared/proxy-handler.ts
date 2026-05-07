@@ -765,7 +765,15 @@ async function retryEmptyResponseRequest(
   releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(emptyErr.usage, req.expectsImageGen), released);
   restoreImplicitResumeRequest?.();
 
-  const newAcquired = acquireAccount(accountPool, req.codexRequest.model, excludeEntryIds, fmt.tag);
+  let newAcquired = acquireAccount(accountPool, req.codexRequest.model, excludeEntryIds, fmt.tag);
+  if (!newAcquired) {
+    newAcquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag);
+    if (newAcquired) {
+      console.warn(
+        `[${fmt.tag}] No alternative account available, falling back to same-account retry (entry=${newAcquired.entryId})`,
+      );
+    }
+  }
   if (!newAcquired) {
     return new Response(JSON.stringify(fmt.formatError(502, "Codex returned an empty response and no other accounts are available for retry")), {
       status: 502,

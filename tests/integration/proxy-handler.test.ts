@@ -544,6 +544,54 @@ describe("proxy-handler integration", () => {
     expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(3);
   });
 
+  it("streaming single-account empty-response falls back to same-account retry", async () => {
+    let createResponseCallCount = 0;
+    mockCreateResponse = async () => {
+      createResponseCallCount++;
+      return new Response("data: {}\n\n");
+    };
+
+    let preflightCallCount = 0;
+    mockPreflightContentfulStream = async () => {
+      preflightCallCount++;
+      throw new EmptyResponseError(`resp_single_${preflightCallCount}`, {
+        input_tokens: preflightCallCount,
+        output_tokens: 0,
+      });
+    };
+
+    const acquireCalls: Array<{ excludeIds?: string[] }> = [];
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn((opts?: { excludeIds?: string[] }) => {
+        const snapshot = opts?.excludeIds ? [...opts.excludeIds] : undefined;
+        acquireCalls.push({ excludeIds: snapshot });
+        if (snapshot?.includes("e1")) return null;
+        return { entryId: "e1", token: "tok1", accountId: "acc1" };
+      }),
+    });
+    const fmt = createMockFormatAdapter();
+    const req = createStreamingRequest();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(502);
+    expect(preflightCallCount).toBe(3);
+    expect(createResponseCallCount).toBe(3);
+    expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(3);
+    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(1, "e1");
+    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(2, "e1");
+    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(3, "e1");
+
+    // 实际调用序列：初始 acquire 1 次；每次 retry 先 exclude(e1) 再 fallback(undefined)。
+    expect(acquireCalls.map((c) => c.excludeIds ?? [])).toEqual([
+      [],
+      ["e1"],
+      [],
+      ["e1", "e1"],
+      [],
+    ]);
+  });
+
   // 8. Empty response retry (non-streaming) → account switch, second succeeds
   it("retries with a new account on EmptyResponseError", async () => {
     let callCount = 0;

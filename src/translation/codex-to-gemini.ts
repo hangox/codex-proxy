@@ -107,7 +107,9 @@ export async function* streamCodexToGemini(
     }
 
     switch (evt.typed.type) {
-      case "response.output_text.delta": {
+      case "response.output_text.delta":
+      case "response.output_text.done":
+      case "response.output_item.done": {
         if (evt.textDelta) {
           hasContent = true;
           if (tupleTextBuffer !== null) {
@@ -132,6 +134,26 @@ export async function* streamCodexToGemini(
       }
 
       case "response.completed": {
+        if (evt.textDelta) {
+          hasContent = true;
+          if (tupleTextBuffer !== null) {
+            tupleTextBuffer += evt.textDelta;
+          } else {
+            const chunk: GeminiGenerateContentResponse = {
+              candidates: [
+                {
+                  content: {
+                    parts: [{ text: evt.textDelta }],
+                    role: "model",
+                  },
+                  index: 0,
+                },
+              ],
+              modelVersion: model,
+            };
+            yield `data: ${JSON.stringify(chunk)}\n\n`;
+          }
+        }
         // Flush buffered tuple text as reconverted JSON
         if (tupleTextBuffer !== null && tupleSchema && tupleTextBuffer) {
           let text = tupleTextBuffer;

@@ -581,6 +581,19 @@ describe("proxy-handler integration", () => {
     expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(1, "e1");
     expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(2, "e1");
     expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(3, "e1");
+    expect(accountPool.release).toHaveBeenCalledTimes(3);
+    expect(accountPool.release).toHaveBeenNthCalledWith(1, "e1", {
+      input_tokens: 1,
+      output_tokens: 0,
+    });
+    expect(accountPool.release).toHaveBeenNthCalledWith(2, "e1", {
+      input_tokens: 2,
+      output_tokens: 0,
+    });
+    expect(accountPool.release).toHaveBeenNthCalledWith(3, "e1", {
+      input_tokens: 3,
+      output_tokens: 0,
+    });
 
     // 实际调用序列：初始 acquire 1 次；每次 retry 先 exclude(e1) 再 fallback(undefined)。
     expect(acquireCalls.map((c) => c.excludeIds ?? [])).toEqual([

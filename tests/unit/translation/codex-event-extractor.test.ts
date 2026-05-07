@@ -486,6 +486,7 @@ describe("parseCodexEvent — usage detail extraction", () => {
 
 import { iterateCodexEvents } from "@src/translation/codex-event-extractor.js";
 import type { ExtractedEvent } from "@src/translation/codex-event-extractor.js";
+import { preflightContentfulStream } from "@src/translation/codex-event-extractor.js";
 import { CodexApi } from "@src/proxy/codex-api.js";
 import { mockResponse, sseChunk } from "@helpers/sse.js";
 
@@ -566,5 +567,50 @@ describe("iterateCodexEvents — unregistered item_id fallback", () => {
     expect(incompleteEvt).toBeDefined();
     expect(incompleteEvt!.usage!.input_tokens).toBe(100);
     expect(incompleteEvt!.usage!.output_tokens).toBe(30);
+  });
+
+  it("extracts message text from output_item.done when text deltas are absent", async () => {
+    const sse =
+      sseChunk("response.created", { response: { id: "resp_done_text" } }) +
+      sseChunk("response.output_item.done", {
+        output_index: 0,
+        item: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "fallback text" }],
+        },
+      }) +
+      sseChunk("response.completed", { response: { id: "resp_done_text" } });
+
+    const api = new CodexApi("test-token", null);
+    const response = mockResponse(sse);
+
+    const events: ExtractedEvent[] = [];
+    for await (const evt of iterateCodexEvents(api, response)) {
+      events.push(evt);
+    }
+
+    expect(events.find((evt) => evt.raw.event === "response.output_item.done")?.textDelta).toBe("fallback text");
+  });
+
+  it("lets preflight pass when only output_item.done carries assistant text", async () => {
+    const sse =
+      sseChunk("response.created", { response: { id: "resp_preflight_done" } }) +
+      sseChunk("response.output_item.done", {
+        output_index: 0,
+        item: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "contentful" }],
+        },
+      }) +
+      sseChunk("response.completed", { response: { id: "resp_preflight_done" } });
+
+    const api = new CodexApi("test-token", null);
+    const response = mockResponse(sse);
+
+    const preflight = await preflightContentfulStream(iterateCodexEvents(api, response));
+
+    expect(preflight.buffered.at(-1)?.textDelta).toBe("contentful");
   });
 });

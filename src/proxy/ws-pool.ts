@@ -652,6 +652,21 @@ export class WsConnectionPool {
     this.byEntry.delete(entryId);
   }
 
+  /** 驱逐指定会话绑定的 WS。用于处理连接本身还活着、但协议层返回空响应的场景。 */
+  evictByPoolKey(poolKey: string): boolean {
+    const ws = this.map.get(poolKey);
+    if (!ws) return false;
+    ws.closeGracefully();
+    // 与 evictByEntryId 保持相同的配额语义：busy WS 会稍后通过 onDead 移除，
+    // 但新的 acquire 不应再把它算进当前账号的连接上限。
+    const entryKeys = this.byEntry.get(ws.entryId);
+    if (entryKeys) {
+      entryKeys.delete(poolKey);
+      if (entryKeys.size === 0) this.byEntry.delete(ws.entryId);
+    }
+    return true;
+  }
+
   /** Returns the number of pooled connections for `entryId`. Test helper. */
   countByEntryId(entryId: string): number {
     return this.byEntry.get(entryId)?.size ?? 0;

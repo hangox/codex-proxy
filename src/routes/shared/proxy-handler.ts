@@ -456,25 +456,38 @@ export async function handleProxyRequest(
     };
   };
 
+  const evictWsPoolForEmptyResponse = (forEntryId: string): void => {
+    const poolCtx = buildPoolCtx(forEntryId);
+    if (!poolCtx) return;
+    const evicted = poolCtx.pool.evictByPoolKey(poolCtx.poolKey);
+    if (evicted) {
+      console.warn(
+        `[${fmt.tag}] Account ${forEntryId} | rid=${requestId.slice(0, 8)} | ws=evict-after-empty-response`,
+      );
+    }
+  };
+
+  const applyRateLimitsForEntry = (forEntryId: string, rl: ParsedRateLimit): void => {
+    const entry = accountPool.getEntry(forEntryId);
+    const quota = rateLimitToQuota(rl, entry?.planType ?? null);
+    accountPool.updateCachedQuota(forEntryId, quota);
+    if (rl.primary?.reset_at != null) {
+      const windowSec = rl.primary.window_minutes != null ? rl.primary.window_minutes * 60 : null;
+      accountPool.syncRateLimitWindow(forEntryId, rl.primary.reset_at, windowSec);
+    }
+    // 主动标记已耗尽的账号，避免后续重试再次选中。
+    if (quota.rate_limit.limit_reached && rl.primary?.reset_at != null) {
+      const backoffSec = rl.primary.reset_at - Math.floor(Date.now() / 1000);
+      if (backoffSec > 0) {
+        accountPool.markRateLimited(forEntryId, { retryAfterSec: backoffSec });
+      }
+    }
+  };
+
   for (;;) {
     try {
       // Apply parsed rate-limit data to the account pool (shared by header + WS event paths)
-      const applyRateLimits = (rl: ParsedRateLimit): void => {
-        const entry = accountPool.getEntry(entryId);
-        const quota = rateLimitToQuota(rl, entry?.planType ?? null);
-        accountPool.updateCachedQuota(entryId, quota);
-        if (rl.primary?.reset_at != null) {
-          const windowSec = rl.primary.window_minutes != null ? rl.primary.window_minutes * 60 : null;
-          accountPool.syncRateLimitWindow(entryId, rl.primary.reset_at, windowSec);
-        }
-        // Proactively mark exhausted accounts so they don't get re-selected
-        if (quota.rate_limit.limit_reached && rl.primary?.reset_at != null) {
-          const backoffSec = rl.primary.reset_at - Math.floor(Date.now() / 1000);
-          if (backoffSec > 0) {
-            accountPool.markRateLimited(entryId, { retryAfterSec: backoffSec });
-          }
-        }
-      };
+      const applyRateLimits = (rl: ParsedRateLimit): void => applyRateLimitsForEntry(entryId, rl);
 
       const startMs = Date.now();
       const rawResponse = await withRetry(
@@ -524,6 +537,7 @@ export async function handleProxyRequest(
             break;
           } catch (preflightErr) {
             if (!(preflightErr instanceof EmptyResponseError)) throw preflightErr;
+            evictWsPoolForEmptyResponse(entryId);
             if (emptyAttempt >= MAX_EMPTY_RETRIES) {
               const email = accountPool.getEntry(entryId)?.email ?? "?";
               console.warn(
@@ -538,6 +552,7 @@ export async function handleProxyRequest(
               accountPool, cookieJar, req, fmt, proxyPool, entryId,
               released, abortController, requestId, preflightErr,
               restoreImplicitResumeRequest, triedEntryIds, buildPoolCtx,
+              applyRateLimitsForEntry,
             );
             if (retryResult instanceof Response) {
               const status = retryResult.status as StatusCode;
@@ -646,6 +661,8 @@ export async function handleProxyRequest(
         () => activeUsageHint,
         restoreImplicitResumeRequest,
         buildPoolCtx,
+        evictWsPoolForEmptyResponse,
+        applyRateLimitsForEntry,
       );
     } catch (err) {
       // EmptyResponseError 走内部循环（streaming 分支自带；non-streaming
@@ -756,6 +773,7 @@ async function retryEmptyResponseRequest(
   restoreImplicitResumeRequest?: () => void,
   excludeEntryIds?: string[],
   buildPoolCtx?: (forEntryId: string) => WsPoolContext | undefined,
+  applyRateLimitsForEntry?: (forEntryId: string, rl: ParsedRateLimit) => void,
 ): Promise<{ nextEntryId: string; nextApi: CodexApi; nextRawResponse: Response } | Response> {
   const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
   console.warn(
@@ -791,8 +809,11 @@ async function retryEmptyResponseRequest(
   const nextApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
   const retryStartMs = Date.now();
   try {
+    const applyRetryRateLimits = applyRateLimitsForEntry
+      ? (rl: ParsedRateLimit): void => applyRateLimitsForEntry(nextEntryId, rl)
+      : undefined;
     const nextRawResponse = await withRetry(
-      () => nextApi.createResponse(req.codexRequest, abortController.signal, undefined, buildPoolCtx?.(nextEntryId)),
+      () => nextApi.createResponse(req.codexRequest, abortController.signal, applyRetryRateLimits, buildPoolCtx?.(nextEntryId)),
       { tag: fmt.tag },
     );
     enqueueLogEntry({
@@ -862,6 +883,8 @@ async function handleNonStreaming(
   getUsageHint?: () => UsageHint | undefined,
   restoreImplicitResumeRequest?: () => void,
   buildPoolCtx?: (forEntryId: string) => WsPoolContext | undefined,
+  evictWsPoolForEmptyResponse?: (forEntryId: string) => void,
+  applyRateLimitsForEntry?: (forEntryId: string, rl: ParsedRateLimit) => void,
 ): Promise<Response> {
   let currentEntryId = initialEntryId;
   let currentApi = initialApi;
@@ -914,6 +937,7 @@ async function handleNonStreaming(
       return c.json(result.response);
     } catch (collectErr) {
       if (collectErr instanceof EmptyResponseError && attempt <= MAX_EMPTY_RETRIES) {
+        evictWsPoolForEmptyResponse?.(currentEntryId);
         console.warn(
           `[${fmt.tag}] Account ${currentEntryId} | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), switching account...`,
         );
@@ -931,6 +955,7 @@ async function handleNonStreaming(
           restoreImplicitResumeRequest,
           undefined,
           buildPoolCtx,
+          applyRateLimitsForEntry,
         );
         if (retryResult instanceof Response) {
           c.status(retryResult.status as StatusCode);
@@ -945,6 +970,7 @@ async function handleNonStreaming(
 
       releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
       if (collectErr instanceof EmptyResponseError) {
+        evictWsPoolForEmptyResponse?.(currentEntryId);
         const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
         console.warn(
           `[${fmt.tag}] Account ${currentEntryId} (${email}) | Empty response (attempt ${attempt}/${MAX_EMPTY_RETRIES + 1}), all retries exhausted`,

@@ -561,6 +561,23 @@ describe("WsConnectionPool", () => {
     await capped.shutdown();
   });
 
+  it("evictByPoolKey closes one conversation connection and frees that cap slot", async () => {
+    const capped = new WsConnectionPool({ maxPerAccount: 2 }, { startGc: false });
+    const { factory } = makeFactory();
+    await capped.acquire("entry-A", "entry-A:conv-1", factory);
+    await capped.acquire("entry-A", "entry-A:conv-2", factory);
+    expect(capped.countByEntryId("entry-A")).toBe(2);
+
+    expect(capped.evictByPoolKey("entry-A:conv-1")).toBe(true);
+    expect(capped.evictByPoolKey("entry-A:missing")).toBe(false);
+    expect(capped.countByEntryId("entry-A")).toBe(1);
+
+    const next = await capped.acquire("entry-A", "entry-A:conv-3", factory);
+    expect(next).toMatchObject({ reused: false });
+    expect(capped.countByEntryId("entry-A")).toBe(2);
+    await capped.shutdown();
+  });
+
   it("gcSweep skips busy entries and closes expired idle ones", async () => {
     let now = 0;
     const sweepPool = new WsConnectionPool(

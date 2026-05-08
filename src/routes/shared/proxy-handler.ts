@@ -805,6 +805,12 @@ async function retryEmptyResponseRequest(
     // new slot with the same entryId, so allow that new slot to be released
     // later instead of treating it as a duplicate release.
     released.delete(nextEntryId);
+    if (req.codexRequest.useWebSocket && !req.codexRequest.previous_response_id) {
+      req.codexRequest.useWebSocket = false;
+      console.warn(
+        `[${fmt.tag}] Account ${nextEntryId} | rid=${requestId.slice(0, 8)} | ws=disable-after-empty-response`,
+      );
+    }
   }
   const nextApi = buildCodexApi(newAcquired.token, newAcquired.accountId, cookieJar, newAcquired.entryId, proxyPool);
   const retryStartMs = Date.now();

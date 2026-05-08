@@ -625,7 +625,7 @@ describe("proxy-handler integration", () => {
 
     const createResponseCalls: unknown[][] = [];
     mockCreateResponse = async (...args: unknown[]) => {
-      createResponseCalls.push(args);
+      createResponseCalls.push([{ ...(args[0] as Record<string, unknown>) }, ...args.slice(1)]);
       return new Response("data: {}\n\n");
     };
 
@@ -665,10 +665,13 @@ describe("proxy-handler integration", () => {
     expect(wsPoolMocks.evictByPoolKey).toHaveBeenCalledTimes(1);
     expect(wsPoolMocks.evictByPoolKey).toHaveBeenCalledWith("e1:conv-ws-empty");
 
+    const firstRequest = createResponseCalls[0][0] as { useWebSocket?: boolean };
+    const retryRequest = createResponseCalls[1][0] as { useWebSocket?: boolean };
     const firstPoolCtx = createResponseCalls[0][3] as { entryId: string; poolKey: string };
-    const retryPoolCtx = createResponseCalls[1][3] as { entryId: string; poolKey: string };
     expect(firstPoolCtx).toMatchObject({ entryId: "e1", poolKey: "e1:conv-ws-empty" });
-    expect(retryPoolCtx).toMatchObject({ entryId: "e1", poolKey: "e1:conv-ws-empty" });
+    expect(firstRequest.useWebSocket).toBe(true);
+    expect(retryRequest.useWebSocket).toBe(false);
+    expect(createResponseCalls[1][3]).toBeUndefined();
     expect(typeof createResponseCalls[1][2]).toBe("function");
   });
 

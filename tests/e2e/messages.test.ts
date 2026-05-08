@@ -142,6 +142,57 @@ describe("E2E: POST /v1/messages", () => {
     expect((msgDelta.delta as Record<string, unknown>).stop_reason).toBe("end_turn");
   });
 
+  it("streaming: agent-team silent initialization returns empty message without upstream call", async () => {
+    const initPrompt = [
+      '<teammate-message teammate_id="team-lead">',
+      "你是 G审查员，属于 team codemaker-review-2026-05-08。",
+      "## 本条初始化消息的处理规则",
+      "这是一条初始化消息，**不是任务**。",
+      "- 不要调用任何工具",
+      "- 不要回复 \"ready\" 或类似确认",
+      "- 直接停止输出，让本轮自然结束并进入 idle",
+      "</teammate-message>",
+    ].join("\n");
+
+    const res = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: initPrompt }],
+    }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(getMockTransport().post).not.toHaveBeenCalled();
+
+    const events = parseAnthropicSSE(await res.text());
+    expect(events.map((e) => e.event)).toEqual([
+      "message_start",
+      "message_delta",
+      "message_stop",
+    ]);
+    const msgStart = events[0].data as { message: { content: unknown[] } };
+    expect(msgStart.message.content).toEqual([]);
+  });
+
+  it("streaming: agent-team initialization with task assignment still calls upstream", async () => {
+    const initWithAssignment = [
+      '<teammate-message teammate_id="team-lead">',
+      "## 本条初始化消息的处理规则",
+      "这是一条初始化消息，**不是任务**。",
+      "直接停止输出",
+      "{\"type\":\"task_assignment\",\"taskId\":\"task-1\"}",
+      "</teammate-message>",
+    ].join("\n");
+
+    const res = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: initWithAssignment }],
+    }));
+
+    expect(res.status).toBe(200);
+    const events = parseAnthropicSSE(await res.text());
+    expect(events.map((e) => e.event)).toContain("content_block_delta");
+  });
+
   // ── Anthropic JSON format ──────────────────────────────────────
 
   it("non-streaming: Anthropic message structure", async () => {

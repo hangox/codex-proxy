@@ -97,10 +97,13 @@ export interface WsCreateRequest {
   model: string;
   instructions: string;
   input: CodexInputItem[];
+  store: false;
+  stream: true;
   previous_response_id?: string;
   reasoning?: { effort?: string; summary?: string };
   tools?: unknown[];
   tool_choice?: string | { type: string; name?: string };
+  parallel_tool_calls?: boolean;
   text?: {
     format: {
       type: "text" | "json_object" | "json_schema";
@@ -112,8 +115,6 @@ export interface WsCreateRequest {
   prompt_cache_key?: string;
   client_metadata?: Record<string, string>;
   include?: string[];
-  // NOTE: `store` and `stream` are intentionally omitted.
-  // The backend defaults to storing via WebSocket and always streams.
 }
 
 /** Optional pool routing context. When provided, `createWebSocketResponse`

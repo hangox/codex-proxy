@@ -12,9 +12,14 @@ import { createMockFormatAdapter } from "@helpers/format-adapter.js";
 
 // ── Module-level control for CodexApi.createResponse / stream preflight ─────
 
-let mockCreateResponse: (() => Promise<Response>) | null = null;
+let mockCreateResponse: ((...args: unknown[]) => Promise<Response>) | null = null;
 let mockIterateCodexEvents: (() => AsyncGenerator<unknown>) | null = null;
 let mockPreflightContentfulStream: ((source: AsyncIterable<unknown>) => Promise<{ buffered: unknown[]; stream: AsyncIterable<unknown> }>) | null = null;
+
+const wsPoolMocks = vi.hoisted(() => ({
+  evictByPoolKey: vi.fn(),
+  getWsPool: vi.fn(),
+}));
 
 vi.mock("@src/proxy/codex-api.js", () => {
   class CodexApiError extends Error {
@@ -35,8 +40,8 @@ vi.mock("@src/proxy/codex-api.js", () => {
   }
 
   const CodexApi = vi.fn().mockImplementation(() => ({
-    createResponse: vi.fn((): Promise<Response> => {
-      if (mockCreateResponse) return mockCreateResponse();
+    createResponse: vi.fn((...args: unknown[]): Promise<Response> => {
+      if (mockCreateResponse) return mockCreateResponse(...args);
       return Promise.resolve(new Response("data: {}\n\n"));
     }),
   }));
@@ -46,6 +51,10 @@ vi.mock("@src/proxy/codex-api.js", () => {
 
 vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({ auth: { request_interval_ms: 0 } })),
+}));
+
+vi.mock("@src/proxy/ws-pool.js", () => ({
+  getWsPool: wsPoolMocks.getWsPool,
 }));
 
 vi.mock("@src/utils/jitter.js", () => ({
@@ -170,6 +179,12 @@ describe("proxy-handler integration", () => {
     mockCreateResponse = null;
     mockIterateCodexEvents = null;
     mockPreflightContentfulStream = null;
+    wsPoolMocks.evictByPoolKey.mockReset();
+    wsPoolMocks.evictByPoolKey.mockReturnValue(false);
+    wsPoolMocks.getWsPool.mockReset();
+    wsPoolMocks.getWsPool.mockReturnValue({
+      evictByPoolKey: wsPoolMocks.evictByPoolKey,
+    });
     vi.clearAllMocks();
   });
 
@@ -603,6 +618,58 @@ describe("proxy-handler integration", () => {
       ["e1", "e1"],
       [],
     ]);
+  });
+
+  it("streaming single-account empty-response evicts the pooled WebSocket before retry", async () => {
+    wsPoolMocks.evictByPoolKey.mockReturnValue(true);
+
+    const createResponseCalls: unknown[][] = [];
+    mockCreateResponse = async (...args: unknown[]) => {
+      createResponseCalls.push(args);
+      return new Response("data: {}\n\n");
+    };
+
+    let preflightCallCount = 0;
+    mockPreflightContentfulStream = async (source: AsyncIterable<unknown>) => {
+      preflightCallCount++;
+      if (preflightCallCount === 1) {
+        throw new EmptyResponseError("resp_ws_empty", {
+          input_tokens: 1,
+          output_tokens: 0,
+        });
+      }
+      return { buffered: [], stream: source };
+    };
+
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn((opts?: { excludeIds?: string[] }) => {
+        if (opts?.excludeIds?.includes("e1")) return null;
+        return { entryId: "e1", token: "tok1", accountId: "acc1" };
+      }),
+    });
+    const fmt = createMockFormatAdapter();
+    const req: ProxyRequest = {
+      ...createStreamingRequest(),
+      clientConversationId: "conv-ws-empty",
+      codexRequest: {
+        ...createStreamingRequest().codexRequest,
+        useWebSocket: true,
+      },
+    };
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(preflightCallCount).toBe(2);
+    expect(createResponseCalls).toHaveLength(2);
+    expect(wsPoolMocks.evictByPoolKey).toHaveBeenCalledTimes(1);
+    expect(wsPoolMocks.evictByPoolKey).toHaveBeenCalledWith("e1:conv-ws-empty");
+
+    const firstPoolCtx = createResponseCalls[0][3] as { entryId: string; poolKey: string };
+    const retryPoolCtx = createResponseCalls[1][3] as { entryId: string; poolKey: string };
+    expect(firstPoolCtx).toMatchObject({ entryId: "e1", poolKey: "e1:conv-ws-empty" });
+    expect(retryPoolCtx).toMatchObject({ entryId: "e1", poolKey: "e1:conv-ws-empty" });
+    expect(typeof createResponseCalls[1][2]).toBe("function");
   });
 
   // 8. Empty response retry (non-streaming) → account switch, second succeeds

@@ -51,8 +51,8 @@ function extractMessageText(content: AnthropicMessagesRequest["messages"][number
 }
 
 function isAgentTeamSilentInitialization(req: AnthropicMessagesRequest): boolean {
-  if (req.messages.length !== 1) return false;
-  const [message] = req.messages;
+  const message = req.messages.at(-1);
+  if (!message) return false;
   if (message.role !== "user") return false;
 
   const text = extractMessageText(message.content);

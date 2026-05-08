@@ -173,6 +173,39 @@ describe("E2E: POST /v1/messages", () => {
     expect(msgStart.message.content).toEqual([]);
   });
 
+  it("streaming: agent-team silent initialization appended to existing history returns empty message without upstream call", async () => {
+    const initPrompt = [
+      '<teammate-message teammate_id="team-lead">',
+      "你是 G快审员，属于 team codex-hook-merge-0508。",
+      "## 本条初始化消息的处理规则",
+      "这是一条初始化消息，**不是任务**。",
+      "- 不要调用任何工具",
+      "- 不要 SendMessage",
+      "- 不要回复 \"ready\"",
+      "- 直接停止输出，让本轮自然结束并进入 idle",
+      "</teammate-message>",
+    ].join("\n");
+
+    const res = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "user", content: "Previous question" },
+        { role: "assistant", content: "Previous answer" },
+        { role: "user", content: initPrompt },
+      ],
+    }));
+
+    expect(res.status).toBe(200);
+    expect(getMockTransport().post).not.toHaveBeenCalled();
+
+    const events = parseAnthropicSSE(await res.text());
+    expect(events.map((e) => e.event)).toEqual([
+      "message_start",
+      "message_delta",
+      "message_stop",
+    ]);
+  });
+
   it("streaming: agent-team initialization with task assignment still calls upstream", async () => {
     const initWithAssignment = [
       '<teammate-message teammate_id="team-lead">',

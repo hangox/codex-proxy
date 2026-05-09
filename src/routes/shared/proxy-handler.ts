@@ -687,7 +687,7 @@ export async function handleProxyRequest(
       if (!wsRecoveryAttempted && isRecoverablePreConnectWebSocketError(err)) {
         wsRecoveryAttempted = true;
         console.warn(
-          `[${fmt.tag}] Account ${entryId} | recoverable pre-connect WS failure, stripping previous_response_id and retrying same request: ${err.causeMessage}`,
+          `[${fmt.tag}] Account ${entryId} | recoverable pre-connect WS failure, stripping previous_response_id and retrying same request: ${err instanceof Error ? err.message : String(err)}`,
         );
         restoreImplicitResumeRequest();
         req.codexRequest.previous_response_id = undefined;

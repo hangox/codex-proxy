@@ -115,6 +115,7 @@ export const ConfigSchema = z.object({
   update: z.object({
     auto_update: z.boolean().default(true),
     auto_download: z.boolean().default(false),
+    show_update_dialog: z.boolean().default(false),
     allow_prerelease: z.boolean().default(false),
   }).default({}),
   /** WebSocket connection pool — pins same (entryId, conversationId) to the

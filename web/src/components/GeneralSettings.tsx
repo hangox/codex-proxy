@@ -22,6 +22,7 @@ export function GeneralSettings() {
   const [draftRequestInterval, setDraftRequestInterval] = useState<string | null>(null);
   const [draftAutoUpdate, setDraftAutoUpdate] = useState<boolean | null>(null);
   const [draftAutoDownload, setDraftAutoDownload] = useState<boolean | null>(null);
+  const [draftShowUpdateDialog, setDraftShowUpdateDialog] = useState<boolean | null>(null);
   const [collapsed, setCollapsed] = useState(true);
 
   const currentPort = gs.data?.port ?? 8080;
@@ -38,6 +39,7 @@ export function GeneralSettings() {
   const currentRequestInterval = gs.data?.request_interval_ms ?? 50;
   const currentAutoUpdate = gs.data?.auto_update ?? true;
   const currentAutoDownload = gs.data?.auto_download ?? false;
+  const currentShowUpdateDialog = gs.data?.show_update_dialog ?? false;
 
   const displayPort = draftPort ?? String(currentPort);
   const displayProxyUrl = draftProxyUrl ?? currentProxyUrl;
@@ -53,6 +55,7 @@ export function GeneralSettings() {
   const displayRequestInterval = draftRequestInterval ?? String(currentRequestInterval);
   const displayAutoUpdate = draftAutoUpdate ?? currentAutoUpdate;
   const displayAutoDownload = draftAutoDownload ?? currentAutoDownload;
+  const displayShowUpdateDialog = draftShowUpdateDialog ?? currentShowUpdateDialog;
 
   const isDirty =
     draftPort !== null ||
@@ -68,7 +71,8 @@ export function GeneralSettings() {
     draftMaxConcurrent !== null ||
     draftRequestInterval !== null ||
     draftAutoUpdate !== null ||
-    draftAutoDownload !== null;
+    draftAutoDownload !== null ||
+    draftShowUpdateDialog !== null;
 
   const handleSave = useCallback(async () => {
     const patch: Record<string, unknown> = {};
@@ -139,6 +143,10 @@ export function GeneralSettings() {
       patch.auto_download = draftAutoDownload;
     }
 
+    if (draftShowUpdateDialog !== null) {
+      patch.show_update_dialog = draftShowUpdateDialog;
+    }
+
     await gs.save(patch);
     setDraftPort(null);
     setDraftProxyUrl(null);
@@ -154,7 +162,8 @@ export function GeneralSettings() {
     setDraftRequestInterval(null);
     setDraftAutoUpdate(null);
     setDraftAutoDownload(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftAutoUpdate, draftAutoDownload, gs]);
+    setDraftShowUpdateDialog(null);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -221,6 +230,23 @@ export function GeneralSettings() {
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsAutoDownloadHint")}</p>
+          </div>
+
+          {/* Update Dialog */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="show-update-dialog"
+                checked={displayShowUpdateDialog}
+                onChange={(e) => setDraftShowUpdateDialog((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="show-update-dialog" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("generalSettingsShowUpdateDialog")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsShowUpdateDialogHint")}</p>
           </div>
 
           {/* Server Port */}

@@ -26,7 +26,7 @@ const mockConfig = {
     max_concurrent_per_account: 3 as number | null,
     request_interval_ms: 50 as number | null,
   },
-  update: { auto_update: true, auto_download: false },
+  update: { auto_update: true, auto_download: false, show_update_dialog: false },
   logs: { enabled: false, capacity: 2000, capture_body: false, llm_only: true },
 };
 
@@ -126,6 +126,7 @@ describe("GET /admin/general-settings", () => {
       refresh_enabled: true,
       auto_update: true,
       auto_download: false,
+      show_update_dialog: false,
       logs_enabled: false,
       logs_capacity: 2000,
       logs_capture_body: false,
@@ -154,6 +155,27 @@ describe("POST /admin/general-settings", () => {
     expect(data.restart_required).toBe(false);
     expect(mutateYaml).toHaveBeenCalledOnce();
     expect(reloadAllConfigs).toHaveBeenCalledOnce();
+  });
+
+  it("persists show_update_dialog without requiring restart", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ show_update_dialog: true }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.restart_required).toBe(false);
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      update: { show_update_dialog: true },
+    });
   });
 
   it("syncs log store when logs_enabled changes", async () => {

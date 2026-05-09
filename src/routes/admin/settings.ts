@@ -110,6 +110,7 @@ export function createSettingsRoutes(): Hono {
       request_interval_ms: config.auth.request_interval_ms,
       auto_update: config.update.auto_update,
       auto_download: config.update.auto_download,
+      show_update_dialog: config.update.show_update_dialog,
       logs_enabled: config.logs.enabled,
       logs_capacity: config.logs.capacity,
       logs_capture_body: config.logs.capture_body,
@@ -145,6 +146,7 @@ export function createSettingsRoutes(): Hono {
       request_interval_ms?: number | null;
       auto_update?: boolean;
       auto_download?: boolean;
+      show_update_dialog?: boolean;
       logs_enabled?: boolean;
       logs_capacity?: number;
       logs_capture_body?: boolean;
@@ -274,6 +276,10 @@ export function createSettingsRoutes(): Hono {
         if (!data.update) data.update = {};
         (data.update as Record<string, unknown>).auto_download = body.auto_download;
       }
+      if (body.show_update_dialog !== undefined) {
+        if (!data.update) data.update = {};
+        (data.update as Record<string, unknown>).show_update_dialog = body.show_update_dialog;
+      }
       if (body.logs_enabled !== undefined) {
         if (!data.logs) data.logs = {};
         (data.logs as Record<string, unknown>).enabled = body.logs_enabled;
@@ -320,6 +326,7 @@ export function createSettingsRoutes(): Hono {
       request_interval_ms: updated.auth.request_interval_ms,
       auto_update: updated.update.auto_update,
       auto_download: updated.update.auto_download,
+      show_update_dialog: updated.update.show_update_dialog,
       logs_enabled: updated.logs?.enabled ?? false,
       logs_capacity: updated.logs?.capacity ?? 2000,
       logs_capture_body: updated.logs?.capture_body ?? false,

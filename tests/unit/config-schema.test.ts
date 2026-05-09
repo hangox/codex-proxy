@@ -43,6 +43,7 @@ describe("ConfigSchema", () => {
     expect(result.quota.warning_thresholds.primary).toEqual([80, 90]);
     expect(result.quota.skip_exhausted).toBe(true);
     expect(result.update.auto_update).toBe(true);
+    expect(result.update.show_update_dialog).toBe(false);
     expect(result.update.allow_prerelease).toBe(false);
     expect(result.session.ttl_minutes).toBe(1440);
     expect(result.ollama).toEqual({
@@ -70,7 +71,7 @@ describe("ConfigSchema", () => {
       session: { ttl_minutes: 120 },
       tls: { force_http11: true },
       quota: { skip_exhausted: false },
-      update: { auto_update: false, allow_prerelease: true },
+      update: { auto_update: false, show_update_dialog: true, allow_prerelease: true },
       ollama: {
         enabled: true,
         host: "0.0.0.0",
@@ -96,6 +97,7 @@ describe("ConfigSchema", () => {
     expect(result.tls.force_http11).toBe(true);
     expect(result.quota.skip_exhausted).toBe(false);
     expect(result.update.auto_update).toBe(false);
+    expect(result.update.show_update_dialog).toBe(true);
     expect(result.update.allow_prerelease).toBe(true);
     expect(result.ollama).toEqual({
       enabled: true,
@@ -201,6 +203,7 @@ describe("ConfigSchema", () => {
     });
     expect(result.quota.concurrency).toBe(10);
     expect(result.update.auto_update).toBe(true);
+    expect(result.update.show_update_dialog).toBe(false);
   });
 });
 

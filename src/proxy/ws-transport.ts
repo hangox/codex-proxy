@@ -17,7 +17,7 @@
 import type { CodexInputItem } from "./codex-api.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
-import { CodexApiError } from "./codex-types.js";
+import { CodexApiError, type WebSocketFailurePhase } from "./codex-types.js";
 import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
 import {
   PersistentWs,
@@ -175,6 +175,21 @@ export type WsDispatchDecision =
   | { kind: "bypass"; reason: string }
   | { kind: "retry-after-stale-reuse"; wsId: string };
 
+export class WebSocketConnectPhaseError extends Error {
+  readonly phase: WebSocketFailurePhase;
+  readonly recoverable: boolean;
+
+  constructor(
+    message: string,
+    opts: { phase?: WebSocketFailurePhase; recoverable?: boolean } = {},
+  ) {
+    super(message);
+    this.name = "WebSocketConnectPhaseError";
+    this.phase = opts.phase ?? "pre-connect";
+    this.recoverable = opts.recoverable ?? true;
+  }
+}
+
 async function buildWsConstructorOpts(
   WS: typeof import("ws").default,
   headers: Record<string, string>,
@@ -319,7 +334,7 @@ async function openOneShotWs(
 
   return new Promise<Response>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new Error("Aborted before WebSocket connect"));
+      reject(new WebSocketConnectPhaseError("Aborted before WebSocket connect"));
       return;
     }
 
@@ -352,7 +367,7 @@ async function openOneShotWs(
       try { ws.close(1000, "aborted"); } catch { /* already closing */ }
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
-        reject(new Error("Aborted during WebSocket connect"));
+        reject(new WebSocketConnectPhaseError("Aborted during WebSocket connect"));
       }
     };
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -451,7 +466,7 @@ async function openOneShotWs(
       signal?.removeEventListener("abort", onAbort);
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
-        reject(err);
+        reject(new WebSocketConnectPhaseError(err.message));
       } else {
         errorStream(err);
       }
@@ -462,7 +477,7 @@ async function openOneShotWs(
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
         const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
-        reject(new Error(
+        reject(new WebSocketConnectPhaseError(
           `WebSocket closed before any data: code=${code}` +
             (reasonStr ? ` reason=${reasonStr}` : ""),
         ));

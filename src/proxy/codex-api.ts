@@ -60,7 +60,7 @@ function getConnectPhaseErrorMeta(err: unknown): { phase: "pre-connect" | "mid-s
   if (!(err instanceof Error)) {
     return { phase: "unknown", recoverable: false };
   }
-  const rec = err as Record<string, unknown>;
+  const rec = err as unknown as Record<string, unknown>;
   return {
     phase: rec.phase === "pre-connect" || rec.phase === "mid-stream" || rec.phase === "unknown"
       ? rec.phase

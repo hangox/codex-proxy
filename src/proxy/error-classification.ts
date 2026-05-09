@@ -85,7 +85,7 @@ export function isPreviousResponseNotFoundError(err: unknown): boolean {
  *  stale previous_response_id / turnState. */
 export function isRecoverablePreConnectWebSocketError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  const rec = err as Record<string, unknown>;
+  const rec = err as unknown as Record<string, unknown>;
   return rec.name === "PreviousResponseWebSocketError"
     && rec.phase === "pre-connect"
     && rec.recoverable === true;

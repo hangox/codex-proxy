@@ -80,6 +80,17 @@ export function isPreviousResponseNotFoundError(err: unknown): boolean {
     || (lower.includes("previous response with id") && lower.includes("not found"));
 }
 
+/** Check if a previous_response_id WebSocket failure happened before any data
+ *  was streamed, so the request may be safely replayed once after stripping the
+ *  stale previous_response_id / turnState. */
+export function isRecoverablePreConnectWebSocketError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const rec = err as Record<string, unknown>;
+  return rec.name === "PreviousResponseWebSocketError"
+    && rec.phase === "pre-connect"
+    && rec.recoverable === true;
+}
+
 /** Check if a CodexApiError indicates the model is not supported on the account's plan. */
 export function isModelNotSupportedError(err: CodexLikeError): boolean {
   if (err.status < 400 || err.status >= 500 || err.status === 429) return false;

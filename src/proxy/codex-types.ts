@@ -131,9 +131,17 @@ export class CodexApiError extends Error {
   }
 }
 
+export type WebSocketFailurePhase = "pre-connect" | "mid-stream" | "unknown";
+
 /** previous_response_id 只能通过 WebSocket 安全续链，失败后不能降级为 HTTP delta-only。 */
 export class PreviousResponseWebSocketError extends CodexApiError {
-  constructor(public readonly causeMessage: string) {
+  public readonly phase: WebSocketFailurePhase;
+  public readonly recoverable: boolean;
+
+  constructor(
+    public readonly causeMessage: string,
+    opts: { phase?: WebSocketFailurePhase; recoverable?: boolean } = {},
+  ) {
     super(
       0,
       JSON.stringify({
@@ -145,5 +153,7 @@ export class PreviousResponseWebSocketError extends CodexApiError {
       }),
     );
     this.name = "PreviousResponseWebSocketError";
+    this.phase = opts.phase ?? "unknown";
+    this.recoverable = opts.recoverable ?? false;
   }
 }

@@ -21,6 +21,10 @@ const wsPoolMocks = vi.hoisted(() => ({
   getWsPool: vi.fn(),
 }));
 
+const sessionAffinityMocks = vi.hoisted(() => ({
+  getSessionAffinityMap: vi.fn(),
+}));
+
 vi.mock("@src/proxy/codex-api.js", () => {
   class CodexApiError extends Error {
     status: number;
@@ -39,6 +43,32 @@ vi.mock("@src/proxy/codex-api.js", () => {
     }
   }
 
+  class PreviousResponseWebSocketError extends CodexApiError {
+    causeMessage: string;
+    phase: "pre-connect" | "mid-stream" | "unknown";
+    recoverable: boolean;
+
+    constructor(
+      causeMessage: string,
+      opts: { phase?: "pre-connect" | "mid-stream" | "unknown"; recoverable?: boolean } = {},
+    ) {
+      super(
+        0,
+        JSON.stringify({
+          error: {
+            message:
+              "WebSocket failed while using previous_response_id; HTTP SSE fallback would drop server-side history: " +
+              causeMessage,
+          },
+        }),
+      );
+      this.name = "PreviousResponseWebSocketError";
+      this.causeMessage = causeMessage;
+      this.phase = opts.phase ?? "unknown";
+      this.recoverable = opts.recoverable ?? false;
+    }
+  }
+
   const CodexApi = vi.fn().mockImplementation(() => ({
     createResponse: vi.fn((...args: unknown[]): Promise<Response> => {
       if (mockCreateResponse) return mockCreateResponse(...args);
@@ -46,11 +76,15 @@ vi.mock("@src/proxy/codex-api.js", () => {
     }),
   }));
 
-  return { CodexApi, CodexApiError };
+  return { CodexApi, CodexApiError, PreviousResponseWebSocketError };
 });
 
 vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({ auth: { request_interval_ms: 0 } })),
+}));
+
+vi.mock("@src/auth/session-affinity.js", () => ({
+  getSessionAffinityMap: sessionAffinityMocks.getSessionAffinityMap,
 }));
 
 vi.mock("@src/proxy/ws-pool.js", () => ({
@@ -103,7 +137,7 @@ vi.mock("@src/translation/codex-event-extractor.js", () => {
 
 // Import after mocks are set up
 import { handleProxyRequest } from "@src/routes/shared/proxy-handler.js";
-import { CodexApiError } from "@src/proxy/codex-api.js";
+import { CodexApiError, PreviousResponseWebSocketError } from "@src/proxy/codex-api.js";
 import { EmptyResponseError, preflightContentfulStream } from "@src/translation/codex-event-extractor.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -184,6 +218,18 @@ describe("proxy-handler integration", () => {
     wsPoolMocks.getWsPool.mockReset();
     wsPoolMocks.getWsPool.mockReturnValue({
       evictByPoolKey: wsPoolMocks.evictByPoolKey,
+    });
+    sessionAffinityMocks.getSessionAffinityMap.mockReset();
+    sessionAffinityMocks.getSessionAffinityMap.mockReturnValue({
+      lookup: vi.fn(() => null),
+      lookupConversationId: vi.fn(() => null),
+      lookupLatestResponseIdByConversationId: vi.fn(() => null),
+      lookupTurnState: vi.fn(() => null),
+      lookupInstructions: vi.fn(() => null),
+      lookupInputTokens: vi.fn(() => null),
+      lookupFunctionCallIds: vi.fn(() => []),
+      forget: vi.fn(),
+      record: vi.fn(),
     });
     vi.clearAllMocks();
   });
@@ -963,6 +1009,140 @@ describe("proxy-handler integration", () => {
     expect(createCount).toBe(2);
     expect(seenPrevIds[0]).toBe("resp_0e2e6e7917486cfd0069eec8532d988194a3da6379c70abe68");
     expect(seenPrevIds[1]).toBeUndefined();
+  });
+
+  it("recovers from recoverable pre-connect WS failure by stripping previous_response_id and disabling WS", async () => {
+    const seenRequests: Array<{ previous_response_id: string | undefined; useWebSocket: boolean | undefined; turnState: string | undefined }> = [];
+    let createCount = 0;
+    mockCreateResponse = (codexRequest: unknown) => {
+      const req = codexRequest as {
+        previous_response_id?: string;
+        useWebSocket?: boolean;
+        turnState?: string;
+      };
+      seenRequests.push({
+        previous_response_id: req.previous_response_id,
+        useWebSocket: req.useWebSocket,
+        turnState: req.turnState,
+      });
+      createCount++;
+      if (createCount === 1) {
+        return Promise.reject(new PreviousResponseWebSocketError("Aborted before WebSocket connect", {
+          phase: "pre-connect",
+          recoverable: true,
+        }));
+      }
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter();
+    const req: ProxyRequest = {
+      ...createDefaultRequest(),
+      codexRequest: {
+        ...createDefaultRequest().codexRequest,
+        previous_response_id: "resp_prev",
+        turnState: "turn_prev",
+        useWebSocket: true,
+      },
+    };
+
+    const { app } = buildTestApp({ accountPool, fmt, req });
+    const res = await app.request("/test", { method: "POST" });
+
+    expect(res.status).toBe(200);
+    expect(createCount).toBe(2);
+    expect(seenRequests).toEqual([
+      {
+        previous_response_id: "resp_prev",
+        useWebSocket: true,
+        turnState: "turn_prev",
+      },
+      {
+        previous_response_id: undefined,
+        useWebSocket: false,
+        turnState: undefined,
+      },
+    ]);
+  });
+
+  it("recovers implicit resume by restoring full input after recoverable pre-connect WS failure", async () => {
+    const seenRequests: Array<{
+      previous_response_id: string | undefined;
+      useWebSocket: boolean | undefined;
+      turnState: string | undefined;
+      input: unknown[];
+    }> = [];
+    let createCount = 0;
+    mockCreateResponse = (codexRequest: unknown) => {
+      const req = codexRequest as {
+        previous_response_id?: string;
+        useWebSocket?: boolean;
+        turnState?: string;
+        input: unknown[];
+      };
+      seenRequests.push({
+        previous_response_id: req.previous_response_id,
+        useWebSocket: req.useWebSocket,
+        turnState: req.turnState,
+        input: req.input,
+      });
+      createCount++;
+      if (createCount === 1) {
+        return Promise.reject(new PreviousResponseWebSocketError("Aborted before WebSocket connect", {
+          phase: "pre-connect",
+          recoverable: true,
+        }));
+      }
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    sessionAffinityMocks.getSessionAffinityMap.mockReturnValue({
+      lookup: vi.fn(() => "e1"),
+      lookupConversationId: vi.fn(() => null),
+      lookupLatestResponseIdByConversationId: vi.fn(() => "resp_implicit_prev"),
+      lookupTurnState: vi.fn(() => "turn_implicit_prev"),
+      lookupInstructions: vi.fn(() => "You are helpful"),
+      lookupInputTokens: vi.fn(() => null),
+      lookupFunctionCallIds: vi.fn(() => []),
+      forget: vi.fn(),
+      record: vi.fn(),
+    });
+
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter();
+    const req: ProxyRequest = {
+      ...createDefaultRequest(),
+      clientConversationId: "conv_implicit_1",
+      codexRequest: {
+        ...createDefaultRequest().codexRequest,
+        input: [
+          { role: "assistant", content: "Earlier answer" },
+          { role: "user", content: "Continue" },
+        ],
+      },
+    };
+
+    const { app } = buildTestApp({ accountPool, fmt, req });
+    const res = await app.request("/test", { method: "POST" });
+
+    expect(res.status).toBe(200);
+    expect(createCount).toBe(2);
+    expect(seenRequests[0]).toEqual({
+      previous_response_id: "resp_implicit_prev",
+      useWebSocket: true,
+      turnState: "turn_implicit_prev",
+      input: [{ role: "user", content: "Continue" }],
+    });
+    expect(seenRequests[1]).toEqual({
+      previous_response_id: undefined,
+      useWebSocket: undefined,
+      turnState: undefined,
+      input: [
+        { role: "assistant", content: "Earlier answer" },
+        { role: "user", content: "Continue" },
+      ],
+    });
   });
 
   // 17b. previous_response_not_found loop guard — only retry once

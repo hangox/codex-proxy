@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { PreviousResponseWebSocketError } from "@src/proxy/codex-api.js";
+import { isRecoverablePreConnectWebSocketError } from "@src/proxy/error-classification.js";
 import {
   getMissingExplicitFunctionCallOutputIds,
   shouldActivateImplicitResume,
@@ -75,6 +76,14 @@ describe("shouldActivateImplicitResume", () => {
     const err = new PreviousResponseWebSocketError("ws down");
     expect(shouldReplayFullInputAfterImplicitResumeError(err, true)).toBe(true);
     expect(shouldReplayFullInputAfterImplicitResumeError(err, false)).toBe(false);
+  });
+
+  it("mid-stream WS 错误不会被判定为 pre-connect recoverable", () => {
+    const err = new PreviousResponseWebSocketError("stream blew up", {
+      phase: "mid-stream",
+      recoverable: false,
+    });
+    expect(isRecoverablePreConnectWebSocketError(err)).toBe(false);
   });
 });
 

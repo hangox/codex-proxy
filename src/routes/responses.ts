@@ -12,7 +12,7 @@ import type { AccountPool } from "../auth/account-pool.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { CodexApi, CodexApiError } from "../proxy/codex-api.js";
-import type { CodexResponsesRequest, CodexCompactRequest, CodexInputItem } from "../proxy/codex-api.js";
+import type { CodexResponsesRequest, CodexCompactRequest, CodexInputItem, CodexSSEEvent } from "../proxy/codex-api.js";
 import { enqueueLogEntry } from "../logs/entry.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
@@ -91,6 +91,37 @@ function syncOutputTextFromOutput(response: Record<string, unknown>): void {
 
 // ── Passthrough stream translator ──────────────────────────────────
 
+const STREAM_DISCONNECTED_CODE = "stream_disconnected";
+const STREAM_DISCONNECTED_MESSAGE = "Upstream stream closed before response.completed";
+
+function isTerminalResponsesEvent(event: string): boolean {
+  return event === "response.completed" || event === "response.failed" || event === "error";
+}
+
+function extractResponseIdFromEventData(data: unknown): string | null {
+  if (!isRecord(data) || !isRecord(data.response)) return null;
+  return typeof data.response.id === "string" ? data.response.id : null;
+}
+
+function buildPrematureCloseFailedEvent(responseId: string | null, detail?: string): string {
+  const id = responseId ?? `resp_proxy_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  const message = detail ? `${STREAM_DISCONNECTED_MESSAGE}: ${detail}` : STREAM_DISCONNECTED_MESSAGE;
+  const error = {
+    type: "server_error",
+    code: STREAM_DISCONNECTED_CODE,
+    message,
+  };
+  return `event: response.failed\ndata: ${JSON.stringify({
+    type: "response.failed",
+    response: {
+      id,
+      status: "failed",
+      error,
+    },
+    error,
+  })}\n\n`;
+}
+
 /** Extract usage from a response.completed payload, including cached_tokens
  *  (nested in input_tokens_details per the OpenAI Responses API contract). */
 export function extractResponseUsage(usage: Record<string, unknown>): { input_tokens: number; output_tokens: number; cached_tokens?: number } {
@@ -117,7 +148,7 @@ export function extractImageGenUsage(response: Record<string, unknown>): { image
   return { image_input_tokens, image_output_tokens };
 }
 
-async function* streamPassthrough(
+export async function* streamPassthrough(
   api: UpstreamAdapter,
   response: Response,
   _model: string,
@@ -129,74 +160,113 @@ async function* streamPassthrough(
   // This means the client receives zero incremental text — all text arrives at once
   // after response.completed. This is a known tradeoff for tuple reconversion correctness.
   let tupleTextBuffer = tupleSchema ? "" : null;
+  let sawTerminal = false;
+  let responseId: string | null = null;
 
-  for await (const raw of api.parseStream(response)) {
-    // Buffer text deltas when tuple reconversion is active
-    if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
-      const data = raw.data;
-      if (isRecord(data) && typeof data.delta === "string") {
-        tupleTextBuffer += data.delta;
-        continue; // suppress this event — will flush reconverted text on completion
+  const stream = api.parseStream(response);
+  let upstreamDone = false;
+  try {
+    while (true) {
+      let next: IteratorResult<CodexSSEEvent>;
+      try {
+        next = await stream.next();
+      } catch (err) {
+        if (sawTerminal) return;
+        const detail = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[Responses] premature stream close before terminal event responseId=${responseId ?? "unknown"}: ${detail}`,
+        );
+        yield buildPrematureCloseFailedEvent(responseId, detail);
+        return;
       }
-    }
 
-    // On completion, flush reconverted text before emitting the completed event
-    if (tupleTextBuffer !== null && tupleSchema && raw.event === "response.completed") {
-      if (tupleTextBuffer) {
-        let reconvertedText = tupleTextBuffer;
-        try {
-          const parsed = JSON.parse(tupleTextBuffer) as unknown;
-          reconvertedText = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
-        } catch (e) {
-          console.warn("[tuple-reconvert] streaming JSON parse failed, emitting raw text:", e);
+      if (next.done) {
+        upstreamDone = true;
+        break;
+      }
+
+      const raw = next.value;
+      responseId = extractResponseIdFromEventData(raw.data) ?? responseId;
+      if (isTerminalResponsesEvent(raw.event)) sawTerminal = true;
+
+      // Buffer text deltas when tuple reconversion is active
+      if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
+        const data = raw.data;
+        if (isRecord(data) && typeof data.delta === "string") {
+          tupleTextBuffer += data.delta;
+          continue; // suppress this event — will flush reconverted text on completion
         }
-        // Emit a single text delta with reconverted content
-        yield `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: reconvertedText })}\n\n`;
       }
-      // Patch the completed event's output text if present
-      const data = raw.data;
-      if (isRecord(data) && isRecord(data.response) && tupleTextBuffer) {
-        const resp = data.response;
-        if (Array.isArray(resp.output)) {
-          for (const item of resp.output as unknown[]) {
-            if (isRecord(item) && Array.isArray(item.content)) {
-              for (const part of item.content as unknown[]) {
-                if (
-                  isRecord(part) &&
-                  (part.type === "output_text" || part.type === "text") &&
-                  typeof part.text === "string"
-                ) {
-                  try {
-                    const parsed = JSON.parse(part.text) as unknown;
-                    part.text = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
-                  } catch { /* leave as-is */ }
+
+      // On completion, flush reconverted text before emitting the completed event
+      if (tupleTextBuffer !== null && tupleSchema && raw.event === "response.completed") {
+        if (tupleTextBuffer) {
+          let reconvertedText = tupleTextBuffer;
+          try {
+            const parsed = JSON.parse(tupleTextBuffer) as unknown;
+            reconvertedText = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
+          } catch (e) {
+            console.warn("[tuple-reconvert] streaming JSON parse failed, emitting raw text:", e);
+          }
+          // Emit a single text delta with reconverted content
+          yield `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: reconvertedText })}\n\n`;
+        }
+        // Patch the completed event's output text if present
+        const data = raw.data;
+        if (isRecord(data) && isRecord(data.response) && tupleTextBuffer) {
+          const resp = data.response;
+          if (Array.isArray(resp.output)) {
+            for (const item of resp.output as unknown[]) {
+              if (isRecord(item) && Array.isArray(item.content)) {
+                for (const part of item.content as unknown[]) {
+                  if (
+                    isRecord(part) &&
+                    (part.type === "output_text" || part.type === "text") &&
+                    typeof part.text === "string"
+                  ) {
+                    try {
+                      const parsed = JSON.parse(part.text) as unknown;
+                      part.text = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
+                    } catch { /* leave as-is */ }
+                  }
                 }
               }
             }
           }
         }
       }
-    }
 
-    // Re-emit raw SSE event
-    yield `event: ${raw.event}\ndata: ${JSON.stringify(raw.data)}\n\n`;
+      // Re-emit raw SSE event
+      yield `event: ${raw.event}\ndata: ${JSON.stringify(raw.data)}\n\n`;
 
-    // Extract usage and responseId for account pool bookkeeping
-    if (
-      raw.event === "response.created" ||
-      raw.event === "response.in_progress" ||
-      raw.event === "response.completed"
-    ) {
-      const data = raw.data;
-      if (isRecord(data) && isRecord(data.response)) {
-        const resp = data.response;
-        if (typeof resp.id === "string") onResponseId(resp.id);
-        if (raw.event === "response.completed" && isRecord(resp.usage)) {
-          const imgUsage = extractImageGenUsage(resp);
-          onUsage({ ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) });
+      // Extract usage and responseId for account pool bookkeeping
+      if (
+        raw.event === "response.created" ||
+        raw.event === "response.in_progress" ||
+        raw.event === "response.completed"
+      ) {
+        const data = raw.data;
+        if (isRecord(data) && isRecord(data.response)) {
+          const resp = data.response;
+          if (typeof resp.id === "string") onResponseId(resp.id);
+          if (raw.event === "response.completed" && isRecord(resp.usage)) {
+            const imgUsage = extractImageGenUsage(resp);
+            onUsage({ ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) });
+          }
         }
       }
     }
+  } finally {
+    if (!upstreamDone) {
+      try { await stream.return(undefined); } catch { /* cleanup best effort */ }
+    }
+  }
+
+  if (!sawTerminal) {
+    console.warn(
+      `[Responses] premature stream close before terminal event responseId=${responseId ?? "unknown"}`,
+    );
+    yield buildPrematureCloseFailedEvent(responseId);
   }
 }
 

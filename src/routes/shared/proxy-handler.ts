@@ -26,7 +26,10 @@ import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import { withRetry } from "../../utils/retry.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError, toErrorStatus } from "./proxy-error-handler.js";
-import { isPreviousResponseNotFoundError } from "../../proxy/error-classification.js";
+import {
+  isPreviousResponseNotFoundError,
+  isRecoverablePreConnectWebSocketError,
+} from "../../proxy/error-classification.js";
 import { streamResponse } from "./response-processor.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import { parseRateLimitHeaders, rateLimitToQuota, type ParsedRateLimit } from "../../proxy/rate-limit-headers.js";
@@ -334,6 +337,7 @@ export async function handleProxyRequest(
   const triedEntryIds: string[] = [entryId];
   let modelRetried = false;
   let prevRespNotFoundRetried = false;
+  let wsRecoveryAttempted = false;
   let usageInfo: UsageInfo | undefined;
   let capturedResponseId: string | null = null;
   const responseFunctionCallIds = new Set<string>();
@@ -677,6 +681,18 @@ export async function handleProxyRequest(
           `[${fmt.tag}] 隐式续链 WebSocket 失败，回退为完整历史重放：${err.causeMessage}`,
         );
         restoreImplicitResumeRequest();
+        continue;
+      }
+
+      if (!wsRecoveryAttempted && isRecoverablePreConnectWebSocketError(err)) {
+        wsRecoveryAttempted = true;
+        console.warn(
+          `[${fmt.tag}] Account ${entryId} | recoverable pre-connect WS failure, stripping previous_response_id and retrying same request: ${err.causeMessage}`,
+        );
+        restoreImplicitResumeRequest();
+        req.codexRequest.previous_response_id = undefined;
+        req.codexRequest.turnState = undefined;
+        req.codexRequest.useWebSocket = false;
         continue;
       }
 

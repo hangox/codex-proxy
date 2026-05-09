@@ -15,7 +15,11 @@ import {
   buildHeaders,
   buildHeadersWithContentType,
 } from "../fingerprint/manager.js";
-import { createWebSocketResponse, type WsCreateRequest, type WsPoolContext } from "./ws-transport.js";
+import {
+  createWebSocketResponse,
+  type WsCreateRequest,
+  type WsPoolContext,
+} from "./ws-transport.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { getInstallationId } from "./installation-id.js";
 
@@ -51,6 +55,19 @@ import {
   type CodexSSEEvent,
   type CodexUsageResponse,
 } from "./codex-types.js";
+
+function getConnectPhaseErrorMeta(err: unknown): { phase: "pre-connect" | "mid-stream" | "unknown"; recoverable: boolean } {
+  if (!(err instanceof Error)) {
+    return { phase: "unknown", recoverable: false };
+  }
+  const rec = err as Record<string, unknown>;
+  return {
+    phase: rec.phase === "pre-connect" || rec.phase === "mid-stream" || rec.phase === "unknown"
+      ? rec.phase
+      : "unknown",
+    recoverable: rec.recoverable === true,
+  };
+}
 
 export class CodexApi {
   readonly tag = "codex" as const;
@@ -195,7 +212,8 @@ export class CodexApi {
           console.warn(
             `[CodexApi] WebSocket 失败（${msg}），previous_response_id 不能安全降级到 HTTP SSE`,
           );
-          throw new PreviousResponseWebSocketError(msg);
+          const meta = getConnectPhaseErrorMeta(err);
+          throw new PreviousResponseWebSocketError(msg, meta);
         }
         console.warn(`[CodexApi] WebSocket failed (${msg}), falling back to HTTP SSE`);
         const { previous_response_id: _, useWebSocket: _ws, ...httpRequest } = request;

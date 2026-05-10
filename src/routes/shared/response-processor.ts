@@ -80,6 +80,13 @@ function formatDiagnosticValue(value: string | null | undefined): string {
   return value && value.length > 0 ? value : "none";
 }
 
+function streamErrorStatus(err: unknown): number {
+  if (err instanceof CodexApiError && err.status >= 400 && err.status < 600) {
+    return err.status;
+  }
+  return 502;
+}
+
 /**
  * Stream SSE chunks from the Codex upstream to the client.
  *
@@ -140,6 +147,7 @@ export async function streamResponse(
     const errMsg = err instanceof Error ? err.message : "Stream interrupted";
     const errStatus = err instanceof CodexApiError ? err.status : "?";
     const errBody = err instanceof CodexApiError ? err.body : undefined;
+    const responseStatus = streamErrorStatus(err);
     console.warn(
       `[stream-error] rid=${formatDiagnosticValue(diagnostics?.requestId)}` +
         ` tag=${formatDiagnosticValue(diagnostics?.tag ?? adapter.tag)} model=${model}` +
@@ -153,7 +161,8 @@ export async function streamResponse(
     // Send error SSE event to client before closing
     try {
       await s.write(
-        `data: ${JSON.stringify({ error: { message: errMsg, type: "stream_error" } })}\n\n`,
+        adapter.formatStreamError?.(responseStatus, errMsg) ??
+          `data: ${JSON.stringify({ error: { message: errMsg, type: "stream_error" } })}\n\n`,
       );
     } catch { /* client already gone */ }
   }

@@ -88,6 +88,26 @@ describe("streamResponse", () => {
     expect(errorChunk).toContain("upstream died");
   });
 
+  it("uses a protocol-specific stream error formatter when stream throws", async () => {
+    const s = createMockStream();
+    const adapter = {
+      ...createMockAdapter({ streamError: new Error("error sending request for url") }),
+      formatStreamError: vi.fn(
+        (status: number, message: string) =>
+          `event: response.failed\ndata: ${JSON.stringify({ status, message })}\n\n`,
+      ),
+    };
+    const api = createMockCodexApi();
+    const rawResponse = new Response("ok");
+
+    await streamResponse(s as never, api, rawResponse, "gpt-5.4", adapter as never, vi.fn());
+
+    expect(adapter.formatStreamError).toHaveBeenCalledWith(502, "error sending request for url");
+    expect(s.written.at(-1)).toBe(
+      `event: response.failed\ndata: ${JSON.stringify({ status: 502, message: "error sending request for url" })}\n\n`,
+    );
+  });
+
   it("handles client disconnect during write gracefully", async () => {
     const s = createMockStream();
     s.write.mockRejectedValueOnce(new Error("client gone"));

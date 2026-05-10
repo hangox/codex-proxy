@@ -94,6 +94,12 @@ function syncOutputTextFromOutput(response: Record<string, unknown>): void {
 const STREAM_DISCONNECTED_CODE = "stream_disconnected";
 const STREAM_DISCONNECTED_MESSAGE = "Upstream stream closed before response.completed";
 
+interface ResponsesStreamError {
+  type: string;
+  code: string;
+  message: string;
+}
+
 function isTerminalResponsesEvent(event: string): boolean {
   return event === "response.completed" || event === "response.failed" || event === "error";
 }
@@ -104,13 +110,16 @@ function extractResponseIdFromEventData(data: unknown): string | null {
 }
 
 function buildPrematureCloseFailedEvent(responseId: string | null, detail?: string): string {
-  const id = responseId ?? `resp_proxy_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   const message = detail ? `${STREAM_DISCONNECTED_MESSAGE}: ${detail}` : STREAM_DISCONNECTED_MESSAGE;
-  const error = {
+  return buildResponseFailedEvent(responseId, {
     type: "server_error",
     code: STREAM_DISCONNECTED_CODE,
     message,
-  };
+  });
+}
+
+function buildResponseFailedEvent(responseId: string | null, error: ResponsesStreamError): string {
+  const id = responseId ?? `resp_proxy_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   return `event: response.failed\ndata: ${JSON.stringify({
     type: "response.failed",
     response: {
@@ -120,6 +129,44 @@ function buildPrematureCloseFailedEvent(responseId: string | null, detail?: stri
     },
     error,
   })}\n\n`;
+}
+
+function stripCodexErrorPrefix(message: string): string {
+  return message.replace(/^Codex API error \(\d+\):\s*/, "");
+}
+
+function classifyResponsesStreamError(status: number, message: string): ResponsesStreamError {
+  const cleanMessage = stripCodexErrorPrefix(message);
+  if (status === 429) {
+    return {
+      type: "rate_limit_error",
+      code: "rate_limit_exceeded",
+      message: cleanMessage,
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      type: "invalid_request_error",
+      code: "authentication_error",
+      message: cleanMessage,
+    };
+  }
+  if (cleanMessage.toLowerCase().includes("error sending request")) {
+    return {
+      type: "server_error",
+      code: "upstream_transport_error",
+      message: cleanMessage,
+    };
+  }
+  return {
+    type: status >= 400 && status < 500 ? "invalid_request_error" : "server_error",
+    code: "codex_api_error",
+    message: cleanMessage,
+  };
+}
+
+function buildResponsesStreamError(status: number, message: string): string {
+  return buildResponseFailedEvent(null, classifyResponsesStreamError(status, message));
 }
 
 /** Extract usage from a response.completed payload, including cached_tokens
@@ -408,6 +455,7 @@ const PASSTHROUGH_FORMAT: FormatAdapter = {
       message: msg,
     },
   }),
+  formatStreamError: (status, msg) => buildResponsesStreamError(status, msg),
   streamTranslator: (api, response, model, onUsage, onResponseId, tupleSchema) =>
     streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema),
   collectTranslator: (api, response, model, tupleSchema) =>

@@ -7,23 +7,25 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
-import type { ProxyRequest } from "@src/routes/shared/proxy-handler.js";
+import type { FormatCollectTranslatorOptions, ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
+import type { WsPoolContext } from "@src/proxy/codex-api.js";
+import type { CodexResponsesRequest } from "@src/proxy/codex-types.js";
+import type { ParsedRateLimit } from "@src/proxy/rate-limit-headers.js";
 import { createMockFormatAdapter } from "@helpers/format-adapter.js";
+import { getSessionAffinityMap } from "@src/auth/session-affinity.js";
+import { buildVariantIdentity, resolvePromptCacheIdentity } from "@src/routes/shared/proxy-session-helpers.js";
+import { computeVariantHash } from "@src/routes/shared/variant-hash.js";
 
-// ── Module-level control for CodexApi.createResponse / stream preflight ─────
+// ── Module-level control for CodexApi.createResponse ──────────────────
 
-let mockCreateResponse: ((...args: unknown[]) => Promise<Response>) | null = null;
-let mockIterateCodexEvents: (() => AsyncGenerator<unknown>) | null = null;
-let mockPreflightContentfulStream: ((source: AsyncIterable<unknown>) => Promise<{ buffered: unknown[]; stream: AsyncIterable<unknown> }>) | null = null;
+type MockCreateResponse = (
+  request: CodexResponsesRequest,
+  signal?: AbortSignal,
+  onRateLimits?: (rateLimits: ParsedRateLimit) => void,
+  poolCtx?: WsPoolContext,
+) => Promise<Response>;
 
-const wsPoolMocks = vi.hoisted(() => ({
-  evictByPoolKey: vi.fn(),
-  getWsPool: vi.fn(),
-}));
-
-const sessionAffinityMocks = vi.hoisted(() => ({
-  getSessionAffinityMap: vi.fn(),
-}));
+let mockCreateResponse: MockCreateResponse | null = null;
 
 vi.mock("@src/proxy/codex-api.js", () => {
   class CodexApiError extends Error {
@@ -45,33 +47,27 @@ vi.mock("@src/proxy/codex-api.js", () => {
 
   class PreviousResponseWebSocketError extends CodexApiError {
     causeMessage: string;
-    phase: "pre-connect" | "mid-stream" | "unknown";
-    recoverable: boolean;
-
-    constructor(
-      causeMessage: string,
-      opts: { phase?: "pre-connect" | "mid-stream" | "unknown"; recoverable?: boolean } = {},
-    ) {
-      super(
-        0,
-        JSON.stringify({
-          error: {
-            message:
-              "WebSocket failed while using previous_response_id; HTTP SSE fallback would drop server-side history: " +
-              causeMessage,
-          },
-        }),
-      );
+    constructor(causeMessage: string) {
+      super(0, JSON.stringify({
+        error: {
+          message:
+            "WebSocket failed while using previous_response_id; HTTP SSE fallback would drop server-side history: " +
+            causeMessage,
+        },
+      }));
       this.name = "PreviousResponseWebSocketError";
       this.causeMessage = causeMessage;
-      this.phase = opts.phase ?? "unknown";
-      this.recoverable = opts.recoverable ?? false;
     }
   }
 
   const CodexApi = vi.fn().mockImplementation(() => ({
-    createResponse: vi.fn((...args: unknown[]): Promise<Response> => {
-      if (mockCreateResponse) return mockCreateResponse(...args);
+    createResponse: vi.fn((
+      request: CodexResponsesRequest,
+      signal?: AbortSignal,
+      onRateLimits?: (rateLimits: ParsedRateLimit) => void,
+      poolCtx?: WsPoolContext,
+    ): Promise<Response> => {
+      if (mockCreateResponse) return mockCreateResponse(request, signal, onRateLimits, poolCtx);
       return Promise.resolve(new Response("data: {}\n\n"));
     }),
   }));
@@ -81,14 +77,6 @@ vi.mock("@src/proxy/codex-api.js", () => {
 
 vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({ auth: { request_interval_ms: 0 } })),
-}));
-
-vi.mock("@src/auth/session-affinity.js", () => ({
-  getSessionAffinityMap: sessionAffinityMocks.getSessionAffinityMap,
-}));
-
-vi.mock("@src/proxy/ws-pool.js", () => ({
-  getWsPool: wsPoolMocks.getWsPool,
 }));
 
 vi.mock("@src/utils/jitter.js", () => ({
@@ -113,32 +101,29 @@ vi.mock("@src/translation/codex-event-extractor.js", () => {
       this.usage = usage;
     }
   }
-
-  async function* iterateCodexEvents() {
-    if (mockIterateCodexEvents) {
-      yield* mockIterateCodexEvents();
-      return;
+  class UpstreamPrematureCloseError extends Error {
+    responseId: string | null;
+    hadReasoning: boolean;
+    eventCount: number;
+    constructor(responseId: string | null, hadReasoning: boolean, eventCount: number) {
+      super(
+        hadReasoning
+          ? "Upstream closed stream after reasoning without producing output (likely hit response-duration cap)"
+          : "Upstream closed stream without a terminal event",
+      );
+      this.name = "UpstreamPrematureCloseError";
+      this.responseId = responseId;
+      this.hadReasoning = hadReasoning;
+      this.eventCount = eventCount;
     }
-    yield { typed: { type: "response.output_text.delta", delta: "hi" }, textDelta: "hi" };
-    yield {
-      typed: { type: "response.completed", response: { id: "resp_stream", usage: { input_tokens: 10, output_tokens: 20 } } },
-      responseId: "resp_stream",
-      usage: { input_tokens: 10, output_tokens: 20 },
-    };
   }
-
-  async function preflightContentfulStream(source: AsyncIterable<unknown>) {
-    if (mockPreflightContentfulStream) return mockPreflightContentfulStream(source);
-    return { buffered: [], stream: source };
-  }
-
-  return { EmptyResponseError, iterateCodexEvents, preflightContentfulStream };
+  return { EmptyResponseError, UpstreamPrematureCloseError };
 });
 
 // Import after mocks are set up
 import { handleProxyRequest } from "@src/routes/shared/proxy-handler.js";
 import { CodexApiError, PreviousResponseWebSocketError } from "@src/proxy/codex-api.js";
-import { EmptyResponseError, preflightContentfulStream } from "@src/translation/codex-event-extractor.js";
+import { EmptyResponseError, UpstreamPrematureCloseError } from "@src/translation/codex-event-extractor.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -147,6 +132,9 @@ function createMockAccountPool(overrides: Record<string, unknown> = {}) {
     acquire: vi.fn(() => ({ entryId: "e1", token: "tok", accountId: "acc1" })),
     release: vi.fn(),
     markRateLimited: vi.fn(),
+    applyRateLimit429: vi.fn(),
+    updateCachedQuota: vi.fn(),
+    syncRateLimitWindow: vi.fn(),
     markStatus: vi.fn(),
     getEntry: vi.fn(() => ({ email: "test@test.com" })),
     recordEmptyResponse: vi.fn(),
@@ -194,13 +182,13 @@ function buildTestApp(opts: {
 
   const app = new Hono();
   app.post("/test", (c) =>
-    handleProxyRequest(
+    handleProxyRequest({
       c,
-      accountPool as never,
+      accountPool: accountPool as never,
       cookieJar,
-      proxyReq,
+      req: proxyReq,
       fmt,
-    ),
+    }),
   );
 
   return { app, accountPool, fmt, proxyReq };
@@ -211,26 +199,7 @@ function buildTestApp(opts: {
 describe("proxy-handler integration", () => {
   beforeEach(() => {
     mockCreateResponse = null;
-    mockIterateCodexEvents = null;
-    mockPreflightContentfulStream = null;
-    wsPoolMocks.evictByPoolKey.mockReset();
-    wsPoolMocks.evictByPoolKey.mockReturnValue(false);
-    wsPoolMocks.getWsPool.mockReset();
-    wsPoolMocks.getWsPool.mockReturnValue({
-      evictByPoolKey: wsPoolMocks.evictByPoolKey,
-    });
-    sessionAffinityMocks.getSessionAffinityMap.mockReset();
-    sessionAffinityMocks.getSessionAffinityMap.mockReturnValue({
-      lookup: vi.fn(() => null),
-      lookupConversationId: vi.fn(() => null),
-      lookupLatestResponseIdByConversationId: vi.fn(() => null),
-      lookupTurnState: vi.fn(() => null),
-      lookupInstructions: vi.fn(() => null),
-      lookupInputTokens: vi.fn(() => null),
-      lookupFunctionCallIds: vi.fn(() => []),
-      forget: vi.fn(),
-      record: vi.fn(),
-    });
+    getSessionAffinityMap().dispose();
     vi.clearAllMocks();
   });
 
@@ -255,7 +224,9 @@ describe("proxy-handler integration", () => {
   it("returns JSON result from collectTranslator for non-streaming", async () => {
     const accountPool = createMockAccountPool();
     const fmt = createMockFormatAdapter();
-    const { app } = buildTestApp({ accountPool, fmt });
+    const tupleSchema = { type: "array", prefixItems: [] } satisfies Record<string, unknown>;
+    const req = { ...createDefaultRequest(), tupleSchema };
+    const { app } = buildTestApp({ accountPool, fmt, req });
 
     const res = await app.request("/test", { method: "POST" });
     expect(res.status).toBe(200);
@@ -263,17 +234,82 @@ describe("proxy-handler integration", () => {
     const body = await res.json();
     expect(body).toEqual({ id: "resp_1", choices: [] });
     expect(fmt.collectTranslator).toHaveBeenCalled();
+    const call = fmt.collectTranslator.mock.calls[0] ?? [];
+    expect(call).toHaveLength(1);
+    const options = call[0] as Record<string, unknown>;
+    expect(options.api).toBeDefined();
+    expect(options.response).toBeInstanceOf(Response);
+    expect(options.model).toBe("codex");
+    expect(options.tupleSchema).toBe(tupleSchema);
+    expect(options.usageHint).toBeUndefined();
+    expect(typeof options.onResponseMetadata).toBe("function");
     expect(accountPool.release).toHaveBeenCalledWith("e1", {
       input_tokens: 10,
       output_tokens: 20,
     });
   });
 
+  it("records non-streaming response affinity metadata from collectTranslator", async () => {
+    mockCreateResponse = () =>
+      Promise.resolve(new Response("data: {}\n\n", {
+        headers: { "x-codex-turn-state": "turn-success" },
+      }));
+
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async (options: FormatCollectTranslatorOptions) => {
+        options.onResponseMetadata?.({ functionCallIds: ["call_a", "call_a"] });
+        options.onResponseMetadata?.({ functionCallIds: ["call_b"] });
+        return {
+          response: { id: "resp_meta", choices: [] },
+          usage: { input_tokens: 33, output_tokens: 4 },
+          responseId: "resp_meta",
+        };
+      }),
+    });
+    const req: ProxyRequest = {
+      ...createDefaultRequest(),
+      codexRequest: {
+        ...createDefaultRequest().codexRequest,
+        prompt_cache_key: "thread-collect",
+      },
+    };
+    const promptCacheIdentity = resolvePromptCacheIdentity(req.codexRequest, req.clientConversationId);
+    const variantHash = computeVariantHash(
+      req.codexRequest.instructions,
+      req.codexRequest.tools,
+      buildVariantIdentity(req.codexRequest, promptCacheIdentity),
+    );
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    const affinityMap = getSessionAffinityMap();
+    expect(affinityMap.lookup("resp_meta")).toBe("e1");
+    expect(affinityMap.lookupConversationId("resp_meta")).toBe("thread-collect");
+    expect(affinityMap.lookupTurnState("resp_meta")).toBe("turn-success");
+    expect(affinityMap.lookupInstructions("resp_meta")).toBe("You are helpful");
+    expect(affinityMap.lookupInputTokens("resp_meta")).toBe(33);
+    expect(affinityMap.lookupFunctionCallIds("resp_meta")).toEqual(["call_a", "call_b"]);
+    expect(affinityMap.lookupLatestResponseIdByConversationId(
+      "thread-collect",
+      undefined,
+      variantHash,
+    )).toBe("resp_meta");
+    expect(affinityMap.lookupLatestResponseIdByConversationId(
+      "thread-collect",
+      undefined,
+      "different-variant",
+    )).toBeNull();
+  });
+
   // 3. Streaming success
   it("returns text/event-stream with SSE chunks for streaming", async () => {
     const accountPool = createMockAccountPool();
     const fmt = createMockFormatAdapter();
-    const req = createStreamingRequest();
+    const tupleSchema = { type: "array", prefixItems: [] } satisfies Record<string, unknown>;
+    const req = { ...createStreamingRequest(), tupleSchema };
     const { app } = buildTestApp({ accountPool, fmt, req });
 
     const res = await app.request("/test", { method: "POST" });
@@ -283,6 +319,47 @@ describe("proxy-handler integration", () => {
     expect(text).toContain("data: {}\n\n");
     expect(text).toContain("data: [DONE]\n\n");
     expect(fmt.streamTranslator).toHaveBeenCalled();
+    const call = fmt.streamTranslator.mock.calls[0] ?? [];
+    expect(call).toHaveLength(1);
+    const options = call[0] as Record<string, unknown>;
+    expect(options.api).toBeDefined();
+    expect(options.response).toBeInstanceOf(Response);
+    expect(options.model).toBe("codex");
+    expect(typeof options.onUsage).toBe("function");
+    expect(typeof options.onResponseId).toBe("function");
+    expect(options.tupleSchema).toBe(tupleSchema);
+    expect(options.usageHint).toBeUndefined();
+    expect(typeof options.onResponseMetadata).toBe("function");
+    expect(options.streamContext).toMatchObject({
+      tag: "Test",
+      provider: "codex",
+      path: "/codex/responses",
+      model: "codex",
+      accountEntryId: "e1",
+    });
+  });
+
+  it("returns a streaming error event when upstream request fails before SSE starts", async () => {
+    mockCreateResponse = () =>
+      Promise.reject(new CodexApiError(0, "error sending request for url"));
+
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter();
+    const req = createStreamingRequest();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+
+    const text = await res.text();
+    expect(text).toContain("event: response.failed");
+    expect(text).toContain("error sending request for url");
+    expect(fmt.formatStreamError).toHaveBeenCalledWith(
+      502,
+      "Codex API error (0): error sending request for url",
+    );
+    expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 
   // 4. CodexApiError 429 → markRateLimited with parsed retryAfterSec + fallback to next account
@@ -311,11 +388,64 @@ describe("proxy-handler integration", () => {
     const res = await app.request("/test", { method: "POST" });
     expect(res.status).toBe(200);
 
-    expect(accountPool.markRateLimited).toHaveBeenCalledWith("e1", {
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledWith("e1", {
       retryAfterSec: 471284,
       countRequest: true,
     });
     // Second account succeeds — release called with usage
+    expect(accountPool.release).toHaveBeenCalledWith("e2", {
+      input_tokens: 10,
+      output_tokens: 20,
+    });
+  });
+
+  it("attributes WebSocket rate-limit callback updates to the failed account before fallback", async () => {
+    const body429 = JSON.stringify({
+      error: { type: "usage_limit_reached", message: "Limit reached", resets_in_seconds: 123 },
+    });
+    const parsedRateLimit: ParsedRateLimit = {
+      primary: { used_percent: 100, window_minutes: 60, reset_at: 2_000_000_300 },
+      secondary: null,
+      code_review: null,
+    };
+    let createCount = 0;
+    mockCreateResponse = (_request, _signal, onRateLimits) => {
+      createCount++;
+      if (createCount === 1) {
+        onRateLimits?.(parsedRateLimit);
+        return Promise.reject(new CodexApiError(429, body429));
+      }
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    let acquireCount = 0;
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn(() => {
+        acquireCount++;
+        if (acquireCount === 1) return { entryId: "e1", token: "tok1", accountId: "acc1" };
+        return { entryId: "e2", token: "tok2", accountId: "acc2" };
+      }),
+    });
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    expect(accountPool.updateCachedQuota).toHaveBeenCalledTimes(1);
+    expect(accountPool.updateCachedQuota).toHaveBeenCalledWith("e1", expect.objectContaining({
+      rate_limit: expect.objectContaining({
+        used_percent: 100,
+        limit_reached: true,
+      }),
+    }));
+    expect(accountPool.syncRateLimitWindow).toHaveBeenCalledWith("e1", 2_000_000_300, 3_600);
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledWith("e1", { resetsAtSec: 2_000_000_300 });
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledWith("e1", {
+      retryAfterSec: 123,
+      countRequest: true,
+    });
+    expect(accountPool.release).toHaveBeenCalledTimes(1);
     expect(accountPool.release).toHaveBeenCalledWith("e2", {
       input_tokens: 10,
       output_tokens: 20,
@@ -338,7 +468,7 @@ describe("proxy-handler integration", () => {
     const res = await app.request("/test", { method: "POST" });
     expect(res.status).toBe(429);
 
-    expect(accountPool.markRateLimited).toHaveBeenCalledWith("e1", {
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledWith("e1", {
       retryAfterSec: undefined,
       countRequest: true,
     });
@@ -363,7 +493,7 @@ describe("proxy-handler integration", () => {
 
     await app.request("/test", { method: "POST" });
 
-    const call = accountPool.markRateLimited.mock.calls[0] as [string, { retryAfterSec: number; countRequest: boolean }];
+    const call = accountPool.applyRateLimit429.mock.calls[0] as [string, { retryAfterSec: number; countRequest: boolean }];
     expect(call[0]).toBe("e1");
     // Should be approximately 3600 (±5s tolerance for test execution time)
     expect(call[1].retryAfterSec).toBeGreaterThan(3590);
@@ -392,9 +522,9 @@ describe("proxy-handler integration", () => {
     expect(res.status).toBe(429);
 
     // Both accounts marked rate limited
-    expect(accountPool.markRateLimited).toHaveBeenCalledTimes(2);
-    expect(accountPool.markRateLimited).toHaveBeenCalledWith("e1", { retryAfterSec: 100, countRequest: true });
-    expect(accountPool.markRateLimited).toHaveBeenCalledWith("e2", { retryAfterSec: 100, countRequest: true });
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledTimes(2);
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledWith("e1", { retryAfterSec: 100, countRequest: true });
+    expect(accountPool.applyRateLimit429).toHaveBeenCalledWith("e2", { retryAfterSec: 100, countRequest: true });
     expect(accountPool.release).not.toHaveBeenCalled();
   });
 
@@ -414,6 +544,46 @@ describe("proxy-handler integration", () => {
     expect(body.error).toBe("api_error");
     expect(body.status).toBe(400);
     expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
+  });
+
+  it("releases model-not-supported account before retrying a fallback account", async () => {
+    let upstreamCalls = 0;
+    mockCreateResponse = () => {
+      upstreamCalls++;
+      if (upstreamCalls === 1) {
+        return Promise.reject(new CodexApiError(400, JSON.stringify({
+          error: { message: "Model gpt-5.4 is not supported on this plan" },
+        })));
+      }
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn()
+        .mockReturnValueOnce({ entryId: "e1", token: "tok1", accountId: "acc1" })
+        .mockReturnValueOnce({ entryId: "e2", token: "tok2", accountId: "acc2" }),
+    });
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    expect(accountPool.acquire).toHaveBeenNthCalledWith(1, {
+      model: "codex",
+      excludeIds: undefined,
+      preferredEntryId: undefined,
+    });
+    expect(accountPool.acquire).toHaveBeenNthCalledWith(2, {
+      model: "codex",
+      excludeIds: ["e1"],
+      preferredEntryId: undefined,
+    });
+    expect(accountPool.release).toHaveBeenNthCalledWith(1, "e1", undefined);
+    expect(accountPool.release).toHaveBeenNthCalledWith(2, "e2", {
+      input_tokens: 10,
+      output_tokens: 20,
+    });
   });
 
   // 5b. CodexApiError 403 (non-CF) → marks banned, tries fallback
@@ -484,241 +654,55 @@ describe("proxy-handler integration", () => {
     expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 
-  it("retries streaming request when preflight detects empty response", async () => {
-    let preflightCallCount = 0;
-    mockPreflightContentfulStream = async (source: AsyncIterable<unknown>) => {
-      preflightCallCount++;
-      if (preflightCallCount <= 2) {
-        throw new EmptyResponseError(`resp_stream_empty_${preflightCallCount}`, {
-          input_tokens: preflightCallCount,
-          output_tokens: 0,
-        });
-      }
-      return { buffered: [], stream: source };
-    };
-
-    const accountPool = createMockAccountPool({
-      acquire: vi.fn()
-        .mockReturnValueOnce({ entryId: "e1", token: "tok1", accountId: "acc1" })
-        .mockReturnValueOnce({ entryId: "e2", token: "tok2", accountId: "acc2" })
-        .mockReturnValueOnce({ entryId: "e3", token: "tok3", accountId: "acc3" }),
-    });
-    const fmt = createMockFormatAdapter();
-    const req = createStreamingRequest();
-    const { app } = buildTestApp({ accountPool, fmt, req });
-
-    const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(200);
-    expect(preflightCallCount).toBe(3);
-    expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(2);
-    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(1, "e1");
-    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(2, "e2");
-    expect(accountPool.release).toHaveBeenCalledWith("e1", {
-      input_tokens: 1,
-      output_tokens: 0,
-    });
-    expect(accountPool.release).toHaveBeenCalledWith("e2", {
-      input_tokens: 2,
-      output_tokens: 0,
-    });
-    expect(accountPool.release).toHaveBeenCalledTimes(2);
-    const text = await res.text();
-    expect(text).not.toContain("Codex returned an empty response");
-  });
-
-  it("streaming empty-response retry calls createResponse exactly once per attempt and excludes tried accounts", async () => {
-    // 防回归: streaming 空响应重试不能在外层 for 多打一次 createResponse,
-    // 也不能选回已经试过的账号。
-    let createResponseCallCount = 0;
-    mockCreateResponse = async () => {
-      createResponseCallCount++;
-      return new Response("data: {}\n\n");
-    };
-
-    let preflightCallCount = 0;
-    mockPreflightContentfulStream = async (source: AsyncIterable<unknown>) => {
-      preflightCallCount++;
-      if (preflightCallCount <= 2) {
-        throw new EmptyResponseError(`resp_stream_empty_${preflightCallCount}`, {
-          input_tokens: preflightCallCount,
-          output_tokens: 0,
-        });
-      }
-      return { buffered: [], stream: source };
-    };
-
-    const acquireCalls: Array<{ excludeIds?: string[] }> = [];
-    const acquire = vi.fn((opts?: { excludeIds?: string[] }) => {
-      // snapshot the array — caller mutates it across attempts.
-      acquireCalls.push({ excludeIds: opts?.excludeIds ? [...opts.excludeIds] : undefined });
-      const idx = acquireCalls.length;
-      return { entryId: `e${idx}`, token: `tok${idx}`, accountId: `acc${idx}` };
-    });
-    const accountPool = createMockAccountPool({ acquire });
-    const fmt = createMockFormatAdapter();
-    const req = createStreamingRequest();
-    const { app } = buildTestApp({ accountPool, fmt, req });
-
-    const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(200);
-
-    // 3 次尝试 → 恰好 3 次 createResponse（首次 + 2 次重试），不能多。
-    expect(createResponseCallCount).toBe(3);
-    expect(preflightCallCount).toBe(3);
-
-    // 第二次 acquire 排除 e1；第三次排除 e1 + e2。
-    expect(acquireCalls.length).toBe(3);
-    expect(acquireCalls[0].excludeIds ?? []).toEqual([]);
-    expect(acquireCalls[1].excludeIds).toEqual(["e1"]);
-    expect(acquireCalls[2].excludeIds).toEqual(["e1", "e2"]);
-  });
-
-  it("streaming empty-response retries are bounded by MAX_EMPTY_RETRIES", async () => {
-    // 防回归: streaming 路径必须有 retry 上限，不能无限循环。
-    let createResponseCallCount = 0;
-    mockCreateResponse = async () => {
-      createResponseCallCount++;
-      return new Response("data: {}\n\n");
-    };
-
-    mockPreflightContentfulStream = async () => {
-      throw new EmptyResponseError("resp_always_empty", {
-        input_tokens: 0,
-        output_tokens: 0,
-      });
-    };
-
-    const accountPool = createMockAccountPool({
-      acquire: vi.fn((opts?: { excludeIds?: string[] }) => {
-        const idx = (opts?.excludeIds?.length ?? 0) + 1;
-        return { entryId: `e${idx}`, token: `tok${idx}`, accountId: `acc${idx}` };
+  it("formats non-Codex collect errors with embedded upstream HTTP status", async () => {
+    const message = "collect failed after HTTP/2 503";
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async () => {
+        throw new Error(message);
       }),
     });
-    const fmt = createMockFormatAdapter();
-    const req = createStreamingRequest();
-    const { app } = buildTestApp({ accountPool, fmt, req });
+    const { app } = buildTestApp({ accountPool, fmt });
 
     const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(502);
-    // MAX_EMPTY_RETRIES = 2 → 上限 3 次 createResponse，绝不能更多。
-    expect(createResponseCallCount).toBe(3);
-    expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(3);
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body).toEqual({
+      error: "api_error",
+      status: 503,
+      message,
+    });
+    expect(fmt.formatError).toHaveBeenCalledWith(503, message);
+    expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 
-  it("streaming single-account empty-response falls back to same-account retry", async () => {
-    let createResponseCallCount = 0;
-    mockCreateResponse = async () => {
-      createResponseCallCount++;
-      return new Response("data: {}\n\n");
-    };
-
-    let preflightCallCount = 0;
-    mockPreflightContentfulStream = async () => {
-      preflightCallCount++;
-      throw new EmptyResponseError(`resp_single_${preflightCallCount}`, {
-        input_tokens: preflightCallCount,
-        output_tokens: 0,
-      });
-    };
-
-    const acquireCalls: Array<{ excludeIds?: string[] }> = [];
+  // 8b. Upstream premature close → 504, no cross-account retry
+  it("fails fast with 504 on UpstreamPrematureCloseError, no retry", async () => {
+    let acquireCount = 0;
     const accountPool = createMockAccountPool({
-      acquire: vi.fn((opts?: { excludeIds?: string[] }) => {
-        const snapshot = opts?.excludeIds ? [...opts.excludeIds] : undefined;
-        acquireCalls.push({ excludeIds: snapshot });
-        if (snapshot?.includes("e1")) return null;
-        return { entryId: "e1", token: "tok1", accountId: "acc1" };
+      acquire: vi.fn(() => {
+        acquireCount++;
+        return { entryId: `e${acquireCount}`, token: "tok", accountId: "acc" };
       }),
     });
-    const fmt = createMockFormatAdapter();
-    const req = createStreamingRequest();
-    const { app } = buildTestApp({ accountPool, fmt, req });
 
-    const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(502);
-    expect(preflightCallCount).toBe(3);
-    expect(createResponseCallCount).toBe(3);
-    expect(accountPool.recordEmptyResponse).toHaveBeenCalledTimes(3);
-    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(1, "e1");
-    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(2, "e1");
-    expect(accountPool.recordEmptyResponse).toHaveBeenNthCalledWith(3, "e1");
-    expect(accountPool.release).toHaveBeenCalledTimes(3);
-    expect(accountPool.release).toHaveBeenNthCalledWith(1, "e1", {
-      input_tokens: 1,
-      output_tokens: 0,
-    });
-    expect(accountPool.release).toHaveBeenNthCalledWith(2, "e1", {
-      input_tokens: 2,
-      output_tokens: 0,
-    });
-    expect(accountPool.release).toHaveBeenNthCalledWith(3, "e1", {
-      input_tokens: 3,
-      output_tokens: 0,
-    });
-
-    // 实际调用序列：初始 acquire 1 次；每次 retry 先 exclude(e1) 再 fallback(undefined)。
-    expect(acquireCalls.map((c) => c.excludeIds ?? [])).toEqual([
-      [],
-      ["e1"],
-      [],
-      ["e1", "e1"],
-      [],
-    ]);
-  });
-
-  it("streaming single-account empty-response evicts the pooled WebSocket before retry", async () => {
-    wsPoolMocks.evictByPoolKey.mockReturnValue(true);
-
-    const createResponseCalls: unknown[][] = [];
-    mockCreateResponse = async (...args: unknown[]) => {
-      createResponseCalls.push([{ ...(args[0] as Record<string, unknown>) }, ...args.slice(1)]);
-      return new Response("data: {}\n\n");
-    };
-
-    let preflightCallCount = 0;
-    mockPreflightContentfulStream = async (source: AsyncIterable<unknown>) => {
-      preflightCallCount++;
-      if (preflightCallCount === 1) {
-        throw new EmptyResponseError("resp_ws_empty", {
-          input_tokens: 1,
-          output_tokens: 0,
-        });
-      }
-      return { buffered: [], stream: source };
-    };
-
-    const accountPool = createMockAccountPool({
-      acquire: vi.fn((opts?: { excludeIds?: string[] }) => {
-        if (opts?.excludeIds?.includes("e1")) return null;
-        return { entryId: "e1", token: "tok1", accountId: "acc1" };
+    let collectCallCount = 0;
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async () => {
+        collectCallCount++;
+        throw new UpstreamPrematureCloseError("resp_pc", true, 1920);
       }),
     });
-    const fmt = createMockFormatAdapter();
-    const req: ProxyRequest = {
-      ...createStreamingRequest(),
-      clientConversationId: "conv-ws-empty",
-      codexRequest: {
-        ...createStreamingRequest().codexRequest,
-        useWebSocket: true,
-      },
-    };
-    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const { app } = buildTestApp({ accountPool, fmt });
 
     const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(200);
-    expect(preflightCallCount).toBe(2);
-    expect(createResponseCalls).toHaveLength(2);
-    expect(wsPoolMocks.evictByPoolKey).toHaveBeenCalledTimes(1);
-    expect(wsPoolMocks.evictByPoolKey).toHaveBeenCalledWith("e1:conv-ws-empty");
-
-    const firstRequest = createResponseCalls[0][0] as { useWebSocket?: boolean };
-    const retryRequest = createResponseCalls[1][0] as { useWebSocket?: boolean };
-    const firstPoolCtx = createResponseCalls[0][3] as { entryId: string; poolKey: string };
-    expect(firstPoolCtx).toMatchObject({ entryId: "e1", poolKey: "e1:conv-ws-empty" });
-    expect(firstRequest.useWebSocket).toBe(true);
-    expect(retryRequest.useWebSocket).toBe(false);
-    expect(createResponseCalls[1][3]).toBeUndefined();
-    expect(typeof createResponseCalls[1][2]).toBe("function");
+    expect(res.status).toBe(504);
+    expect(collectCallCount).toBe(1);
+    expect(acquireCount).toBe(1);
+    expect(accountPool.recordEmptyResponse).not.toHaveBeenCalled();
+    expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 
   // 8. Empty response retry (non-streaming) → account switch, second succeeds
@@ -772,6 +756,45 @@ describe("proxy-handler integration", () => {
       input_tokens: 5,
       output_tokens: 15,
     });
+  });
+
+  it("attributes collect CodexApiError after EmptyResponseError retry to the new account", async () => {
+    let acquireCount = 0;
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn(() => {
+        acquireCount++;
+        if (acquireCount === 1) return { entryId: "e1", token: "tok1", accountId: "acc1" };
+        return { entryId: "e2", token: "tok2", accountId: "acc2" };
+      }),
+    });
+
+    let collectCallCount = 0;
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async () => {
+        collectCallCount++;
+        if (collectCallCount === 1) {
+          throw new EmptyResponseError(
+            "resp_empty",
+            { input_tokens: 1, output_tokens: 0 },
+          );
+        }
+        throw new CodexApiError(422, JSON.stringify({
+          error: { type: "invalid_request_error", message: "bad retry collect" },
+        }));
+      }),
+    });
+
+    const { app } = buildTestApp({ accountPool, fmt });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(422);
+
+    expect(accountPool.recordEmptyResponse).toHaveBeenCalledWith("e1");
+    expect(accountPool.release).toHaveBeenCalledWith("e1", {
+      input_tokens: 1,
+      output_tokens: 0,
+    });
+    expect(accountPool.release).toHaveBeenCalledWith("e2", undefined);
   });
 
   // 9. Empty response retries exhausted → 502
@@ -955,6 +978,7 @@ describe("proxy-handler integration", () => {
     const message = fmt.format429.mock.calls[0][0] as string;
     expect(message).toContain("All accounts exhausted");
     expect(message).toContain("2 rate-limited");
+    expect(accountPool.acquire).toHaveBeenCalledTimes(1);
   });
 
   // 17. previous_response_not_found: should strip previous_response_id and retry
@@ -1011,137 +1035,143 @@ describe("proxy-handler integration", () => {
     expect(seenPrevIds[1]).toBeUndefined();
   });
 
-  it("recovers from recoverable pre-connect WS failure by stripping previous_response_id and disabling WS", async () => {
-    const seenRequests: Array<{ previous_response_id: string | undefined; useWebSocket: boolean | undefined; turnState: string | undefined }> = [];
-    let createCount = 0;
-    mockCreateResponse = (codexRequest: unknown) => {
-      const req = codexRequest as {
-        previous_response_id?: string;
-        useWebSocket?: boolean;
-        turnState?: string;
-      };
-      seenRequests.push({
-        previous_response_id: req.previous_response_id,
-        useWebSocket: req.useWebSocket,
-        turnState: req.turnState,
-      });
-      createCount++;
-      if (createCount === 1) {
-        return Promise.reject(new PreviousResponseWebSocketError("Aborted before WebSocket connect", {
-          phase: "pre-connect",
-          recoverable: true,
-        }));
-      }
-      return Promise.resolve(new Response("data: {}\n\n"));
-    };
-
-    const accountPool = createMockAccountPool();
-    const fmt = createMockFormatAdapter();
+  it("replays full original input after implicit previous-response WebSocket failure", async () => {
     const req: ProxyRequest = {
       ...createDefaultRequest(),
       codexRequest: {
         ...createDefaultRequest().codexRequest,
-        previous_response_id: "resp_prev",
-        turnState: "turn_prev",
-        useWebSocket: true,
+        prompt_cache_key: "thread-implicit-ws",
+        input: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "ok" },
+          { role: "user", content: "continue" },
+        ],
+        turnState: "turn-original",
+        useWebSocket: false,
       },
     };
+    const affinityMap = getSessionAffinityMap();
+    const promptCacheIdentity = resolvePromptCacheIdentity(req.codexRequest, req.clientConversationId);
+    const variantHash = computeVariantHash(
+      req.codexRequest.instructions,
+      req.codexRequest.tools,
+      buildVariantIdentity(req.codexRequest, promptCacheIdentity),
+    );
+    affinityMap.record(
+      "resp_implicit_ws",
+      "e1",
+      "thread-implicit-ws",
+      "turn-implicit",
+      "You are helpful",
+      undefined,
+      undefined,
+      variantHash,
+    );
 
-    const { app } = buildTestApp({ accountPool, fmt, req });
-    const res = await app.request("/test", { method: "POST" });
-
-    expect(res.status).toBe(200);
-    expect(createCount).toBe(2);
-    expect(seenRequests).toEqual([
-      {
-        previous_response_id: "resp_prev",
-        useWebSocket: true,
-        turnState: "turn_prev",
-      },
-      {
-        previous_response_id: undefined,
-        useWebSocket: false,
-        turnState: undefined,
-      },
-    ]);
-  });
-
-  it("recovers implicit resume by restoring full input after recoverable pre-connect WS failure", async () => {
     const seenRequests: Array<{
-      previous_response_id: string | undefined;
-      useWebSocket: boolean | undefined;
+      input: CodexResponsesRequest["input"];
+      previousResponseId: string | undefined;
       turnState: string | undefined;
-      input: unknown[];
+      useWebSocket: boolean | undefined;
     }> = [];
     let createCount = 0;
-    mockCreateResponse = (codexRequest: unknown) => {
-      const req = codexRequest as {
-        previous_response_id?: string;
-        useWebSocket?: boolean;
-        turnState?: string;
-        input: unknown[];
-      };
-      seenRequests.push({
-        previous_response_id: req.previous_response_id,
-        useWebSocket: req.useWebSocket,
-        turnState: req.turnState,
-        input: req.input,
-      });
+    mockCreateResponse = (request) => {
       createCount++;
+      seenRequests.push({
+        input: [...request.input],
+        previousResponseId: request.previous_response_id,
+        turnState: request.turnState,
+        useWebSocket: request.useWebSocket,
+      });
       if (createCount === 1) {
-        return Promise.reject(new PreviousResponseWebSocketError("Aborted before WebSocket connect", {
-          phase: "pre-connect",
-          recoverable: true,
-        }));
+        return Promise.reject(new PreviousResponseWebSocketError("ws down"));
       }
       return Promise.resolve(new Response("data: {}\n\n"));
     };
 
-    sessionAffinityMocks.getSessionAffinityMap.mockReturnValue({
-      lookup: vi.fn(() => "e1"),
-      lookupConversationId: vi.fn(() => null),
-      lookupLatestResponseIdByConversationId: vi.fn(() => "resp_implicit_prev"),
-      lookupTurnState: vi.fn(() => "turn_implicit_prev"),
-      lookupInstructions: vi.fn(() => "You are helpful"),
-      lookupInputTokens: vi.fn(() => null),
-      lookupFunctionCallIds: vi.fn(() => []),
-      forget: vi.fn(),
-      record: vi.fn(),
-    });
-
     const accountPool = createMockAccountPool();
     const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    expect(seenRequests).toEqual([
+      {
+        input: [{ role: "user", content: "continue" }],
+        previousResponseId: "resp_implicit_ws",
+        turnState: "turn-implicit",
+        useWebSocket: true,
+      },
+      {
+        input: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "ok" },
+          { role: "user", content: "continue" },
+        ],
+        previousResponseId: undefined,
+        turnState: "turn-original",
+        useWebSocket: false,
+      },
+    ]);
+    expect(accountPool.acquire).toHaveBeenCalledTimes(1);
+    expect(accountPool.release).toHaveBeenCalledWith("e1", {
+      input_tokens: 10,
+      output_tokens: 20,
+    });
+  });
+
+  it("recovers when collectTranslator raises previous_response_not_found", async () => {
+    const notFoundBody = JSON.stringify({
+      error: {
+        type: "invalid_request_error",
+        code: "previous_response_not_found",
+        message: "Previous response with id 'resp_collect_stale' not found.",
+      },
+    });
     const req: ProxyRequest = {
       ...createDefaultRequest(),
-      clientConversationId: "conv_implicit_1",
       codexRequest: {
         ...createDefaultRequest().codexRequest,
-        input: [
-          { role: "assistant", content: "Earlier answer" },
-          { role: "user", content: "Continue" },
-        ],
+        previous_response_id: "resp_collect_stale",
       },
     };
+    let createCount = 0;
+    const seenPrevIds: Array<string | undefined> = [];
+    mockCreateResponse = () => {
+      createCount++;
+      seenPrevIds.push(req.codexRequest.previous_response_id);
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
 
-    const { app } = buildTestApp({ accountPool, fmt, req });
-    const res = await app.request("/test", { method: "POST" });
-
-    expect(res.status).toBe(200);
-    expect(createCount).toBe(2);
-    expect(seenRequests[0]).toEqual({
-      previous_response_id: "resp_implicit_prev",
-      useWebSocket: true,
-      turnState: "turn_implicit_prev",
-      input: [{ role: "user", content: "Continue" }],
+    let collectCount = 0;
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async () => {
+        collectCount++;
+        if (collectCount === 1) {
+          throw new CodexApiError(400, notFoundBody);
+        }
+        return {
+          response: { id: "resp_after_collect_retry", choices: [] },
+          usage: { input_tokens: 7, output_tokens: 3 },
+          responseId: "resp_after_collect_retry",
+        };
+      }),
     });
-    expect(seenRequests[1]).toEqual({
-      previous_response_id: undefined,
-      useWebSocket: undefined,
-      turnState: undefined,
-      input: [
-        { role: "assistant", content: "Earlier answer" },
-        { role: "user", content: "Continue" },
-      ],
+    const accountPool = createMockAccountPool();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    expect(createCount).toBe(2);
+    expect(collectCount).toBe(2);
+    expect(seenPrevIds[0]).toBe("resp_collect_stale");
+    expect(seenPrevIds[1]).toBeUndefined();
+    expect(accountPool.release).toHaveBeenCalledTimes(1);
+    expect(accountPool.release).toHaveBeenCalledWith("e1", {
+      input_tokens: 7,
+      output_tokens: 3,
     });
   });
 
@@ -1173,6 +1203,45 @@ describe("proxy-handler integration", () => {
     expect(res.status).toBe(400);
     // Exactly 2 upstream calls — strip-retry happens once, no further retries
     expect(createCount).toBe(2);
+  });
+
+  // 17c. unanswered function_call: upstream "No tool output found for function
+  // call call_X" means a stored function_call from the previous response was
+  // not answered. Recovery: strip previous_response_id, retry once on the same
+  // account (full input replay covers the missing context).
+  it("recovers from unanswered function_call by stripping ID and retrying", async () => {
+    const unansweredBody = JSON.stringify({
+      error: {
+        type: "invalid_request_error",
+        message: "No tool output found for function call call_8vO7oqvintBWH5bAoAz3vPh5.",
+      },
+    });
+
+    let createCount = 0;
+    const seenPrevIds: Array<string | undefined> = [];
+    const req: ProxyRequest = {
+      ...createDefaultRequest(),
+      codexRequest: {
+        ...createDefaultRequest().codexRequest,
+        previous_response_id: "resp_unanswered_chain",
+      },
+    };
+    mockCreateResponse = () => {
+      seenPrevIds.push(req.codexRequest.previous_response_id);
+      createCount++;
+      if (createCount === 1) return Promise.reject(new CodexApiError(400, unansweredBody));
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+    const res = await app.request("/test", { method: "POST" });
+
+    expect(res.status).toBe(200);
+    expect(createCount).toBe(2);
+    expect(seenPrevIds[0]).toBe("resp_unanswered_chain");
+    expect(seenPrevIds[1]).toBeUndefined();
   });
 
   // 18. 403 ban with mixed pool states → descriptive error

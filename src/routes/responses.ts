@@ -12,8 +12,9 @@ import type { AccountPool } from "../auth/account-pool.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { CodexApi, CodexApiError } from "../proxy/codex-api.js";
-import type { CodexResponsesRequest, CodexCompactRequest, CodexInputItem } from "../proxy/codex-api.js";
+import type { CodexResponsesRequest, CodexCompactRequest, CodexInputItem, CodexSSEEvent } from "../proxy/codex-api.js";
 import { enqueueLogEntry } from "../logs/entry.js";
+import { recordStreamCloseEvent, type StreamCloseContextBase } from "../logs/stream-close-event.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { randomUUID } from "crypto";
@@ -23,24 +24,45 @@ import { prepareSchema } from "../translation/shared-utils.js";
 import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { parseModelName, resolveModelId, getModelInfo, buildDisplayModelName } from "../models/model-store.js";
 import { EmptyResponseError, type UsageInfo, type ExtractedEvent } from "../translation/codex-event-extractor.js";
-import type { CodexSSEEvent } from "../proxy/codex-api.js";
-import {
-  handleProxyRequest,
-  handleDirectRequest,
-  staggerIfNeeded,
-  type ResponseMetadata,
-  type FormatAdapter,
-} from "./shared/proxy-handler.js";
+import { handleProxyRequest } from "./shared/proxy-handler.js";
+import { staggerIfNeeded } from "./shared/proxy-stagger.js";
+import { handleDirectRequest } from "./shared/direct-request-handler.js";
+import type { FormatAdapter, ResponseMetadata } from "./shared/proxy-handler-types.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
 import { handleCodexApiError } from "./shared/proxy-error-handler.js";
 import { withRetry } from "../utils/retry.js";
 import { extractCodexError } from "../types/codex-events.js";
+import {
+  extractOpenAISubagentFromMetadata,
+  normalizeOpenAISubagent,
+  OPENAI_SUBAGENT_HEADER,
+  sanitizeClientMetadata,
+} from "../proxy/openai-subagent.js";
+
+const X_CODEX_TURN_STATE_HEADER = "x-codex-turn-state";
+const X_CODEX_TURN_METADATA_HEADER = "x-codex-turn-metadata";
+const X_CODEX_BETA_FEATURES_HEADER = "x-codex-beta-features";
+const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER = "x-responsesapi-include-timing-metrics";
+const X_CODEX_PARENT_THREAD_ID_HEADER = "x-codex-parent-thread-id";
+const X_CODEX_WINDOW_ID_HEADER = "x-codex-window-id";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function firstHeaderOrMetadata(
+  c: Context,
+  metadata: Record<string, string>,
+  headerName: string,
+): string | null {
+  return nonEmptyString(c.req.header(headerName)) ?? nonEmptyString(metadata[headerName]);
 }
 
 function extractOutputTextFromItem(item: unknown): string {
@@ -95,6 +117,84 @@ function emitFunctionCallMetadata(
 
 // ── Passthrough stream translator ──────────────────────────────────
 
+const STREAM_DISCONNECTED_CODE = "stream_disconnected";
+const STREAM_DISCONNECTED_MESSAGE = "Upstream stream closed before response.completed";
+
+interface ResponsesStreamError {
+  type: string;
+  code: string;
+  message: string;
+}
+
+function isTerminalResponsesEvent(event: string): boolean {
+  return event === "response.completed" || event === "response.failed" || event === "error";
+}
+
+function extractResponseIdFromEventData(data: unknown): string | null {
+  if (!isRecord(data) || !isRecord(data.response)) return null;
+  return typeof data.response.id === "string" ? data.response.id : null;
+}
+
+function buildPrematureCloseFailedEvent(responseId: string | null, detail?: string): string {
+  const message = detail ? `${STREAM_DISCONNECTED_MESSAGE}: ${detail}` : STREAM_DISCONNECTED_MESSAGE;
+  return buildResponseFailedEvent(responseId, {
+    type: "server_error",
+    code: STREAM_DISCONNECTED_CODE,
+    message,
+  });
+}
+
+function buildResponseFailedEvent(responseId: string | null, error: ResponsesStreamError): string {
+  const id = responseId ?? `resp_proxy_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  return `event: response.failed\ndata: ${JSON.stringify({
+    type: "response.failed",
+    response: {
+      id,
+      status: "failed",
+      error,
+    },
+    error,
+  })}\n\n`;
+}
+
+function stripCodexErrorPrefix(message: string): string {
+  return message.replace(/^Codex API error \(\d+\):\s*/, "");
+}
+
+function classifyResponsesStreamError(status: number, message: string): ResponsesStreamError {
+  const cleanMessage = stripCodexErrorPrefix(message);
+  if (status === 429) {
+    return {
+      type: "rate_limit_error",
+      code: "rate_limit_exceeded",
+      message: cleanMessage,
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      type: "invalid_request_error",
+      code: "authentication_error",
+      message: cleanMessage,
+    };
+  }
+  if (cleanMessage.toLowerCase().includes("error sending request")) {
+    return {
+      type: "server_error",
+      code: "upstream_transport_error",
+      message: cleanMessage,
+    };
+  }
+  return {
+    type: status >= 400 && status < 500 ? "invalid_request_error" : "server_error",
+    code: "codex_api_error",
+    message: cleanMessage,
+  };
+}
+
+function buildResponsesStreamError(status: number, message: string): string {
+  return buildResponseFailedEvent(null, classifyResponsesStreamError(status, message));
+}
+
 /** Extract usage from a response.completed payload, including cached_tokens
  *  (nested in input_tokens_details per the OpenAI Responses API contract). */
 export function extractResponseUsage(usage: Record<string, unknown>): { input_tokens: number; output_tokens: number; cached_tokens?: number } {
@@ -128,13 +228,14 @@ function isExtractedEventStream(
     && !(source instanceof Response);
 }
 
-async function* streamPassthrough(
+export async function* streamPassthrough(
   api: UpstreamAdapter,
   source: Response | AsyncIterable<ExtractedEvent>,
-  _model: string,
+  model: string,
   onUsage: (u: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number }) => void,
   onResponseId: (id: string) => void,
   tupleSchema?: Record<string, unknown> | null,
+  streamContext?: StreamCloseContextBase,
   _usageHint?: unknown,
   onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): AsyncGenerator<string> {
@@ -143,10 +244,11 @@ async function* streamPassthrough(
   // after response.completed. This is a known tradeoff for tuple reconversion correctness.
   let tupleTextBuffer = tupleSchema ? "" : null;
   const seenFunctionCallIds = new Set<string>();
+  let sawTerminal = false;
+  let responseId: string | null = null;
 
-  // Normalize input: callers may pass either a raw upstream Response (legacy / direct
-  // path) or a pre-parsed event stream (proxy-handler preflight path). Both must yield
-  // the original CodexSSEEvent so passthrough re-emits raw event names verbatim.
+  // 本地路径可能传入 Response 或 proxy-handler preflight 后的 ExtractedEvent 流；
+  // 这里把两种来源都归一成原始 CodexSSEEvent。
   async function* toRawEvents(): AsyncGenerator<CodexSSEEvent> {
     if (isExtractedEventStream(source)) {
       for await (const evt of source) yield evt.raw;
@@ -155,91 +257,140 @@ async function* streamPassthrough(
     }
   }
 
-  for await (const raw of toRawEvents()) {
-    if (
-      (raw.event === "response.output_item.added" || raw.event === "response.output_item.done") &&
-      isRecord(raw.data)
-    ) {
-      emitFunctionCallMetadata(
-        extractFunctionCallIdsFromItem(raw.data.item),
-        seenFunctionCallIds,
-        onResponseMetadata,
-      );
-    }
-
-    // Buffer text deltas when tuple reconversion is active
-    if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
-      const data = raw.data;
-      if (isRecord(data) && typeof data.delta === "string") {
-        tupleTextBuffer += data.delta;
-        continue; // suppress this event — will flush reconverted text on completion
+  const stream = toRawEvents();
+  let upstreamDone = false;
+  try {
+    while (true) {
+      let next: IteratorResult<CodexSSEEvent>;
+      try {
+        next = await stream.next();
+      } catch (err) {
+        if (sawTerminal) return;
+        const detail = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[Responses] premature stream close before terminal event responseId=${responseId ?? "unknown"}: ${detail}`,
+        );
+        recordStreamCloseEvent({
+          kind: "upstream-premature",
+          tag: streamContext?.tag ?? "Responses",
+          requestId: streamContext?.requestId,
+          provider: streamContext?.provider,
+          path: streamContext?.path,
+          model: streamContext?.model ?? model,
+          accountEntryId: streamContext?.accountEntryId,
+          variantHash: streamContext?.variantHash,
+          responseId,
+          detail,
+        });
+        yield buildPrematureCloseFailedEvent(responseId, detail);
+        return;
       }
-    }
 
-    // On completion, flush reconverted text before emitting the completed event
-    if (tupleTextBuffer !== null && tupleSchema && raw.event === "response.completed") {
-      if (tupleTextBuffer) {
-        let reconvertedText = tupleTextBuffer;
-        try {
-          const parsed = JSON.parse(tupleTextBuffer) as unknown;
-          reconvertedText = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
-        } catch (e) {
-          console.warn("[tuple-reconvert] streaming JSON parse failed, emitting raw text:", e);
+      if (next.done) {
+        upstreamDone = true;
+        break;
+      }
+
+      const raw = next.value;
+      responseId = extractResponseIdFromEventData(raw.data) ?? responseId;
+      if (isTerminalResponsesEvent(raw.event)) sawTerminal = true;
+
+      // Buffer text deltas when tuple reconversion is active
+      if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
+        const data = raw.data;
+        if (isRecord(data) && typeof data.delta === "string") {
+          tupleTextBuffer += data.delta;
+          continue; // suppress this event — will flush reconverted text on completion
         }
-        // Emit a single text delta with reconverted content
-        yield `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: reconvertedText })}\n\n`;
       }
-      // Patch the completed event's output text if present
-      const data = raw.data;
-      if (isRecord(data) && isRecord(data.response) && tupleTextBuffer) {
-        const resp = data.response;
-        if (Array.isArray(resp.output)) {
-          for (const item of resp.output as unknown[]) {
-            if (isRecord(item) && Array.isArray(item.content)) {
-              for (const part of item.content as unknown[]) {
-                if (
-                  isRecord(part) &&
-                  (part.type === "output_text" || part.type === "text") &&
-                  typeof part.text === "string"
-                ) {
-                  try {
-                    const parsed = JSON.parse(part.text) as unknown;
-                    part.text = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
-                  } catch { /* leave as-is */ }
+
+      // On completion, flush reconverted text before emitting the completed event
+      if (tupleTextBuffer !== null && tupleSchema && raw.event === "response.completed") {
+        if (tupleTextBuffer) {
+          let reconvertedText = tupleTextBuffer;
+          try {
+            const parsed = JSON.parse(tupleTextBuffer) as unknown;
+            reconvertedText = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
+          } catch (e) {
+            console.warn("[tuple-reconvert] streaming JSON parse failed, emitting raw text:", e);
+          }
+          // Emit a single text delta with reconverted content
+          yield `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: reconvertedText })}\n\n`;
+        }
+        // Patch the completed event's output text if present
+        const data = raw.data;
+        if (isRecord(data) && isRecord(data.response) && tupleTextBuffer) {
+          const resp = data.response;
+          if (Array.isArray(resp.output)) {
+            for (const item of resp.output as unknown[]) {
+              if (isRecord(item) && Array.isArray(item.content)) {
+                for (const part of item.content as unknown[]) {
+                  if (
+                    isRecord(part) &&
+                    (part.type === "output_text" || part.type === "text") &&
+                    typeof part.text === "string"
+                  ) {
+                    try {
+                      const parsed = JSON.parse(part.text) as unknown;
+                      part.text = JSON.stringify(reconvertTupleValues(parsed, tupleSchema));
+                    } catch { /* leave as-is */ }
+                  }
                 }
               }
             }
           }
         }
       }
-    }
 
-    // Re-emit raw SSE event
-    yield `event: ${raw.event}\ndata: ${JSON.stringify(raw.data)}\n\n`;
+      // Re-emit raw SSE event
+      yield `event: ${raw.event}\ndata: ${JSON.stringify(raw.data)}\n\n`;
 
-    // Extract usage and responseId for account pool bookkeeping
-    if (
-      raw.event === "response.created" ||
-      raw.event === "response.in_progress" ||
-      raw.event === "response.completed"
-    ) {
-      const data = raw.data;
-      if (isRecord(data) && isRecord(data.response)) {
-        const resp = data.response;
-        if (raw.event === "response.completed") {
-          emitFunctionCallMetadata(
-            extractFunctionCallIdsFromOutput(resp.output),
-            seenFunctionCallIds,
-            onResponseMetadata,
-          );
-        }
-        if (typeof resp.id === "string") onResponseId(resp.id);
-        if (raw.event === "response.completed" && isRecord(resp.usage)) {
-          const imgUsage = extractImageGenUsage(resp);
-          onUsage({ ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) });
+      // Extract usage and responseId for account pool bookkeeping
+      if (
+        raw.event === "response.created" ||
+        raw.event === "response.in_progress" ||
+        raw.event === "response.completed"
+      ) {
+        const data = raw.data;
+        if (isRecord(data) && isRecord(data.response)) {
+          const resp = data.response;
+          if (raw.event === "response.completed") {
+            emitFunctionCallMetadata(
+              extractFunctionCallIdsFromOutput(resp.output),
+              seenFunctionCallIds,
+              onResponseMetadata,
+            );
+          }
+          if (typeof resp.id === "string") onResponseId(resp.id);
+          if (raw.event === "response.completed" && isRecord(resp.usage)) {
+            const imgUsage = extractImageGenUsage(resp);
+            onUsage({ ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) });
+          }
         }
       }
     }
+  } finally {
+    if (!upstreamDone) {
+      try { await stream.return(undefined); } catch { /* cleanup best effort */ }
+    }
+  }
+
+  if (!sawTerminal) {
+    console.warn(
+      `[Responses] premature stream close before terminal event responseId=${responseId ?? "unknown"}`,
+    );
+    recordStreamCloseEvent({
+      kind: "upstream-premature",
+      tag: streamContext?.tag ?? "Responses",
+      requestId: streamContext?.requestId,
+      provider: streamContext?.provider,
+      path: streamContext?.path,
+      model: streamContext?.model ?? model,
+      accountEntryId: streamContext?.accountEntryId,
+      variantHash: streamContext?.variantHash,
+      responseId,
+    });
+    yield buildPrematureCloseFailedEvent(responseId);
   }
 }
 
@@ -394,18 +545,10 @@ const PASSTHROUGH_FORMAT: FormatAdapter = {
       message: msg,
     },
   }),
-  invalidRequestStatus: 400,
-  formatInvalidRequest: ({ message, code }) => ({
-    type: "error",
-    error: {
-      type: "invalid_request_error",
-      code: code ?? "invalid_request",
-      message,
-    },
-  }),
-  streamTranslator: (api, response, model, onUsage, onResponseId, tupleSchema, usageHint, onResponseMetadata) =>
-    streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema, usageHint, onResponseMetadata),
-  collectTranslator: (api, response, model, tupleSchema, usageHint, onResponseMetadata) =>
+  formatStreamError: (status, msg) => buildResponsesStreamError(status, msg),
+  streamTranslator: ({ api, response, model, onUsage, onResponseId, tupleSchema, usageHint, onResponseMetadata, streamContext }) =>
+    streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema, streamContext, usageHint, onResponseMetadata),
+  collectTranslator: ({ api, response, model, tupleSchema, usageHint, onResponseMetadata }) =>
     collectPassthrough(api, response, model, tupleSchema, usageHint, onResponseMetadata),
 };
 
@@ -560,7 +703,7 @@ async function handleCompact(
       model: rawModel,
       isStreaming: false,
     };
-    return handleDirectRequest(c, compactRouteMatch.adapter, directReq, PASSTHROUGH_FORMAT);
+    return handleDirectRequest({ c, upstream: compactRouteMatch.adapter, req: directReq, fmt: PASSTHROUGH_FORMAT });
   }
 
   // Acquire account
@@ -695,9 +838,47 @@ export function createResponsesRoutes(
     if (process.env.CODEX_PROXY_DISABLE_WS !== "1") {
       codexRequest.useWebSocket = true;
     }
+    const forcedReview = c.req.path === "/v1/responses/review" || c.req.path === "/responses/review";
+    const openAiSubagent =
+      forcedReview
+        ? "review"
+        : normalizeOpenAISubagent(c.req.header(OPENAI_SUBAGENT_HEADER)) ??
+          extractOpenAISubagentFromMetadata(body.client_metadata);
+    const clientMetadata = sanitizeClientMetadata(body.client_metadata);
+    delete clientMetadata[OPENAI_SUBAGENT_HEADER];
+    if (openAiSubagent) clientMetadata[OPENAI_SUBAGENT_HEADER] = openAiSubagent;
+    if (Object.keys(clientMetadata).length > 0) {
+      codexRequest.client_metadata = clientMetadata;
+    }
     if (typeof body.previous_response_id === "string") {
       codexRequest.previous_response_id = body.previous_response_id;
     }
+    if (typeof body.prompt_cache_key === "string") {
+      codexRequest.prompt_cache_key = body.prompt_cache_key;
+    }
+    if (Array.isArray(body.include) && body.include.every((v) => typeof v === "string")) {
+      codexRequest.include = body.include as string[];
+    }
+    codexRequest.turnState =
+      nonEmptyString(body.turnState) ??
+      firstHeaderOrMetadata(c, clientMetadata, X_CODEX_TURN_STATE_HEADER) ??
+      undefined;
+    codexRequest.turnMetadata =
+      firstHeaderOrMetadata(c, clientMetadata, X_CODEX_TURN_METADATA_HEADER) ??
+      undefined;
+    codexRequest.betaFeatures =
+      firstHeaderOrMetadata(c, clientMetadata, X_CODEX_BETA_FEATURES_HEADER) ??
+      undefined;
+    codexRequest.includeTimingMetrics =
+      firstHeaderOrMetadata(c, clientMetadata, X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER) ??
+      undefined;
+    codexRequest.version = nonEmptyString(c.req.header("Version")) ?? undefined;
+    codexRequest.codexWindowId =
+      firstHeaderOrMetadata(c, clientMetadata, X_CODEX_WINDOW_ID_HEADER) ??
+      undefined;
+    codexRequest.parentThreadId =
+      firstHeaderOrMetadata(c, clientMetadata, X_CODEX_PARENT_THREAD_ID_HEADER) ??
+      undefined;
 
     // Reasoning effort: explicit body > suffix > config default
     const effort =
@@ -730,6 +911,9 @@ export function createResponsesRoutes(
     }
     if (body.tool_choice !== undefined) {
       codexRequest.tool_choice = body.tool_choice as CodexResponsesRequest["tool_choice"];
+    }
+    if (typeof body.parallel_tool_calls === "boolean") {
+      codexRequest.parallel_tool_calls = body.parallel_tool_calls;
     }
 
     // Detect image_generation tool at request time so we can classify the
@@ -790,11 +974,11 @@ export function createResponsesRoutes(
 
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       // Use raw model name so adapter's extractModelId can strip the provider prefix
-      const directReq = { ...proxyReq, codexRequest: { ...codexRequest, model: rawModel } };
-      return handleDirectRequest(c, routeMatch.adapter, directReq, PASSTHROUGH_FORMAT);
+      const directReq = { ...proxyReq, model: rawModel, codexRequest: { ...codexRequest, model: rawModel } };
+      return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt: PASSTHROUGH_FORMAT });
     }
 
-    return handleProxyRequest(c, accountPool, cookieJar, proxyReq, PASSTHROUGH_FORMAT, proxyPool);
+    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
   };
 
   // ── POST /v1/responses/compact — non-streaming JSON proxy ──
@@ -842,6 +1026,9 @@ export function createResponsesRoutes(
   };
 
   app.post("/v1/responses", responsesHandler);
+  app.post("/v1/responses/review", responsesHandler);
+  app.post("/responses", responsesHandler);
+  app.post("/responses/review", responsesHandler);
   app.post("/v1/responses/compact", compactHandler);
 
   return app;

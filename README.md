@@ -145,16 +145,16 @@ curl http://localhost:8080/v1/chat/completions \
 - 自动完成 Chat Completions / Anthropic / Gemini ↔ Codex Responses API 双向协议转换
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）和 Gemini `responseMimeType`
 - **Function Calling** — 原生 `function_call` / `tool_calls` 支持（所有协议）
-- 若使用自定义 API Keys，则仅兼容 OpenAI（`/v1/chat/completions`）格式。
+- **第三方 API Keys** — 支持 OpenAI / Anthropic / Gemini / OpenRouter / 自定义 OpenAI-compatible Provider，并按模型路由直通上游。
 
 ### 🔐 账号管理与智能轮换
 - **OAuth PKCE 登录** — 浏览器一键授权，无需手动复制 Token
 - **多账号轮换** — `least_used`（最少使用优先）、`round_robin`（轮询）、`sticky`（粘性）三种策略
 - **Plan Routing** — 不同 plan（free/plus/team/business）的账号自动路由到各自支持的模型
 - **Token 自动续期** — JWT 到期前自动刷新，指数退避重试
-- **配额自动刷新** — 后台每 5 分钟拉取各账号额度，达到阈值时弹出预警横幅；额度耗尽自动跳过
+- **配额被动采集** — 从上游响应头和 WebSocket rate limit 事件更新账号额度；`quota.refresh_interval_minutes` 仅控制用量快照记录，`0` 表示关闭快照定时器。
 - **封禁检测** — 上游 403 自动标记 banned；401 token 吊销自动过期并切换账号
-- **Relay 中转站** — 支持接入第三方 API 中转站（API Key + baseUrl），自动按 `format` 决定直通或翻译
+- **API Key Provider 池** — 支持通过 Dashboard 管理第三方 API Key、模型列表、导入导出和启停状态。
 - **Web 控制面板** — 账号管理、用量统计、批量操作，中英双语；远程访问需 Dashboard 登录门
 
 ### 🌐 代理池
@@ -195,8 +195,8 @@ curl http://localhost:8080/v1/chat/completions \
 │                                                          │
 │  ┌──────────┐  ┌───────────────┐  ┌──────────────────┐  │
 │  │   Auth   │  │  Fingerprint  │  │   Model Store    │  │
-│  │ OAuth/JWT│  │ Rust (rustls) │  │ Static + Dynamic │  │
-│  │  Relay   │  │  Headers/UA   │  │  Plan Routing    │  │
+│  │OAuth/API │  │ Rust (rustls) │  │ Static + Dynamic │  │
+│  │ API Keys │  │  Headers/UA   │  │  Plan Routing    │  │
 │  └──────────┘  └───────────────┘  └──────────────────┘  │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
@@ -207,30 +207,32 @@ curl http://localhost:8080/v1/chat/completions \
                           │
                    ┌──────┴──────┐
                    ▼             ▼
-              chatgpt.com   Relay 中转站
+             chatgpt.com   第三方 Provider
          /backend-api/codex  (第三方 API)
 ```
 
 ## 📦 可用模型
 
-| 模型 ID | 推理等级 | 输出 | 说明 |
-|---------|---------|------|------|
-| `gpt-5.5` | low / medium / high / xhigh | 文本 | 通用旗舰（Plus+） |
-| `gpt-5.4` | low / medium / high / xhigh | 文本 | 最新旗舰模型（默认） |
-| `gpt-5.4-mini` | low / medium / high / xhigh | 文本 | 5.4 轻量版 |
-| `gpt-5.3-codex` | low / medium / high / xhigh | 文本 | 5.3 编程优化模型 |
-| `gpt-5.2` | low / medium / high / xhigh | 文本 | 专业工作 + 长时间代理 |
-| `gpt-5-codex` | low / medium / high | 文本 | GPT-5 编程模型 |
-| `gpt-5-codex-mini` | medium / high | 文本 | 轻量编程模型 |
-| `gpt-oss-120b` | low / medium / high | 文本 | 开源 120B 模型 |
-| `gpt-oss-20b` | low / medium / high | 文本 | 开源 20B 模型 |
-| `gpt-image-2` | — | 图像 | 图像生成后端（Plus+，通过 `image_generation` 工具调用） |
+| 模型 ID | 推理等级 | 当前上下文 | 最大上下文 | 最大输出 | 输出 | 说明 |
+|---------|---------|------------|------------|----------|------|------|
+| `gpt-5.5` | low / medium / high / xhigh | 272,000 | 272,000 | 128,000 | 文本 | 通用旗舰（Plus+） |
+| `gpt-5.4` | low / medium / high / xhigh | 272,000 | 1,000,000 | 128,000 | 文本 | 最新旗舰模型（默认） |
+| `gpt-5.4-mini` | low / medium / high / xhigh | 400,000 | 未公开 | 128,000 | 文本 | 5.4 轻量版 |
+| `gpt-5.3-codex` | low / medium / high / xhigh | 400,000 | 未公开 | 128,000 | 文本 | 5.3 编程优化模型 |
+| `gpt-5.2` | low / medium / high / xhigh | 400,000 | 未公开 | 128,000 | 文本 | 专业工作 + 长时间代理 |
+| `gpt-5-codex` | low / medium / high | 400,000 | 未公开 | 128,000 | 文本 | GPT-5 编程模型 |
+| `gpt-5-codex-mini` | medium / high | 未公开 | 未公开 | 未公开 | 文本 | 轻量编程模型 |
+| `gpt-oss-120b` | low / medium / high | 131,072 | 未公开 | 未公开 | 文本 | 开源 120B 模型 |
+| `gpt-oss-20b` | low / medium / high | 131,072 | 未公开 | 未公开 | 文本 | 开源 20B 模型 |
+| `gpt-image-2` | — | — | — | — | 图像 | 图像生成后端（Plus+，通过 `image_generation` 工具调用） |
 
 > **后缀**：任意 chat 模型名后追加 `-fast` 启用 Fast 模式，`-high`/`-low` 切换推理等级。例如：`gpt-5.4-fast`、`gpt-5.4-high-fast`。图像模型（`gpt-image-2`）不支持后缀。
 >
 > **Plan Routing**：不同 plan（free/plus/team/business）的账号自动路由到各自支持的模型。模型列表由后端动态获取，自动同步。
 >
 > **前端模型选择 ≠ 配置文件**：Dashboard 中切换模型只影响前端展示和 API 示例中的模型名，**不会修改** `config/default.yaml` 或 `data/local.yaml` 中的 `model.default`。实际使用哪个模型取决于客户端请求中的 `model` 字段（如 Cursor、Claude Code 等自行指定），配置文件中的 `model.default` 仅在客户端未指定模型时作为兜底。
+>
+> **Max token 说明**：上表是 Codex 运行时模型目录元数据，用于展示和客户端参考；运行时从 Codex 后端拉到的模型信息会覆盖静态值，并保留 `contextWindow`、`maxContextWindow`、`maxOutputTokens`、`truncationPolicyLimit`。实测 2026-05-08 的 Codex 后端对 `gpt-5.5` 回传 `context_window=272000`、`max_context_window=272000`、`truncation_policy.limit=10000`，对 `gpt-5.4` 回传 `context_window=272000`、`max_context_window=1000000`、`truncation_policy.limit=10000`，可能和公开模型页不同。请求体里的 `context_window` / `max_context_window` / `truncation_policy` / `max_output_tokens` 都不是可用开关；直接转发给 Codex 原生接口会返回 `400 Unsupported parameter`。
 
 ### 🖼️ 图像生成
 
@@ -256,6 +258,8 @@ curl -N http://localhost:8080/v1/responses \
 
 **编辑模式**（带参考图）：在 user message 的 `content` 里追加 `{"type":"input_image","image_url":"data:image/png;base64,..."}` 即可。
 
+> `/v1/chat/completions` 兼容路径会接受 `image_generation` 工具，避免 OpenAI 客户端因 schema 失败；但图像 payload 只有 `/v1/responses` 会稳定透出 `image_generation_call.result`。需要拿到图片字节时请使用 `/v1/responses`。
+
 ## 🔗 客户端接入
 
 > 所有客户端的 API Key 均从控制面板 (`http://localhost:8080`) 获取。模型名填具体 ID（默认 `gpt-5.4`）或任意 [可用模型](#-可用模型) ID。
@@ -271,7 +275,7 @@ claude
 
 > 控制面板的 **Anthropic SDK Setup** 卡片可一键复制环境变量（含 Opus / Sonnet / Haiku 层级模型配置）。
 >
-> 推荐模型：Opus → `gpt-5.4`，Sonnet → `gpt-5.3-codex`，Haiku → `gpt-5.4-mini`。
+> 推荐模型：Opus → `gpt-5.5`，Sonnet → `gpt-5.4`，Haiku → `gpt-5.3-codex`。
 >
 > ⚠️ 配置不生效？请参考 **[Claude Code 配置避坑指南](.github/guides/claude-code-setup.md)**（AUTH_TOKEN 劫持、API Key 黑名单等常见问题）。
 
@@ -283,17 +287,17 @@ claude
 name = "Codex Proxy"
 base_url = "http://localhost:8080/v1"
 wire_api = "responses"
-env_key = "PROXY_API_KEY"
+
+# 直接把 API Key 写进 config（推荐：本地单用户场景）
+[model_providers.proxy_codex.http_headers]
+Authorization = "Bearer your-api-key"
 
 [profiles.default]
 model = "gpt-5.4"
 model_provider = "proxy_codex"
 ```
 
-```bash
-export PROXY_API_KEY=your-api-key
-codex
-```
+> 💡 也可以改用环境变量：把 `[model_providers.proxy_codex.http_headers]` 这两行删掉，换成 `env_key = "PROXY_API_KEY"`，然后 `export PROXY_API_KEY=your-api-key && codex`。需要避免密钥落到 config 文件（多人共享 / 开源仓库）时用这个。
 
 ### Claude Desktop
 
@@ -302,21 +306,30 @@ codex
 3. **填写配置**：
    - **Endpoint**: `http://127.0.0.1:8080`
    - **API Key**: 你的 API Key
-   - **Model**: `gpt-5.4` (或 `anthropic/claude-3-5-sonnet-20241022` 这种 Anthropic 格式 ID)
+   - **Model**: `claude-opus-4-7` / `claude-sonnet-4-6` / `claude-haiku-4-5`
 
 > 或手动修改配置文件（Windows 下路径通常在 `%APPDATA%\Claude-3p\configLibrary\` 目录下的 JSON 文件，Mac 为 `~/Library/Application Support/Claude-3p/configLibrary/`），添加如下字段：
 ```json
  {
+   "disableDeploymentModeChooser": true,
    "inferenceProvider": "gateway",
    "inferenceGatewayBaseUrl": "http://127.0.0.1:8080",
    "inferenceGatewayApiKey": "your-api-key",
    "inferenceGatewayAuthScheme": "bearer",
    "inferenceModels": [
-     { "name": "gpt-5.4" },
-     { "name": "gpt-5.3-codex" },
-     { "name": "gpt-5.4-mini" }
+     "claude-opus-4-7",
+     "claude-sonnet-4-6",
+     "claude-haiku-4-5"
    ]
  }
+```
+
+默认映射在 `config/models.yaml` 的 `aliases` 里，可自行改：
+```yaml
+aliases:
+  claude-opus-4-7: gpt-5.5
+  claude-sonnet-4-6: gpt-5.4
+  claude-haiku-4-5: gpt-5.3-codex
 ```
 
 > 💡 **排查提示 (Windows)**: 如果使用 `127.0.0.1` 时 Claude Desktop 提示 `ERR_CONNECTION_REFUSED`（而使用 `localhost` 提示 URL 格式错误），说明 Node.js 在你的系统上默认只绑定了 IPv6。请进入 Codex Proxy 控制面板的设置页面，将 **Host** 修改为 `127.0.0.1`，或在 `data/local.yaml` 中添加 `server: { host: "127.0.0.1" }` 后重启代理。
@@ -335,14 +348,18 @@ codex
 name = "Codex Proxy"
 base_url = "http://localhost:8080/v1"
 wire_api = "responses"
-env_key = "PROXY_API_KEY"
+
+[model_providers.proxy_codex.http_headers]
+Authorization = "Bearer your-api-key"
 
 [profiles.default]
 model = "gpt-5.4"
 model_provider = "proxy_codex"
 ```
 
-> ⚠️ 如果你是通过“登录 ChatGPT 账号”方式使用的，客户端可能会忽略此配置。建议在环境变量中设置 `PROXY_API_KEY` 后启动。
+> 💡 **为什么不用 `env_key`？** macOS / Windows 的 GUI 应用不读 shell 的 `~/.zshrc` / `.bashrc`，光 `export PROXY_API_KEY=...` 在终端里 GUI 进程根本看不到，启动会直接报 `Missing environment variable`。`http_headers` 把 Authorization 写在 config 里，重启 Codex 就能用，不用折腾 `launchctl setenv` 或 LaunchAgent。需要密钥从配置文件解耦时（共享机器 / 仓库提交）再换回 `env_key = "PROXY_API_KEY"` 走环境变量。
+>
+> ⚠️ 如果你是通过"登录 ChatGPT 账号"方式使用的，客户端可能会忽略此配置——只要 `[model_providers.proxy_codex]` 配上、`profiles.default.model_provider = "proxy_codex"`，新会话就会走 proxy；登录会话仍可能直接走官方上游。
 
 ### Claude for VSCode / JetBrains
 
@@ -492,13 +509,27 @@ for await (const chunk of stream) {
 | `model` | `default`, `default_reasoning_effort`, `inject_desktop_context` | 默认模型与推理配置 |
 | `auth` | `rotation_strategy`, `rate_limit_backoff_seconds` | 轮换策略与限流退避 |
 | `tls` | `proxy_url`, `force_http11` | TLS 代理与 HTTP 版本 |
-| `quota` | `refresh_interval_minutes`, `warning_thresholds`, `skip_exhausted` | 额度刷新与预警 |
+| `quota` | `refresh_interval_minutes`, `warning_thresholds`, `skip_exhausted` | 用量快照、阈值配置与耗尽账号跳过 |
 | `session` | `ttl_minutes`, `cleanup_interval_minutes` | Dashboard session 管理 |
 | `ollama` | `enabled`, `host`, `port`, `version`, `disable_vision` | Ollama 兼容桥接 |
+| `official_agent` | `enabled`, `api_key`, `app_server_url`, `auth` | 官方 Codex app-server 桥接，用于复用 Chrome/browser 插件 |
+
+### 配额轮转
+
+`quota.skip_exhausted: true` 时，账号池会在选择账号前跳过缓存额度已经耗尽的账号；这个过滤发生在 session affinity / `preferredEntryId` 之前，所以长对话也不会强行粘到已耗尽账号上。
+
+当前跳过条件是缓存额度里的 `rate_limit.limit_reached === true`、`secondary_rate_limit.limit_reached === true` 或 `code_review_rate_limit.limit_reached === true`。如果只是 `used_percent` 接近 100（例如 99%）但上游还没标记 `limit_reached`，代理仍会继续使用该账号；真正打到上游 429 后，账号会进入 `rate_limited` 退避并切换到其他可用账号。secondary / code review 窗口自己的 `reset_at` 过期后会从缓存中清除，避免账号被永久跳过。
 
 ### 局域网访问
 
-默认监听 `127.0.0.1`（仅本机）。如需局域网内其他设备访问，在 `data/local.yaml` 中添加：
+源码/容器默认配置监听 `::`（IPv6 unspecified，通常也覆盖本机访问）；Electron 启动时会传入 `127.0.0.1`，除非 `data/local.yaml` 显式覆盖。建议需要仅本机访问时写入：
+
+```yaml
+server:
+  host: "127.0.0.1"
+```
+
+如需局域网内其他设备访问，在 `data/local.yaml` 中添加：
 
 ```yaml
 server:
@@ -530,10 +561,10 @@ tls:
 ```yaml
 server:
   proxy_api_key: "pwd"    # 自定义密钥，客户端用 Bearer pwd 访问
-  # proxy_api_key: null   # null = 自动生成 codex-proxy-xxxx 格式密钥
+  # proxy_api_key: null   # null = 不配置全局密钥；已登录账号仍会生成 account-level codex-proxy-xxxx 密钥
 ```
 
-当前密钥始终显示在控制面板的 API Configuration 区域。
+首次启动如果缺少 `data/local.yaml`，程序会自动创建 `server.proxy_api_key: pwd`。当前可用密钥显示在控制面板的 API Configuration 区域。
 
 ### Ollama Bridge 配置
 
@@ -564,6 +595,67 @@ Docker 部署时，如果希望宿主机访问 `11434`：
 
 浏览器 CORS 访问仅允许 `localhost`、`127.x.x.x`、`::1` 等 loopback origin；非本机网页来源不能读取桥接响应。Bridge 会为 `/v1/*` 直通请求注入已配置的 Codex Proxy API Key，因此暴露到 localhost 之外时，相当于也把主代理 API 以无鉴权方式暴露出去。
 
+### Official Agent Bridge 配置
+
+该桥接用于连接本机官方 `codex app-server`，从而复用 Codex app 的官方 Chrome/browser 插件、审批和 app mention 能力。默认关闭，不影响现有 `/v1/*` 模型代理。
+
+先启动官方 app-server：
+
+```bash
+codex app-server --listen ws://127.0.0.1:4500
+```
+
+然后在 `data/local.yaml` 启用：
+
+```yaml
+server:
+  proxy_api_key: "your-api-key"
+
+official_agent:
+  enabled: true
+  api_key: "your-official-agent-key"
+  app_server_url: ws://127.0.0.1:4500
+  auth:
+    type: none
+```
+
+如果 app-server 使用 capability token：
+
+```bash
+codex app-server --listen ws://127.0.0.1:4500 \
+  --ws-auth capability-token \
+  --ws-token-file /absolute/path/to/token
+```
+
+对应配置：
+
+```yaml
+server:
+  proxy_api_key: "your-api-key"
+
+official_agent:
+  enabled: true
+  api_key: "your-official-agent-key"
+  app_server_url: ws://127.0.0.1:4500
+  auth:
+    type: capability_token
+    token_file: /absolute/path/to/token
+```
+
+可用端点：
+
+```bash
+curl http://localhost:8080/official-agent/apps \
+  -H "Authorization: Bearer your-official-agent-key"
+```
+
+```bash
+curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
+  -H "Authorization: Bearer your-official-agent-key" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Open localhost:8080 and inspect the dashboard","app":{"id":"chrome","name":"Chrome"}}'
+```
+
 ### 环境变量覆盖
 
 | 环境变量 | 覆盖配置 |
@@ -581,7 +673,7 @@ Docker 部署时，如果希望宿主机访问 `11434`：
 ## 📡 API 端点
 
 <details>
-<summary>点击展开完整端点列表</summary>
+<summary>点击展开主要端点列表</summary>
 
 **协议端点**
 
@@ -589,8 +681,13 @@ Docker 部署时，如果希望宿主机访问 `11434`：
 |------|------|------|
 | `/v1/chat/completions` | POST | OpenAI 格式聊天补全 |
 | `/v1/responses` | POST | Codex Responses API 直通 |
+| `/v1/responses/compact` | POST | Codex compact 响应代理 |
 | `/v1/messages` | POST | Anthropic 格式聊天补全 |
 | `/v1/models` | GET | 可用模型列表 |
+| `/v1/models/catalog` | GET | Dashboard 使用的完整模型目录 |
+| `/v1/models/:modelId/info` | GET | 单个模型的推理等级等详情 |
+| `/v1beta/models` | GET | Gemini 格式模型列表 |
+| `/v1beta/models/:modelAction` | POST | Gemini `generateContent` / `streamGenerateContent` |
 | `:11434/api/chat` | POST | Ollama 兼容聊天补全（需启用 Ollama Bridge） |
 
 **账号与认证**
@@ -602,9 +699,27 @@ Docker 部署时，如果希望宿主机访问 `11434`：
 | `/auth/accounts` | POST | 添加单个账号（token 或 refreshToken） |
 | `/auth/accounts/import` | POST | 批量导入账号 |
 | `/auth/accounts/export` | GET | 导出账号（`?format=minimal` 精简格式） |
-| `/auth/accounts/relay` | POST | 添加 Relay 中转站账号 |
 | `/auth/accounts/batch-delete` | POST | 批量删除账号 |
 | `/auth/accounts/batch-status` | POST | 批量修改账号状态 |
+| `/auth/accounts/health-check` | POST | 批量检测账号可用性 |
+| `/auth/accounts/:id/refresh` | POST | 刷新并探测单个账号 |
+| `/auth/accounts/:id/quota` | GET | 主动查询单个账号额度 |
+| `/auth/accounts/:id/cookies` | GET/POST/DELETE | 管理账号 Cloudflare cookies |
+| `/auth/quota/warnings` | GET | 当前额度预警状态 |
+
+**第三方 API Keys**
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/auth/api-keys/catalog` | GET | 内置 Provider 与推荐模型目录 |
+| `/auth/api-keys` | GET/POST | API Key 列表 / 添加 |
+| `/auth/api-keys/models` | POST | 从自定义 OpenAI-compatible Provider 拉取模型 |
+| `/auth/api-keys/export` | GET | 导出 API Key 配置 |
+| `/auth/api-keys/import` | POST | 导入 API Key 配置 |
+| `/auth/api-keys/batch-delete` | POST | 批量删除 API Key |
+| `/auth/api-keys/:id` | DELETE | 删除单个 API Key |
+| `/auth/api-keys/:id/label` | PATCH | 修改 API Key 标签 |
+| `/auth/api-keys/:id/status` | PATCH | 启用或停用 API Key |
 
 **账号导入导出示例**
 
@@ -648,6 +763,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 | `/admin/refresh-models` | POST | 手动刷新模型列表 |
 | `/admin/usage-stats/summary` | GET | 用量统计汇总 |
 | `/admin/usage-stats/history` | GET | 用量时间序列 |
+| `/admin/logs` | GET | 请求日志列表 |
+| `/admin/logs/state` | GET/POST | 日志采集开关与配置 |
+| `/admin/update-status` | GET | 自更新状态 |
+| `/admin/check-update` | POST | 检查更新 |
+| `/admin/apply-update` | POST | 执行自更新 |
 | `/health` | GET | 健康检查 |
 
 **代理池**
@@ -659,6 +779,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 | `/api/proxies/:id/check` | POST | 健康检查单个代理 |
 | `/api/proxies/check-all` | POST | 全部代理健康检查 |
 | `/api/proxies/assign` | POST | 为账号分配代理 |
+| `/api/proxies/assignments` | GET | 查看账号代理分配 |
+| `/api/proxies/assign-bulk` | POST | 批量分配代理 |
+| `/api/proxies/assign-rule` | POST | 按规则分配代理 |
+| `/api/proxies/export` | GET | 导出代理池 YAML |
+| `/api/proxies/import` | POST | 导入代理池 YAML |
 
 </details>
 
@@ -683,26 +808,25 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 ### [Unreleased]
 
 **Added**
-- Dashboard 用量页新增「时段命中率（Range Hit Rate）」卡片：基于当前选中时间窗口聚合 `cached_tokens / input_tokens`，与原本的全局累计「Cache Hit Rate」卡并列，方便对比近窗口与历史命中率（`web/src/pages/UsageStats.tsx`、`shared/i18n/translations.ts`）
-- Dashboard 用量页新增独立的「Hit Rate Over Time」图：每个 bucket 渲染命中率折线 + 数据点 dot，hover 可见 `cached / input`；`input=0` 的 bucket 自动跳过（不渲染 0% 假命中），单数据点也用 dot 保证可见性（`web/src/components/UsageChart.tsx`）
-- Usage history `five_min` granularity（5 分钟桶）+ Dashboard 新增「5 min」粒度选项与「Last 1h / 6h」时间窗：snapshot 默认 5 分钟一记，新粒度等同于一桶一快照，方便排查刚发生的请求；旧的 hourly/daily 不变，按 granularity 自动收敛兼容窗口（`src/auth/usage-stats.ts`、`src/routes/admin/usage-stats.ts`、`shared/hooks/use-usage-stats.ts`、`web/src/pages/UsageStats.tsx`）
-- 共享纯函数 `formatHitRate` / `sumWindow` / `formatUsageNumber` 抽到 `shared/utils/usage-stats.ts`，配套 vitest 单测覆盖边界（input=0 → "—"、<0.01% 截断、windowed 求和等），UsageChart 与 UsageStats 复用同一份格式化逻辑（`shared/utils/usage-stats.ts`、`shared/utils/__tests__/usage-stats.test.ts`）
-- WebSocket 连接池新增 keepalive ping + liveness 检测（`src/proxy/ws-pool.ts`）：每个 `PersistentWs` 默认 25 s 发一次 WS ping 帧（`DEFAULT_PING_INTERVAL_MS`），抵消上游 LB / NAT / 防火墙的 idle timeout 静默 RST；同时跟踪 `lastActivityAt`（pong 或任何 message 都算 proof of life），超过 `livenessTimeoutMs`（默认 = 2.5 × ping interval ≈ 62.5 s）无上游信号则主动 `markDead`，避免下次 acquire 复用一个已经"OPEN 但实际死了"的连接。E2E 验证（设备 a → 本机 8080）：单 WS 撑满 10 轮 + 70 s idle gap，turn 6 跨越 gap 后 hit 仍 99.6%（与 turn 5 持平），0 次 `liveness timeout` 误杀。Busy 时跳 ping（streaming data frame 已 keepalive）。`pingIntervalMs: 0` 或 `livenessTimeoutMs: 0` 各自独立可禁用（`tests/unit/proxy/ws-pool.test.ts` 共 11 个新单测覆盖：ping 节奏 / dead 后停 / readyState 守卫 / busy 跳过 / 错误吞咽 / liveness 误杀 / pong 重置 / message 重置 / 默认值边界等）
-- ...（[查看全部](./CHANGELOG.md)）
+- Stream-close 事件结构化落盘到 Errors tab + 审计 log：`premature stream close` / `stream-client-abort` / `stream-client-disconnect` / `stream-error` 此前只走 `console.warn` 进 `dev-YYYY-MM-DD.log`，需要 grep 才能定位，且生产模式没有 tee；新增 `src/logs/stream-close-event.ts` 把这些事件同时写到 `data/error-log.jsonl`（Errors tab 按签名分组 + 角标计数）和 `logStore`（`/admin/logs` 审计流）。覆盖 7 个调用点：`proxy-handler.ts` 两处 client abort + 一处 `UpstreamPrematureCloseError`（带 eventCount / hadReasoning / responseId / variantHash）、`response-processor.ts` 两处（`client-write-failed` 带 writtenChunks/Bytes/lastSentEvent；`upstream-error` 带 upstreamStatus）、`responses.ts` 两处 `streamPassthrough` 内部 EOF（rid / accountEntryId / variantHash 通过 `FormatAdapter.streamTranslator` 的 `streamContext` option 由 `response-processor` 透传，其它 adapter 兼容性接收并忽略）。顺手修 `error-log.ts:readAppVersion` 在 config 未加载时崩溃（unit-test 路径会撞到），改为 try/catch 兜底回退 "unknown"。新增 `tests/unit/logs/stream-close-event.test.ts` 6 个单测覆盖 4 种 kind + 缺失 rid 兜底 + numeric upstreamStatus → audit status 透传 + direct upstream provider/path；Errors tab 展开分组时会显示 sample context。下次复现 premature close 直接看 Errors tab 按 `StreamUpstreamPrematureClose` 分组拉 rid + account + closeCode，不用再 grep dev 日志（`src/logs/stream-close-event.ts`、`src/logs/error-log.ts`、`src/routes/shared/proxy-handler.ts`、`src/routes/shared/response-processor.ts`、`src/routes/responses.ts`、`tests/unit/logs/stream-close-event.test.ts`）
+- Opt-in 上游请求/响应 dumper：新增 `src/utils/debug-dump.ts`，环境变量 `CODEX_PROXY_DEBUG_DUMP=1` 启用时把每次上游请求 + 流式 chunk + 终止状态 + 错误写入 `/tmp/codex-proxy-dump-<startupMs>.jsonl`（一行一事件）；未启用时所有 hook 是 `if (debugDumpEnabled())` 守护下的纯 boolean check，零开销。在 `src/routes/shared/proxy-handler.ts` 加 1 个 hook（`request`，含 rid/tag/entryId/conv/implicitResumeActive/resumeReason/payload），在 `src/routes/shared/response-processor.ts` 加 3 个 hook（`upstream-chunk` 截断到 16KB、`stream-finish` 含 chunks/bytes/sawTerminal、`stream-error` 含 status/msg/body 截断到 4KB）。**privacy 警告**：dump 文件包含完整 request payload（含用户 prompt）和上游响应，路径在启动时打印一次提示 sensitive 性质。日常排查"账号轮换重试风暴" / "premature stream close" 等偶发错误时 opt-in 启用，问题复现后再 opt-out
+- Pre-publish artifact smoke 拦在 stable 之前（#479）：`release.yml` 把 4 个平台（mac arm64 / mac x64 / win / linux）的 Pack step 从 `--publish always` 改成 `--publish never`，新增跨平台 smoke step 用 `.github/scripts/electron-smoke.sh` 启动打包好的 binary、tail 日志拿 `Server started on port N`、curl `/health`、清进程；smoke 失败直接阻塞 `gh release upload`，artifact 不会进 GitHub Release（坏的就不发）。Linux 装 `libfuse2 + xvfb` 起虚拟显示，Windows 用 `win-unpacked/*.exe` 跳过 NSIS 安装；smoke 失败时通过 `actions/upload-artifact@v4` 把日志保留 7 天给排查。新增 `tests/unit/ci/electron-smoke-script.test.ts` 6 个单测，覆盖脚本的 fail-loud 路径（缺 RUNNER_OS / RELEASE_DIR / AppImage / 不支持的 OS），保证脚本本身坏掉时不会沉默通过。CI 时间增量约 +5 分钟（Linux 最快，Windows 需研究 GHA windows-latest 的 GUI 启动行为，首次 PR 可能要回炉）（`.github/scripts/electron-smoke.sh`、`.github/workflows/release.yml`、`tests/unit/ci/electron-smoke-script.test.ts`）
+- Dashboard Errors tab + Header 浮起 badge + 渲染进程错误捕获（observability，#480 PR-2）：新增 `Errors` tab（按 `name + first stack frame` 聚合，按 last_seen 降序，可展开看 sample stack；折叠后只显示一行）；Header 右侧多一个红色 pulsing badge 显示未读错误数（>99 显示 `99+`），点击跳 `#/errors`；渲染进程注册 `window.addEventListener('error')` + `unhandledrejection` 在 `main.tsx` `render()` 之前，每条事件 fetch POST `/admin/error-logs/report`（不走 IPC，复用同源 dashboardAuth）；`useErrorLogs` / `useErrorLogsCount` hook 30s 轮询；i18n 中英双语；`mark all read` 按钮调 `/admin/error-logs/seen` 推进 cursor；新增前端 web bundle +8KB gzipped（`web/src/error-capture.ts`、`web/src/pages/ErrorsPage.tsx`、`shared/hooks/use-error-logs.ts`、`web/src/App.tsx`、`web/src/components/Header.tsx`、`web/src/main.tsx`、`shared/i18n/translations.ts`、`tests/unit/web/error-capture.test.ts`、`shared/hooks/use-error-logs.test.ts`）
+- 本地 uncaught error log（observability foundation，#480 PR-1）：进程级 `uncaughtException` / `unhandledRejection` 自动落盘到 `data/error-log.jsonl`，单 backup 滚动（默认 10MB → `error-log.1.jsonl`），`context` 经 `redactJson` 脱敏 token / cookie / api_key / oauth；新增 4 个 admin 端点 `/admin/error-logs`（按 `name + first stack frame` 聚合）/ `/admin/error-logs/raw`（裸 JSONL tail）/ `/admin/error-logs/count`（含 unread）/ `/admin/error-logs/seen`（推进读游标）/ `/admin/error-logs/report`（renderer / 外部 POST 上报）；`uncaughtException` 走 `setImmediate(throw)` 保留 Node 默认崩溃语义，不会静默吞掉 fatal；新增 schema 节 `observability: { local_error_log: bool=true, max_log_bytes: int=10485760 }`；前端 Errors tab + 浮起 badge 由 PR-2 跟进（`src/logs/error-log.ts`、`src/routes/admin/error-logs.ts`、`src/config-schema.ts`、`src/index.ts`、`tests/unit/logs/error-log.test.ts`、`tests/unit/routes/admin/error-logs.test.ts`）
 **Changed**
-- `src/routes/shared/proxy-handler.ts` 入口与 Usage 日志补充诊断字段：入口行新增 `rid` / `conv` / `key` / `prev=<src>:<tail8>` / `tools=N` / `resume=on|off:<reason>`（reason 含 `no_pref_entry`/`acct_mismatch`/`instr_diff`/`missing_tool_calls`/`cont_start_eq_len`），Usage 行带 `rid` 与 `hit=X.X%`，便于对照 prompt-cache 命中率为何偏低、或同一会话请求是否落到同一 cache key
-- 上游请求补 `x-codex-installation-id` header 与 body 内 `client_metadata: { "x-codex-installation-id": <uuid> }`（HTTP + WS + compact 三条路径）：对齐真实 Codex CLI（`core/src/client.rs:874`），让上游 LB 能拿到稳定客户端身份做粘性路由提示。优先复用 `~/.codex/installation_id`，没有则在 `data/installation_id` 持久化新生成的 UUID（`src/proxy/installation-id.ts`、`src/proxy/codex-api.ts`、`src/proxy/codex-types.ts`、`src/proxy/ws-transport.ts`、`config/fingerprint.yaml`）
-- `evaluateImplicitResume()` 取代 `shouldActivateImplicitResume()` 内部判定：返回 `{ active, reason }`，便于在拒绝时给出具体原因（`src/routes/shared/proxy-handler.ts`）。原 `shouldActivateImplicitResume()` 保持向后兼容，作为 `.active` 的薄包装
+- `handleProxyRequest` / `handleDirectRequest` 改为 named options object 调用契约，顺带把 private `handleNonStreaming` 的 20 个位置参数收敛成内部 options object，避免后续新增可选上下文时错位；所有 route 调用与直接 handler 测试同步迁移，并补 direct upstream route guard 锁住 adapter/raw model/format tag 传递（`src/routes/shared/proxy-handler.ts`、`src/routes/chat.ts`、`src/routes/messages.ts`、`src/routes/gemini.ts`、`src/routes/responses.ts`、`tests/unit/routes/upstream-auth-bypass.test.ts`）
+- `FormatAdapter.streamTranslator` / `collectTranslator` 改为 single options object 契约，替换原先 9 个 / 6 个位置参数，避免 `tupleSchema` / `usageHint` / `onResponseMetadata` / `streamContext` 后续扩展时错位；Chat / Messages / Gemini / Responses adapter wrapper 保持下游 translator 行为不变，并补 streaming、Codex collect、direct collect 三条 guard 测试锁住 options object 传递（`src/routes/shared/proxy-handler.ts`、`src/routes/shared/response-processor.ts`、`src/routes/chat.ts`、`src/routes/messages.ts`、`src/routes/gemini.ts`、`src/routes/responses.ts`、`tests/unit/routes/shared/response-processor.test.ts`、`tests/integration/proxy-handler.test.ts`、`tests/unit/routes/shared/error-forwarding.test.ts`）
+- `streamResponse` 改为 named options object 调用契约，替换原先 11 个位置参数，避免 `tupleSchema` / `onResponseId` / `usageHint` / `onResponseMetadata` / `diagnostics` 后续继续错位；Codex streaming 与 direct streaming 两个 caller 同步迁移，并补 caller-level guard 锁住 `streamContext` 的 Codex vs direct provider/path 归因（`src/routes/shared/response-processor.ts`、`src/routes/shared/proxy-handler.ts`、`tests/unit/routes/shared/response-processor.test.ts`、`tests/integration/proxy-handler.test.ts`、`tests/unit/routes/shared/error-forwarding.test.ts`）
+- request diagnostics 输出从 `proxy-handler.ts` 收敛进 `proxy-request-diagnostics.ts`，主 handler 不再直接 `console.log` / `console.warn` summary 与 large-payload warning，只负责传入已解析的 session / resume / affinity 上下文；新增 logging wrapper 行为测试和边界测试锁住 warning 输出仍由 diagnostics 模块负责（`src/routes/shared/proxy-request-diagnostics.ts`、`src/routes/shared/proxy-handler.ts`、`tests/unit/routes/shared/proxy-request-diagnostics.test.ts`、`tests/unit/routes/shared/proxy-request-diagnostics-boundary.test.ts`）
+- 非流式 collect/retry 路径从 `proxy-handler.ts` 抽到独立 `non-streaming-handler.ts`，并把 `buildCodexApi`、image generation usage 标记、Codex error prefix 清理收敛到 `proxy-handler-utils.ts`，降低主 handler 对 empty-response retry / premature-close / affinity 逻辑的耦合；新增模块边界测试、collect 阶段 `previous_response_not_found` strip-retry guard、non-stream affinity metadata guard（`src/routes/shared/non-streaming-handler.ts`、`src/routes/shared/proxy-handler-utils.ts`、`src/routes/shared/proxy-handler.ts`、`tests/unit/routes/shared/non-streaming-handler-boundary.test.ts`、`tests/integration/proxy-handler.test.ts`）
+- ...（[查看全部](./CHANGELOG.md)）
 **Fixed**
-- **WebSocket 连接池**（`src/proxy/ws-pool.ts` + `src/proxy/ws-transport.ts` + `src/routes/shared/proxy-handler.ts`）：上游 chatgpt.com 的 WS gateway 按"连接 ID"做负载均衡 hash，过去 codex-proxy 对每个 WS 请求都 `new WebSocket(url)`，导致同一会话同一账号的 prompt cache 命中率在 5%~99% 之间剧烈抖动（同一逻辑会话被路由到不同 backend，每个 backend 各自缓存了不同长度的前缀；实测 cached_tokens 反复出现 1920/2432/24448/40320/47488 等离散"checkpoint"）。引入 per-`(entryId, conversationId)` 的持久 WS 连接池：
-  - 单 WS 上 strict request/response 串行（codex 协议要求），busy 时旁路开新一次性 WS 而非排队（避免死锁）
-  - 无 idle TTL，连接保持开放直到自然死亡 / `max_age_ms`（默认 55 min，留 5 min 缓冲，比 server 60 min 硬限制提前关）/ 账号状态变化（`evictByEntryId`）级联清理
-  - 复用失败（pre-response close）抛 `WsReusedConnectionError`，自动单次 fallback 到一次性新连接；流中段失败保持原语义抛给客户端（不重试，client 已收到部分数据）
-  - account-pool 在 `markRateLimited` / `markStatus(non-active)` / `removeAccount` / `updateToken`（refresh 完成）时级联 `evictByEntryId`，避免老 WS 携带的 access_token 被复用
-  - 新增配置 `ws_pool: { enabled: true, max_age_ms: 3300000, max_per_account: 8 }`；可 `enabled: false` + 重启回滚到旧行为
-  - SIGTERM/SIGINT 进程退出钩子追加 `wsPool.shutdown()` 优雅关闭所有池中连接
-  - 入口日志加 `ws=reuse:<id>` / `ws=new:<id>` / `ws=bypass(<reason>)` / `ws=retry-after-stale-reuse:<id>` 字段，配合 `rid` 可对照 cache 命中率
-  - 集成测：`tests/integration/ws-pool-reuse.test.ts` 起本地 `ws.Server` 验证 5 turn 同会话只触发 1 次 `connection`
+- Lockfile tarball sources now point to the official npm registry instead of `registry.npmmirror.com`, and the CI package boundary guard fails if any root/web/native lockfile resolves npm packages from a non-`registry.npmjs.org` host. Root production dependency audit is also clean after non-breaking lockfile updates for `hono`, `@hono/node-server`, `undici`, `minimatch`, and `brace-expansion`; the remaining full-audit finding is the existing Electron major-version upgrade requirement (`package-lock.json`, `web/package-lock.json`, `tests/unit/ci/package-boundary.test.ts`).
+- Update checker now keeps `config/default.yaml` in sync when it auto-applies a Codex Desktop appcast version, while still writing `data/version-state.json` for cold-start runtime overrides. When a matching `data/extracted-fingerprint.json` is present, the checker also carries `chromium_version` through to version state, YAML, and in-memory config so User-Agent and `sec-ch-ua` fingerprint fields do not drift. The checked-in default fingerprint is updated to Codex Desktop `26.506.31421` / build `2620` / Chromium `146` (`src/update-checker.ts`, `config/default.yaml`, `tests/unit/update-checker.test.ts`).
+- Root package boundary now has a CI-enforced guard for proxy package metadata, root/workspace lockfile version sync, core npm entrypoints, local `tsx` script targets, and strict TypeScript coverage for public update scripts. This also restores the public update script entrypoints plus their extraction pattern config that `package.json` and `update-scripts-path.test.ts` already referenced, keeps them trackable by removing stale ignore rules, prevents `promote-dev-to-master` from treating missing checks as green, makes the runtime update checker fork `full-update` only when `CODEX_DESKTOP_PATH` / `CODEX_APP_PATH` points at a local Codex Desktop source, and broadens model extraction to current `gpt-*` IDs such as `gpt-5-codex` (`package-lock.json`, `.gitignore`, `.github/workflows/ci-quality.yml`, `.github/workflows/promote-dev-to-master.yml`, `.github/workflows/bump-electron.yml`, `tsconfig.scripts.json`, `config/extraction-patterns.yaml`, `src/update-checker.ts`, `scripts/build/check-update.ts`, `scripts/build/apply-update.ts`, `scripts/build/full-update.ts`, `scripts/build/types.ts`, `scripts/build/vendor-types.d.ts`, `tests/unit/ci/package-boundary.test.ts`, `tests/unit/update-checker.test.ts`, `tests/unit/update-scripts-path.test.ts`).
+- Codex Desktop 指纹冷启动不再漂移：`loadMergedConfig()` 会把 `data/version-state.json` 合并进 `client.app_version/build_number`，并在匹配同版本的 `data/extracted-fingerprint.json` 可用时同步 `chromium_version`；显式 `data/local.yaml` 版本覆盖优先。`extract-fingerprint.ts` 也会优先解析 `desktopOriginator` 绑定并跳过 bundled plugin 的 `.app` 名称，避免把 `Codex Computer Use.app` 误当成 API originator（`src/config-loader.ts`、`scripts/build/extract-fingerprint.ts`、`tests/unit/config-loader.test.ts`、`tests/unit/update-scripts-originator.test.ts`、`tests/unit/update-scripts-path.test.ts`）
+- 同账号 `previous_response_not_found` / `unanswered_function_call` 恢复逻辑从 `proxy-handler.ts` 拆到独立 `proxy-retry-recovery.ts`，集中处理错误分类、日志前缀、stale affinity 清理、implicit-resume restore、清 `previous_response_id` / `turnState`；主 handler 只保留 loop guard 与 continue 编排。新增 helper 行为测试和 AST/import 边界测试防止 recovery 细节回流到 orchestrator（`src/routes/shared/proxy-retry-recovery.ts`、`src/routes/shared/proxy-handler.ts`、`tests/unit/routes/shared/proxy-retry-recovery.test.ts`、`tests/unit/routes/shared/proxy-retry-recovery-boundary.test.ts`）
+- ...（[查看全部](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24
 

@@ -6,7 +6,6 @@ export type AccountStatus =
   | "active"
   | "expired"
   | "quota_exhausted"
-  | "rate_limited"
   | "refreshing"
   | "disabled"
   | "banned";
@@ -27,7 +26,12 @@ export interface AccountUsage {
   image_request_failed_count?: number;
   empty_response_count: number;
   last_used: string | null;
-  rate_limit_until: string | null;
+  /**
+   * Legacy local-lock field, retired. Reads survive on disk to support
+   * in-place migration; new code MUST consult cachedQuota.*.limit_reached
+   * instead. Removed from runtime mutation by `migrateLegacyRateLimit`.
+   */
+  rate_limit_until?: string | null;
   /** Tracks the current rate limit window end (Unix seconds). When window rolls over, counters reset. */
   window_reset_at?: number | null;
   /** Per-window request count (resets when window expires). */
@@ -110,7 +114,21 @@ export interface CodexQuota {
     limit_reached: boolean;
     used_percent: number | null;
     reset_at: number | null;
+    limit_window_seconds: number | null;
   } | null;
+  /** All metered quota buckets returned by Codex app's /wham/usage additional_rate_limits. */
+  rate_limits_by_limit_id?: Record<string, {
+    limit_id: string;
+    limit_name: string | null;
+    allowed: boolean;
+    limit_reached: boolean;
+    used_percent: number | null;
+    reset_at: number | null;
+    limit_window_seconds: number | null;
+    secondary_rate_limit?: CodexQuotaWindow & {
+      limit_reached: boolean;
+    } | null;
+  }> | null;
 }
 
 /** Returned by acquire() */

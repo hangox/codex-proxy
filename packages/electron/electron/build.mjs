@@ -27,6 +27,14 @@ console.log("[esbuild] dist-electron/main.cjs built successfully");
 
 // 2. Backend server → ESM (dynamically imported by main.cjs)
 //    大部分 npm 依赖会被打进单文件 bundle；WebSocket 相关运行时包保持 external。
+//    Only Node builtins and optional native modules are external.
+//
+// Banner: bundled CJS deps (e.g. `ws`) call `require("events")` etc.,
+// which esbuild rewrites to an internal `__require` shim that throws
+// `Dynamic require of "X" is not supported` when `require` is undefined.
+// In an ESM (.mjs) module `require` is undefined, so we synthesize one
+// from `module.createRequire` — the shim then delegates to real Node
+// `require` and Node builtins resolve correctly.
 await build({
   entryPoints: ["src/electron-entry.ts"],
   bundle: true,
@@ -38,6 +46,9 @@ await build({
   sourcemap: true,
   // Mark .node files as external (native addons)
   loader: { ".node": "empty" },
+  banner: {
+    js: `import { createRequire as __cpCreateRequire } from "module";\nconst require = __cpCreateRequire(import.meta.url);`,
+  },
 });
 
 console.log("[esbuild] dist-electron/server.mjs built successfully");

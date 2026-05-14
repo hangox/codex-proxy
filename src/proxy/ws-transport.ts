@@ -8,10 +8,13 @@
  *
  * Used when `previous_response_id` is present — HTTP SSE does not support it.
  *
- * The `ws` package is loaded lazily via dynamic import to avoid
- * "Dynamic require of 'events' is not supported" errors when the
- * backend is bundled as ESM for Electron (esbuild cannot convert
- * ws's CJS require chain to ESM statics).
+ * The `ws` package is loaded lazily via dynamic import so its heavy
+ * CJS init (Receiver/Sender/PerMessageDeflate) is deferred until the
+ * WS path is actually exercised. Note: esbuild still bundles ws into
+ * the ESM server bundle; that bundling is what makes the
+ * `createRequire` banner in packages/electron/electron/build.mjs
+ * load-bearing — without it, ws's `require("events")` etc. throw
+ * `Dynamic require of "X" is not supported` at runtime.
  */
 
 import type { CodexInputItem } from "./codex-api.js";
@@ -100,6 +103,10 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } 
   return null;
 }
 
+function isTerminalWsEvent(type: string): boolean {
+  return type === "response.completed" || type === "response.failed" || type === "error";
+}
+
 /** Cached ws module — loaded once on first use. */
 let _WS: typeof import("ws").default | undefined;
 
@@ -132,16 +139,27 @@ async function createProxyAgent(proxyUrl: string): Promise<ProxyAgent> {
   return new HttpsProxyAgent(proxyUrl);
 }
 
+/**
+ * Public alias of `getWS` — exposes the lazy ws loader so the Electron
+ * bundle smoke test can force ws's CJS factory to run without spinning
+ * up the full server. Re-exported via packages/electron/src/electron-entry.ts;
+ * consumed by packages/electron/__tests__/build.test.ts.
+ */
+export const loadWebSocketModule = getWS;
+
 /** Flat WebSocket message format expected by the Codex backend. */
 export interface WsCreateRequest {
   type: "response.create";
   model: string;
   instructions: string;
   input: CodexInputItem[];
+  store: false;
+  stream: true;
   previous_response_id?: string;
   reasoning?: { effort?: string; summary?: string };
   tools?: unknown[];
   tool_choice?: string | { type: string; name?: string };
+  parallel_tool_calls?: boolean;
   text?: {
     format: {
       type: "text" | "json_object" | "json_schema";
@@ -150,11 +168,10 @@ export interface WsCreateRequest {
       strict?: boolean;
     };
   };
+  service_tier?: string;
   prompt_cache_key?: string;
   client_metadata?: Record<string, string>;
   include?: string[];
-  // NOTE: `store` and `stream` are intentionally omitted.
-  // The backend defaults to storing via WebSocket and always streams.
 }
 
 /** Optional pool routing context. When provided, `createWebSocketResponse`
@@ -196,6 +213,8 @@ async function buildWsConstructorOpts(
   proxyUrl: string | null | undefined,
 ): Promise<ConstructorParameters<typeof WS>[2]> {
   const wsOpts: ConstructorParameters<typeof WS>[2] = { headers };
+  // 与 native transport 代理语义保持一致：
+  // undefined = 全局默认，null = 显式直连，string = 指定代理。
   const effectiveProxyUrl = resolveEffectiveProxyUrl(proxyUrl);
   if (effectiveProxyUrl) {
     let agent = _agentCache.get(effectiveProxyUrl);
@@ -347,6 +366,7 @@ async function openOneShotWs(
     // for a real first frame so we can detect early upstream errors and
     // route them through the existing CodexApiError → rotation path.
     let earlyDecisionMade = false;
+    let sawTerminalEvent = false;
 
     function closeStream() {
       if (!streamClosed && controller) {
@@ -449,7 +469,8 @@ async function openOneShotWs(
         controller!.enqueue(encoder.encode(sse));
 
         // Close stream after response.completed, response.failed, or error
-        if (type === "response.completed" || type === "response.failed" || type === "error") {
+        if (isTerminalWsEvent(type)) {
+          sawTerminalEvent = true;
           queueMicrotask(() => {
             closeStream();
             ws.close(1000);
@@ -481,6 +502,15 @@ async function openOneShotWs(
           `WebSocket closed before any data: code=${code}` +
             (reasonStr ? ` reason=${reasonStr}` : ""),
         ));
+        return;
+      }
+      if (earlyDecisionMade && !sawTerminalEvent) {
+        const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
+        errorStream(new Error(
+          `WebSocket closed before terminal event: code=${code}` +
+            (reasonStr ? ` reason=${reasonStr}` : ""),
+        ));
+        return;
       }
       closeStream();
     });

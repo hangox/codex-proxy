@@ -21,10 +21,13 @@ import type {
 import {
   iterateCodexEvents,
   EmptyResponseError,
+  UpstreamPrematureCloseError,
   type UsageInfo,
   type ExtractedEvent,
 } from "./codex-event-extractor.js";
 import { reconvertTupleValues } from "./tuple-schema.js";
+import { codexApiErrorFromEvent } from "./codex-api-error-from-event.js";
+import { debugDump, debugDumpEnabled } from "../utils/debug-dump.js";
 
 /** Format an SSE chunk for streaming output */
 function formatSSE(chunk: ChatCompletionChunk): string {
@@ -88,38 +91,7 @@ export async function* streamCodexToOpenAI(
 
     // Handle upstream error events
     if (evt.error) {
-      sawTerminalFailure = true;
-      if (hasContent) {
-        console.warn(`[codex-to-openai] partial stream failed responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantReasoning ? "enabled" : "disabled"} error=${evt.error.code}:${evt.error.message}`);
-      }
-      yield formatSSE({
-        id: chunkId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [
-          {
-            index: 0,
-            delta: { content: `[Error] ${evt.error.code}: ${evt.error.message}` },
-            finish_reason: null,
-          },
-        ],
-      });
-      yield formatSSE({
-        id: chunkId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [
-          {
-            index: 0,
-            delta: {},
-            finish_reason: "stop",
-          },
-        ],
-      });
-      yield "data: [DONE]\n\n";
-      return;
+      throw codexApiErrorFromEvent(evt.error);
     }
 
     // Handle function call events
@@ -392,10 +364,23 @@ export async function collectCodexResponse(
   // Collect tool calls
   const toolCalls: ChatCompletionToolCall[] = [];
 
+  const dumpEnabled = debugDumpEnabled();
+  const eventTrace: unknown[] = [];
+  let sawTerminalEvent = false;
+  let eventCount = 0;
+
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    if (dumpEnabled) eventTrace.push(evt.typed);
+    eventCount++;
+    if (
+      evt.typed.type === "response.completed" ||
+      evt.typed.type === "response.failed"
+    ) {
+      sawTerminalEvent = true;
+    }
     if (evt.responseId) responseId = evt.responseId;
     if (evt.error) {
-      throw new Error(`Codex API error: ${evt.error.code}: ${evt.error.message}`);
+      throw codexApiErrorFromEvent(evt.error);
     }
     if (evt.textDelta) fullText += evt.textDelta;
     if (evt.reasoningDelta) fullReasoning += evt.reasoningDelta;
@@ -419,6 +404,29 @@ export async function collectCodexResponse(
 
   // Detect empty response (HTTP 200 but no content)
   if (!fullText && toolCalls.length === 0 && completionTokens === 0) {
+    if (dumpEnabled) {
+      debugDump("empty-response-openai", {
+        model,
+        responseId,
+        promptTokens,
+        completionTokens,
+        cachedTokens,
+        reasoningTokens,
+        fullTextLen: fullText.length,
+        fullReasoningLen: fullReasoning.length,
+        toolCallsCount: toolCalls.length,
+        sawTerminalEvent,
+        eventCount: eventTrace.length,
+        events: eventTrace,
+      });
+    }
+    // Upstream FIN'd without ever sending response.completed / response.failed
+    // — this is the gpt-5.5 xhigh reasoning > 120 s cap, not a real "empty"
+    // payload. Surface it distinctly so the proxy-handler can fail fast
+    // instead of burning a 3-account empty-response retry.
+    if (!sawTerminalEvent) {
+      throw new UpstreamPrematureCloseError(responseId, fullReasoning.length > 0, eventCount);
+    }
     throw new EmptyResponseError(responseId, { input_tokens: promptTokens, output_tokens: completionTokens });
   }
 

@@ -47,6 +47,7 @@ export async function* streamCodexToOpenAI(
   onResponseId?: (id: string) => void,
   wantReasoning?: boolean,
   tupleSchema?: Record<string, unknown> | null,
+  onResponseCompleted?: (id?: string) => void,
 ): AsyncGenerator<string> {
   const chunkId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   const created = Math.floor(Date.now() / 1000);
@@ -281,6 +282,22 @@ export async function* streamCodexToOpenAI(
         }
 
         if (evt.usage) onUsage?.(evt.usage);
+        onResponseCompleted?.(evt.responseId);
+        if (!hasContent) {
+          yield formatSSE({
+            id: chunkId,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: { content: "[Error] Codex returned an empty response. Please retry." },
+                finish_reason: null,
+              },
+            ],
+          });
+        }
         // Build usage object for final chunk (OpenAI includes usage in last streaming chunk)
         const chunkUsage: ChatCompletionChunk["usage"] = evt.usage
           ? {

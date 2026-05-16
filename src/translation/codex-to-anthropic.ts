@@ -72,6 +72,7 @@ export async function* streamCodexToAnthropic(
   wantThinking?: boolean,
   usageHint?: CacheUsageHint,
   onResponseMetadata?: (metadata: ResponseMetadata) => void,
+  onResponseCompleted?: (id?: string) => void,
 ): AsyncGenerator<string> {
   const msgId = `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   let outputTokens = 0;
@@ -274,6 +275,15 @@ export async function* streamCodexToAnthropic(
             output_tokens: outputTokens,
             cached_tokens: cachedTokens,
             reasoning_tokens: evt.usage.reasoning_tokens,
+          });
+        }
+        onResponseCompleted?.(evt.responseId);
+        if (!hasContent) {
+          yield* ensureTextBlock();
+          yield formatSSE("content_block_delta", {
+            type: "content_block_delta",
+            index: contentIndex,
+            delta: { type: "text_delta", text: "[Error] Codex returned an empty response. Please retry." },
           });
         }
         break;

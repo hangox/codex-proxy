@@ -124,10 +124,11 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
       model,
       onUsage,
       onResponseId,
+      onResponseCompleted,
       usageHint,
       onResponseMetadata,
     }) =>
-      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking, usageHint, onResponseMetadata),
+      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking, usageHint, onResponseMetadata, onResponseCompleted),
     collectTranslator: ({
       api,
       response,
@@ -252,10 +253,11 @@ export function createMessagesRoutes(
     };
 
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
+      const directModel = routeMatch.resolvedModel ?? req.model;
       const directReq = {
         ...proxyReq,
-        model: req.model,
-        codexRequest: { ...codexRequest, model: req.model },
+        model: directModel,
+        codexRequest: { ...codexRequest, model: directModel },
       };
       return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
     }

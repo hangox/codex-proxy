@@ -78,4 +78,24 @@ describe("AnthropicMessagesRequestSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("moves inline system messages to top-level system", () => {
+    const result = AnthropicMessagesRequestSchema.safeParse({
+      ...BASE_REQUEST,
+      system: "Existing system.",
+      messages: [
+        { role: "user", content: "Hello" },
+        { role: "system", content: "Inline system." },
+        { role: "assistant", content: "Hi" },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.system).toBe("Existing system.\n\nInline system.");
+    expect(result.data.messages).toEqual([
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi" },
+    ]);
+  });
 });

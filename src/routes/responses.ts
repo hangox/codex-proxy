@@ -350,6 +350,17 @@ export async function* streamPassthrough(
       // Re-emit raw SSE event
       yield `event: ${raw.event}\ndata: ${JSON.stringify(raw.data)}\n\n`;
 
+      if (raw.event === "response.output_item.done") {
+        const data = raw.data;
+        if (isRecord(data)) {
+          emitFunctionCallMetadata(
+            extractFunctionCallIdsFromItem(data.item),
+            seenFunctionCallIds,
+            onResponseMetadata,
+          );
+        }
+      }
+
       // Extract usage and responseId for account pool bookkeeping
       if (
         raw.event === "response.created" ||

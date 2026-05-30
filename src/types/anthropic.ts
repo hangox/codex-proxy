@@ -196,6 +196,46 @@ export type AnthropicMessagesRequest = z.infer<
   typeof AnthropicMessagesRequestSchema
 >;
 
+export const AnthropicCountTokensRequestSchema = z.preprocess(normalizeInlineSystemMessages, z.object({
+  model: z.string(),
+  messages: z.array(AnthropicMessageSchema).min(1),
+  system: z
+    .union([z.string(), z.array(AnthropicTextContentSchema)])
+    .optional(),
+  tools: z.array(z.union([
+    z.object({
+      name: z.string(),
+      description: z.string().optional(),
+      input_schema: z.record(z.unknown()).optional(),
+    }).passthrough(),
+    z.object({
+      type: z.enum(["web_search_20250305", "web_search"]),
+      name: z.string().optional(),
+      max_uses: z.number().int().positive().optional(),
+      allowed_domains: z.array(z.string()).optional(),
+      blocked_domains: z.array(z.string()).optional(),
+      user_location: z.record(z.unknown()).optional(),
+    }).passthrough(),
+  ])).optional(),
+  tool_choice: z.union([
+    z.object({ type: z.literal("auto") }),
+    z.object({ type: z.literal("any") }),
+    z.object({ type: z.literal("tool"), name: z.string() }),
+  ]).optional(),
+  thinking: z
+    .union([
+      AnthropicThinkingEnabledSchema,
+      AnthropicThinkingDisabledSchema,
+      AnthropicThinkingAdaptiveSchema,
+    ])
+    .optional(),
+  betas: z.array(z.string()).optional(),
+}));
+
+export type AnthropicCountTokensRequest = z.infer<
+  typeof AnthropicCountTokensRequestSchema
+>;
+
 // --- Response ---
 
 export interface AnthropicContentBlock {

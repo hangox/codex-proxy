@@ -153,7 +153,7 @@ curl http://localhost:8080/v1/chat/completions \
 - **多账号轮换** — `least_used`（最少使用优先）、`round_robin`（轮询）、`sticky`（粘性）三种策略
 - **Plan Routing** — 不同 plan（free/plus/team/business）的账号自动路由到各自支持的模型
 - **Token 自动续期** — JWT 到期前自动刷新，指数退避重试
-- **配额被动采集** — 从上游响应头和 WebSocket rate limit 事件更新账号额度；`quota.refresh_interval_minutes` 仅控制用量快照记录，`0` 表示关闭快照定时器。
+- **配额采集** — 默认从上游响应头和 WebSocket rate limit 事件被动更新账号额度；用户手动查询单账号额度时会调用 `/backend-api/wham/usage`，并把 `remaining_percent = 100 - used_percent` 写入缓存。
 - **封禁检测** — 上游 403 自动标记 banned；401 token 吊销自动过期并切换账号
 - **API Key Provider 池** — 支持通过 Dashboard 管理第三方 API Key、模型列表、导入导出和启停状态。
 - **Web 控制面板** — 账号管理、用量统计、批量操作，中英双语；远程访问需 Dashboard 登录门
@@ -572,14 +572,16 @@ model:
 
 ### 局域网访问
 
-源码/容器默认配置监听 `::`（IPv6 unspecified，通常也覆盖本机访问）；Electron 启动时会传入 `127.0.0.1`，除非 `data/local.yaml` 显式覆盖。建议需要仅本机访问时写入：
+源码默认配置仅监听 `127.0.0.1`；Electron 也会传入 `127.0.0.1`，除非 `data/local.yaml` 显式覆盖。Docker 镜像会通过 `CODEX_PROXY_HOST=0.0.0.0` 在容器内监听所有接口，`docker-compose.yml` 默认仍只把宿主机端口绑定到 `127.0.0.1`。
+
+需要仅本机访问时写入：
 
 ```yaml
 server:
   host: "127.0.0.1"
 ```
 
-如需局域网内其他设备访问，在 `data/local.yaml` 中添加：
+如需局域网内其他设备访问，在 `data/local.yaml` 中添加，并把 `docker-compose.yml` 的端口映射从 `127.0.0.1:${PORT:-8080}:8080` 改成 `${PORT:-8080}:8080`：
 
 ```yaml
 server:
@@ -711,6 +713,7 @@ curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
 | 环境变量 | 覆盖配置 |
 |---------|---------|
 | `PORT` | `server.port` |
+| `CODEX_PROXY_HOST` | `server.host`（仅当 `data/local.yaml` 未显式设置 `server.host` 时生效） |
 | `CODEX_PLATFORM` | `client.platform` |
 | `CODEX_ARCH` | `client.arch` |
 | `HTTPS_PROXY` | `tls.proxy_url` |
@@ -745,10 +748,10 @@ curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/auth/login` | GET | OAuth 登录入口 |
-| `/auth/accounts` | GET | 账号列表（`?quota=true` / `?quota=fresh`） |
+| `/auth/accounts` | GET | 账号列表（含缓存额度） |
 | `/auth/accounts` | POST | 添加单个账号（token 或 refreshToken） |
-| `/auth/accounts/import` | POST | 批量导入账号 |
-| `/auth/accounts/export` | GET | 导出账号（`?format=minimal` 精简格式） |
+| `/auth/accounts/import` | POST | 批量导入账号（JSON / `text/plain` token 行） |
+| `/auth/accounts/export` | GET | 导出账号（`?format=full|minimal|cockpit_tools|sub2api|cpa`） |
 | `/auth/accounts/batch-delete` | POST | 批量删除账号 |
 | `/auth/accounts/batch-status` | POST | 批量修改账号状态 |
 | `/auth/accounts/health-check` | POST | 批量检测账号可用性 |
@@ -782,6 +785,10 @@ curl -s http://localhost:8080/auth/accounts/export \
 curl -s "http://localhost:8080/auth/accounts/export?format=minimal" \
   -H "Authorization: Bearer your-api-key" > backup-minimal.json
 
+# 导出第三方兼容格式
+curl -s "http://localhost:8080/auth/accounts/export?format=sub2api" \
+  -H "Authorization: Bearer your-api-key" > sub2api-accounts.json
+
 # 批量导入（支持 token、refreshToken，或两者同时传）
 curl -X POST http://localhost:8080/auth/accounts/import \
   -H "Content-Type: application/json" \
@@ -794,6 +801,12 @@ curl -X POST http://localhost:8080/auth/accounts/import \
     ]
   }'
 # 返回: { "added": 2, "updated": 1, "failed": 0, "errors": [] }
+
+# text/plain token 行导入（每行 access token 或 refresh token）
+curl -X POST http://localhost:8080/auth/accounts/import \
+  -H "Content-Type: text/plain" \
+  -H "Authorization: Bearer your-api-key" \
+  --data-binary $'eyJhbGciOi...\noaistb_rt_...\n'
 
 # 备份恢复一键操作（导出后直接导入到另一个实例）
 curl -X POST http://localhost:8080/auth/accounts/import \
@@ -858,11 +871,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 ### [Unreleased]
 
 **Added**
+- Dashboard 新增 Plus / Pro / PAYG 账号的 credit 余额可视化与账号池总览（Phase 1，零新增上游 traffic）：`CodexUsageResponse.credits` 此前被打成 `unknown` 全量丢弃，现在 `toQuota()` 把 `has_credits / unlimited / overage_limit_reached / balance` 解析进新 `CodexQuota.credits` 槽，并把 `balance` 从 upstream 的十进制字符串转成 number（malformed payload 防御性返回 null 而不是 NaN）；`AccountRegistry.updateCachedQuota` 在收到不带 credits 字段的 quota（passive header path）时保留之前已知的 credit 余额，防止每次 `/codex/responses` 响应抹掉初始 warmup 拿到的余额；新增 `usage_stats.credits_per_usd` 配置项（默认 25，即 1000 credits = $40），dashboard 端按此换算 USD 显示。前端 `AccountCard` 在 `has_credits=true` 或 `unlimited=true` 的账号上新增一行 Credit Balance（balance + USD 换算 或 "Unlimited" 标签 或 overage 红字提示），Plus 账号 has_credits=false 时整行不渲染；新增 `PoolOverview` 卡片在 `/` 主页 AccountList 上方汇总账号池：active / quota_exhausted 数量、所有携带 credits 的账号余额合计与 USD 折算、secondary used% 最高的账号 + 重置时间。新增 `formatCredits` / `creditsToUsd` / `formatUsd` 共享格式化工具，shared 类型 `AccountQuota.credits` 透传到前端。新增 `tests/unit/auth/quota-utils.test.ts` 5 个 credits 用例、`tests/unit/auth/account-pool-quota.test.ts` 2 个 updateCachedQuota credits-preserve 用例、`shared/utils/__tests__/format-credits.test.ts` 11 个格式化工具用例、`tests/unit/web/pool-overview-stats.test.ts` 7 个聚合算法用例、`tests/unit/config-schema.test.ts` 补 `credits_per_usd` 默认值断言。i18n 中英新增 8 个新键（`src/proxy/codex-types.ts`、`src/auth/types.ts`、`src/auth/quota-utils.ts`、`src/auth/account-registry.ts`、`src/config-schema.ts`、`src/proxy/codex-api.ts`、`shared/types.ts`、`shared/utils/format.ts`、`shared/i18n/translations.ts`、`web/src/App.tsx`、`web/src/components/AccountCard.tsx`、`web/src/components/PoolOverview.tsx`）
+- 第三方 API key 增加 capability 分层与 OpenAI-compatible embeddings 代理：旧 key 自动按 `chat` 迁移，新增/导入/导出支持 `capabilities`，`/v1/embeddings` 只使用显式标记 `embeddings` 的 OpenAI/OpenRouter/custom key 并直连上游 `/embeddings`；Dashboard API Keys 表单新增 Chat / Embeddings 复选框和手动模型输入，避免静态 catalog 卡住 embedding/custom model。启动时无持久 key 也会创建 runtime router，后续在面板添加的 key 无需重启即可参与 chat 直连；chat 直连模型在配置 `proxy_api_key` 时补齐代理 key 校验。新增单元、前端表单和真实 OpenRouter embeddings 3 连 E2E 验证（`src/auth/api-key-pool.ts`、`src/routes/api-keys.ts`、`src/routes/embeddings.ts`、`src/proxy/upstream-router-bootstrap.ts`、`src/routes/chat.ts`、`web/src/components/ApiKeyManager.tsx`、`tests/unit/routes/embeddings.test.ts`、`web/src/components/ApiKeyManager.test.tsx`）
+- Account transfer compatibility with Cockpit Tools / Sub2API / CPA: normalized quota windows now include `remaining_percent` while preserving `used_percent`; successful `GET /auth/accounts/:id/quota` calls update cached quota; account import accepts Cockpit Tools portable objects, direct `accessToken` / `refresh_token`, Sub2API exports, raw arrays, and `text/plain` token lines; account export adds `format=cockpit_tools|sub2api|cpa` alongside existing `full|minimal`; Dashboard import/export now sends JSON or token-line files without forcing `{ accounts: [...] }` and exposes the export format selector. Docs now record the `/backend-api/wham/usage` active quota path and compatibility formats (`src/auth/quota-utils.ts`, `src/proxy/rate-limit-headers.ts`, `src/routes/accounts.ts`, `src/services/account-transfer-formats.ts`, `shared/account-transfer-client.ts`, `shared/hooks/use-accounts.ts`, `web/src/components/AccountImportExport.tsx`, `docs/architecture/auth/quota.md`, `docs/architecture/auth/import-export.md`, `docs/todo/cockpit-tools-quota-import-export.md`).
 - 支持 Dashboard 配置模型映射与本地自定义模型目录：`data/local.yaml` 可把客户端模型名映射到 Codex 模型、带 provider 前缀的第三方模型或已有 `model_routing` 目标；Dashboard → Settings → 模型映射可直接增删 alias 并热加载后端；`model.custom_models` 可把自定义 Codex-compatible ID 加入 `/v1/models/catalog` 并支持 `-fast` / `-high` 等后缀。ModelStore 会用本地 alias 覆盖静态 `config/models.yaml` alias，UpstreamRouter 会在内置 Claude/Gemini 自动路由前解析 alias，并在直连 provider 请求中把 outgoing `model` 改写为映射目标。新增 schema / model-store / upstream-router / route direct guard / Dashboard 组件测试覆盖配置默认值、静态 alias 覆盖、custom catalog、provider target 路由、四类直连接口（Chat / Messages / Responses / Gemini）的目标模型透传和 UI 持久化（`src/config-schema.ts`、`src/models/model-store.ts`、`src/proxy/upstream-router.ts`、`src/routes/admin/settings.ts`、`src/routes/chat.ts`、`src/routes/messages.ts`、`src/routes/responses.ts`、`src/routes/gemini.ts`、`web/src/components/ModelAliasSettings.tsx`、`tests/unit/config-schema.test.ts`、`tests/unit/models/model-store.test.ts`、`tests/unit/proxy/upstream-router.test.ts`、`tests/unit/routes/general-settings.test.ts`、`tests/unit/routes/upstream-auth-bypass.test.ts`、`web/src/components/ModelAliasSettings.test.tsx`）
 - Stream-close 事件结构化落盘到 Errors tab + 审计 log：`premature stream close` / `stream-client-abort` / `stream-client-disconnect` / `stream-error` 此前只走 `console.warn` 进 `dev-YYYY-MM-DD.log`，需要 grep 才能定位，且生产模式没有 tee；新增 `src/logs/stream-close-event.ts` 把这些事件同时写到 `data/error-log.jsonl`（Errors tab 按签名分组 + 角标计数）和 `logStore`（`/admin/logs` 审计流）。覆盖 7 个调用点：`proxy-handler.ts` 两处 client abort + 一处 `UpstreamPrematureCloseError`（带 eventCount / hadReasoning / responseId / variantHash）、`response-processor.ts` 两处（`client-write-failed` 带 writtenChunks/Bytes/lastSentEvent；`upstream-error` 带 upstreamStatus）、`responses.ts` 两处 `streamPassthrough` 内部 EOF（rid / accountEntryId / variantHash 通过 `FormatAdapter.streamTranslator` 的 `streamContext` option 由 `response-processor` 透传，其它 adapter 兼容性接收并忽略）。顺手修 `error-log.ts:readAppVersion` 在 config 未加载时崩溃（unit-test 路径会撞到），改为 try/catch 兜底回退 "unknown"。新增 `tests/unit/logs/stream-close-event.test.ts` 6 个单测覆盖 4 种 kind + 缺失 rid 兜底 + numeric upstreamStatus → audit status 透传 + direct upstream provider/path；Errors tab 展开分组时会显示 sample context。下次复现 premature close 直接看 Errors tab 按 `StreamUpstreamPrematureClose` 分组拉 rid + account + closeCode，不用再 grep dev 日志（`src/logs/stream-close-event.ts`、`src/logs/error-log.ts`、`src/routes/shared/proxy-handler.ts`、`src/routes/shared/response-processor.ts`、`src/routes/responses.ts`、`tests/unit/logs/stream-close-event.test.ts`）
-- Opt-in 上游请求/响应 dumper：新增 `src/utils/debug-dump.ts`，环境变量 `CODEX_PROXY_DEBUG_DUMP=1` 启用时把每次上游请求 + 流式 chunk + 终止状态 + 错误写入 `/tmp/codex-proxy-dump-<startupMs>.jsonl`（一行一事件）；未启用时所有 hook 是 `if (debugDumpEnabled())` 守护下的纯 boolean check，零开销。在 `src/routes/shared/proxy-handler.ts` 加 1 个 hook（`request`，含 rid/tag/entryId/conv/implicitResumeActive/resumeReason/payload），在 `src/routes/shared/response-processor.ts` 加 3 个 hook（`upstream-chunk` 截断到 16KB、`stream-finish` 含 chunks/bytes/sawTerminal、`stream-error` 含 status/msg/body 截断到 4KB）。**privacy 警告**：dump 文件包含完整 request payload（含用户 prompt）和上游响应，路径在启动时打印一次提示 sensitive 性质。日常排查"账号轮换重试风暴" / "premature stream close" 等偶发错误时 opt-in 启用，问题复现后再 opt-out
-- Pre-publish artifact smoke 拦在 stable 之前（#479）：`release.yml` 把 4 个平台（mac arm64 / mac x64 / win / linux）的 Pack step 从 `--publish always` 改成 `--publish never`，新增跨平台 smoke step 用 `.github/scripts/electron-smoke.sh` 启动打包好的 binary、tail 日志拿 `Server started on port N`、curl `/health`、清进程；smoke 失败直接阻塞 `gh release upload`，artifact 不会进 GitHub Release（坏的就不发）。Linux 装 `libfuse2 + xvfb` 起虚拟显示，Windows 用 `win-unpacked/*.exe` 跳过 NSIS 安装；smoke 失败时通过 `actions/upload-artifact@v4` 把日志保留 7 天给排查。新增 `tests/unit/ci/electron-smoke-script.test.ts` 6 个单测，覆盖脚本的 fail-loud 路径（缺 RUNNER_OS / RELEASE_DIR / AppImage / 不支持的 OS），保证脚本本身坏掉时不会沉默通过。CI 时间增量约 +5 分钟（Linux 最快，Windows 需研究 GHA windows-latest 的 GUI 启动行为，首次 PR 可能要回炉）（`.github/scripts/electron-smoke.sh`、`.github/workflows/release.yml`、`tests/unit/ci/electron-smoke-script.test.ts`）
-- Dashboard Errors tab + Header 浮起 badge + 渲染进程错误捕获（observability，#480 PR-2）：新增 `Errors` tab（按 `name + first stack frame` 聚合，按 last_seen 降序，可展开看 sample stack；折叠后只显示一行）；Header 右侧多一个红色 pulsing badge 显示未读错误数（>99 显示 `99+`），点击跳 `#/errors`；渲染进程注册 `window.addEventListener('error')` + `unhandledrejection` 在 `main.tsx` `render()` 之前，每条事件 fetch POST `/admin/error-logs/report`（不走 IPC，复用同源 dashboardAuth）；`useErrorLogs` / `useErrorLogsCount` hook 30s 轮询；i18n 中英双语；`mark all read` 按钮调 `/admin/error-logs/seen` 推进 cursor；新增前端 web bundle +8KB gzipped（`web/src/error-capture.ts`、`web/src/pages/ErrorsPage.tsx`、`shared/hooks/use-error-logs.ts`、`web/src/App.tsx`、`web/src/components/Header.tsx`、`web/src/main.tsx`、`shared/i18n/translations.ts`、`tests/unit/web/error-capture.test.ts`、`shared/hooks/use-error-logs.test.ts`）
 - ...（[查看全部](./CHANGELOG.md)）
 **Changed**
 - `handleProxyRequest` / `handleDirectRequest` 改为 named options object 调用契约，顺带把 private `handleNonStreaming` 的 20 个位置参数收敛成内部 options object，避免后续新增可选上下文时错位；所有 route 调用与直接 handler 测试同步迁移，并补 direct upstream route guard 锁住 adapter/raw model/format tag 传递（`src/routes/shared/proxy-handler.ts`、`src/routes/chat.ts`、`src/routes/messages.ts`、`src/routes/gemini.ts`、`src/routes/responses.ts`、`tests/unit/routes/upstream-auth-bypass.test.ts`）
@@ -872,11 +885,11 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 - 非流式 collect/retry 路径从 `proxy-handler.ts` 抽到独立 `non-streaming-handler.ts`，并把 `buildCodexApi`、image generation usage 标记、Codex error prefix 清理收敛到 `proxy-handler-utils.ts`，降低主 handler 对 empty-response retry / premature-close / affinity 逻辑的耦合；新增模块边界测试、collect 阶段 `previous_response_not_found` strip-retry guard、non-stream affinity metadata guard（`src/routes/shared/non-streaming-handler.ts`、`src/routes/shared/proxy-handler-utils.ts`、`src/routes/shared/proxy-handler.ts`、`tests/unit/routes/shared/non-streaming-handler-boundary.test.ts`、`tests/integration/proxy-handler.test.ts`）
 - ...（[查看全部](./CHANGELOG.md)）
 **Fixed**
-- Release bump workflows now require runtime file changes in addition to meaningful commit subjects before tagging a beta or stable build. This prevents squash-promotion history divergence from re-counting old dev commits, and prevents workflow/docs/test-only fixes from producing empty Electron releases (`.github/workflows/bump-electron.yml`, `.github/workflows/bump-electron-beta.yml`, `tests/unit/ci/package-boundary.test.ts`).
-- Release bump workflows now skip the release-notes workflow hotfix subject itself, so promoting the stable-notes CI fix to `master` does not create an empty desktop release on the next scheduled bump (`.github/workflows/bump-electron.yml`, `.github/workflows/bump-electron-beta.yml`, `tests/unit/ci/package-boundary.test.ts`).
-- 修复 stable release notes 在手动 squash promotion 后只写 `fix: promote dev release fixes to master`、漏掉 dev 原始 PR 的问题：`release.yml` 改为调用 `.github/scripts/generate-release-notes.sh`，stable tag 若只有 promotion 内容且运行时代码树与 `origin/dev` 一致（忽略 README/package 版本文件），会回退使用 dev history 生成说明；新增单测覆盖正常 stable tag 与 squash promotion 两条路径（`.github/workflows/release.yml`、`.github/scripts/generate-release-notes.sh`、`tests/unit/ci/release-notes-script.test.ts`）。
-- Lockfile tarball sources now point to the official npm registry instead of `registry.npmmirror.com`, and the CI package boundary guard fails if any root/web/native lockfile resolves npm packages from a non-`registry.npmjs.org` host. Root production dependency audit is also clean after non-breaking lockfile updates for `hono`, `@hono/node-server`, `undici`, `minimatch`, and `brace-expansion`; the remaining full-audit finding is the existing Electron major-version upgrade requirement (`package-lock.json`, `web/package-lock.json`, `tests/unit/ci/package-boundary.test.ts`).
-- Update checker now keeps `config/default.yaml` in sync when it auto-applies a Codex Desktop appcast version, while still writing `data/version-state.json` for cold-start runtime overrides. When a matching `data/extracted-fingerprint.json` is present, the checker also carries `chromium_version` through to version state, YAML, and in-memory config so User-Agent and `sec-ch-ua` fingerprint fields do not drift. The checked-in default fingerprint is updated to Codex Desktop `26.506.31421` / build `2620` / Chromium `146` (`src/update-checker.ts`, `config/default.yaml`, `tests/unit/update-checker.test.ts`).
+- Release/promotion readiness fixes: `promote-dev-to-master.yml` now fails the workflow when `master` cannot fast-forward to `dev` instead of reporting a skipped success; `release.yml` runs stale asset cleanup under bash on every matrix runner and uses a dedicated PowerShell smoke script for Windows packaged Electron builds. Dashboard pool credit totals now use the persisted `usage_stats.credits_per_usd` value exposed by `/admin/general-settings`, and Anthropic cache-reporting tests now match the current contract where `input_tokens` excludes cached input while `cache_read_input_tokens` reports the hit count (`.github/workflows/promote-dev-to-master.yml`, `.github/workflows/release.yml`, `.github/scripts/electron-smoke.ps1`, `src/routes/admin/settings.ts`, `shared/hooks/use-general-settings.ts`, `web/src/App.tsx`, `web/src/components/PoolOverview.tsx`, `tests/unit/cache-reporting.test.ts`).
+- Dashboard 的"刷新配额"按钮现在真正刷新账号 quota：`GET /auth/accounts/:id/quota` 此前只把 `/codex/usage` 结果返回给 caller、不写回 `pool.cachedQuota`。所以当 OpenAI 做 promo / window grant 把 `secondary_window.used_percent` 重置为 0% 时，proxy 仍然显示重置前的 98–100%，要等下一次真实 `/codex/responses` 请求才被动靠 `x-codex-*` 响应头追上。同一条死路也让 Pro / PAYG 账号 `credits` 块永远进不了 cachedQuota（header path 根本不带 credits）。修复：`/auth/accounts/:id/quota` 拉取上游后立刻 `pool.updateCachedQuota(id, toQuota(usage))` 写回；前端 `AccountList.onRefreshQuota` 直接调用单账号 `GET /quota`，失败时输出 warning 后刷新列表缓存（`src/routes/accounts.ts`、`web/src/components/AccountList.tsx`）
+- `AccountRegistry.isAuthenticated()` 现在尊重 `quota.skip_exhausted` 配置：此前不论该开关如何配置，`isAuthenticated` 都会把 `cachedQuota` 已耗尽的活跃账号一律视作不可用，导致 `quota.skip_exhausted=false` 的部署在所有号都 `limit_reached=true` 但仍可被 `AccountLifecycle.acquire()` 取走的情况下，被 `accountPool.isAuthenticated()` 守门的路由（`/v1/chat/completions` / `/v1/messages` / `/v1/responses` / model 列表 / health）全部 401。现在 `isAuthenticated` 与 `hasAvailableAccounts` 用同一套规则：`skipExhausted ? !hasReachedCachedQuota(entry) : true`。配置默认值不变（默认仍跳过）。新增 5 个单测覆盖空池 / 默认 skip / 默认非 skip / `skip_exhausted=false` 配额耗尽路径 / disabled 账号 0 容忍（`src/auth/account-registry.ts`、`tests/unit/auth/account-pool-has-available.test.ts`）
+- Claude Code 2.1.84 计费头 strip 行为新增 rotation 变体回归覆盖：实测 Claude Code 把 `x-anthropic-billing-header: cc_version=...; cc_entrypoint=cli; cch=<5hex>;` 作为 `system[0]` 独立块下发，`cc_version` 后缀和 `cch` 每请求 reroll；新增 `it.each` 覆盖 5 个真实 `cc_version` 后缀（c8e / 76b / f51 / 5b4 / 4f3）与"两次不同 cch 产出同一份 `instructions`"的不变性断言，防止后续改 strip（如改 `startsWith` → 正则、或加 inline 清洗）意外让 `cch` 漏进 `instructions` 污染上游 prompt cache（`tests/unit/translation/anthropic-to-codex.test.ts`）
+- Dashboard Errors tab now has a real clear action: `DELETE /admin/error-logs` removes current + backup JSONL files and the read cursor so repeated `StreamUpstreamPrematureClose` groups can be cleared from the page instead of only marked read. Anthropic setup defaults now map Opus 4.7 → `gpt-5.5` and Sonnet 4.6 → `gpt-5.4`, and the built-in Anthropic API-key catalog lists Claude Opus 4.7 (`src/logs/error-log.ts`, `src/routes/admin/error-logs.ts`, `shared/hooks/use-error-logs.ts`, `web/src/pages/ErrorsPage.tsx`, `web/src/components/AnthropicSetup.tsx`, `src/auth/api-key-catalog.ts`).
 - ...（[查看全部](./CHANGELOG.md)）
 
 ### [v0.8.0](https://github.com/icebear0828/codex-proxy/releases/tag/v0.8.0) - 2026-02-24

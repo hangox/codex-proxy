@@ -5,6 +5,56 @@ import { z } from "zod";
 
 // --- Request ---
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractSystemText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+
+  const text = content
+    .map((part) => {
+      if (!isRecord(part)) return "";
+      return typeof part.text === "string" ? part.text : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  return text || undefined;
+}
+
+function normalizeInlineSystemMessages(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.messages)) return value;
+
+  const systemParts: string[] = [];
+  const messages: unknown[] = [];
+
+  for (const message of value.messages) {
+    if (!isRecord(message)) {
+      messages.push(message);
+      continue;
+    }
+
+    if (message.role === "system" || message.role === "developer") {
+      const text = extractSystemText(message.content);
+      if (text) systemParts.push(text);
+      continue;
+    }
+
+    messages.push(message);
+  }
+
+  if (systemParts.length === 0) return value;
+
+  const existingSystem = extractSystemText(value.system);
+  return {
+    ...value,
+    messages,
+    system: [existingSystem, ...systemParts].filter(Boolean).join("\n\n"),
+  };
+}
+
 const AnthropicCacheControlSchema = z.object({
   type: z.string(),
 }).passthrough();
@@ -94,7 +144,7 @@ const AnthropicThinkingAdaptiveSchema = z.object({
   budget_tokens: z.number().int().positive().optional(),
 });
 
-export const AnthropicMessagesRequestSchema = z.object({
+export const AnthropicMessagesRequestSchema = z.preprocess(normalizeInlineSystemMessages, z.object({
   model: z.string(),
   max_tokens: z.number().int().positive(),
   messages: z.array(AnthropicMessageSchema).min(1),
@@ -140,7 +190,7 @@ export const AnthropicMessagesRequestSchema = z.object({
     z.object({ type: z.literal("any") }),
     z.object({ type: z.literal("tool"), name: z.string() }),
   ]).optional(),
-});
+}));
 
 export type AnthropicMessagesRequest = z.infer<
   typeof AnthropicMessagesRequestSchema

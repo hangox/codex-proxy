@@ -15,6 +15,11 @@ import { streamResponse } from "./response-processor.js";
 import { toErrorStatus } from "./proxy-error-handler.js";
 import type { HandleDirectRequestOptions } from "./proxy-handler-types.js";
 import { canReturnStreamError, streamErrorResponse } from "./stream-error-response.js";
+import {
+  isPromptTooLongLike,
+  normalizePromptTooLongMessage,
+  promptTooLongStatus,
+} from "../../proxy/prompt-too-long-error.js";
 
 export async function handleDirectRequest(options: HandleDirectRequestOptions): Promise<Response> {
   const { c, upstream, req, fmt } = options;
@@ -61,22 +66,26 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
       },
     });
     if (err instanceof CodexApiError) {
-      const code = toErrorStatus(err.status) as StatusCode;
+      const isPromptTooLong = isPromptTooLongLike(err.body) || isPromptTooLongLike(err.message);
+      const code = (isPromptTooLong ? promptTooLongStatus(err.status) : toErrorStatus(err.status)) as StatusCode;
+      const message = isPromptTooLong ? normalizePromptTooLongMessage(err.body || err.message) : err.message;
       if (canReturnStreamError(req, fmt)) {
-        return streamErrorResponse(c, fmt, code, err.message);
+        return streamErrorResponse(c, fmt, code, message);
       }
       c.status(code);
       // For API-key upstreams, forward the raw upstream error body transparently.
-      try {
-        const parsed: unknown = JSON.parse(err.body);
-        if (parsed && typeof parsed === "object") {
-          return c.json(parsed);
-        }
-      } catch { /* non-JSON body: fall through */ }
-      if (code === 429) {
-        return c.json(fmt.format429(err.message));
+      if (!isPromptTooLong) {
+        try {
+          const parsed: unknown = JSON.parse(err.body);
+          if (parsed && typeof parsed === "object") {
+            return c.json(parsed);
+          }
+        } catch { /* non-JSON body: fall through */ }
       }
-      return c.json(fmt.formatError(code, err.message));
+      if (code === 429) {
+        return c.json(fmt.format429(message));
+      }
+      return c.json(fmt.formatError(code, message));
     }
     if (canReturnStreamError(req, fmt)) {
       return streamErrorResponse(c, fmt, 502, msg);
@@ -134,8 +143,18 @@ export async function handleDirectRequest(options: HandleDirectRequestOptions): 
   } catch (err) {
     abortController.abort();
     const msg = err instanceof Error ? err.message : "Failed to collect upstream response";
-    const code = toErrorStatus(0) as StatusCode;
+    const isPromptTooLong =
+      err instanceof CodexApiError &&
+      (isPromptTooLongLike(err.body) || isPromptTooLongLike(err.message));
+    const code = (err instanceof CodexApiError
+      ? isPromptTooLong
+        ? promptTooLongStatus(err.status)
+        : toErrorStatus(err.status)
+      : toErrorStatus(0)) as StatusCode;
+    const message = isPromptTooLong && err instanceof CodexApiError
+      ? normalizePromptTooLongMessage(err.body || err.message)
+      : msg;
     c.status(code);
-    return c.json(fmt.formatError(code, msg));
+    return c.json(fmt.formatError(code, message));
   }
 }

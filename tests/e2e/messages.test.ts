@@ -353,6 +353,29 @@ describe("E2E: POST /v1/messages", () => {
     expect(body.error.type).toBe("rate_limit_error");
   });
 
+  it("upstream context_length_exceeded: returns Prompt is too long for Claude Code recovery", async () => {
+    let attempts = 0;
+    setTransportPost(async () => {
+      attempts++;
+      return makeErrorTransportResponse(502, JSON.stringify({
+        error: {
+          type: "context_length_exceeded",
+          code: "context_length_exceeded",
+          message: "Your input exceeds the context window",
+        },
+      }));
+    });
+
+    const res = await messagesRequest(defaultBody());
+    expect(res.status).toBe(400);
+
+    const body = await res.json() as { type: string; error: { type: string; message: string } };
+    expect(body.type).toBe("error");
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.message).toContain("Prompt is too long");
+    expect(attempts).toBe(1);
+  });
+
   it("upstream 500: retries then returns api_error", async () => {
     // Count attempts at the underlying transport (covers both WS and HTTP
     // paths; messages.ts forces useWebSocket=true, so withRetry retries the

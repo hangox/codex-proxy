@@ -121,6 +121,7 @@ const ROTATABLE_ERROR_CODES: Readonly<Record<string, number>> = {
   account_banned: 403,
   banned: 403,
   previous_response_not_found: 400,
+  context_length_exceeded: 400,
   websocket_connection_limit_reached: 503,
 };
 

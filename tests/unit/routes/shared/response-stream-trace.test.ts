@@ -52,6 +52,7 @@ describe("response stream trace helpers", () => {
 
   it("maps stream errors to client-facing status codes", () => {
     expect(streamErrorStatus(new CodexApiError(429, '{"error":{"message":"rate limited"}}'))).toBe(429);
+    expect(streamErrorStatus(new CodexApiError(502, '{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window"}}'))).toBe(400);
     expect(streamErrorStatus(new CodexApiError(0, '{"error":{"message":"transport"}}'))).toBe(502);
     expect(streamErrorStatus(new Error("stream died"))).toBe(502);
   });

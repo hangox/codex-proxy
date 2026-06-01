@@ -1,4 +1,5 @@
 import { CodexApiError } from "../../proxy/codex-types.js";
+import { isPromptTooLongLike, promptTooLongStatus } from "../../proxy/prompt-too-long-error.js";
 
 export interface WrittenStreamTrace {
   chunks: number;
@@ -71,6 +72,9 @@ export function formatDiagnosticValue(value: string | null | undefined): string 
 
 export function streamErrorStatus(err: unknown): number {
   if (err instanceof CodexApiError && err.status >= 400 && err.status < 600) {
+    if (isPromptTooLongLike(err.body) || isPromptTooLongLike(err.message)) {
+      return promptTooLongStatus(err.status);
+    }
     return err.status;
   }
   return 502;

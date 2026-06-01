@@ -20,6 +20,7 @@ import type {
 import {
   iterateCodexEvents,
   EmptyResponseError,
+  preflightContentfulStream,
   type UsageInfo,
   type ExtractedEvent,
 } from "./codex-event-extractor.js";
@@ -154,6 +155,13 @@ export async function* streamCodexToAnthropic(
     }
   }
 
+  const rawEventSource = rawResponse instanceof Response
+    ? iterateCodexEvents(codexApi, rawResponse)
+    : rawResponse;
+  const { stream: eventSource } = await preflightContentfulStream(rawEventSource, {
+    includeReasoning: Boolean(wantThinking),
+  });
+
   // 1. message_start
   yield formatSSE("message_start", {
     type: "message_start",
@@ -170,10 +178,6 @@ export async function* streamCodexToAnthropic(
   });
 
   // Don't eagerly open a text block — wait for actual content so thinking can come first
-
-  const eventSource = rawResponse instanceof Response
-    ? iterateCodexEvents(codexApi, rawResponse)
-    : rawResponse;
 
   // 2. Process Codex stream events
   for await (const evt of eventSource) {
@@ -318,14 +322,6 @@ export async function* streamCodexToAnthropic(
           });
         }
         onResponseCompleted?.(evt.responseId);
-        if (!hasContent) {
-          yield* ensureTextBlock();
-          yield formatSSE("content_block_delta", {
-            type: "content_block_delta",
-            index: contentIndex,
-            delta: { type: "text_delta", text: "[Error] Codex returned an empty response. Please retry." },
-          });
-        }
         break;
       }
 

@@ -7,7 +7,7 @@
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
 import { CodexApiError } from "../../proxy/codex-types.js";
 import type { FormatAdapter, ResponseMetadata, UsageHint } from "./proxy-handler-types.js";
-import type { UsageInfo } from "../../translation/codex-event-extractor.js";
+import { EmptyResponseError, type UsageInfo } from "../../translation/codex-event-extractor.js";
 import { debugDump, debugDumpEnabled } from "../../utils/debug-dump.js";
 import { recordStreamCloseEvent } from "../../logs/stream-close-event.js";
 import {
@@ -47,6 +47,7 @@ export interface StreamResponseOptions {
   usageHint?: UsageHint;
   onResponseMetadata?: (metadata: ResponseMetadata) => void;
   diagnostics?: StreamDiagnostics;
+  rethrowEmptyResponseBeforeWrite?: boolean;
 }
 
 /**
@@ -69,6 +70,7 @@ export async function streamResponse(options: StreamResponseOptions): Promise<vo
     usageHint,
     onResponseMetadata,
     diagnostics,
+    rethrowEmptyResponseBeforeWrite,
   } = options;
   const written = createWrittenStreamTrace();
   // Diagnostic context passed into adapter-internal premature-close records
@@ -155,6 +157,9 @@ export async function streamResponse(options: StreamResponseOptions): Promise<vo
   } catch (err) {
     if (diagnostics?.abortSignal?.aborted) {
       return;
+    }
+    if (rethrowEmptyResponseBeforeWrite && err instanceof EmptyResponseError && written.chunks === 0) {
+      throw err;
     }
     const errMsg = err instanceof Error ? err.message : "Stream interrupted";
     const errStatus = err instanceof CodexApiError ? err.status : "?";

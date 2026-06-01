@@ -22,6 +22,7 @@ import {
   iterateCodexEvents,
   EmptyResponseError,
   UpstreamPrematureCloseError,
+  preflightContentfulStream,
   type UsageInfo,
   type ExtractedEvent,
 } from "./codex-event-extractor.js";
@@ -64,6 +65,13 @@ export async function* streamCodexToOpenAI(
   // Track which call_ids have received argument deltas
   const callIdsWithDeltas = new Set<string>();
 
+  const rawEventSource = rawResponse instanceof Response
+    ? iterateCodexEvents(codexApi, rawResponse)
+    : rawResponse;
+  const { stream: eventSource } = await preflightContentfulStream(rawEventSource, {
+    includeReasoning: Boolean(wantReasoning),
+  });
+
   // Send initial role chunk
   yield formatSSE({
     id: chunkId,
@@ -78,10 +86,6 @@ export async function* streamCodexToOpenAI(
       },
     ],
   });
-
-  const eventSource = rawResponse instanceof Response
-    ? iterateCodexEvents(codexApi, rawResponse)
-    : rawResponse;
 
   for await (const evt of eventSource) {
     if (evt.responseId) {
@@ -283,21 +287,6 @@ export async function* streamCodexToOpenAI(
 
         if (evt.usage) onUsage?.(evt.usage);
         onResponseCompleted?.(evt.responseId);
-        if (!hasContent) {
-          yield formatSSE({
-            id: chunkId,
-            object: "chat.completion.chunk",
-            created,
-            model,
-            choices: [
-              {
-                index: 0,
-                delta: { content: "[Error] Codex returned an empty response. Please retry." },
-                finish_reason: null,
-              },
-            ],
-          });
-        }
         // Build usage object for final chunk (OpenAI includes usage in last streaming chunk)
         const chunkUsage: ChatCompletionChunk["usage"] = evt.usage
           ? {

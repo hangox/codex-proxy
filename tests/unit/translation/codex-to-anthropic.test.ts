@@ -149,6 +149,11 @@ describe("streamCodexToAnthropic", () => {
       message: expect.stringContaining("Prompt is too long"),
     });
   });
+
+  it("throws EmptyResponseError before emitting fallback text for empty stream", async () => {
+    await expect(collectStreamOutput(emptyStream()))
+      .rejects.toThrow("empty response");
+  });
 });
 
 describe("collectCodexToAnthropicResponse", () => {

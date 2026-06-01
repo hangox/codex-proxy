@@ -186,6 +186,8 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           accountPool,
           req,
           fmt,
+          cookieJar,
+          proxyPool,
           api: codexApi,
           response: rawResponse,
           entryId,
@@ -197,6 +199,12 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           turnState: upstreamTurnState,
           usageHint: implicitResume.getUsageHint(),
           variantHash: sessionContext.variantHash,
+          buildPoolCtx,
+          setActiveAccount: (nextEntryId, nextApi) => {
+            entryId = nextEntryId;
+            codexApi = nextApi;
+            if (!triedEntryIds.includes(nextEntryId)) triedEntryIds.push(nextEntryId);
+          },
         });
       }
 

@@ -112,6 +112,7 @@ export function isContentfulEvent(
   evt: ExtractedEvent,
   options: ContentDetectionOptions = {},
 ): boolean {
+  if (evt.error) return true;
   if (evt.textDelta && evt.textDelta.length > 0) return true;
   if (evt.functionCallStart) return true;
   if (evt.functionCallDelta) return true;

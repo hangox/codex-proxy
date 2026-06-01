@@ -416,6 +416,50 @@ describe("proxy-handler integration", () => {
     expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 
+  it("retries streaming EmptyResponseError with a new account before writing chunks", async () => {
+    let createCount = 0;
+    mockCreateResponse = () => {
+      createCount++;
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    let acquireCount = 0;
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn(() => {
+        acquireCount++;
+        if (acquireCount === 1) return { entryId: "e1", token: "tok1", accountId: "acc1" };
+        return { entryId: "e2", token: "tok2", accountId: "acc2" };
+      }),
+    });
+
+    let streamCallCount = 0;
+    const fmt = createMockFormatAdapter({
+      streamTranslator: vi.fn(async function* (options: { onUsage: (usage: { input_tokens: number; output_tokens: number }) => void }) {
+        streamCallCount++;
+        if (streamCallCount === 1) {
+          throw new EmptyResponseError("resp_empty", { input_tokens: 1, output_tokens: 0 });
+        }
+        options.onUsage({ input_tokens: 5, output_tokens: 6 });
+        yield "data: ok\n\n";
+        yield "data: [DONE]\n\n";
+      }),
+    });
+    const req = createStreamingRequest();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+
+    const res = await app.request("/test", { method: "POST" });
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(text).toContain("data: ok\n\n");
+    expect(text).not.toContain("Codex returned an empty response");
+    expect(createCount).toBe(2);
+    expect(fmt.streamTranslator).toHaveBeenCalledTimes(2);
+    expect(accountPool.recordEmptyResponse).toHaveBeenCalledWith("e1");
+    expect(accountPool.release).toHaveBeenCalledWith("e1", { input_tokens: 1, output_tokens: 0 });
+    expect(accountPool.release).toHaveBeenCalledWith("e2", { input_tokens: 5, output_tokens: 6 });
+  });
+
   // 4. CodexApiError 429 → markRateLimited with parsed retryAfterSec + fallback to next account
   it("handles 429 by parsing resets_in_seconds and falling back to next account", async () => {
     const body429 = JSON.stringify({

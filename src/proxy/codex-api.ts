@@ -23,6 +23,11 @@ import {
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { getInstallationId } from "./installation-id.js";
 import { normalizeOpenAISubagent, OPENAI_SUBAGENT_HEADER } from "./openai-subagent.js";
+import {
+  buildPromptTooLongErrorBody,
+  isPromptTooLongLike,
+  promptTooLongStatus,
+} from "./prompt-too-long-error.js";
 
 export type { WsPoolContext };
 import { parseSSEBlock, parseSSEStream } from "./codex-sse.js";
@@ -70,6 +75,16 @@ import {
   type CodexSSEEvent,
   type CodexUsageResponse,
 } from "./codex-types.js";
+
+function normalizePromptTooLongApiError(err: CodexApiError): CodexApiError {
+  if (!isPromptTooLongLike(err.body) && !isPromptTooLongLike(err.message)) {
+    return err;
+  }
+  return new CodexApiError(
+    promptTooLongStatus(err.status),
+    buildPromptTooLongErrorBody(err.body || err.message),
+  );
+}
 
 function getConnectPhaseErrorMeta(err: unknown): { phase: "pre-connect" | "mid-stream" | "unknown"; recoverable: boolean } {
   if (!(err instanceof Error)) {
@@ -287,7 +302,7 @@ export class CodexApi {
         // proxy-handler's rotation flow on the SAME account, not retry
         // via HTTP — HTTP would just hit the same quota.
         if (err instanceof CodexApiError) {
-          throw err;
+          throw normalizePromptTooLongApiError(err);
         }
         const msg = err instanceof Error ? err.message : String(err);
         if (request.previous_response_id) {
@@ -445,7 +460,11 @@ export class CodexApi {
         }
       }
       const errorBody = Buffer.concat(chunks).toString("utf-8");
-      throw new CodexApiError(transportRes.status, errorBody);
+      const promptTooLong = isPromptTooLongLike(errorBody);
+      throw new CodexApiError(
+        promptTooLong ? promptTooLongStatus(transportRes.status) : transportRes.status,
+        promptTooLong ? buildPromptTooLongErrorBody(errorBody) : errorBody,
+      );
     }
 
     return new Response(transportRes.body, {
@@ -499,7 +518,11 @@ export class CodexApi {
     const responseBody = Buffer.concat(chunks).toString("utf-8");
 
     if (transportRes.status < 200 || transportRes.status >= 300) {
-      throw new CodexApiError(transportRes.status, responseBody);
+      const promptTooLong = isPromptTooLongLike(responseBody);
+      throw new CodexApiError(
+        promptTooLong ? promptTooLongStatus(transportRes.status) : transportRes.status,
+        promptTooLong ? buildPromptTooLongErrorBody(responseBody) : responseBody,
+      );
     }
 
     try {

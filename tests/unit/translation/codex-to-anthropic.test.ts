@@ -13,6 +13,7 @@ import {
   multiToolCallStream,
   usageStream,
 } from "@fixtures/sse-streams.js";
+import { createError } from "@helpers/events.js";
 
 let mockEvents: ExtractedEvent[] = [];
 
@@ -138,6 +139,15 @@ describe("streamCodexToAnthropic", () => {
   it("throws CodexApiError on upstream error events", async () => {
     await expect(collectStreamOutput(errorStream()))
       .rejects.toMatchObject({ status: 429 });
+  });
+
+  it("normalizes context_length_exceeded so Claude Code can reactive-compact", async () => {
+    await expect(collectStreamOutput([
+      createError("context_length_exceeded", "Your input exceeds the context window"),
+    ])).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("Prompt is too long"),
+    });
   });
 });
 

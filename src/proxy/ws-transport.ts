@@ -63,6 +63,7 @@ const ROTATABLE_ERROR_CODES: Readonly<Record<string, number>> = {
   // 400 — stale previous_response_id (account doesn't recognise it; let
   // proxy-handler strip the ID and retry on the same account)
   previous_response_not_found: 400,
+  context_length_exceeded: 400,
   // 502 — upstream transient server failures. These are retryable through the
   // existing proxy-handler flow.
   server_error: 502,

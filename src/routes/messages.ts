@@ -28,6 +28,10 @@ import type { FormatAdapter } from "./shared/proxy-handler-types.js";
 import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
+import {
+  isPromptTooLongLike,
+  normalizePromptTooLongMessage,
+} from "../proxy/prompt-too-long-error.js";
 
 function makeError(
   type: AnthropicErrorType,
@@ -108,6 +112,13 @@ function estimateCountTokens(req: AnthropicCountTokensRequest): number {
   return Math.max(1, modelTokens + systemTokens + messageTokens + toolTokens + toolChoiceTokens + thinkingTokens + 3);
 }
 
+function makeAnthropicProtocolError(status: number, message: string): AnthropicErrorBody {
+  if (isPromptTooLongLike(message)) {
+    return makeError("invalid_request_error", normalizePromptTooLongMessage(message));
+  }
+  return makeError(status === 429 ? "rate_limit_error" : "api_error", message);
+}
+
 function extractMessageText(content: AnthropicMessagesRequest["messages"][number]["content"]): string {
   if (typeof content === "string") return content;
   return content
@@ -155,6 +166,10 @@ function formatAnthropicSse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+function formatAnthropicStreamError(status: number, message: string): string {
+  return formatAnthropicSse("error", makeAnthropicProtocolError(status, message));
+}
+
 function makeSilentInitializationResponse(req: AnthropicMessagesRequest, model: string): Response {
   const message = makeEmptyAnthropicMessage(model);
   if (!req.stream) {
@@ -189,7 +204,8 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
         "No available accounts. All accounts are expired or rate-limited.",
       ),
     format429: (msg) => makeError("rate_limit_error", msg),
-    formatError: (_status, msg) => makeError("api_error", msg),
+    formatError: (status, msg) => makeAnthropicProtocolError(status, msg),
+    formatStreamError: (status, msg) => formatAnthropicStreamError(status, msg),
     streamTranslator: ({
       api,
       response,

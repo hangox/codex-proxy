@@ -19,6 +19,11 @@ import type { StatusCode } from "hono/utils/http-status";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import { recordCfPathBlock } from "../../auth/cf-path-block-tracker.js";
 import { appendErrorLog } from "../../logs/error-log.js";
+import {
+  isPromptTooLongLike,
+  normalizePromptTooLongMessage,
+  promptTooLongStatus,
+} from "../../proxy/prompt-too-long-error.js";
 
 /** Consecutive CF path-blocks before the account is auto-disabled. */
 const CF_PATH_BLOCK_DISABLE_THRESHOLD = 3;
@@ -64,6 +69,12 @@ export function handleCodexApiError(
   cookieJar?: CookieJar,
 ): ErrorAction {
   const email = pool.getEntry(entryId)?.email ?? "?";
+
+  if (isPromptTooLongLike(err.body) || isPromptTooLongLike(err.message)) {
+    const status = promptTooLongStatus(err.status);
+    const message = normalizePromptTooLongMessage(err.body || err.message);
+    return { action: "respond", status, message };
+  }
 
   // 1. Model not supported on this account's plan
   if (isModelNotSupportedError(err)) {

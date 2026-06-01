@@ -35,6 +35,10 @@ import type {
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
 import { handleCodexApiError } from "./shared/proxy-error-handler.js";
+import {
+  isPromptTooLongLike,
+  normalizePromptTooLongMessage,
+} from "../proxy/prompt-too-long-error.js";
 import { withRetry } from "../utils/retry.js";
 import { extractCodexError } from "../types/codex-events.js";
 import {
@@ -167,6 +171,13 @@ function stripCodexErrorPrefix(message: string): string {
 
 function classifyResponsesStreamError(status: number, message: string): ResponsesStreamError {
   const cleanMessage = stripCodexErrorPrefix(message);
+  if (isPromptTooLongLike(message)) {
+    return {
+      type: "invalid_request_error",
+      code: "context_length_exceeded",
+      message: normalizePromptTooLongMessage(message),
+    };
+  }
   if (status === 429) {
     return {
       type: "rate_limit_error",
@@ -557,14 +568,7 @@ const PASSTHROUGH_FORMAT: FormatAdapter = {
       message: msg,
     },
   }),
-  formatError: (_status, msg) => ({
-    type: "error",
-    error: {
-      type: "server_error",
-      code: "codex_api_error",
-      message: msg,
-    },
-  }),
+  formatError: (status, msg) => formatResponsesError(status, msg),
   formatStreamError: (status, msg) => buildResponsesStreamError(status, msg),
   streamTranslator: ({ api, response, model, onUsage, onResponseId, onResponseCompleted, tupleSchema, onResponseMetadata, streamContext }) =>
     streamPassthrough(api, response, model, onUsage, onResponseId, tupleSchema, streamContext, onResponseCompleted, onResponseMetadata),
@@ -626,10 +630,20 @@ function parseBody(c: Context, body: unknown): Record<string, unknown> | Respons
 }
 
 function formatResponsesError(status: number, msg: string): unknown {
+  if (isPromptTooLongLike(msg)) {
+    return {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        code: "context_length_exceeded",
+        message: normalizePromptTooLongMessage(msg),
+      },
+    };
+  }
   return {
     type: "error",
     error: {
-      type: "server_error",
+      type: status >= 400 && status < 500 ? "invalid_request_error" : "server_error",
       code: "codex_api_error",
       message: msg,
     },

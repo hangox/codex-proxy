@@ -186,6 +186,26 @@ describe("handleCodexApiError", () => {
   // ── generic errors ──
 
   describe("generic errors", () => {
+    it("returns prompt-too-long as a client error without mutating account state", () => {
+      const err = new CodexApiError(502, JSON.stringify({
+        error: {
+          type: "context_length_exceeded",
+          code: "context_length_exceeded",
+          message: "Your input exceeds the context window",
+        },
+      }));
+
+      const result = handleCodexApiError(err, pool as never, entryId, model, tag, false);
+
+      expect(result).toMatchObject({
+        action: "respond",
+        status: 400,
+        message: expect.stringContaining("Prompt is too long"),
+      });
+      expect(pool.applyRateLimit429).not.toHaveBeenCalled();
+      expect(pool.markStatus).not.toHaveBeenCalled();
+    });
+
     it("returns respond with clamped status for 5xx", () => {
       const err = new CodexApiError(503, "service unavailable");
 

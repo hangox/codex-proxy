@@ -1,4 +1,9 @@
 import { CodexApiError } from "../proxy/codex-types.js";
+import {
+  buildPromptTooLongErrorBody,
+  isPromptTooLongLike,
+  promptTooLongStatus,
+} from "../proxy/prompt-too-long-error.js";
 
 /**
  * Convert an upstream `error` / `response.failed` SSE event into a CodexApiError
@@ -9,15 +14,20 @@ import { CodexApiError } from "../proxy/codex-types.js";
 export function codexApiErrorFromEvent(
   err: { code: string; message: string },
 ): CodexApiError {
-  const status = statusForCode(err.code);
-  const body = JSON.stringify({
-    error: { type: err.code, code: err.code, message: err.message },
-  });
+  const raw = JSON.stringify({ error: { code: err.code, message: err.message } });
+  const promptTooLong = isPromptTooLongLike(raw);
+  const status = promptTooLong ? promptTooLongStatus(statusForCode(err.code)) : statusForCode(err.code);
+  const body = promptTooLong
+    ? buildPromptTooLongErrorBody(raw)
+    : JSON.stringify({
+        error: { type: err.code, code: err.code, message: err.message },
+      });
   return new CodexApiError(status, body);
 }
 
 function statusForCode(code: string): number {
   const lower = code.toLowerCase();
+  if (lower.includes("context_length")) return 400;
   if (lower.includes("invalid_request") || lower.includes("not_found")) return 400;
   if (lower.includes("rate_limit") || lower.includes("usage_limit")) return 429;
   if (lower.includes("unauthorized") || lower.includes("invalid_api_key")) return 401;

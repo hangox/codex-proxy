@@ -15,12 +15,7 @@
 
 import { appendErrorLog } from "./error-log.js";
 import { enqueueLogEntry } from "./entry.js";
-
-export type StreamCloseKind =
-  | "client-abort"
-  | "client-write-failed"
-  | "upstream-error"
-  | "upstream-premature";
+import { streamCloseErrorName, streamCloseMessage, type StreamCloseKind } from "./stream-close-format.js";
 
 /** Caller-provided diagnostic context that travels with a streaming request.
  *  Optional fields are filled in opportunistically — missing context still
@@ -54,20 +49,6 @@ export interface StreamCloseEvent extends StreamCloseContextBase {
   upstreamStatus?: number | string | null;
 }
 
-const ERROR_NAMES: Readonly<Record<StreamCloseKind, string>> = {
-  "client-abort": "StreamClientAbort",
-  "client-write-failed": "StreamClientWriteFailed",
-  "upstream-error": "StreamUpstreamError",
-  "upstream-premature": "StreamUpstreamPrematureClose",
-};
-
-const BASE_MESSAGES: Readonly<Record<StreamCloseKind, string>> = {
-  "client-abort": "Client aborted stream",
-  "client-write-failed": "Client disconnected mid-stream (write failed)",
-  "upstream-error": "Upstream stream errored",
-  "upstream-premature": "Upstream stream closed before terminal event",
-};
-
 function prune<T extends object>(obj: T): Partial<T> {
   const out: Partial<T> = {};
   for (const [k, v] of Object.entries(obj) as Array<[keyof T, T[keyof T]]>) {
@@ -81,9 +62,8 @@ function prune<T extends object>(obj: T): Partial<T> {
  *  and the in-memory audit log. Never throws — logging failures inside the
  *  helpers swallow themselves. */
 export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
-  const name = ERROR_NAMES[evt.kind];
-  const base = BASE_MESSAGES[evt.kind];
-  const message = evt.detail ? `${base}: ${evt.detail}` : base;
+  const name = streamCloseErrorName(evt.kind);
+  const message = streamCloseMessage(evt.kind, evt.detail, evt.closeCode);
   const numericStatus =
     typeof evt.upstreamStatus === "number" ? evt.upstreamStatus : null;
 

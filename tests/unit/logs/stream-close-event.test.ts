@@ -83,8 +83,7 @@ describe("recordStreamCloseEvent", () => {
     expect(err.source).toBe("server");
     const errBody = err.error as Record<string, unknown>;
     expect(errBody.name).toBe("StreamUpstreamPrematureClose");
-    expect(errBody.message).toContain("Upstream stream closed before terminal event");
-    expect(errBody.message).toContain("code=1006");
+    expect(errBody.message).toBe("Upstream WebSocket closed before terminal event (code=1006)");
     const ctx = err.context as Record<string, unknown>;
     expect(ctx).toMatchObject({
       kind: "upstream-premature",
@@ -108,7 +107,7 @@ describe("recordStreamCloseEvent", () => {
     expect(log.model).toBe("gpt-5.5");
     expect(log.provider).toBe("codex");
     expect(log.stream).toBe(true);
-    expect(log.error).toContain("Upstream stream closed before terminal event");
+    expect(log.error).toBe("Upstream WebSocket closed before terminal event (code=1006)");
     const req = log.request as Record<string, unknown>;
     expect(req).toMatchObject({
       kind: "upstream-premature",
@@ -136,12 +135,12 @@ describe("recordStreamCloseEvent", () => {
     expect(errEntries).toHaveLength(1);
     const errBody = errEntries[0].error as Record<string, unknown>;
     expect(errBody.name).toBe("StreamClientAbort");
-    expect(errBody.message).toBe("Client aborted stream");
+    expect(errBody.message).toBe("Client closed stream before completion");
 
     await flushMicrotasks();
     const audit = logStore.list({ limit: 50 });
     expect(audit.records).toHaveLength(1);
-    expect(audit.records[0].error).toBe("Client aborted stream");
+    expect(audit.records[0].error).toBe("Client closed stream before completion");
     const req = audit.records[0].request as Record<string, unknown>;
     expect(req.kind).toBe("client-abort");
     expect(req).not.toHaveProperty("eventCount");
@@ -166,7 +165,7 @@ describe("recordStreamCloseEvent", () => {
     expect(errEntries).toHaveLength(1);
     const errBody = errEntries[0].error as Record<string, unknown>;
     expect(errBody.name).toBe("StreamClientWriteFailed");
-    expect(errBody.message).toContain("socket hang up");
+    expect(errBody.message).toBe("Client disconnected while proxy was writing stream: socket hang up");
     const ctx = errEntries[0].context as Record<string, unknown>;
     expect(ctx).toMatchObject({
       writtenChunks: 12,
@@ -236,6 +235,9 @@ describe("recordStreamCloseEvent", () => {
 
     const errEntries = readErrorLogLines();
     expect(errEntries).toHaveLength(1);
+    const errBody = errEntries[0].error as Record<string, unknown>;
+    expect(errBody.name).toBe("StreamUpstreamPrematureClose");
+    expect(errBody.message).toBe("Upstream WebSocket closed before terminal event: early eof");
     const ctx = errEntries[0].context as Record<string, unknown>;
     expect(ctx).not.toHaveProperty("requestId");
   });

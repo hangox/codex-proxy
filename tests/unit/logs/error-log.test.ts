@@ -219,6 +219,81 @@ describe("groupErrorLog", () => {
     const rangeErr = groups.find((g) => g.name === "RangeError")!;
     expect(rangeErr.count).toBe(1);
   });
+
+  it("normalizes legacy stream-close entries for Errors tab grouping", async () => {
+    const { groupErrorLog } = await importErrorLog();
+
+    const groups = groupErrorLog([
+      {
+        ts: "2026-05-10T00:00:00Z",
+        version: "v",
+        platform: "darwin",
+        source: "server" as const,
+        error: {
+          name: "StreamUpstreamError",
+          message: "WebSocket closed before terminal event: code=1006",
+          stack: "at stream.js:1:1",
+        },
+        context: {
+          kind: "upstream-error",
+          detail: "WebSocket closed before terminal event: code=1006",
+          closeCode: 1006,
+        },
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].name).toBe("StreamUpstreamPrematureClose");
+    expect(groups[0].message).toBe("Upstream WebSocket closed before terminal event (code=1006)");
+    expect(groups[0].signature).toBe("StreamUpstreamPrematureClose|at stream.js:1:1");
+  });
+
+  it("keeps non-WebSocket upstream-premature details in grouped legacy entries", async () => {
+    const { groupErrorLog } = await importErrorLog();
+
+    const groups = groupErrorLog([
+      {
+        ts: "2026-05-10T00:00:00Z",
+        version: "v",
+        platform: "darwin",
+        source: "server" as const,
+        error: {
+          name: "StreamUpstreamPrematureClose",
+          message: "early eof",
+        },
+        context: {
+          kind: "upstream-premature",
+          detail: "early eof",
+        },
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].message).toBe("Upstream WebSocket closed before terminal event: early eof");
+  });
+
+  it("does not duplicate already-normalized stream-close messages", async () => {
+    const { groupErrorLog } = await importErrorLog();
+
+    const groups = groupErrorLog([
+      {
+        ts: "2026-05-10T00:00:00Z",
+        version: "v",
+        platform: "darwin",
+        source: "server" as const,
+        error: {
+          name: "StreamUpstreamPrematureClose",
+          message: "Upstream WebSocket closed before terminal event (code=1006)",
+        },
+        context: {
+          kind: "upstream-premature",
+        },
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].message).toBe("Upstream WebSocket closed before terminal event (code=1006)");
+  });
 });
 
 describe("read cursor + unread count", () => {

@@ -34,6 +34,7 @@ import { resolve } from "path";
 import { getConfig } from "../config.js";
 import { getDataDir } from "../paths.js";
 import { redactJson } from "./redact.js";
+import { normalizeStreamCloseErrorForDisplay } from "./stream-close-format.js";
 
 export type ErrorSource = "main" | "renderer" | "server" | "external";
 
@@ -243,28 +244,29 @@ function firstStackFrame(stack: string | undefined): string {
 export function groupErrorLog(entries: ErrorLogEntry[]): ErrorGroup[] {
   const groups = new Map<string, ErrorGroup>();
   for (const e of entries) {
-    const sig = `${e.error.name}|${firstStackFrame(e.error.stack)}`;
+    const error = normalizeStreamCloseErrorForDisplay(e.error, e.context);
+    const sig = `${error.name}|${firstStackFrame(error.stack)}`;
     const existing = groups.get(sig);
     if (existing) {
       existing.count += 1;
       if (e.ts > existing.last_seen) {
         existing.last_seen = e.ts;
-        existing.message = e.error.message;
+        existing.message = error.message;
         existing.source = e.source;
-        existing.sample_stack = e.error.stack;
+        existing.sample_stack = error.stack;
         existing.sample_context = e.context;
       }
       if (e.ts < existing.first_seen) existing.first_seen = e.ts;
     } else {
       groups.set(sig, {
         signature: sig,
-        name: e.error.name,
-        message: e.error.message,
+        name: error.name,
+        message: error.message,
         count: 1,
         first_seen: e.ts,
         last_seen: e.ts,
         source: e.source,
-        sample_stack: e.error.stack,
+        sample_stack: error.stack,
         sample_context: e.context,
       });
     }

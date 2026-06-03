@@ -33,7 +33,7 @@ function extractModelId(model: string): string {
 export class AnthropicUpstream implements UpstreamAdapter {
   readonly tag = "anthropic" as const;
   private apiKey: string;
-  private baseUrl: string;
+  readonly baseUrl: string;
 
   constructor(apiKey: string, baseUrl = "https://api.anthropic.com/v1") {
     this.apiKey = apiKey;

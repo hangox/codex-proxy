@@ -32,7 +32,7 @@ function extractModelId(model: string): string {
 export class GeminiUpstream implements UpstreamAdapter {
   readonly tag = "gemini" as const;
   private apiKey: string;
-  private baseUrl: string;
+  readonly baseUrl: string;
 
   constructor(apiKey: string, baseUrl = "https://generativelanguage.googleapis.com/v1beta") {
     this.apiKey = apiKey;

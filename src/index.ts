@@ -143,11 +143,11 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     console.log("[Init] OpenAI upstream configured");
   }
   if (cfg.providers.anthropic) {
-    adapters.set("anthropic", new AnthropicUpstream(cfg.providers.anthropic.api_key));
+    adapters.set("anthropic", new AnthropicUpstream(cfg.providers.anthropic.api_key, cfg.providers.anthropic.base_url));
     console.log("[Init] Anthropic upstream configured");
   }
   if (cfg.providers.gemini) {
-    adapters.set("gemini", new GeminiUpstream(cfg.providers.gemini.api_key));
+    adapters.set("gemini", new GeminiUpstream(cfg.providers.gemini.api_key, cfg.providers.gemini.base_url));
     console.log("[Init] Gemini upstream configured");
   }
   for (const [name, provider] of Object.entries(cfg.providers.custom)) {

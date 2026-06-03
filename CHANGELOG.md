@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 修复并支持自定义 Anthropic & Gemini Upstream Base URL 与 ProxyPool 健康检查 URL（硬编码审计与修复）：在 `config-schema.ts` 的 `providers.anthropic` 和 `providers.gemini` 中添加可选的 `base_url` 字段，且在 `tls` 中添加 `health_check_url`（默认为 `https://api.ipify.org?format=json`）。通过构造函数将配置传入 `AnthropicUpstream` 和 `GeminiUpstream` 并在请求中动态调用；修改 `ProxyPool` 的 `healthCheck` 获取动态的健康检查 URL。新增 `tests/unit/proxy/adapter-factory.test.ts` 与 `tests/unit/config-schema.test.ts` 相关测试以保障 TDD。（`src/config-schema.ts`、`src/proxy/anthropic-upstream.ts`、`src/proxy/gemini-upstream.ts` 、`src/proxy/adapter-factory.ts`、`src/index.ts`、`src/proxy/proxy-pool.ts`、`tests/unit/config-schema.test.ts`、`tests/unit/proxy/adapter-factory.test.ts`）
+
 ### Changed
 
 - 更新 `README_EN.md` 中过时的模型推荐说明以匹配最新的模型别名映射（`README_EN.md`）

@@ -19,6 +19,7 @@ import {
 import { resolve, dirname } from "path";
 import { getDataDir } from "../paths.js";
 import { getTransport, type TlsTransport } from "../tls/transport.js";
+import { getConfig } from "../config.js";
 
 function getProxiesFile(): string {
   return resolve(getDataDir(), "proxies.json");
@@ -58,7 +59,6 @@ interface ProxiesFile {
   healthCheckIntervalMinutes: number;
 }
 
-const HEALTH_CHECK_URL = "https://api.ipify.org?format=json";
 const DEFAULT_HEALTH_INTERVAL_MIN = 5;
 
 // ── ProxyPool ─────────────────────────────────────────────────────────
@@ -262,9 +262,16 @@ export class ProxyPool {
     const transport = this.injectedTransport ?? getTransport();
     const start = Date.now();
 
+    let checkUrl = "https://api.ipify.org?format=json";
+    try {
+      checkUrl = getConfig().tls.health_check_url;
+    } catch {
+      // Fallback if config is not loaded yet (e.g. in some early tests)
+    }
+
     try {
       const result = await transport.get(
-        HEALTH_CHECK_URL,
+        checkUrl,
         { Accept: "application/json" },
         10,
         proxy.url,

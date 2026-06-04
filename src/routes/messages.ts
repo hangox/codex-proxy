@@ -16,6 +16,7 @@ import {
   collectCodexToAnthropicResponse,
 } from "../translation/codex-to-anthropic.js";
 import { getConfig } from "../config.js";
+import { extractProxyApiKey } from "../utils/extract-api-key.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
 import { enqueueLogEntry } from "../logs/entry.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
@@ -40,10 +41,7 @@ function checkProxyApiKey(c: Context, accountPool: AccountPool): Response | null
   const config = getConfig();
   if (!config.server.proxy_api_key) return null;
 
-  const xApiKey = c.req.header("x-api-key");
-  const authHeader = c.req.header("Authorization");
-  const bearerKey = authHeader?.replace("Bearer ", "");
-  const providedKey = xApiKey ?? bearerKey;
+  const providedKey = extractProxyApiKey(c);
 
   if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
     c.status(401);

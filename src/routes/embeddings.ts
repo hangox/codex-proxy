@@ -12,6 +12,7 @@ import type { AccountPool } from "../auth/account-pool.js";
 import type { ApiKeyEntry, ApiKeyPool } from "../auth/api-key-pool.js";
 import type { ApiKeyProvider } from "../auth/api-key-catalog.js";
 import { getConfig } from "../config.js";
+import { extractProxyApiKey } from "../utils/extract-api-key.js";
 import { withFetchDispatcher } from "../proxy/fetch-dispatcher.js";
 
 const EmbeddingInputSchema = z.union([
@@ -47,16 +48,11 @@ function invalidProxyApiKeyResponse(c: Context): Response {
   return c.json(openAIError("Invalid proxy API key", "invalid_api_key"));
 }
 
-function extractBearerToken(header: string | undefined): string | null {
-  if (!header?.startsWith("Bearer ")) return null;
-  return header.slice("Bearer ".length);
-}
-
 function checkProxyApiKey(c: Context, accountPool: AccountPool): Response | null {
   const config = getConfig();
   if (!config.server.proxy_api_key) return null;
 
-  const providedKey = c.req.header("x-api-key") ?? extractBearerToken(c.req.header("Authorization"));
+  const providedKey = extractProxyApiKey(c);
   if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
     return invalidProxyApiKeyResponse(c);
   }

@@ -13,12 +13,10 @@ import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { extractCodexError } from "../types/codex-events.js";
 import { recordStreamCloseEvent } from "../logs/stream-close-event.js";
 import type { FormatAdapter, StreamTranslatorContext } from "./shared/proxy-handler-types.js";
+import { isRecord } from "../translation/shared-utils.js";
 
 // ── Shared helpers ────────────────────────────────────────────────
 
-export function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 function extractOutputTextFromItem(item: unknown): string {
   if (!isRecord(item) || !Array.isArray(item.content)) return "";

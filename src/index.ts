@@ -119,7 +119,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.use("*", cors);
   app.use("*", requestId);
   app.use("*", logger);
-  app.use("*", errorHandler);
+  app.onError(errorHandler);
   app.use("*", dashboardAuth);
   app.use("*", logCapture);
 

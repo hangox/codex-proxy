@@ -191,7 +191,7 @@ describe("errorHandler — Gemini format (/v1beta/)", () => {
 describe("errorHandler — passthrough", () => {
   it("passes through successful responses without modification", async () => {
     const app = new Hono();
-    app.use("*", errorHandler);
+    app.onError(errorHandler);
     app.get("/health", (c) => c.json({ status: "ok" }));
     const res = await app.request("/health");
     expect(res.status).toBe(200);

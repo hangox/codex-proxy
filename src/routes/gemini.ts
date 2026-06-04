@@ -20,6 +20,7 @@ import {
   collectCodexToGeminiResponse,
 } from "../translation/codex-to-gemini.js";
 import { getConfig } from "../config.js";
+import { extractProxyApiKey } from "../utils/extract-api-key.js";
 import { getModelCatalog } from "../models/model-store.js";
 import {
   handleProxyRequest,
@@ -138,11 +139,7 @@ export function createGeminiRoutes(
     // API key check: query param ?key= or header x-goog-api-key
     const config = getConfig();
     if (config.server.proxy_api_key) {
-      const queryKey = c.req.query("key");
-      const headerKey = c.req.header("x-goog-api-key");
-      const authHeader = c.req.header("Authorization");
-      const bearerKey = authHeader?.replace("Bearer ", "");
-      const providedKey = queryKey ?? headerKey ?? bearerKey;
+      const providedKey = extractProxyApiKey(c);
 
       if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
         c.status(401);

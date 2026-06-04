@@ -26,7 +26,7 @@ beforeAll(() => {
 
   app = new Hono();
   app.use("*", requestId);
-  app.use("*", errorHandler);
+  app.onError(errorHandler);
   app.route("/", createAuthRoutes(pool, scheduler));
 });
 

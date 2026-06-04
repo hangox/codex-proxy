@@ -1,5 +1,5 @@
 import type { AccountPool } from "@src/auth/account-pool.js";
-import { handleNonStreamingCollectFailure } from "@src/routes/shared/non-streaming-collect-failure.js";
+import { handleNonStreamingCollectFailure } from "@src/routes/shared/non-streaming-helpers.js";
 import type { ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 import { describe, expect, it, vi } from "vitest";
 

@@ -25,6 +25,7 @@ import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { FormatAdapter, ProxyRequest } from "./shared/proxy-handler-types.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
+import { extractProxyApiKey } from "../utils/extract-api-key.js";
 
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
@@ -77,8 +78,7 @@ function checkProxyApiKey(c: Context, accountPool: AccountPool) {
   const config = getConfig();
   if (!config.server.proxy_api_key) return null;
 
-  const authHeader = c.req.header("Authorization");
-  const providedKey = authHeader?.replace(/^bearer\s+/i, "");
+  const providedKey = extractProxyApiKey(c);
   if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
     c.status(401);
     return c.json({
@@ -104,20 +104,7 @@ export function createChatRoutes(
 
   app.post("/v1/chat/completions", async (c) => {
     // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json({
-        error: {
-          message: "Malformed JSON request body",
-          type: "invalid_request_error",
-          param: null,
-          code: "invalid_json",
-        },
-      });
-    }
+    const body = await c.req.json();
     const parsed = ChatCompletionRequestSchema.safeParse(body);
     if (!parsed.success) {
       c.status(400);

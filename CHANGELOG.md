@@ -14,7 +14,13 @@
 
 ### Changed
 
+- 重构：消除类型守卫 `isRecord` 的多处重复声明（收拢翻译层与路由层到 `shared-utils.ts`）
+- 重构：合并推理预算映射表 `REASONING_EFFORT_BUDGET`（提取为 `shared-utils.ts` 的公共常量）
+- 重构：精简别名（删除 `gemini-to-codex.ts` 里的 `flattenParts` 别名）
+- 重构：治理并归并过度拆分的文件（收拢 `src/routes/shared/` 下的 `non-streaming-*.ts` 为统一的 `non-streaming-helpers.ts` 并更新对应测试）
+- 重构：抽象路由层的 JSON 拦截与 API Key 校验（提取统一的 API Key 提取器 `extractProxyApiKey`；由全局 `errorHandler` 统一拦截 SyntaxError 带来的 JSON 解析失败并返回 400）
 - 更新 `README_EN.md` 中过时的模型推荐说明以匹配最新的模型别名映射（`README_EN.md`）
+
 
 ### Added
 

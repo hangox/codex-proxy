@@ -33,9 +33,11 @@ function extractModelId(model: string): string {
 export class AnthropicUpstream implements UpstreamAdapter {
   readonly tag = "anthropic" as const;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl = "https://api.anthropic.com/v1") {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   async createResponse(
@@ -45,7 +47,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
     const modelId = extractModelId(req.model);
     const body = translateCodexToAnthropicRequest(req, modelId);
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch(`${this.baseUrl}/messages`, {
       method: "POST",
       headers: {
         "x-api-key": this.apiKey,

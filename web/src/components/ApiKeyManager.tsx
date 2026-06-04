@@ -2,8 +2,31 @@ import { useState, useCallback, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
 import type { ApiKeyCapability, ApiKeyProvider, ApiKeyWire, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
 
-/** Providers whose upstream wire protocol (chat vs responses) is selectable. */
+/** Providers whose upstream wire protocol is selectable. */
 const WIRE_SELECTABLE_PROVIDERS: ReadonlySet<ApiKeyProvider> = new Set(["openai", "openrouter", "custom"]);
+
+const WIRE_OPTIONS: Array<{ value: ApiKeyWire; label: string; description: string }> = [
+  {
+    value: "chat",
+    label: "Chat Completions (OpenAI-compatible)",
+    description: "POST /chat/completions；DeepSeek / Kimi / GLM 等第三方通常使用此协议。",
+  },
+  {
+    value: "responses",
+    label: "Responses API (OpenAI-compatible)",
+    description: "POST /responses；仅当上游支持原生 Responses API 时使用。",
+  },
+  {
+    value: "anthropic",
+    label: "Anthropic Messages",
+    description: "POST /messages；用于 Anthropic-compatible 自定义上游。",
+  },
+  {
+    value: "gemini",
+    label: "Gemini generateContent",
+    description: "POST /models/{model}:streamGenerateContent；Base URL 填 API root，例如 /v1beta，不要包含 /models。",
+  },
+];
 
 const PROVIDER_MODELS_HINT = "请先输入 API Key，将会获取模型列表";
 const CUSTOM_MODELS_HINT = "请先输入 API Key 和 URL，将会获取模型列表";
@@ -60,7 +83,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     wire?: ApiKeyWire;
   }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
-  fetchProviderModels: (input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
+  fetchProviderModels: (input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
 }) {
   const [provider, setProvider] = useState<ApiKeyProvider>("anthropic");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -82,6 +105,10 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
   const wireSelectable = WIRE_SELECTABLE_PROVIDERS.has(provider);
   const providerCatalog = !isCustom ? catalog[provider]?.models ?? [] : [];
   const availableModels = providerModels.length > 0 ? providerModels : providerCatalog;
+  const visibleWireOptions = isCustom
+    ? WIRE_OPTIONS
+    : WIRE_OPTIONS.filter((option) => option.value === "chat" || option.value === "responses");
+  const selectedWireOption = visibleWireOptions.find((option) => option.value === wire) ?? visibleWireOptions[0];
   const selectedModelSet = useMemo(() => new Set(selectedModels), [selectedModels]);
   const selectedCapabilitySet = useMemo(() => new Set(capabilities), [capabilities]);
 
@@ -113,7 +140,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     }
 
     const signature = isCustom
-      ? `${provider}::${normalizedBaseUrl}::${normalizedApiKey}`
+      ? `${provider}::${wire}::${normalizedBaseUrl}::${normalizedApiKey}`
       : `${provider}::${normalizedApiKey}`;
     if (latestResolvedSignatureRef.current === signature && providerModels.length > 0) return;
 
@@ -127,6 +154,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       provider,
       apiKey: normalizedApiKey,
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
+      wire: isCustom ? wire : undefined,
     });
 
     if (latestModelRequestRef.current !== requestId) return;
@@ -148,7 +176,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       const next = prev.filter((id) => result.models.some((model) => model.id === id));
       return next.length > 0 ? next : [result.models[0].id];
     });
-  }, [apiKey, baseUrl, fetchProviderModels, isCustom, provider, providerModels.length, resetProviderModels]);
+  }, [apiKey, baseUrl, fetchProviderModels, isCustom, provider, providerModels.length, resetProviderModels, wire]);
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -177,6 +205,11 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     }
 
     setAdding(true);
+    const submittedWire: ApiKeyWire = isCustom
+      ? wire
+      : wire === "responses"
+        ? "responses"
+        : "chat";
     const result = await onAdd({
       provider,
       models,
@@ -184,7 +217,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
       label: label.trim() || undefined,
       capabilities,
-      wire: wireSelectable ? wire : undefined,
+      wire: wireSelectable ? submittedWire : undefined,
     });
     setAdding(false);
     if (result.ok) {
@@ -298,11 +331,12 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
             onChange={(e) => setWire((e.target as HTMLSelectElement).value as ApiKeyWire)}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           >
-            <option value="chat">Chat Completions (default)</option>
-            <option value="responses">Responses API</option>
+            {visibleWireOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
           <span class="text-[0.65rem] text-slate-400 dark:text-text-dim">
-            多数第三方(DeepSeek / Kimi / GLM)只支持 Chat Completions；仅当上游支持原生 Responses API 时才选 Responses。
+            {selectedWireOption.description}
           </span>
         </div>
       )}
@@ -386,7 +420,7 @@ function KeyRow({ entry, onDelete, onToggle }: {
       )}
 
       <span class="text-xs text-slate-400 dark:text-text-dim">
-        {entry.capabilities.join(", ")}
+        {entry.capabilities.join(", ")}{entry.provider === "custom" ? ` · ${entry.wire}` : ""}
       </span>
 
       <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto hidden sm:inline">

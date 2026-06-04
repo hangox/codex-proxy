@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "path";
 import { getDataDir } from "../paths.js";
 import { PROVIDER_CATALOG, isBuiltinProvider } from "./api-key-catalog.js";
+import type { ApiKeyWire } from "./api-key-pool.js";
 import type { ApiKeyProvider, BuiltinProvider, CatalogModel, ProviderMeta } from "./api-key-catalog.js";
 
 export const MODEL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — provider model lists change frequently
@@ -25,6 +26,7 @@ export interface FetchProviderModelsInput {
   provider: ApiKeyProvider;
   apiKey: string;
   baseUrl?: string;
+  wire?: ApiKeyWire;
 }
 
 interface ModelRequest {
@@ -141,7 +143,7 @@ export class ApiKeyModelCache {
     }
 
     const payload = await response.json().catch(() => null) as unknown;
-    const models = normalizeProviderModels(input.provider, payload);
+    const models = normalizeProviderModels(input, payload);
     if (models.length === 0) {
       throw new ProviderModelFetchError("empty", "Provider returned no models");
     }
@@ -177,6 +179,29 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
     const baseUrl = input.baseUrl?.trim();
     if (!baseUrl) throw new ProviderModelFetchError("provider", "baseUrl is required for custom providers");
     const cacheUrl = `${normalizeBaseUrl(baseUrl)}/models`;
+    const effectiveWire = getEffectiveModelWire(input);
+
+    if (effectiveWire === "anthropic") {
+      return {
+        cacheUrl,
+        requestUrl: cacheUrl,
+        headers: {
+          ...bearerHeaders(apiKey),
+          "anthropic-version": "2023-06-01",
+        },
+      };
+    }
+
+    if (effectiveWire === "gemini") {
+      const requestUrl = new URL(cacheUrl);
+      requestUrl.searchParams.set("key", apiKey);
+      return {
+        cacheUrl,
+        requestUrl: requestUrl.toString(),
+        headers: { Accept: "application/json" },
+      };
+    }
+
     return {
       cacheUrl,
       requestUrl: cacheUrl,
@@ -223,11 +248,18 @@ function bearerHeaders(apiKey: string): Record<string, string> {
   };
 }
 
-export function normalizeProviderModels(provider: ApiKeyProvider, payload: unknown): CatalogModel[] {
-  if (provider === "gemini") return normalizeGeminiModels(payload);
+function getEffectiveModelWire(input: Pick<FetchProviderModelsInput, "provider" | "wire">): ApiKeyWire {
+  if (input.provider === "anthropic") return "anthropic";
+  if (input.provider === "gemini") return "gemini";
+  return input.wire ?? "chat";
+}
+
+export function normalizeProviderModels(input: Pick<FetchProviderModelsInput, "provider" | "wire">, payload: unknown): CatalogModel[] {
+  const effectiveWire = getEffectiveModelWire(input);
+  if (effectiveWire === "gemini") return normalizeGeminiModels(payload);
   // Anthropic's /v1/models response uses `id` + `display_name` (no `name` field).
   // OpenAI and OpenRouter use `id` + `name` as the human-readable display.
-  return normalizeDataModels(payload, provider === "anthropic" ? ["display_name", "name"] : ["name", "display_name"]);
+  return normalizeDataModels(payload, effectiveWire === "anthropic" ? ["display_name", "name"] : ["name", "display_name"]);
 }
 
 function normalizeDataModels(payload: unknown, displayKeys: string[]): CatalogModel[] {

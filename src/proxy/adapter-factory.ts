@@ -12,7 +12,7 @@ import { GeminiUpstream } from "./gemini-upstream.js";
 
 /**
  * OpenAI-family providers default to Chat Completions; an entry may opt into the
- * native Responses API via `wire: "responses"`. anthropic/gemini ignore `wire`.
+ * native Responses API via `wire: "responses"`.
  */
 function createOpenAIFamilyAdapter(
   tag: "openai" | "openrouter" | "custom",
@@ -23,17 +23,30 @@ function createOpenAIFamilyAdapter(
     : new OpenAIUpstream(tag, entry.apiKey, entry.baseUrl);
 }
 
+function createCustomAdapter(entry: ApiKeyEntry): UpstreamAdapter {
+  switch (entry.wire) {
+    case "responses":
+      return new ResponsesUpstream("custom", entry.apiKey, entry.baseUrl);
+    case "anthropic":
+      return new AnthropicUpstream(entry.apiKey, entry.baseUrl);
+    case "gemini":
+      return new GeminiUpstream(entry.apiKey, entry.baseUrl);
+    case "chat":
+      return new OpenAIUpstream("custom", entry.apiKey, entry.baseUrl);
+  }
+}
+
 export function createAdapterForEntry(entry: ApiKeyEntry): UpstreamAdapter {
   switch (entry.provider) {
     case "anthropic":
-      return new AnthropicUpstream(entry.apiKey);
+      return new AnthropicUpstream(entry.apiKey, entry.baseUrl);
     case "gemini":
-      return new GeminiUpstream(entry.apiKey);
+      return new GeminiUpstream(entry.apiKey, entry.baseUrl);
     case "openai":
       return createOpenAIFamilyAdapter("openai", entry);
     case "openrouter":
       return createOpenAIFamilyAdapter("openrouter", entry);
     case "custom":
-      return createOpenAIFamilyAdapter("custom", entry);
+      return createCustomAdapter(entry);
   }
 }

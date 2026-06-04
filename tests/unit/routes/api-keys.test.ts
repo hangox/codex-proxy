@@ -133,6 +133,52 @@ describe("api key routes", () => {
     });
   });
 
+  it("fetches custom Anthropic-format models when wire is anthropic", async () => {
+    fetchFn.mockResolvedValueOnce(jsonResponse({ data: [{ id: "claude-custom", display_name: "Claude Custom" }] }));
+
+    const res = await app.request("/auth/api-keys/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "custom",
+        apiKey: "custom-ant",
+        baseUrl: "https://anthropic.example.com/v1/",
+        wire: "anthropic",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ models: [{ id: "claude-custom", displayName: "Claude Custom" }] });
+    expect(fetchFn).toHaveBeenCalledWith("https://anthropic.example.com/v1/models", {
+      headers: {
+        Authorization: "Bearer custom-ant",
+        Accept: "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+    });
+  });
+
+  it("fetches custom Gemini-format models when wire is gemini", async () => {
+    fetchFn.mockResolvedValueOnce(jsonResponse({ models: [{ name: "models/gemini-custom", displayName: "Gemini Custom" }] }));
+
+    const res = await app.request("/auth/api-keys/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "custom",
+        apiKey: "custom-gem",
+        baseUrl: "https://gemini.example.com/v1beta/",
+        wire: "gemini",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ models: [{ id: "gemini-custom", displayName: "Gemini Custom" }] });
+    expect(String(fetchFn.mock.calls[0][0])).toBe("https://gemini.example.com/v1beta/models?key=custom-gem");
+    expect(fetchFn.mock.calls[0][1]).toEqual({ headers: { Accept: "application/json" } });
+    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://gemini.example.com/v1beta/models"]);
+  });
+
   it("uses URL-keyed cache for repeated model fetches", async () => {
     const body = JSON.stringify({ provider: "openai", apiKey: "sk-one" });
     const secondBody = JSON.stringify({ provider: "openai", apiKey: "sk-two" });
@@ -223,6 +269,35 @@ describe("api key routes", () => {
     expect(body.error).toBe("Invalid request");
   });
 
+  it("stores custom Anthropic and Gemini wire values", async () => {
+    const anthropicRes = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "custom",
+        models: ["claude-custom"],
+        apiKey: "custom-ant",
+        baseUrl: "https://anthropic.example.com/v1",
+        wire: "anthropic",
+      }),
+    });
+    const geminiRes = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "custom",
+        models: ["gemini-custom"],
+        apiKey: "custom-gem",
+        baseUrl: "https://gemini.example.com/v1beta",
+        wire: "gemini",
+      }),
+    });
+
+    expect(anthropicRes.status).toBe(200);
+    expect(geminiRes.status).toBe(200);
+    expect(pool.getAll().map((entry) => entry.wire)).toEqual(["anthropic", "gemini"]);
+  });
+
   it("imports keys by expanding each entry's models", async () => {
     const res = await app.request("/auth/api-keys/import", {
       method: "POST",
@@ -280,6 +355,51 @@ describe("api key routes", () => {
         capabilities: ["chat", "embeddings"],
         wire: "chat",
       },
+    ]);
+  });
+
+  it("imports and exports custom native wire values", async () => {
+    const importRes = await app.request("/auth/api-keys/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keys: [
+          {
+            provider: "custom",
+            models: ["claude-custom"],
+            apiKey: "custom-ant",
+            baseUrl: "https://anthropic.example.com/v1",
+            wire: "anthropic",
+          },
+          {
+            provider: "custom",
+            models: ["gemini-custom"],
+            apiKey: "custom-gem",
+            baseUrl: "https://gemini.example.com/v1beta",
+            wire: "gemini",
+          },
+        ],
+      }),
+    });
+
+    expect(importRes.status).toBe(200);
+    const res = await app.request("/auth/api-keys/export");
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.keys).toEqual([
+      expect.objectContaining({
+        provider: "custom",
+        models: ["claude-custom"],
+        baseUrl: "https://anthropic.example.com/v1",
+        wire: "anthropic",
+      }),
+      expect.objectContaining({
+        provider: "custom",
+        models: ["gemini-custom"],
+        baseUrl: "https://gemini.example.com/v1beta",
+        wire: "gemini",
+      }),
     ]);
   });
 

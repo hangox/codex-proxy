@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from "preact/hooks";
 
 export type ApiKeyProvider = "anthropic" | "openai" | "gemini" | "openrouter" | "custom";
 export type ApiKeyCapability = "chat" | "embeddings";
-/** Upstream wire protocol for OpenAI-family providers; ignored for anthropic/gemini. */
-export type ApiKeyWire = "chat" | "responses";
+/** Upstream wire protocol used by runtime API-key entries. */
+export type ApiKeyWire = "chat" | "responses" | "anthropic" | "gemini";
 
 export interface ApiKeyEntry {
   id: string;
@@ -34,6 +34,7 @@ export interface FetchProviderModelsInput {
   provider: ApiKeyProvider;
   apiKey: string;
   baseUrl?: string;
+  wire?: ApiKeyWire;
 }
 
 export type Catalog = Record<string, ProviderMeta>;
@@ -145,6 +146,7 @@ export function useApiKeys() {
           provider: input.provider,
           apiKey: input.apiKey.trim(),
           baseUrl: input.baseUrl?.trim(),
+          wire: input.wire,
         }),
       });
       const data = await resp.json();

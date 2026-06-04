@@ -26,12 +26,13 @@ export const API_KEY_CAPABILITIES = ["chat", "embeddings"] as const;
 export type ApiKeyCapability = typeof API_KEY_CAPABILITIES[number];
 
 /**
- * Upstream wire protocol for OpenAI-family providers (openai/openrouter/custom).
- * "chat" → POST /chat/completions (default; the only option for DeepSeek/Kimi/GLM
- * and most gateways). "responses" → POST /responses (opt-in, higher fidelity for
- * providers that support the native Responses API). Ignored for anthropic/gemini.
+ * Upstream wire protocol for runtime API-key providers.
+ * "chat" → OpenAI-compatible POST /chat/completions.
+ * "responses" → OpenAI-compatible POST /responses.
+ * "anthropic" → Anthropic Messages API POST /messages.
+ * "gemini" → Gemini streamGenerateContent API.
  */
-export const API_KEY_WIRES = ["chat", "responses"] as const;
+export const API_KEY_WIRES = ["chat", "responses", "anthropic", "gemini"] as const;
 export type ApiKeyWire = typeof API_KEY_WIRES[number];
 
 export interface ApiKeyEntry {
@@ -301,9 +302,12 @@ function normalizeCapabilities(value: unknown): ApiKeyCapability[] {
   return deduped.length > 0 ? deduped : ["chat"];
 }
 
+function isApiKeyWire(value: unknown): value is ApiKeyWire {
+  return value === "chat" || value === "responses" || value === "anthropic" || value === "gemini";
+}
+
 function normalizeWire(value: unknown): ApiKeyWire {
-  // Legacy entries (and anthropic/gemini, where wire is irrelevant) default to chat.
-  return value === "responses" ? "responses" : "chat";
+  return isApiKeyWire(value) ? value : "chat";
 }
 
 function normalizeEntry(entry: PersistedApiKeyEntry): ApiKeyEntry {

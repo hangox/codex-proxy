@@ -124,17 +124,23 @@ describe("ApiKeyModelCache", () => {
   });
 
   it("normalizes provider model payloads", () => {
-    expect(normalizeProviderModels("openai", { data: [{ id: "gpt", name: "GPT" }, { id: "gpt", name: "Duplicate" }] })).toEqual([
+    expect(normalizeProviderModels({ provider: "openai" }, { data: [{ id: "gpt", name: "GPT" }, { id: "gpt", name: "Duplicate" }] })).toEqual([
       { id: "gpt", displayName: "Duplicate" },
     ]);
-    expect(normalizeProviderModels("anthropic", { data: [{ id: "claude", display_name: "Claude" }] })).toEqual([
+    expect(normalizeProviderModels({ provider: "anthropic" }, { data: [{ id: "claude", display_name: "Claude" }] })).toEqual([
       { id: "claude", displayName: "Claude" },
     ]);
-    expect(normalizeProviderModels("gemini", { models: [{ name: "models/gemini", displayName: "Gemini" }] })).toEqual([
+    expect(normalizeProviderModels({ provider: "gemini" }, { models: [{ name: "models/gemini", displayName: "Gemini" }] })).toEqual([
       { id: "gemini", displayName: "Gemini" },
     ]);
-    expect(normalizeProviderModels("custom", { data: [{ id: "custom", display_name: "Custom" }] })).toEqual([
+    expect(normalizeProviderModels({ provider: "custom" }, { data: [{ id: "custom", display_name: "Custom" }] })).toEqual([
       { id: "custom", displayName: "Custom" },
+    ]);
+    expect(normalizeProviderModels({ provider: "custom", wire: "anthropic" }, { data: [{ id: "claude-custom", display_name: "Claude Custom" }] })).toEqual([
+      { id: "claude-custom", displayName: "Claude Custom" },
+    ]);
+    expect(normalizeProviderModels({ provider: "custom", wire: "gemini" }, { models: [{ name: "models/gemini-custom", displayName: "Gemini Custom" }] })).toEqual([
+      { id: "gemini-custom", displayName: "Gemini Custom" },
     ]);
   });
 });

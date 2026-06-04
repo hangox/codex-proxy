@@ -32,6 +32,7 @@ const FetchProviderModelsSchema = z.object({
   provider: z.enum(VALID_PROVIDERS),
   apiKey: z.string().trim().min(1),
   baseUrl: z.string().trim().url().optional(),
+  wire: WireSchema,
 }).refine(
   (d) => d.provider !== "custom" || Boolean(d.baseUrl),
   { message: "baseUrl is required for custom providers" },

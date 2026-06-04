@@ -22,7 +22,7 @@ function createOnAdd() {
 }
 
 function createFetchProviderModels(models: CatalogModel[] = []) {
-  return vi.fn(async (_input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string }) => ({
+  return vi.fn(async (_input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire }) => ({
     ok: true as const,
     models,
   }));
@@ -86,7 +86,7 @@ describe("AddKeyForm", () => {
     fireEvent.input(screen.getByPlaceholderText("manual-model-1, manual-model-2"), {
       target: { value: "gpt-5.5" },
     });
-    const wireSelect = screen.getByDisplayValue("Chat Completions (default)");
+    const wireSelect = screen.getByDisplayValue("Chat Completions (OpenAI-compatible)");
     fireEvent.change(wireSelect, { target: { value: "responses" } });
     fireEvent.click(screen.getByText("Add Key"));
 
@@ -126,7 +126,7 @@ describe("AddKeyForm", () => {
     fireEvent.blur(screen.getByPlaceholderText("sk-..."));
 
     await waitFor(() => expect(screen.getByText("GPT Test")).toBeTruthy());
-    expect(fetchProviderModels).toHaveBeenCalledWith({ provider: "openai", apiKey: "sk-test", baseUrl: undefined });
+    expect(fetchProviderModels).toHaveBeenCalledWith({ provider: "openai", apiKey: "sk-test", baseUrl: undefined, wire: undefined });
   });
 
   it("submits a selected dynamically fetched built-in model", async () => {
@@ -193,6 +193,85 @@ describe("AddKeyForm", () => {
       provider: "custom",
       apiKey: "custom-key",
       baseUrl: "https://api.example.com/v1",
+      wire: "chat",
+    });
+  });
+
+  it("shows native protocol choices only for custom providers", () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels();
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+      />,
+    );
+
+    const providerSelect = screen.getByRole("combobox");
+    fireEvent.change(providerSelect, { target: { value: "openai" } });
+    expect(screen.queryByRole("option", { name: /Anthropic Messages/i })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Gemini generateContent/i })).toBeNull();
+
+    fireEvent.change(providerSelect, { target: { value: "custom" } });
+    expect(screen.getByRole("option", { name: /Anthropic Messages/i })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Gemini generateContent/i })).toBeTruthy();
+  });
+
+  it("submits custom Anthropic wire", async () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels();
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByDisplayValue("Chat Completions (OpenAI-compatible)"), { target: { value: "anthropic" } });
+    fireEvent.input(screen.getByPlaceholderText("sk-..."), { target: { value: "custom-ant" } });
+    fireEvent.input(screen.getByPlaceholderText("https://api.example.com/v1"), { target: { value: "https://anthropic.example.com/v1" } });
+    fireEvent.input(screen.getByPlaceholderText("manual-model-1, manual-model-2"), { target: { value: "claude-custom" } });
+    fireEvent.click(screen.getByText("Add Key"));
+
+    await waitFor(() => expect(onAdd).toHaveBeenCalledTimes(1));
+    expect(onAdd.mock.calls[0][0]).toMatchObject({
+      provider: "custom",
+      apiKey: "custom-ant",
+      baseUrl: "https://anthropic.example.com/v1",
+      wire: "anthropic",
+      models: ["claude-custom"],
+    });
+  });
+
+  it("passes custom Gemini wire when fetching models", async () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels([{ id: "gemini-custom", displayName: "Gemini Custom" }]);
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByDisplayValue("Chat Completions (OpenAI-compatible)"), { target: { value: "gemini" } });
+    fireEvent.input(screen.getByPlaceholderText("sk-..."), { target: { value: "custom-gem" } });
+    fireEvent.input(screen.getByPlaceholderText("https://api.example.com/v1"), { target: { value: "https://gemini.example.com/v1beta" } });
+    fireEvent.blur(screen.getByPlaceholderText("https://api.example.com/v1"));
+
+    await waitFor(() => expect(screen.getByText("Gemini Custom")).toBeTruthy());
+    expect(fetchProviderModels).toHaveBeenCalledWith({
+      provider: "custom",
+      apiKey: "custom-gem",
+      baseUrl: "https://gemini.example.com/v1beta",
+      wire: "gemini",
     });
   });
 });

@@ -32,9 +32,11 @@ function extractModelId(model: string): string {
 export class GeminiUpstream implements UpstreamAdapter {
   readonly tag = "gemini" as const;
   private apiKey: string;
+  private baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl = "https://generativelanguage.googleapis.com/v1beta") {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   async createResponse(
@@ -45,7 +47,7 @@ export class GeminiUpstream implements UpstreamAdapter {
     const body = translateCodexToGeminiRequest(req);
 
     // Always use streaming endpoint; non-streaming requests also use it for simplicity
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
+    const url = `${this.baseUrl}/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
 
     const response = await fetch(url, withFetchDispatcher({
       method: "POST",

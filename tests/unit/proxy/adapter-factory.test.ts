@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdapterForEntry } from "@src/proxy/adapter-factory.js";
 import { OpenAIUpstream } from "@src/proxy/openai-upstream.js";
 import { ResponsesUpstream } from "@src/proxy/responses-upstream.js";
 import { AnthropicUpstream } from "@src/proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "@src/proxy/gemini-upstream.js";
 import type { ApiKeyEntry, ApiKeyProvider, ApiKeyWire } from "@src/auth/api-key-pool.js";
+import type { CodexResponsesRequest } from "@src/proxy/codex-types.js";
 
 function entry(
   provider: ApiKeyProvider,
@@ -26,6 +27,19 @@ function entry(
   };
 }
 
+function codexRequest(model: string): CodexResponsesRequest {
+  return {
+    model,
+    input: [{ role: "user", content: "hello" }],
+    stream: true,
+    store: false,
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("createAdapterForEntry — wire routing", () => {
   it("OpenAI-family default to Chat Completions (OpenAIUpstream)", () => {
     for (const p of ["openai", "openrouter", "custom"] as const) {
@@ -41,8 +55,51 @@ describe("createAdapterForEntry — wire routing", () => {
     }
   });
 
-  it("anthropic/gemini ignore wire and use their native adapters", () => {
+  it("custom can use Anthropic and Gemini native wires", () => {
+    expect(createAdapterForEntry(entry("custom", "anthropic"))).toBeInstanceOf(AnthropicUpstream);
+    expect(createAdapterForEntry(entry("custom", "gemini"))).toBeInstanceOf(GeminiUpstream);
+  });
+
+  it("built-in anthropic/gemini ignore wire and use their native adapters", () => {
     expect(createAdapterForEntry(entry("anthropic", "responses"))).toBeInstanceOf(AnthropicUpstream);
     expect(createAdapterForEntry(entry("gemini", "responses"))).toBeInstanceOf(GeminiUpstream);
+  });
+
+  it("AnthropicUpstream posts to custom baseUrl /messages", async () => {
+    const fetchMock = vi.fn(async () => new Response("event: message_stop\ndata: {}\n\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const upstream = new AnthropicUpstream("sk-ant", "https://anthropic.example.com/v1/");
+    await upstream.createResponse(codexRequest("claude-custom"), new AbortController().signal);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://anthropic.example.com/v1/messages");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "x-api-key": "sk-ant",
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+      },
+    });
+  });
+
+  it("GeminiUpstream posts to custom baseUrl streamGenerateContent endpoint", async () => {
+    const fetchMock = vi.fn(async () => new Response("data: {}\n\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const upstream = new GeminiUpstream("gem-key", "https://gemini.example.com/v1beta/");
+    await upstream.createResponse(codexRequest("gemini-custom"), new AbortController().signal);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://gemini.example.com/v1beta/models/gemini-custom:streamGenerateContent?alt=sse&key=gem-key");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+      },
+    });
   });
 });

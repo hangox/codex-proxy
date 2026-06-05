@@ -16,7 +16,7 @@ import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { randomUUID } from "crypto";
 import { getConfig } from "../config.js";
-import { extractProxyApiKey } from "../utils/extract-api-key.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { prepareSchema, isRecord } from "../translation/shared-utils.js";
 import { parseModelName, resolveModelId, buildDisplayModelName } from "../models/model-store.js";
@@ -58,11 +58,7 @@ function firstHeaderOrMetadata(
 
 // ── Auth check ────────────────────────────────────────────────────
 
-function checkAuth(
-  c: Context,
-  accountPool: AccountPool,
-  allowUnauthenticated: boolean = false,
-): Response | null {
+function checkAuth(c: Context, accountPool: AccountPool, allowUnauthenticated: boolean): Response | null {
   if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
     c.status(401);
     return c.json({
@@ -73,22 +69,6 @@ function checkAuth(
         message: "Not authenticated. Please login first at /",
       },
     });
-  }
-
-  const config = getConfig();
-  if (config.server.proxy_api_key) {
-    const providedKey = extractProxyApiKey(c);
-    if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-      c.status(401);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_api_key",
-          message: "Invalid proxy API key",
-        },
-      });
-    }
   }
   return null;
 }
@@ -118,6 +98,7 @@ export function createResponsesRoutes(
 ): Hono {
   const app = new Hono();
   app.onError(errorHandler);
+  app.use("*", apiKeyAuth(accountPool));
 
   const responsesHandler = async (c: Context) => {
     const rawBody = await c.req.json();

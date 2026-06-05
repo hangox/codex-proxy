@@ -20,10 +20,7 @@ import type { CodexResponsesRequest, CodexSSEEvent } from "./codex-types.js";
 import { CodexApiError } from "./codex-types.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToAnthropicRequest } from "../translation/codex-request-to-anthropic.js";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+import { isRecord } from "../translation/shared-utils.js";
 
 function extractModelId(model: string): string {
   const colon = model.indexOf(":");

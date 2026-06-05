@@ -25,7 +25,7 @@ import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { FormatAdapter, ProxyRequest } from "./shared/proxy-handler-types.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
-import { extractProxyApiKey } from "../utils/extract-api-key.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
@@ -74,26 +74,6 @@ function formatModelNotFound(model: string) {
   };
 }
 
-function checkProxyApiKey(c: Context, accountPool: AccountPool) {
-  const config = getConfig();
-  if (!config.server.proxy_api_key) return null;
-
-  const providedKey = extractProxyApiKey(c);
-  if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-    c.status(401);
-    return c.json({
-      error: {
-        message: "Invalid proxy API key",
-        type: "invalid_request_error",
-        param: null,
-        code: "invalid_api_key",
-      },
-    });
-  }
-
-  return null;
-}
-
 export function createChatRoutes(
   accountPool: AccountPool,
   cookieJar?: CookieJar,
@@ -101,6 +81,7 @@ export function createChatRoutes(
   upstreamRouter?: UpstreamRouter,
 ): Hono {
   const app = new Hono();
+  app.use("*", apiKeyAuth(accountPool));
 
   app.post("/v1/chat/completions", async (c) => {
     // Parse request
@@ -155,8 +136,6 @@ export function createChatRoutes(
     });
 
     if (routeMatch.kind === "api-key" || routeMatch.kind === "adapter") {
-      const authError = checkProxyApiKey(c, accountPool);
-      if (authError) return authError;
 
       const directModel = routeMatch.resolvedModel ?? req.model;
       const directReq = {
@@ -179,9 +158,6 @@ export function createChatRoutes(
         },
       });
     }
-
-    const authError = checkProxyApiKey(c, accountPool);
-    if (authError) return authError;
 
     const summary = accountPool.getPoolSummary();
     if (summary.active === 0) {

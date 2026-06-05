@@ -18,6 +18,7 @@ import type {
   AnthropicUsage,
 } from "../types/anthropic.js";
 import { iterateCodexEvents, EmptyResponseError, type UsageInfo } from "./codex-event-extractor.js";
+import { isRecord } from "./shared-utils.js";
 import { codexApiErrorFromEvent } from "./codex-api-error-from-event.js";
 
 interface CacheUsageHint {
@@ -26,10 +27,6 @@ interface CacheUsageHint {
 
 interface ResponseMetadata {
   functionCallIds?: string[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sanitizeToolInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> {

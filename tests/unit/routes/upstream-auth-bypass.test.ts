@@ -487,7 +487,7 @@ describe("upstream direct routing without Codex auth", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer wrong-key",
+        Authorization: "Bearer proxy-secret",
       },
       body: JSON.stringify({
         model: "unknown-model-xyz",

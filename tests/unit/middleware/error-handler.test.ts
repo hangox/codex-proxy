@@ -10,12 +10,7 @@ import { errorHandler } from "@src/middleware/error-handler.js";
 
 function createApp(throwFn: () => never): Hono {
   const app = new Hono();
-  // Use Hono's onError to route thrown errors through our errorHandler.
-  // errorHandler(c, next) catches the error from `await next()` and returns
-  // the appropriate JSON response via `c.json()`.
-  app.onError((err, c) =>
-    errorHandler(c, async () => { throw err; }) as unknown as Response,
-  );
+  app.onError(errorHandler);
   app.all("/*", () => {
     throwFn();
   });

@@ -476,7 +476,7 @@ describe("upstream direct routing without Codex auth", () => {
     pool.destroy();
   });
 
-  it("returns 404 for unknown models before auth", async () => {
+  it("returns 404 for unknown models with valid auth", async () => {
     mockConfig.server.proxy_api_key = "proxy-secret";
     const pool = new AccountPool();
     const app = createChatRoutes(pool, undefined, undefined, {
@@ -497,6 +497,29 @@ describe("upstream direct routing without Codex auth", () => {
 
     expect(res.status).toBe(404);
     expect(mockHandleDirectRequest).toHaveBeenCalledTimes(0);
+    pool.destroy();
+  });
+
+  it("returns 401 for wrong API key before model routing", async () => {
+    mockConfig.server.proxy_api_key = "proxy-secret";
+    const pool = new AccountPool();
+    const app = createChatRoutes(pool, undefined, undefined, {
+      resolveMatch: vi.fn(() => ({ kind: "not-found" })),
+    } as never);
+
+    const res = await app.request("/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer wrong-key",
+      },
+      body: JSON.stringify({
+        model: "unknown-model-xyz",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(res.status).toBe(401);
     pool.destroy();
   });
 

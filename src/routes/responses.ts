@@ -97,6 +97,8 @@ export function createResponsesRoutes(
   upstreamRouter?: UpstreamRouter,
 ): Hono {
   const app = new Hono();
+  // Register errorHandler locally so that when testing this router in isolation (e.g. unit tests),
+  // uncaught errors are still handled and formatted appropriately.
   app.onError(errorHandler);
   app.use("*", apiKeyAuth(accountPool));
 

@@ -1,4 +1,5 @@
-import type { Context, Next } from "hono";
+import type { Context } from "hono";
+import type { ErrorHandler as HonoErrorHandler } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
 import type { OpenAIErrorBody } from "../types/openai.js";
 import type { AnthropicErrorBody, AnthropicErrorType } from "../types/anthropic.js";
@@ -38,38 +39,16 @@ function makeGeminiError(
   return { error: { code, message, status } };
 }
 
-export async function errorHandler(arg1: unknown, arg2: unknown): Promise<Response | void> {
-  let err: unknown;
-  let c: Context;
-  let next: Next | undefined;
+export const errorHandler: HonoErrorHandler = (err: Error, c: Context): Response => {
+  const errRecord = err as unknown as Record<string, unknown>;
+  const message = err.message || "Internal server error";
+  console.error("[ErrorHandler]", err.stack ?? message);
 
-  if (arg1 && typeof arg1 === "object" && "req" in arg1) {
-    c = arg1 as Context;
-    next = arg2 as Next;
-    try {
-      await next();
-      return;
-    } catch (e) {
-      err = e;
-    }
-  } else {
-    err = arg1;
-    c = arg2 as Context;
-  }
-
-  const isObj = typeof err === "object" && err !== null;
-  const errName = isObj && "name" in err && typeof (err as any).name === "string" ? (err as any).name : "";
-  const errMessage = isObj && "message" in err && typeof (err as any).message === "string" ? (err as any).message : String(err);
-  const message = errMessage || "Internal server error";
-  const stack = isObj && "stack" in err && typeof (err as any).stack === "string" ? (err as any).stack : undefined;
-  console.error("[ErrorHandler]", stack ?? message);
-
-  const status = isObj && "status" in err && typeof (err as any).status === "number" ? (err as any).status : undefined;
-
+  const status = typeof errRecord.status === "number" ? errRecord.status : undefined;
   const path = c.req.path;
 
   // Malformed JSON request body should be treated as a client error.
-  const isSyntaxError = err instanceof SyntaxError || errName === "SyntaxError" || String(err).includes("SyntaxError");
+  const isSyntaxError = err instanceof SyntaxError || err.name === "SyntaxError" || String(err).includes("SyntaxError");
   if (isSyntaxError && message.toLowerCase().includes("json")) {
     c.status(400);
     if (path.startsWith("/v1/messages")) {
@@ -167,5 +146,4 @@ export async function errorHandler(arg1: unknown, arg2: unknown): Promise<Respon
   return c.json(
     makeOpenAIError(message, "server_error", "internal_error"),
   );
-}
-
+};

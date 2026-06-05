@@ -190,5 +190,3 @@ export const REASONING_EFFORT_BUDGET: Record<string, number> = {
   high: 16000,
   xhigh: 32000,
 };
-
-

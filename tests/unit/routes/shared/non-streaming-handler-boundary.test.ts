@@ -300,4 +300,30 @@ describe("non-streaming handler module boundary", () => {
     expect(handler).not.toContain("metadataCollector");
   });
 
+  it("does not let the consolidated helpers module import back into the handler or upper-layer modules", () => {
+    const helpers = source(HELPERS_MODULE);
+    const importedSpecs = importedModuleSpecifiers(helpers, HELPERS_MODULE);
+
+    // Must not circularly import the handler
+    expect(importedSpecs).not.toContain("./non-streaming-handler.js");
+
+    // Must not import streaming handler
+    expect(importedSpecs).not.toContain("./streaming-handler.js");
+
+    // Must not import Hono runtime (type-only imports are erased and won't appear)
+    for (const spec of importedSpecs) {
+      if (spec === "hono" || spec.startsWith("hono/")) {
+        // Verify it's type-only — value imports of hono are forbidden
+        expect(importsNamedBinding(helpers, spec, "Hono", HELPERS_MODULE)).toBe(false);
+      }
+    }
+
+    // Must not directly format error responses (that's the handler's job)
+    expect(helpers).not.toContain("c.json(");
+    expect(helpers).not.toContain("c.status(");
+
+    // Must not own the entry-level request logger
+    expect(importedSpecs).not.toContain("../../logs/entry.js");
+  });
+
 });

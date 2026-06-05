@@ -2,12 +2,11 @@
  * Model Store — manages model catalog + aliases.
  *
  * Data flow:
- *   1. loadStatic() — load from config/models.yaml (fallback baseline)
- *   2. applyBackendModels() — merge backend-fetched models (backend wins for shared IDs)
+ *   1. loadStatic() — load last successful backend snapshot from data/models-cache.yaml
+ *   2. applyBackendModelsForPlan() — replace that plan's backend model snapshot
  *   3. getters — runtime reads from mutable state
  *
- * Aliases come from the static YAML baseline plus local `model.aliases`
- * overrides; backend model refreshes never replace them.
+ * Aliases come only from local `model.aliases`; they are not exposed as models.
  *
  * The ModelStore class owns all state. Module-level free functions delegate
  * to a default instance for backward compatibility.
@@ -159,6 +158,7 @@ export class ModelStore {
   private aliases: Record<string, string> = {};
   private lastFetchTime: string | null = null;
   private planModelMap = new Map<string, Set<string>>();
+  private planModelSnapshots = new Map<string, CodexModelInfo[]>();
   private modelPlanIndex = new Map<string, Set<string>>();
   private defaultModelFn: () => string;
 
@@ -174,32 +174,22 @@ export class ModelStore {
     const raw = yaml.load(readFileSync(configPath, "utf-8")) as ModelsConfig;
 
     this.catalog = (raw.models ?? []).map((m) => ({ ...m, source: "static" as const }));
-    this.aliases = {
-      ...normalizeAliases(raw.aliases),
-      ...this.getConfiguredAliases(),
-    };
+    this.aliases = this.getConfiguredAliases();
     this.planModelMap = new Map();
+    this.planModelSnapshots = new Map();
     this.modelPlanIndex = new Map();
-    console.log(`[ModelStore] Loaded ${this.catalog.length} static models, ${Object.keys(this.aliases).length} aliases`);
 
-    // Overlay cached backend models from data/ (cold-start fallback)
     try {
       const cachePath = resolve(getDataDir(), "models-cache.yaml");
       if (existsSync(cachePath)) {
         const cached = yaml.load(readFileSync(cachePath, "utf-8")) as ModelsConfig;
         const cachedModels = cached.models ?? [];
-        if (cachedModels.length > 0) {
-          const staticIds = new Set(this.catalog.map((m) => m.id));
-          let added = 0;
-          for (const m of cachedModels) {
-            if (!staticIds.has(m.id)) {
-              this.catalog.push({ ...m, source: "backend" as const });
-              added++;
-            }
-          }
-          if (added > 0) {
-            console.log(`[ModelStore] Overlaid ${added} cached backend models from data/models-cache.yaml`);
-          }
+        this.catalog = cachedModels.map((m) => ({ ...m, source: "backend" as const }));
+        if (this.catalog.length > 0) {
+          this.planModelSnapshots.set("cache", this.catalog.map((m) => ({ ...m })));
+          this.planModelMap.set("cache", new Set(this.catalog.map((m) => m.id)));
+          this.rebuildPlanIndex();
+          console.log(`[ModelStore] Loaded ${this.catalog.length} cached backend models from data/models-cache.yaml`);
         }
       }
     } catch {
@@ -210,79 +200,29 @@ export class ModelStore {
     if (customCount > 0) {
       console.log(`[ModelStore] Applied ${customCount} custom models from local config`);
     }
+    console.log(`[ModelStore] Loaded ${this.catalog.length} models, ${Object.keys(this.aliases).length} configured aliases`);
   }
 
   // ── Backend merge ───────────────────────────────────────────────
 
   applyBackendModels(backendModels: BackendModelEntry[]): void {
-    const staticMap = new Map(this.catalog.map((m) => [m.id, m]));
-    const merged: CodexModelInfo[] = [];
-    const seenIds = new Set<string>();
-
-    for (const raw of backendModels) {
-      const normalized = normalizeBackendModel(raw);
-      seenIds.add(normalized.id);
-
-      const existing = staticMap.get(normalized.id);
-      const { _hasExplicitEfforts, ...model } = normalized;
-      if (existing) {
-        merged.push({
-          ...existing,
-          ...model,
-          description: model.description || existing.description,
-          displayName: model.displayName || existing.displayName,
-          supportedReasoningEfforts: _hasExplicitEfforts
-            ? model.supportedReasoningEfforts
-            : existing.supportedReasoningEfforts,
-          // Preserve static isDefault when backend doesn't explicitly mark a default.
-          // Codex backend typically omits is_default for non-flagship models, which
-          // would otherwise clobber our YAML-declared default to false.
-          isDefault: raw.is_default === true ? true : existing.isDefault,
-          source: "backend",
-        });
-      } else {
-        merged.push(model);
-      }
-    }
-
-    for (const m of this.catalog) {
-      if (!seenIds.has(m.id)) {
-        merged.push({ ...m, source: m.source ?? "static" });
-      }
-    }
-
-    this.catalog = merged;
-    this.lastFetchTime = new Date().toISOString();
-    console.log(
-      `[ModelStore] Merged ${backendModels.length} backend + ${merged.length - backendModels.length} static-only = ${merged.length} total models`,
-    );
-
-    this.syncCache();
+    this.applyBackendModelsForPlan("default", backendModels);
   }
 
   applyBackendModelsForPlan(planType: string, backendModels: BackendModelEntry[]): void {
-    this.applyBackendModels(backendModels);
+    const models = backendModels.map((raw) => stripNormalizeMetadata(normalizeBackendModel(raw)));
+    const admittedIds = new Set(models.map((model) => model.id));
 
-    const admittedIds = new Set<string>();
-    for (const raw of backendModels) {
-      const id = raw.slug ?? raw.id ?? raw.name ?? "";
-      if (id) admittedIds.add(id);
-    }
+    this.planModelSnapshots.delete("cache");
+    this.planModelMap.delete("cache");
+    this.planModelSnapshots.set(planType, models);
     this.planModelMap.set(planType, admittedIds);
-
-    this.modelPlanIndex = new Map();
-    for (const [plan, modelIds] of this.planModelMap) {
-      for (const id of modelIds) {
-        let plans = this.modelPlanIndex.get(id);
-        if (!plans) {
-          plans = new Set();
-          this.modelPlanIndex.set(id, plans);
-        }
-        plans.add(plan);
-      }
-    }
+    this.rebuildCatalogFromPlanSnapshots();
+    this.lastFetchTime = new Date().toISOString();
 
     console.log(`[ModelStore] Plan "${planType}": ${admittedIds.size} admitted models, ${this.planModelMap.size} plans tracked`);
+    console.log(`[ModelStore] Rebuilt ${this.catalog.length} models from backend snapshots`);
+    this.syncCache();
   }
 
   // ── Getters ─────────────────────────────────────────────────────
@@ -400,7 +340,7 @@ export class ModelStore {
     ].join("\n");
 
     const body = yaml.dump(
-      { models, aliases: this.aliases },
+      { models, aliases: {} },
       { lineWidth: 120, noRefs: true, sortKeys: false },
     );
 
@@ -455,6 +395,32 @@ export class ModelStore {
     return applied;
   }
 
+  private rebuildCatalogFromPlanSnapshots(): void {
+    const modelsById = new Map<string, CodexModelInfo>();
+    for (const models of this.planModelSnapshots.values()) {
+      for (const model of models) {
+        modelsById.set(model.id, { ...model, source: "backend" });
+      }
+    }
+    this.catalog = [...modelsById.values()];
+    this.applyConfiguredCustomModels();
+    this.rebuildPlanIndex();
+  }
+
+  private rebuildPlanIndex(): void {
+    this.modelPlanIndex = new Map();
+    for (const [plan, modelIds] of this.planModelMap) {
+      for (const id of modelIds) {
+        let plans = this.modelPlanIndex.get(id);
+        if (!plans) {
+          plans = new Set();
+          this.modelPlanIndex.set(id, plans);
+        }
+        plans.add(plan);
+      }
+    }
+  }
+
   private resolveAliasChain(input: string): string {
     let current = input.trim();
     const seen = new Set<string>();
@@ -472,6 +438,11 @@ export class ModelStore {
 }
 
 // ── Helpers (module-level, stateless) ─────────────────────────────
+
+function stripNormalizeMetadata(model: NormalizedModelWithMeta): CodexModelInfo {
+  const { _hasExplicitEfforts: _meta, ...info } = model;
+  return info;
+}
 
 function normalizeBackendModel(raw: BackendModelEntry): NormalizedModelWithMeta {
   const id = raw.slug ?? raw.id ?? raw.name ?? "unknown";

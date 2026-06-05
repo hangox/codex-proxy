@@ -360,6 +360,11 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Fetch dev for stable release notes
         run: git fetch origin dev:refs/remotes/origin/dev || true
 

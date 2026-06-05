@@ -1,5 +1,5 @@
 import { SessionAffinityMap } from "@src/auth/session-affinity.js";
-import { recordNonStreamingSuccessAffinity } from "@src/routes/shared/non-streaming-affinity.js";
+import { recordNonStreamingSuccessAffinity } from "@src/routes/shared/non-streaming-helpers.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 describe("recordNonStreamingSuccessAffinity", () => {

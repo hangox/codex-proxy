@@ -1,5 +1,5 @@
 import { CodexApiError } from "@src/proxy/codex-api.js";
-import { rethrowNonStreamingCodexApiErrorDuringCollect } from "@src/routes/shared/non-streaming-codex-api-error.js";
+import { rethrowNonStreamingCodexApiErrorDuringCollect } from "@src/routes/shared/non-streaming-helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("rethrowNonStreamingCodexApiErrorDuringCollect", () => {

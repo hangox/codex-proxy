@@ -8,6 +8,7 @@
 import type { ChatCompletionRequest } from "../types/openai.js";
 import type { AnthropicMessagesRequest } from "../types/anthropic.js";
 import type { GeminiGenerateContentRequest } from "../types/gemini.js";
+import { isRecord } from "./shared-utils.js";
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -46,10 +47,6 @@ export type CodexTool = CodexToolDefinition | CodexHostedWebSearchTool | CodexIm
 
 export interface AnthropicToolConversionOptions {
   mapClaudeCodeWebSearch?: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isHostedWebSearchType(type: unknown): boolean {

@@ -44,6 +44,23 @@ function normalizeModelAliases(input: unknown): {
 export function createSettingsRoutes(): Hono {
   const app = new Hono();
 
+  app.use("/admin/*", async (c, next) => {
+    if (c.req.method !== "POST" && c.req.method !== "PUT" && c.req.method !== "PATCH" && c.req.method !== "DELETE") {
+      return next();
+    }
+    const config = getConfig();
+    const currentKey = config.server.proxy_api_key;
+    if (currentKey) {
+      const authHeader = c.req.header("Authorization") ?? "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      if (token !== currentKey) {
+        c.status(401);
+        return c.json({ error: "Invalid current API key" });
+      }
+    }
+    return next();
+  });
+
   // --- Rotation settings ---
 
   app.get("/admin/rotation-settings", (c) => {
@@ -54,18 +71,6 @@ export function createSettingsRoutes(): Hono {
   });
 
   app.post("/admin/rotation-settings", async (c) => {
-    const config = getConfig();
-    const currentKey = config.server.proxy_api_key;
-
-    if (currentKey) {
-      const authHeader = c.req.header("Authorization") ?? "";
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-      if (token !== currentKey) {
-        c.status(401);
-        return c.json({ error: "Invalid current API key" });
-      }
-    }
-
     const body = await c.req.json() as { rotation_strategy?: string };
     const valid: readonly string[] = ROTATION_STRATEGIES;
     if (!body.rotation_strategy || !valid.includes(body.rotation_strategy)) {
@@ -96,16 +101,6 @@ export function createSettingsRoutes(): Hono {
   app.post("/admin/settings", async (c) => {
     const config = getConfig();
     const currentKey = config.server.proxy_api_key;
-
-    if (currentKey) {
-      const authHeader = c.req.header("Authorization") ?? "";
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-      if (token !== currentKey) {
-        c.status(401);
-        return c.json({ error: "Invalid current API key" });
-      }
-    }
-
     const body = await c.req.json() as { proxy_api_key?: string | null };
     const newKey = body.proxy_api_key === undefined ? currentKey : (body.proxy_api_key || null);
 
@@ -159,17 +154,6 @@ export function createSettingsRoutes(): Hono {
 
   app.post("/admin/general-settings", async (c) => {
     const config = getConfig();
-    const currentKey = config.server.proxy_api_key;
-
-    if (currentKey) {
-      const authHeader = c.req.header("Authorization") ?? "";
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-      if (token !== currentKey) {
-        c.status(401);
-        return c.json({ error: "Invalid current API key" });
-      }
-    }
-
     const body = await c.req.json() as {
       port?: number;
       proxy_url?: string | null;
@@ -428,18 +412,6 @@ export function createSettingsRoutes(): Hono {
   });
 
   app.post("/admin/quota-settings", async (c) => {
-    const config = getConfig();
-    const currentKey = config.server.proxy_api_key;
-
-    if (currentKey) {
-      const authHeader = c.req.header("Authorization") ?? "";
-      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-      if (token !== currentKey) {
-        c.status(401);
-        return c.json({ error: "Invalid current API key" });
-      }
-    }
-
     const body = await c.req.json() as {
       refresh_interval_minutes?: number;
       warning_thresholds?: { primary?: number[]; secondary?: number[] };

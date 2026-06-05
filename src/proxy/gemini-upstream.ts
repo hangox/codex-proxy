@@ -19,10 +19,7 @@ import { CodexApiError } from "./codex-types.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToGeminiRequest } from "../translation/codex-request-to-gemini.js";
 import { withFetchDispatcher } from "./fetch-dispatcher.js";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+import { isRecord } from "../translation/shared-utils.js";
 
 function extractModelId(model: string): string {
   const colon = model.indexOf(":");
@@ -32,7 +29,7 @@ function extractModelId(model: string): string {
 export class GeminiUpstream implements UpstreamAdapter {
   readonly tag = "gemini" as const;
   private apiKey: string;
-  private baseUrl: string;
+  readonly baseUrl: string;
 
   constructor(apiKey: string, baseUrl = "https://generativelanguage.googleapis.com/v1beta") {
     this.apiKey = apiKey;

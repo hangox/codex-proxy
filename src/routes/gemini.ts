@@ -83,8 +83,10 @@ export function createGeminiRoutes(
   upstreamRouter?: UpstreamRouter,
 ): Hono {
   const app = new Hono();
+  app.use("*", apiKeyAuth(accountPool));
+
   // Handle both generateContent and streamGenerateContent
-  app.post("/v1beta/models/:modelAction", apiKeyAuth(accountPool), async (c) => {
+  app.post("/v1beta/models/:modelAction", async (c) => {
     const modelActionParam = c.req.param("modelAction");
     const parsed = parseModelAction(modelActionParam);
 

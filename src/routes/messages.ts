@@ -134,9 +134,9 @@ export function createMessagesRoutes(
   upstreamRouter?: UpstreamRouter,
 ): Hono {
   const app = new Hono();
-  const auth = apiKeyAuth(accountPool);
+  app.use("*", apiKeyAuth(accountPool));
 
-  app.post("/v1/messages/count_tokens", auth, async (c) => {
+  app.post("/v1/messages/count_tokens", async (c) => {
     const body = await c.req.json();
 
     const parsed = AnthropicCountTokensRequestSchema.safeParse(body);
@@ -150,7 +150,7 @@ export function createMessagesRoutes(
     return c.json({ input_tokens: estimateCountTokens(parsed.data) });
   });
 
-  app.post("/v1/messages", auth, async (c) => {
+  app.post("/v1/messages", async (c) => {
     // Parse request
     const body = await c.req.json();
     const parsed = AnthropicMessagesRequestSchema.safeParse(body);

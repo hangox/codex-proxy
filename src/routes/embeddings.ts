@@ -98,7 +98,9 @@ function copyResponseHeaders(upstream: Response): Headers {
 
 export function createEmbeddingsRoutes(accountPool: AccountPool, apiKeyPool: ApiKeyPool): Hono {
   const app = new Hono();
-  app.post("/v1/embeddings", apiKeyAuth(accountPool), async (c) => {
+  app.use("*", apiKeyAuth(accountPool));
+
+  app.post("/v1/embeddings", async (c) => {
     const body = await c.req.json();
     const parsed = EmbeddingsRequestSchema.safeParse(body);
     if (!parsed.success) {

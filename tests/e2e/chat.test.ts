@@ -25,6 +25,7 @@ import {
   buildTextStreamChunks,
   buildToolCallStreamChunks,
   buildReasoningStreamChunks,
+  buildImageGenStreamChunks,
 } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
 
@@ -390,5 +391,81 @@ describe("E2E: POST /v1/chat/completions", () => {
     const sentBody = JSON.parse(getLastTransportBody()!);
     expect(sentBody.model).toBe("gpt-5.4");
     expect(sentBody.reasoning?.effort).toBe("high");
+  });
+
+  // ── Image generation ──────────────────────────────────────────
+
+  it("non-streaming image generation: translates image_generation_call to tool_calls", async () => {
+    setTransportPost(async () =>
+      makeTransportResponse(
+        buildImageGenStreamChunks("resp_chat_img_ns", "item_img_e2e_1", "fake_b64_data", "red circle"),
+      ),
+    );
+
+    const res = await chatRequest(defaultBody({
+      tools: [{ type: "image_generation", size: "1024x1024" }],
+    }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json() as Record<string, unknown>;
+    const choices = body.choices as Array<{
+      message: { tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> };
+      finish_reason: string;
+    }>;
+
+    expect(choices[0].message.tool_calls).toBeDefined();
+    expect(choices[0].message.tool_calls!.length).toBe(1);
+    const tc = choices[0].message.tool_calls![0];
+    expect(tc.id).toBe("item_img_e2e_1");
+    expect(tc.function.name).toBe("image_generation");
+    const args = JSON.parse(tc.function.arguments);
+    expect(args.result).toBe("fake_b64_data");
+    expect(args.revised_prompt).toBe("red circle");
+  });
+
+  it("streaming image generation: translates image_generation_call to tool_calls", async () => {
+    setTransportPost(async () =>
+      makeTransportResponse(
+        buildImageGenStreamChunks("resp_chat_img_s", "item_img_e2e_2", "fake_b64_data_stream", "blue square"),
+      ),
+    );
+
+    const res = await chatRequest(defaultBody({
+      stream: true,
+      tools: [{ type: "image_generation", size: "1024x1024" }],
+    }));
+    expect(res.status).toBe(200);
+
+    const text = await res.text();
+    const chunks = parseOpenAISSE(text);
+
+    const toolCallChunks = chunks.filter((c) => {
+      const choices = c.choices as Array<{ delta?: { tool_calls?: unknown } }> | undefined;
+      return choices?.[0]?.delta?.tool_calls;
+    });
+
+    // Per OpenAI streaming spec: start chunk (id+name+empty args) + arguments chunk
+    expect(toolCallChunks).toHaveLength(2);
+
+    type ToolCallChunk = Array<{
+      index: number;
+      id?: string;
+      type?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+
+    const startChunkChoices = toolCallChunks[0].choices as Array<{ delta?: { tool_calls?: ToolCallChunk } }>;
+    const startTc = startChunkChoices[0].delta!.tool_calls![0];
+    expect(startTc.id).toBe("item_img_e2e_2");
+    expect(startTc.type).toBe("function");
+    expect(startTc.function?.name).toBe("image_generation");
+    expect(startTc.function?.arguments).toBe("");
+
+    const argsChunkChoices = toolCallChunks[1].choices as Array<{ delta?: { tool_calls?: ToolCallChunk } }>;
+    const argsTc = argsChunkChoices[0].delta!.tool_calls![0];
+    expect(argsTc.id).toBeUndefined();
+    const args = JSON.parse(argsTc.function!.arguments!);
+    expect(args.result).toBe("fake_b64_data_stream");
+    expect(args.revised_prompt).toBe("blue square");
   });
 });

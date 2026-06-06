@@ -5,6 +5,7 @@ import type { AccountPool } from "../auth/account-pool.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { translateToCodexRequest } from "../translation/openai-to-codex.js";
+import { isRecord } from "../translation/shared-utils.js";
 import {
   streamCodexToOpenAI,
   collectCodexResponse,
@@ -109,6 +110,8 @@ export function createChatRoutes(
     }
 
     const { codexRequest, tupleSchema } = translateToCodexRequest(req);
+    const expectsImageGen = Array.isArray(codexRequest.tools)
+      && codexRequest.tools.some((t): t is Record<string, unknown> => isRecord(t) && t.type === "image_generation");
     // Check after translation so suffix-parsed and config-default effort are included.
     const wantReasoning = !!codexRequest.reasoning?.effort;
     const fmt = makeOpenAIFormat(wantReasoning);
@@ -119,6 +122,7 @@ export function createChatRoutes(
       isStreaming: req.stream ?? false,
       clientConversationId: req.user,
       tupleSchema,
+      expectsImageGen,
     };
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);

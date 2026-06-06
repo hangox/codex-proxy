@@ -87,18 +87,13 @@ export async function* streamCodexToOpenAI(
       hasToolCalls = true;
       hasContent = true;
       const idx = nextToolCallIndex++;
-      const toolCall: ChatCompletionChunkToolCall = {
-        index: idx,
-        id: evt.imageGenerationDone.id,
-        type: "function",
-        function: {
-          name: "image_generation",
-          arguments: JSON.stringify({
-            result: evt.imageGenerationDone.result,
-            revised_prompt: evt.imageGenerationDone.revised_prompt,
-          }),
-        },
-      };
+      const argsJson = JSON.stringify({
+        result: evt.imageGenerationDone.result,
+        ...(evt.imageGenerationDone.revised_prompt !== undefined
+          ? { revised_prompt: evt.imageGenerationDone.revised_prompt }
+          : {}),
+      });
+      // Start chunk: id + type + name (arguments empty per OpenAI streaming spec)
       yield formatSSE({
         id: chunkId,
         object: "chat.completion.chunk",
@@ -107,7 +102,32 @@ export async function* streamCodexToOpenAI(
         choices: [
           {
             index: 0,
-            delta: { tool_calls: [toolCall] },
+            delta: {
+              tool_calls: [
+                {
+                  index: idx,
+                  id: evt.imageGenerationDone.id,
+                  type: "function",
+                  function: { name: "image_generation", arguments: "" },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      // Arguments chunk: arguments content (no id/type per OpenAI streaming spec)
+      yield formatSSE({
+        id: chunkId,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: idx, function: { arguments: argsJson } }],
+            },
             finish_reason: null,
           },
         ],
@@ -402,7 +422,9 @@ export async function collectCodexResponse(
           name: "image_generation",
           arguments: JSON.stringify({
             result: evt.imageGenerationDone.result,
-            revised_prompt: evt.imageGenerationDone.revised_prompt,
+            ...(evt.imageGenerationDone.revised_prompt !== undefined
+              ? { revised_prompt: evt.imageGenerationDone.revised_prompt }
+              : {}),
           }),
         },
       });

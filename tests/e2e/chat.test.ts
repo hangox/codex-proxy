@@ -444,19 +444,27 @@ describe("E2E: POST /v1/chat/completions", () => {
       return choices?.[0]?.delta?.tool_calls;
     });
 
-    expect(toolCallChunks).toHaveLength(1);
-    const choices = toolCallChunks[0].choices as Array<{
-      delta?: {
-        tool_calls?: Array<{
-          id: string;
-          function: { name: string; arguments: string };
-        }>;
-      };
+    // Per OpenAI streaming spec: start chunk (id+name+empty args) + arguments chunk
+    expect(toolCallChunks).toHaveLength(2);
+
+    type ToolCallChunk = Array<{
+      index: number;
+      id?: string;
+      type?: string;
+      function?: { name?: string; arguments?: string };
     }>;
-    const tc = choices[0].delta!.tool_calls![0];
-    expect(tc.id).toBe("item_img_e2e_2");
-    expect(tc.function.name).toBe("image_generation");
-    const args = JSON.parse(tc.function.arguments);
+
+    const startChunkChoices = toolCallChunks[0].choices as Array<{ delta?: { tool_calls?: ToolCallChunk } }>;
+    const startTc = startChunkChoices[0].delta!.tool_calls![0];
+    expect(startTc.id).toBe("item_img_e2e_2");
+    expect(startTc.type).toBe("function");
+    expect(startTc.function?.name).toBe("image_generation");
+    expect(startTc.function?.arguments).toBe("");
+
+    const argsChunkChoices = toolCallChunks[1].choices as Array<{ delta?: { tool_calls?: ToolCallChunk } }>;
+    const argsTc = argsChunkChoices[0].delta!.tool_calls![0];
+    expect(argsTc.id).toBeUndefined();
+    const args = JSON.parse(argsTc.function!.arguments!);
     expect(args.result).toBe("fake_b64_data_stream");
     expect(args.revised_prompt).toBe("blue square");
   });

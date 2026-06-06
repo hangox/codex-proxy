@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFile } from "fs";
 import { resolve } from "path";
 
 const mockConfiguredAliases: Record<string, string> = {};
@@ -196,6 +196,75 @@ aliases:
       expect(getModelCatalog().map((m) => m.id)).toEqual(["cached-only"]);
       expect(getModelAliases()).toEqual({});
       expect(getModelInfo("cached-only")!.source).toBe("backend");
+    });
+
+    it("loads per-plan cache snapshots and preserves unfetched plans after one plan refreshes", () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        const filePath = String(path);
+        if (filePath.endsWith("models-cache.yaml")) {
+          return `
+planSnapshots:
+  plus:
+    - id: cached-plus
+      displayName: Cached Plus
+      description: Cached plus model
+      isDefault: false
+      supportedReasoningEfforts:
+        - { reasoningEffort: medium, description: "Medium" }
+      defaultReasoningEffort: medium
+      inputModalities: [text]
+      supportsPersonality: false
+      upgrade: null
+  team:
+    - id: cached-team
+      displayName: Cached Team
+      description: Cached team model
+      isDefault: false
+      supportedReasoningEfforts:
+        - { reasoningEffort: medium, description: "Medium" }
+      defaultReasoningEffort: medium
+      inputModalities: [text]
+      supportsPersonality: false
+      upgrade: null
+aliases: {}
+`;
+        }
+        return FIXTURE_YAML;
+      });
+
+      loadStaticModels("/tmp/test-config");
+      applyBackendModelsForPlan("plus", [{ slug: "fresh-plus", display_name: "Fresh Plus" }]);
+
+      expect(getModelInfo("fresh-plus")).toBeDefined();
+      expect(getModelInfo("cached-plus")).toBeUndefined();
+      expect(getModelInfo("cached-team")).toBeDefined();
+      expect(getModelPlanTypes("cached-team")).toEqual(["team"]);
+    });
+
+    it("does not revive removed custom models from the backend cache", () => {
+      let cachedYaml = "";
+      vi.mocked(writeFile).mockImplementation((_path, data, _enc, cb) => {
+        cachedYaml = String(data);
+        cb(null);
+      });
+
+      mockCustomModels.push("local-custom");
+      loadStaticModels("/tmp/test-config");
+      applyBackendModelsForPlan("plus", [{ slug: "fresh-plus", display_name: "Fresh Plus" }]);
+
+      mockCustomModels.length = 0;
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        const filePath = String(path);
+        if (filePath.endsWith("models-cache.yaml")) return cachedYaml;
+        return FIXTURE_YAML;
+      });
+
+      loadStaticModels("/tmp/test-config");
+
+      expect(getModelInfo("fresh-plus")).toBeDefined();
+      expect(getModelInfo("local-custom")).toBeUndefined();
     });
 
     it("adds custom models from local config to the catalog", () => {

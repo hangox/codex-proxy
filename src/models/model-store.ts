@@ -50,6 +50,10 @@ interface ModelsConfig {
   aliases: Record<string, string>;
 }
 
+interface ModelsCacheConfig extends Partial<ModelsConfig> {
+  planSnapshots?: Record<string, CodexModelInfo[]>;
+}
+
 /**
  * Raw model entry from backend (fields are optional — format may vary).
  */
@@ -182,14 +186,25 @@ export class ModelStore {
     try {
       const cachePath = resolve(getDataDir(), "models-cache.yaml");
       if (existsSync(cachePath)) {
-        const cached = yaml.load(readFileSync(cachePath, "utf-8")) as ModelsConfig;
-        const cachedModels = cached.models ?? [];
-        this.catalog = cachedModels.map((m) => ({ ...m, source: "backend" as const }));
-        if (this.catalog.length > 0) {
-          this.planModelSnapshots.set("cache", this.catalog.map((m) => ({ ...m })));
-          this.planModelMap.set("cache", new Set(this.catalog.map((m) => m.id)));
-          this.rebuildPlanIndex();
+        const cached = yaml.load(readFileSync(cachePath, "utf-8")) as ModelsCacheConfig;
+        const planSnapshots = cached.planSnapshots ?? null;
+        if (planSnapshots) {
+          for (const [planType, models] of Object.entries(planSnapshots)) {
+            const backendModels = models.map((m) => ({ ...m, source: "backend" as const }));
+            this.planModelSnapshots.set(planType, backendModels);
+            this.planModelMap.set(planType, new Set(backendModels.map((m) => m.id)));
+          }
+          this.rebuildCatalogFromPlanSnapshots();
           console.log(`[ModelStore] Loaded ${this.catalog.length} cached backend models from data/models-cache.yaml`);
+        } else {
+          const cachedModels = cached.models ?? [];
+          this.catalog = cachedModels.map((m) => ({ ...m, source: "backend" as const }));
+          if (this.catalog.length > 0) {
+            this.planModelSnapshots.set("cache", this.catalog.map((m) => ({ ...m })));
+            this.planModelMap.set("cache", new Set(this.catalog.map((m) => m.id)));
+            this.rebuildPlanIndex();
+            console.log(`[ModelStore] Loaded ${this.catalog.length} cached backend models from data/models-cache.yaml`);
+          }
         }
       }
     } catch {
@@ -213,8 +228,8 @@ export class ModelStore {
     const models = backendModels.map((raw) => stripNormalizeMetadata(normalizeBackendModel(raw)));
     const admittedIds = new Set(models.map((model) => model.id));
 
-    this.planModelSnapshots.delete("cache");
-    this.planModelMap.delete("cache");
+    this.planModelSnapshots.delete(planType);
+    this.planModelMap.delete(planType);
     this.planModelSnapshots.set(planType, models);
     this.planModelMap.set(planType, admittedIds);
     this.rebuildCatalogFromPlanSnapshots();
@@ -327,7 +342,11 @@ export class ModelStore {
     const cachePath = resolve(dataDir, "models-cache.yaml");
     const today = new Date().toISOString().slice(0, 10);
 
-    const models = this.catalog.map(({ source: _s, ...rest }) => rest);
+    const planSnapshots: Record<string, CodexModelInfo[]> = {};
+    for (const [planType, models] of this.planModelSnapshots) {
+      planSnapshots[planType] = models.map(({ source: _s, ...rest }) => rest);
+    }
+    const modelCount = Object.values(planSnapshots).reduce((total, models) => total + models.length, 0);
 
     const header = [
       "# Codex model cache",
@@ -340,7 +359,7 @@ export class ModelStore {
     ].join("\n");
 
     const body = yaml.dump(
-      { models, aliases: {} },
+      { planSnapshots, aliases: {} },
       { lineWidth: 120, noRefs: true, sortKeys: false },
     );
 
@@ -354,7 +373,7 @@ export class ModelStore {
       if (err) {
         console.warn(`[ModelStore] Failed to sync models cache: ${err.message}`);
       } else {
-        console.log(`[ModelStore] Synced ${models.length} models to data/models-cache.yaml`);
+        console.log(`[ModelStore] Synced ${modelCount} models to data/models-cache.yaml`);
       }
     });
   }

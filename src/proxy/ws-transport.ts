@@ -299,23 +299,34 @@ async function openOneShotWs(
   const wsOpts = await buildWsConstructorOpts(WS, headers, proxyUrl);
 
   return new Promise<Response>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("Aborted before WebSocket connect"));
-      return;
-    }
-
     const ws = new WS(wsUrl, wsOpts);
     const encoder = new TextEncoder();
     let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
     let streamClosed = false;
-    // Flips the first time we either resolve(Response) or reject(...).
-    // Internal `codex.rate_limits` frames do NOT flip this — we keep waiting
-    // for a real first frame so we can detect early upstream errors and
-    // route them through the existing CodexApiError → rotation path.
     let earlyDecisionMade = false;
     let sawTerminalEvent = false;
+    let pingTimer: ReturnType<typeof setInterval> | undefined;
+
+    // Open timeout: if the WS handshake never completes, reject after 20s.
+    const openTimer = setTimeout(() => {
+      if (!earlyDecisionMade) {
+        earlyDecisionMade = true;
+        cleanupTimers();
+        try { ws.close(1000, "open timeout"); } catch { /* already closing */ }
+        reject(new Error("WebSocket open timeout (20s)"));
+      }
+    }, 20_000);
+
+    function cleanupTimers() {
+      clearTimeout(openTimer);
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = undefined;
+      }
+    }
 
     function closeStream() {
+      cleanupTimers();
       if (!streamClosed && controller) {
         streamClosed = true;
         try { controller.close(); } catch { /* already closed */ }
@@ -323,6 +334,7 @@ async function openOneShotWs(
     }
 
     function errorStream(err: Error) {
+      cleanupTimers();
       if (!streamClosed && controller) {
         streamClosed = true;
         try { controller.error(err); } catch { /* already closed */ }
@@ -331,13 +343,23 @@ async function openOneShotWs(
 
     // Abort signal handling
     const onAbort = () => {
+      cleanupTimers();
       try { ws.close(1000, "aborted"); } catch { /* already closing */ }
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
-        reject(new Error("Aborted during WebSocket connect"));
+        reject(new Error("aborted"));
+      } else {
+        errorStream(new Error("aborted"));
       }
     };
-    signal?.addEventListener("abort", onAbort, { once: true });
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
@@ -356,7 +378,7 @@ async function openOneShotWs(
 
     function buildResponse(): Response {
       const responseHeaders = new Headers({ "content-type": "text/event-stream" });
-      for (const [key, value] of Object.entries(upgradeHeaders)) {
+      for (const [key, value] of Array.from(Object.entries(upgradeHeaders))) {
         const v = Array.isArray(value) ? value[0] : value;
         if (v != null) responseHeaders.set(key, v);
       }
@@ -364,12 +386,11 @@ async function openOneShotWs(
     }
 
     ws.on("open", () => {
+      clearTimeout(openTimer);
       ws.send(JSON.stringify(request));
-      // resolve() is deferred until the first non-internal frame arrives in
-      // ws.on("message"). This lets us classify early upstream errors (e.g.
-      // usage_limit_reached) and reject with a CodexApiError so the
-      // proxy-handler's existing rotation flow takes over instead of the
-      // error being passed through mid-stream to the client.
+      pingTimer = setInterval(() => {
+        try { ws.ping(); } catch { /* ws already closed */ }
+      }, 25_000);
     });
 
     ws.on("message", (data: Buffer | string) => {
@@ -385,11 +406,6 @@ async function openOneShotWs(
         // Non-JSON message — handled below as raw data.
       }
 
-      // Internal rate-limit frames are observed via `onRateLimits` but not
-      // streamed, and they don't flip the early-decision flag — we keep
-      // waiting for a real frame so we can detect early upstream errors.
-      // If no callback is provided (test-only path), fall through and
-      // forward the frame as SSE like any other event.
       if (msg && type === "codex.rate_limits" && onRateLimits) {
         const rl = parseRateLimitsEvent(msg);
         if (rl) onRateLimits(rl);
@@ -401,21 +417,19 @@ async function openOneShotWs(
         if (msg) {
           const classified = classifyWsErrorEvent(msg);
           if (classified) {
+            cleanupTimers();
             reject(new CodexApiError(classified.status, JSON.stringify(msg)));
             try { ws.close(1000, "early upstream error"); } catch { /* already closing */ }
             return;
           }
         }
         resolve(buildResponse());
-        // fall through to enqueue this first frame
       }
 
       if (msg) {
-        // Re-encode as SSE: event: <type>\ndata: <full json>\n\n
         const sse = `event: ${type}\ndata: ${raw}\n\n`;
         controller!.enqueue(encoder.encode(sse));
 
-        // Close stream after response.completed, response.failed, or error
         if (isTerminalWsEvent(type)) {
           sawTerminalEvent = true;
           queueMicrotask(() => {
@@ -424,13 +438,13 @@ async function openOneShotWs(
           });
         }
       } else {
-        // Non-JSON message — emit as raw data
         const sse = `data: ${raw}\n\n`;
         controller!.enqueue(encoder.encode(sse));
       }
     });
 
     ws.on("error", (err: Error) => {
+      cleanupTimers();
       signal?.removeEventListener("abort", onAbort);
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
@@ -441,6 +455,7 @@ async function openOneShotWs(
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
+      cleanupTimers();
       signal?.removeEventListener("abort", onAbort);
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;

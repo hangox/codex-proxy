@@ -109,6 +109,12 @@ export function createChatRoutes(
     }
 
     const { codexRequest, tupleSchema } = translateToCodexRequest(req);
+    const expectsImageGen = Array.isArray(codexRequest.tools)
+      && codexRequest.tools.some((t) => {
+        if (typeof t !== "object" || t === null) return false;
+        const record = t as Record<string, unknown>;
+        return record.type === "image_generation";
+      });
     // Check after translation so suffix-parsed and config-default effort are included.
     const wantReasoning = !!codexRequest.reasoning?.effort;
     const fmt = makeOpenAIFormat(wantReasoning);
@@ -119,6 +125,7 @@ export function createChatRoutes(
       isStreaming: req.stream ?? false,
       clientConversationId: req.user,
       tupleSchema,
+      expectsImageGen,
     };
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);

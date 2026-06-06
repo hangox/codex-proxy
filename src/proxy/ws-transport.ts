@@ -386,6 +386,7 @@ async function openOneShotWs(
     }
 
     ws.on("open", () => {
+      console.log(`[WS-Open] 🟢 WebSocket successfully opened for request. wsUrl: ${wsUrl}`);
       clearTimeout(openTimer);
       ws.send(JSON.stringify(request));
       pingTimer = setInterval(() => {
@@ -396,6 +397,7 @@ async function openOneShotWs(
     ws.on("message", (data: Buffer | string) => {
       if (streamClosed) return;
       const raw = typeof data === "string" ? data : data.toString("utf-8");
+      console.log(`[WS-Message] 📥 Frame received. Raw length: ${raw.length}, snippet: ${raw.slice(0, 120)}`);
 
       let msg: Record<string, unknown> | null = null;
       let type = "unknown";
@@ -404,12 +406,6 @@ async function openOneShotWs(
         type = typeof msg.type === "string" ? msg.type : "unknown";
       } catch {
         // Non-JSON message — handled below as raw data.
-      }
-
-      if (msg && type === "codex.rate_limits" && onRateLimits) {
-        const rl = parseRateLimitsEvent(msg);
-        if (rl) onRateLimits(rl);
-        return;
       }
 
       if (!earlyDecisionMade) {
@@ -424,6 +420,12 @@ async function openOneShotWs(
           }
         }
         resolve(buildResponse());
+      }
+
+      if (msg && type === "codex.rate_limits" && onRateLimits) {
+        const rl = parseRateLimitsEvent(msg);
+        if (rl) onRateLimits(rl);
+        return;
       }
 
       if (msg) {
@@ -444,6 +446,7 @@ async function openOneShotWs(
     });
 
     ws.on("error", (err: Error) => {
+      console.error(`[WS-Error] ❌ WebSocket error for request:`, err.message);
       cleanupTimers();
       signal?.removeEventListener("abort", onAbort);
       if (!earlyDecisionMade) {
@@ -455,11 +458,12 @@ async function openOneShotWs(
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
+      const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
+      console.log(`[WS-Close] 🔴 WebSocket closed. Code: ${code}, Reason: ${reasonStr}`);
       cleanupTimers();
       signal?.removeEventListener("abort", onAbort);
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
-        const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
         reject(new Error(
           `WebSocket closed before any data: code=${code}` +
             (reasonStr ? ` reason=${reasonStr}` : ""),
@@ -467,7 +471,6 @@ async function openOneShotWs(
         return;
       }
       if (earlyDecisionMade && !sawTerminalEvent) {
-        const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
         errorStream(new Error(
           `WebSocket closed before terminal event: code=${code}` +
             (reasonStr ? ` reason=${reasonStr}` : ""),

@@ -100,7 +100,6 @@ export function createResponsesRoutes(
   // Register errorHandler locally so that when testing this router in isolation (e.g. unit tests),
   // uncaught errors are still handled and formatted appropriately.
   app.onError(errorHandler);
-  app.use("*", apiKeyAuth(accountPool));
 
   const responsesHandler = async (c: Context) => {
     const rawBody = await c.req.json();
@@ -297,11 +296,11 @@ export function createResponsesRoutes(
     return handleCompact(c, accountPool, cookieJar, proxyPool, body, upstreamRouter);
   };
 
-  app.post("/v1/responses", responsesHandler);
-  app.post("/v1/responses/review", responsesHandler);
-  app.post("/responses", responsesHandler);
-  app.post("/responses/review", responsesHandler);
-  app.post("/v1/responses/compact", compactHandler);
+  app.post("/v1/responses", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/v1/responses/review", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/responses", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/responses/review", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/v1/responses/compact", apiKeyAuth(accountPool), compactHandler);
 
   return app;
 }

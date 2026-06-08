@@ -178,22 +178,20 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
   if (input.provider === "custom") {
     const baseUrl = input.baseUrl?.trim();
     if (!baseUrl) throw new ProviderModelFetchError("provider", "baseUrl is required for custom providers");
-    const cacheUrl = `${normalizeBaseUrl(baseUrl)}/models`;
+    const modelUrl = `${normalizeBaseUrl(baseUrl)}/models`;
     const effectiveWire = getEffectiveModelWire(input);
+    const cacheUrl = `${modelUrl}#wire=${effectiveWire}`;
 
     if (effectiveWire === "anthropic") {
       return {
         cacheUrl,
-        requestUrl: cacheUrl,
-        headers: {
-          ...bearerHeaders(apiKey),
-          "anthropic-version": "2023-06-01",
-        },
+        requestUrl: modelUrl,
+        headers: anthropicHeaders(apiKey),
       };
     }
 
     if (effectiveWire === "gemini") {
-      const requestUrl = new URL(cacheUrl);
+      const requestUrl = new URL(modelUrl);
       requestUrl.searchParams.set("key", apiKey);
       return {
         cacheUrl,
@@ -204,7 +202,7 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
 
     return {
       cacheUrl,
-      requestUrl: cacheUrl,
+      requestUrl: modelUrl,
       headers: bearerHeaders(apiKey),
     };
   }
@@ -218,10 +216,7 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
     return {
       cacheUrl,
       requestUrl: cacheUrl,
-      headers: {
-        ...bearerHeaders(apiKey),
-        "anthropic-version": "2023-06-01",
-      },
+      headers: anthropicHeaders(apiKey),
     };
   }
   if (input.provider === "gemini") {
@@ -244,6 +239,14 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
 function bearerHeaders(apiKey: string): Record<string, string> {
   return {
     Authorization: `Bearer ${apiKey}`,
+    Accept: "application/json",
+  };
+}
+
+function anthropicHeaders(apiKey: string): Record<string, string> {
+  return {
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01",
     Accept: "application/json",
   };
 }

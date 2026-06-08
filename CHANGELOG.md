@@ -40,6 +40,12 @@
 
 ### Fixed
 
+- 修复自定义 API Key 原生 wire 的 provider/wire 一致性问题：后端拒绝 built-in provider 的无效 wire/baseUrl 组合，custom 模型缓存按 wire 隔离，Anthropic 模型发现改用 x-api-key，Anthropic 上游请求接入 fetch dispatcher，Embeddings 路由拒绝 custom Anthropic/Gemini wire，并在前端切换 custom wire 时清空旧模型列表（src/routes/api-keys.ts、src/auth/api-key-model-cache.ts、src/proxy/anthropic-upstream.ts、src/routes/embeddings.ts、web/src/components/ApiKeyManager.tsx）。
+
+- 修复 Windows 本地缺少 POSIX shell 时 CI 脚本单测失败、Electron bundle 动态导入路径以及 `full-update` 子进程启动路径含空格的问题（`tests/unit/ci/*`、`packages/electron/__tests__/build.test.ts`、`scripts/build/full-update.ts`）。
+
+- 修复 Settings → API 配置默认模型下拉混入写死、别名和过期权限模型的问题：模型目录改为使用当前成功拉取的账号/plan 快照与缓存快照，成功刷新后不再增量保留已失效模型；缓存按 plan 持久化以保留未刷新 plan 的冷启动 fallback，并避免本地 custom models 被写入 backend cache；同时过滤非文本 chat 模型（`config/models.yaml`、`src/models/model-store.ts`、`src/routes/models.ts`、`shared/hooks/use-status.ts`）。
+
 - 修复了 Electron 强制覆盖 `server.host` 配置的问题：不再于启动 server 时硬编码 `host: "127.0.0.1"`，使其能正常使用配置文件 `local.yaml` 以及环境变量 `CODEX_PROXY_HOST` 的设置（`packages/electron/electron/main.ts`、`tests/unit/config-local-override.test.ts`）
 - 修复了当启用 `skip_exhausted` 模式时可能造成配额耗尽账号”死锁假死”以及本地被动重置引发”重置时间漂移”的隐患：通过新增 `ActiveQuotaRefresher` 后台主动心跳服务，对耗尽或重置前后的账号定期带 Jitter 主动校验；同时引入 “Drift-Defense” 防漂移验证，在本地脑补清零后，强制触发一次上游验证后再安全放行。（`src/auth/active-quota-refresher.ts`，`src/routes/shared/proxy-handler.ts`，`tests/integration/proxy-handler.test.ts`）
 - 修复了在会话亲和降级或账号切换时可能触发上游”连锁封号（cascading ban）”的安全隐患：当由于首选账号（拥有上一个 `previous_response_id` 对应的会话）不可用而发生 Failover 切换到新账号时，现在会主动在请求发送前剥离 `previous_response_id` 和 `turnState`，并清理旧的 Affinity 关系，避免将带有其他账号的会话标识发往上游导致连锁关联封号风险。（`src/routes/shared/proxy-handler.ts`，`tests/integration/proxy-handler.test.ts`）

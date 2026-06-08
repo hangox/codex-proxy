@@ -10,7 +10,6 @@ import type { Context } from "hono";
 import { z } from "zod";
 import type { AccountPool } from "../auth/account-pool.js";
 import type { ApiKeyEntry, ApiKeyPool } from "../auth/api-key-pool.js";
-import type { ApiKeyProvider } from "../auth/api-key-catalog.js";
 import { getConfig } from "../config.js";
 import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { withFetchDispatcher } from "../proxy/fetch-dispatcher.js";
@@ -45,8 +44,9 @@ function openAIError(message: string, code: string, param: string | null = null)
 
 
 
-function supportsOpenAIEmbeddings(provider: ApiKeyProvider): boolean {
-  return provider === "openai" || provider === "openrouter" || provider === "custom";
+function supportsOpenAIEmbeddings(entry: ApiKeyEntry): boolean {
+  if (entry.provider === "openai" || entry.provider === "openrouter") return true;
+  return entry.provider === "custom" && (entry.wire === "chat" || entry.wire === "responses");
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -113,7 +113,7 @@ export function createEmbeddingsRoutes(accountPool: AccountPool, apiKeyPool: Api
       return c.json(openAIError(`Model '${parsed.data.model}' not found for embeddings`, "model_not_found", "model"));
     }
 
-    if (!supportsOpenAIEmbeddings(resolved.entry.provider)) {
+    if (!supportsOpenAIEmbeddings(resolved.entry)) {
       c.status(400);
       return c.json(openAIError(
         `Provider '${resolved.entry.provider}' does not support OpenAI-compatible embeddings`,

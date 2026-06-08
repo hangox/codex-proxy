@@ -256,14 +256,13 @@ describe("createWebSocketResponse", () => {
     ).rejects.toThrow("aborted");
   });
 
-  it("resolves the response even if the first message is codex.rate_limits", async () => {
+  it("ignores codex.rate_limits for early response resolution", async () => {
     let rateLimitCalled = false;
     const onRateLimits = () => { rateLimitCalled = true; };
     const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, undefined, undefined, onRateLimits);
     await waitForOpen();
     const ws = lastWs();
 
-    // Emit rate limit as first frame. This should resolve the promise and execute the callback.
     ws.emit("message", JSON.stringify({
       type: "codex.rate_limits",
       rate_limits: {
@@ -271,9 +270,11 @@ describe("createWebSocketResponse", () => {
       }
     }));
 
+    expect(rateLimitCalled).toBe(true);
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
     const response = await promise;
     expect(response.status).toBe(200);
-    expect(rateLimitCalled).toBe(true);
 
     ws.close();
   });

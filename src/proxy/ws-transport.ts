@@ -408,6 +408,12 @@ async function openOneShotWs(
         // Non-JSON message — handled below as raw data.
       }
 
+      if (msg && type === "codex.rate_limits") {
+        const rl = parseRateLimitsEvent(msg);
+        if (rl) onRateLimits?.(rl);
+        return;
+      }
+
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
         if (msg) {
@@ -420,12 +426,6 @@ async function openOneShotWs(
           }
         }
         resolve(buildResponse());
-      }
-
-      if (msg && type === "codex.rate_limits" && onRateLimits) {
-        const rl = parseRateLimitsEvent(msg);
-        if (rl) onRateLimits(rl);
-        return;
       }
 
       if (msg) {

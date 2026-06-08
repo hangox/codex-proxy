@@ -11,6 +11,17 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+function hasBash(): boolean {
+  try {
+    execFileSync("bash", ["-c", "exit 0"], { stdio: "ignore", timeout: 1000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const describeIfBash = hasBash() ? describe : describe.skip;
+
 function runNotes(cwd: string, tag: string): string {
   return execFileSync("bash", [SCRIPT, tag], {
     cwd,
@@ -56,6 +67,13 @@ describe("generate-release-notes.sh", () => {
     expect(workflow).toContain("Fetch dev for stable release notes");
     expect(workflow).toContain("git fetch origin dev:refs/remotes/origin/dev || true");
     expect(workflow).toContain("bash .github/scripts/generate-release-notes.sh \"$TAG\" > /tmp/release-notes.md");
+  });
+
+});
+
+describeIfBash("generate-release-notes.sh bash behavior", () => {
+  beforeAll(() => {
+    expect(existsSync(SCRIPT), `script missing: ${SCRIPT}`).toBe(true);
   });
 
   it("uses normal stable tag history when the release tag contains the real commits", () => {

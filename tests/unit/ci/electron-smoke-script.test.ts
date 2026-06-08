@@ -27,6 +27,18 @@ interface RunResult {
   stderr: string;
 }
 
+function hasBash(): boolean {
+  try {
+    execFileSync("bash", ["-c", "exit 0"], { stdio: "ignore", timeout: 1000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const bashAvailable = hasBash();
+const describeIfBash = bashAvailable ? describe : describe.skip;
+
 function run(env: Record<string, string>, timeoutMs = 10_000): RunResult {
   try {
     const out = execFileSync("bash", [SCRIPT], {
@@ -53,9 +65,27 @@ describe("electron-smoke.sh script", () => {
 
   it("is executable", () => {
     const mode = statSync(SCRIPT).mode;
-    // Owner-execute bit (0o100) — bash also runs non-+x scripts when invoked
-    // explicitly, but +x makes intent clear and matches CI invocation.
+    // Windows checkouts do not preserve POSIX executable bits. CI runs this
+    // script on Unix-like runners, where +x must be present.
+    if (process.platform === "win32") {
+      expect(mode).toBeGreaterThan(0);
+      return;
+    }
     expect(mode & 0o100).toBeTruthy();
+  });
+
+  it("has a dedicated Windows PowerShell smoke script", () => {
+    expect(existsSync(WINDOWS_SCRIPT), `script missing: ${WINDOWS_SCRIPT}`).toBe(true);
+    const source = readFileSync(WINDOWS_SCRIPT, "utf-8");
+    expect(source).toContain("Start-Process");
+    expect(source).toContain("Invoke-WebRequest");
+    expect(source).toContain("Stop-Process");
+  });
+});
+
+describeIfBash("electron-smoke.sh script bash behavior", () => {
+  beforeAll(() => {
+    expect(existsSync(SCRIPT), `script missing: ${SCRIPT}`).toBe(true);
   });
 
   it("passes `bash -n` syntax check", () => {
@@ -117,13 +147,6 @@ describe("electron-smoke.sh script", () => {
     expect(result.stderr + result.stdout).toContain("Unsupported RUNNER_OS");
   });
 
-  it("has a dedicated Windows PowerShell smoke script", () => {
-    expect(existsSync(WINDOWS_SCRIPT), `script missing: ${WINDOWS_SCRIPT}`).toBe(true);
-    const source = readFileSync(WINDOWS_SCRIPT, "utf-8");
-    expect(source).toContain("Start-Process");
-    expect(source).toContain("Invoke-WebRequest");
-    expect(source).toContain("Stop-Process");
-  });
 });
 
 function stepBlock(source: string, name: string): string {

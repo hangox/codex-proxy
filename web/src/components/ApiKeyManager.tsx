@@ -328,7 +328,11 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
           <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Upstream protocol</label>
           <select
             value={wire}
-            onChange={(e) => setWire((e.target as HTMLSelectElement).value as ApiKeyWire)}
+            onChange={(e) => {
+              setWire((e.target as HTMLSelectElement).value as ApiKeyWire);
+              latestResolvedSignatureRef.current = "";
+              resetProviderModels("idle", isCustom ? CUSTOM_MODELS_HINT : PROVIDER_MODELS_HINT);
+            }}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           >
             {visibleWireOptions.map((option) => (

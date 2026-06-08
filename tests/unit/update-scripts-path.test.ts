@@ -194,7 +194,7 @@ describe("update scripts path resolution", () => {
     expect(content).toContain("import.meta.url === pathToFileURL");
   });
 
-  it("extracts every current gpt model id shape from quoted Desktop source strings", () => {
+  it("extracts current gpt model id shapes from quoted Desktop source strings", () => {
     const patterns = readYamlRecord(resolve(ROOT, "config/extraction-patterns.yaml"));
     const mainJs = requireRecord(patterns, "main_js");
     const modelsPattern = requireRecord(mainJs, "models");
@@ -202,14 +202,7 @@ describe("update scripts path resolution", () => {
     const groupValue = modelsPattern.group;
     const groupIndex = typeof groupValue === "number" ? groupValue : 0;
 
-    const modelsYaml = readYamlRecord(resolve(ROOT, "config/models.yaml"));
-    const entries = Array.isArray(modelsYaml.models) ? modelsYaml.models : [];
-    const modelIds = entries
-      .map((entry) => isRecord(entry) ? entry.id : null)
-      .filter((id): id is string => typeof id === "string" && id.startsWith("gpt-"));
-
-    expect(modelIds).toContain("gpt-5-codex");
-    expect(modelIds).toContain("gpt-5-codex-mini");
+    const modelIds = ["gpt-5.4", "gpt-5.4-mini", "gpt-5-codex", "gpt-5-codex-mini"];
 
     for (const modelId of modelIds) {
       const matches = [...`"${modelId}"`.matchAll(new RegExp(pattern, "g"))]

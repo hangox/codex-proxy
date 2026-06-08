@@ -6,7 +6,6 @@ import { Hono } from "hono";
 import type { OpenAIModel, OpenAIModelList } from "../types/openai.js";
 import {
   getModelCatalog,
-  getModelAliases,
   getModelInfo,
   getModelStoreDebug,
   type CodexModelInfo,
@@ -43,14 +42,10 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
 
   app.get("/v1/models", (c) => {
     const catalog = getModelCatalog();
-    const aliases = getModelAliases();
     const modelsById = new Map<string, OpenAIModel>();
 
     for (const model of catalog) {
       modelsById.set(model.id, toOpenAIModel(model));
-    }
-    for (const alias of Object.keys(aliases)) {
-      modelsById.set(alias, toRuntimeOpenAIModel(alias));
     }
     for (const modelId of apiKeyPool?.getActiveModels() ?? []) {
       modelsById.set(modelId, toRuntimeOpenAIModel(modelId));
@@ -76,15 +71,9 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
   app.get("/v1/models/:modelId", (c) => {
     const modelId = c.req.param("modelId");
     const catalog = getModelCatalog();
-    const aliases = getModelAliases();
 
     const info = catalog.find((m) => m.id === modelId);
     if (info) return c.json(toOpenAIModel(info));
-
-    const resolved = aliases[modelId];
-    if (resolved) {
-      return c.json(toRuntimeOpenAIModel(modelId));
-    }
 
     if (apiKeyPool?.hasActiveModel(modelId)) {
       return c.json(toRuntimeOpenAIModel(modelId));
@@ -104,9 +93,7 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
   // Extended endpoint: model details with reasoning efforts
   app.get("/v1/models/:modelId/info", (c) => {
     const modelId = c.req.param("modelId");
-    const aliases = getModelAliases();
-    const resolved = aliases[modelId] ?? modelId;
-    const info = getModelInfo(resolved);
+    const info = getModelInfo(modelId);
     if (!info) {
       c.status(404);
       return c.json({ error: `Model '${modelId}' not found` });

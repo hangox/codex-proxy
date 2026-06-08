@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, readFileSync, rmSync, statSync } from "fs";
 import { resolve } from "path";
+import { pathToFileURL } from "url";
 import { execFileSync } from "child_process";
 import { acquireElectronTestLock } from "./test-lock.js";
 
@@ -109,7 +110,7 @@ describe("electron build (esbuild)", () => {
     // to run. Stdout marker proves end-to-end success; any throw from
     // the bundle surfaces as a non-zero exit + stderr.
     const script = `
-      const mod = await import(${JSON.stringify(serverMjs)});
+      const mod = await import(${JSON.stringify(pathToFileURL(serverMjs).href)});
       if (typeof mod.loadWebSocketModule !== "function") {
         console.error("loadWebSocketModule export missing");
         process.exit(2);

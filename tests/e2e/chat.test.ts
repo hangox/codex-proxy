@@ -98,7 +98,7 @@ function chatRequest(body: unknown) {
 
 function defaultBody(overrides?: Record<string, unknown>) {
   return {
-    model: "codex",
+    model: "gpt-5.4",
     messages: [{ role: "user", content: "Hello" }],
     stream: false,
     ...overrides,
@@ -242,7 +242,7 @@ describe("E2E: POST /v1/chat/completions", () => {
 
   it("Cursor-style Responses payload: normalizes input and tools before forwarding", async () => {
     const res = await chatRequest({
-      model: "codex",
+      model: "gpt-5.4",
       input: [
         {
           role: "user",
@@ -358,7 +358,7 @@ describe("E2E: POST /v1/chat/completions", () => {
   });
 
   it("missing messages: returns 400 invalid_request", async () => {
-    const res = await chatRequest({ model: "codex", stream: false });
+    const res = await chatRequest({ model: "gpt-5.4", stream: false });
     expect(res.status).toBe(400);
 
     const body = await res.json() as { error: { code: string } };
@@ -380,12 +380,12 @@ describe("E2E: POST /v1/chat/completions", () => {
     expect(sentBody.reasoning?.effort).toBe("low");
   });
 
-  it("model suffix: codex-high resolves reasoning effort", async () => {
+  it("model suffix: gpt-5.4-high resolves reasoning effort", async () => {
     setTransportPost(async () =>
-      makeTransportResponse(buildTextStreamChunks("resp_chat_alias_sfx", "Alias suffix!")),
+      makeTransportResponse(buildTextStreamChunks("resp_chat_high_sfx", "High suffix!")),
     );
 
-    const res = await chatRequest(defaultBody({ model: "codex-high" }));
+    const res = await chatRequest(defaultBody({ model: "gpt-5.4-high" }));
     expect(res.status).toBe(200);
 
     const sentBody = JSON.parse(getLastTransportBody()!);

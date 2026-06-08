@@ -274,4 +274,28 @@ describe("AddKeyForm", () => {
       wire: "gemini",
     });
   });
+
+  it("clears fetched custom models when the upstream protocol changes", async () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels([{ id: "chat-custom", displayName: "Chat Custom" }]);
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "custom" } });
+    fireEvent.input(screen.getByPlaceholderText("sk-..."), { target: { value: "custom-key" } });
+    fireEvent.input(screen.getByPlaceholderText("https://api.example.com/v1"), { target: { value: "https://api.example.com/v1" } });
+    fireEvent.blur(screen.getByPlaceholderText("https://api.example.com/v1"));
+    await waitFor(() => expect(screen.getByText("Chat Custom")).toBeTruthy());
+
+    fireEvent.change(screen.getByDisplayValue("Chat Completions (OpenAI-compatible)"), { target: { value: "gemini" } });
+
+    expect(screen.queryByText("Chat Custom")).toBeNull();
+    expect(screen.getByText("请先输入 API Key 和 URL，将会获取模型列表")).toBeTruthy();
+  });
 });

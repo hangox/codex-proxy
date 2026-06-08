@@ -149,6 +149,7 @@ export const ConfigSchema = z.object({
   tls: z.object({
     proxy_url: z.string().nullable().default(null),
     force_http11: z.boolean().default(false),
+    health_check_url: z.string().default("https://api.ipify.org?format=json"),
   }).default({}),
   quota: z.object({
     refresh_interval_minutes: z.number().min(0).default(5),
@@ -203,9 +204,11 @@ export const ConfigSchema = z.object({
     }).optional(),
     anthropic: z.object({
       api_key: z.string(),
+      base_url: z.string().optional(),
     }).optional(),
     gemini: z.object({
       api_key: z.string(),
+      base_url: z.string().optional(),
     }).optional(),
     /** OpenAI-compatible third-party providers (Groq, DeepSeek, Together, etc.). */
     custom: z.record(

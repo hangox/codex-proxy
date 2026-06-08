@@ -11,6 +11,7 @@ import { z } from "zod";
 import type { AccountPool } from "../auth/account-pool.js";
 import type { ApiKeyEntry, ApiKeyPool } from "../auth/api-key-pool.js";
 import { getConfig } from "../config.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { withFetchDispatcher } from "../proxy/fetch-dispatcher.js";
 
 const EmbeddingInputSchema = z.union([
@@ -41,27 +42,7 @@ function openAIError(message: string, code: string, param: string | null = null)
   };
 }
 
-function invalidProxyApiKeyResponse(c: Context): Response {
-  c.status(401);
-  return c.json(openAIError("Invalid proxy API key", "invalid_api_key"));
-}
 
-function extractBearerToken(header: string | undefined): string | null {
-  if (!header?.startsWith("Bearer ")) return null;
-  return header.slice("Bearer ".length);
-}
-
-function checkProxyApiKey(c: Context, accountPool: AccountPool): Response | null {
-  const config = getConfig();
-  if (!config.server.proxy_api_key) return null;
-
-  const providedKey = c.req.header("x-api-key") ?? extractBearerToken(c.req.header("Authorization"));
-  if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-    return invalidProxyApiKeyResponse(c);
-  }
-
-  return null;
-}
 
 function supportsOpenAIEmbeddings(entry: ApiKeyEntry): boolean {
   if (entry.provider === "openai" || entry.provider === "openrouter") return true;
@@ -99,28 +80,7 @@ function resolveEmbeddingEntry(pool: ApiKeyPool, model: string): { entry: ApiKey
   return null;
 }
 
-async function parseEmbeddingsRequest(c: Context): Promise<
-  { ok: true; data: EmbeddingsRequest } | { ok: false; response: Response }
-> {
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    c.status(400);
-    return { ok: false, response: c.json(openAIError("Malformed JSON request body", "invalid_json")) };
-  }
 
-  const parsed = EmbeddingsRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    c.status(400);
-    return {
-      ok: false,
-      response: c.json(openAIError(`Invalid request: ${parsed.error.message}`, "invalid_request")),
-    };
-  }
-
-  return { ok: true, data: parsed.data };
-}
 
 function buildUpstreamRequestBody(req: EmbeddingsRequest, upstreamModel: string): EmbeddingsRequest {
   return {
@@ -139,12 +99,13 @@ function copyResponseHeaders(upstream: Response): Headers {
 export function createEmbeddingsRoutes(accountPool: AccountPool, apiKeyPool: ApiKeyPool): Hono {
   const app = new Hono();
 
-  app.post("/v1/embeddings", async (c) => {
-    const authError = checkProxyApiKey(c, accountPool);
-    if (authError) return authError;
-
-    const parsed = await parseEmbeddingsRequest(c);
-    if (!parsed.ok) return parsed.response;
+  app.post("/v1/embeddings", apiKeyAuth(accountPool), async (c) => {
+    const body = await c.req.json();
+    const parsed = EmbeddingsRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      c.status(400);
+      return c.json(openAIError(`Invalid request: ${parsed.error.message}`, "invalid_request"));
+    }
 
     const resolved = resolveEmbeddingEntry(apiKeyPool, parsed.data.model);
     if (!resolved) {

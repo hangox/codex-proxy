@@ -19,16 +19,20 @@ vi.mock("@src/paths.js", () => ({
   getConfigDir: vi.fn(() => "/tmp/test-config"),
 }));
 
-vi.mock("@src/translation/shared-utils.js", () => ({
-  buildInstructions: vi.fn((text: string) => text),
-  budgetToEffort: vi.fn((budget: number | undefined) => {
-    if (!budget || budget <= 0) return undefined;
-    if (budget < 2000) return "low";
-    if (budget < 8000) return "medium";
-    if (budget < 20000) return "high";
-    return "xhigh";
-  }),
-}));
+vi.mock("@src/translation/shared-utils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@src/translation/shared-utils.js")>();
+  return {
+    ...actual,
+    buildInstructions: vi.fn((text: string) => text),
+    budgetToEffort: vi.fn((budget: number | undefined) => {
+      if (!budget || budget <= 0) return undefined;
+      if (budget < 2000) return "low";
+      if (budget < 8000) return "medium";
+      if (budget < 20000) return "high";
+      return "xhigh";
+    }),
+  };
+});
 
 vi.mock("@src/translation/tool-format.js", () => ({
   anthropicToolsToCodex: vi.fn((tools: unknown[]) => tools),

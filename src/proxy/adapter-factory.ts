@@ -5,7 +5,6 @@
 
 import type { UpstreamAdapter } from "./upstream-adapter.js";
 import type { ApiKeyEntry } from "../auth/api-key-pool.js";
-import { PROVIDER_CATALOG } from "../auth/api-key-catalog.js";
 import { OpenAIUpstream } from "./openai-upstream.js";
 import { ResponsesUpstream } from "./responses-upstream.js";
 import { AnthropicUpstream } from "./anthropic-upstream.js";
@@ -40,9 +39,9 @@ function createCustomAdapter(entry: ApiKeyEntry): UpstreamAdapter {
 export function createAdapterForEntry(entry: ApiKeyEntry): UpstreamAdapter {
   switch (entry.provider) {
     case "anthropic":
-      return new AnthropicUpstream(entry.apiKey, PROVIDER_CATALOG.anthropic.defaultBaseUrl);
+      return new AnthropicUpstream(entry.apiKey, entry.baseUrl);
     case "gemini":
-      return new GeminiUpstream(entry.apiKey, PROVIDER_CATALOG.gemini.defaultBaseUrl);
+      return new GeminiUpstream(entry.apiKey, entry.baseUrl);
     case "openai":
       return createOpenAIFamilyAdapter("openai", entry);
     case "openrouter":

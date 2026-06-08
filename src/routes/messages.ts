@@ -16,6 +16,7 @@ import {
   collectCodexToAnthropicResponse,
 } from "../translation/codex-to-anthropic.js";
 import { getConfig } from "../config.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
 import { enqueueLogEntry } from "../logs/entry.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
@@ -36,22 +37,7 @@ function makeError(
   return { type: "error", error: { type, message } };
 }
 
-function checkProxyApiKey(c: Context, accountPool: AccountPool): Response | null {
-  const config = getConfig();
-  if (!config.server.proxy_api_key) return null;
 
-  const xApiKey = c.req.header("x-api-key");
-  const authHeader = c.req.header("Authorization");
-  const bearerKey = authHeader?.replace("Bearer ", "");
-  const providedKey = xApiKey ?? bearerKey;
-
-  if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-    c.status(401);
-    return c.json(makeError("authentication_error", "Invalid API key"));
-  }
-
-  return null;
-}
 
 function estimateTextTokens(text: string): number {
   const trimmed = text.trim();
@@ -149,16 +135,8 @@ export function createMessagesRoutes(
 ): Hono {
   const app = new Hono();
 
-  app.post("/v1/messages/count_tokens", async (c) => {
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json(
-        makeError("invalid_request_error", "Invalid JSON in request body"),
-      );
-    }
+  app.post("/v1/messages/count_tokens", apiKeyAuth(accountPool), async (c) => {
+    const body = await c.req.json();
 
     const parsed = AnthropicCountTokensRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -168,23 +146,12 @@ export function createMessagesRoutes(
       );
     }
 
-    const authError = checkProxyApiKey(c, accountPool);
-    if (authError) return authError;
-
     return c.json({ input_tokens: estimateCountTokens(parsed.data) });
   });
 
-  app.post("/v1/messages", async (c) => {
+  app.post("/v1/messages", apiKeyAuth(accountPool), async (c) => {
     // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json(
-        makeError("invalid_request_error", "Invalid JSON in request body"),
-      );
-    }
+    const body = await c.req.json();
     const parsed = AnthropicMessagesRequestSchema.safeParse(body);
     if (!parsed.success) {
       c.status(400);
@@ -204,9 +171,6 @@ export function createMessagesRoutes(
         makeError("authentication_error", "Not authenticated. Please login first at /"),
       );
     }
-
-    const authError = checkProxyApiKey(c, accountPool);
-    if (authError) return authError;
 
     const clientConversationId = extractAnthropicClientConversationId(
       req,

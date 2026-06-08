@@ -10,17 +10,13 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions, budgetToEffort } from "./shared-utils.js";
+import { buildInstructions, budgetToEffort, isRecord } from "./shared-utils.js";
 import type { ModelConfigOverride } from "./shared-utils.js";
 import {
   anthropicToolsToCodex,
   anthropicToolChoiceToCodex,
   type AnthropicToolConversionOptions,
 } from "./tool-format.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function hasHostedWebSearchTool(tools: unknown[]): boolean {
   return tools.some((tool) => isRecord(tool) && tool.type === "web_search");

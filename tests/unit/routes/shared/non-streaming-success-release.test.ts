@@ -1,5 +1,5 @@
 import type { AccountPool } from "@src/auth/account-pool.js";
-import { releaseNonStreamingSuccessAccount } from "@src/routes/shared/non-streaming-success-release.js";
+import { releaseNonStreamingSuccessAccount } from "@src/routes/shared/non-streaming-helpers.js";
 import type { UsageInfo } from "@src/translation/codex-event-extractor.js";
 import { describe, expect, it, vi } from "vitest";
 

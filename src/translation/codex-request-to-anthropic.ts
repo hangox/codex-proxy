@@ -10,6 +10,7 @@
  */
 
 import type { CodexInputItem, CodexContentPart, CodexResponsesRequest } from "../proxy/codex-types.js";
+import { REASONING_EFFORT_BUDGET } from "./shared-utils.js";
 
 /** Anthropic content block shapes. */
 type AnthropicContentBlock =
@@ -91,12 +92,6 @@ function inputItemsToAnthropicMessages(input: CodexInputItem[]): AnthropicMessag
   return messages;
 }
 
-const REASONING_EFFORT_BUDGET: Record<string, number> = {
-  low: 1024,
-  medium: 8192,
-  high: 16000,
-  xhigh: 32000,
-};
 
 export function translateCodexToAnthropicRequest(
   req: CodexResponsesRequest,

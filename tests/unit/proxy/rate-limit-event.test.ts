@@ -243,7 +243,7 @@ describe("ws-transport rate_limits callback", () => {
     expect(output).toContain("event: response.completed");
   });
 
-  it("does not invoke callback when no onRateLimits provided", async () => {
+  it("drops codex.rate_limits when no onRateLimits provided", async () => {
     vi.doMock("ws", () => ({
       default: createMockWsClass([
         { type: "codex.rate_limits", rate_limits: { primary: { used_percent: 10, window_minutes: 300, reset_at: 1 } } },
@@ -260,7 +260,8 @@ describe("ws-transport rate_limits callback", () => {
 
     const output = await collectSSE(response);
 
-    // Without callback, rate_limits event IS forwarded as SSE (no interception)
-    expect(output).toContain("codex.rate_limits");
+    // rate_limits is an internal transport event and is never forwarded to downstream SSE.
+    expect(output).not.toContain("codex.rate_limits");
+    expect(output).toContain("event: response.completed");
   });
 });

@@ -17,7 +17,8 @@ import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js"
 import { handleCodexApiError } from "./shared/proxy-error-handler.js";
 import { staggerIfNeeded } from "./shared/proxy-stagger.js";
 import { withRetry } from "../utils/retry.js";
-import { isRecord, PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
+import { PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
+import { isRecord } from "../translation/shared-utils.js";
 
 // ── Helpers ───────────────────────────────────────────────────────
 

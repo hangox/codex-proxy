@@ -399,14 +399,6 @@ export class PersistentWs {
       /* fall through to raw passthrough */
     }
 
-    // Internal rate-limit frames bypass the stream and don't flip the
-    // early-decision flag; they're observed via the per-session callback.
-    if (msg && type === "codex.rate_limits" && sess.onRateLimits) {
-      const rl = parseRateLimitsEvent(msg);
-      if (rl) sess.onRateLimits(rl);
-      return;
-    }
-
     if (!sess.earlyDecisionMade) {
       sess.earlyDecisionMade = true;
       if (msg) {
@@ -425,6 +417,14 @@ export class PersistentWs {
       }
       sess.resolveResponse();
       // Fall through to enqueue this first frame.
+    }
+
+    // Internal rate-limit frames bypass the stream and don't flip the
+    // early-decision flag; they're observed via the per-session callback.
+    if (msg && type === "codex.rate_limits" && sess.onRateLimits) {
+      const rl = parseRateLimitsEvent(msg);
+      if (rl) sess.onRateLimits(rl);
+      return;
     }
 
     if (msg) {

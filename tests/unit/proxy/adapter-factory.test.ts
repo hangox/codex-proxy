@@ -69,9 +69,15 @@ describe("createAdapterForEntry — wire routing", () => {
     expect(createAdapterForEntry(entry("custom", "gemini"))).toBeInstanceOf(GeminiUpstream);
   });
 
-  it("built-in anthropic/gemini ignore wire and use their native adapters", () => {
-    expect(createAdapterForEntry(entry("anthropic", "responses"))).toBeInstanceOf(AnthropicUpstream);
-    expect(createAdapterForEntry(entry("gemini", "responses"))).toBeInstanceOf(GeminiUpstream);
+  it("built-in anthropic/gemini ignore wire and use their native adapters with custom baseUrl", () => {
+    const customUrl = "https://custom.endpoint.com/v1";
+    const anthropicAdapter = createAdapterForEntry(entry("anthropic", "responses", customUrl)) as AnthropicUpstream;
+    expect(anthropicAdapter).toBeInstanceOf(AnthropicUpstream);
+    expect(anthropicAdapter.baseUrl).toBe("https://custom.endpoint.com/v1");
+
+    const geminiAdapter = createAdapterForEntry(entry("gemini", "responses", customUrl)) as GeminiUpstream;
+    expect(geminiAdapter).toBeInstanceOf(GeminiUpstream);
+    expect(geminiAdapter.baseUrl).toBe("https://custom.endpoint.com/v1");
   });
 
   it("AnthropicUpstream posts to custom baseUrl /messages", async () => {

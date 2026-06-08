@@ -16,7 +16,9 @@ import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { randomUUID } from "crypto";
 import { getConfig } from "../config.js";
-import { prepareSchema } from "../translation/shared-utils.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { prepareSchema, isRecord } from "../translation/shared-utils.js";
 import { parseModelName, resolveModelId, buildDisplayModelName } from "../models/model-store.js";
 import { handleProxyRequest } from "./shared/proxy-handler.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
@@ -27,7 +29,7 @@ import {
   OPENAI_SUBAGENT_HEADER,
   sanitizeClientMetadata,
 } from "../proxy/openai-subagent.js";
-import { isRecord, PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
+import { PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
 import { handleCompact } from "./responses-compact.js";
 
 // Re-export for downstream consumers
@@ -56,11 +58,7 @@ function firstHeaderOrMetadata(
 
 // ── Auth check ────────────────────────────────────────────────────
 
-function checkAuth(
-  c: Context,
-  accountPool: AccountPool,
-  allowUnauthenticated: boolean = false,
-): Response | null {
+function checkAuth(c: Context, accountPool: AccountPool, allowUnauthenticated: boolean): Response | null {
   if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
     c.status(401);
     return c.json({
@@ -71,23 +69,6 @@ function checkAuth(
         message: "Not authenticated. Please login first at /",
       },
     });
-  }
-
-  const config = getConfig();
-  if (config.server.proxy_api_key) {
-    const authHeader = c.req.header("Authorization");
-    const providedKey = authHeader?.replace(/^bearer\s+/i, "");
-    if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-      c.status(401);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_api_key",
-          message: "Invalid proxy API key",
-        },
-      });
-    }
   }
   return null;
 }
@@ -116,22 +97,12 @@ export function createResponsesRoutes(
   upstreamRouter?: UpstreamRouter,
 ): Hono {
   const app = new Hono();
+  // Register errorHandler locally so that when testing this router in isolation (e.g. unit tests),
+  // uncaught errors are still handled and formatted appropriately.
+  app.onError(errorHandler);
 
   const responsesHandler = async (c: Context) => {
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_json",
-          message: "Malformed JSON request body",
-        },
-      });
-    }
+    const rawBody = await c.req.json();
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
@@ -297,20 +268,7 @@ export function createResponsesRoutes(
   };
 
   const compactHandler = async (c: Context) => {
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_json",
-          message: "Malformed JSON request body",
-        },
-      });
-    }
+    const rawBody = await c.req.json();
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
@@ -338,11 +296,11 @@ export function createResponsesRoutes(
     return handleCompact(c, accountPool, cookieJar, proxyPool, body, upstreamRouter);
   };
 
-  app.post("/v1/responses", responsesHandler);
-  app.post("/v1/responses/review", responsesHandler);
-  app.post("/responses", responsesHandler);
-  app.post("/responses/review", responsesHandler);
-  app.post("/v1/responses/compact", compactHandler);
+  app.post("/v1/responses", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/v1/responses/review", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/responses", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/responses/review", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/v1/responses/compact", apiKeyAuth(accountPool), compactHandler);
 
   return app;
 }

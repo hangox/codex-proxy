@@ -1,5 +1,5 @@
 import type { CodexApi } from "@src/proxy/codex-api.js";
-import { collectNonStreamingResponse } from "@src/routes/shared/non-streaming-collect-response.js";
+import { collectNonStreamingResponse } from "@src/routes/shared/non-streaming-helpers.js";
 import type { FormatCollectTranslatorOptions, ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 import { createMockFormatAdapter } from "@helpers/format-adapter.js";
 import { describe, expect, it, vi } from "vitest";

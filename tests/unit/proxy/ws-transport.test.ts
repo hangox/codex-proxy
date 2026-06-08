@@ -253,7 +253,30 @@ describe("createWebSocketResponse", () => {
 
     await expect(
       createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, controller.signal),
-    ).rejects.toThrow("Aborted");
+    ).rejects.toThrow("aborted");
+  });
+
+  it("ignores codex.rate_limits for early response resolution", async () => {
+    let rateLimitCalled = false;
+    const onRateLimits = () => { rateLimitCalled = true; };
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, undefined, undefined, onRateLimits);
+    await waitForOpen();
+    const ws = lastWs();
+
+    ws.emit("message", JSON.stringify({
+      type: "codex.rate_limits",
+      rate_limits: {
+        primary: { used_percent: 55.0, window_minutes: 300, reset_at: 1700000000 },
+      }
+    }));
+
+    expect(rateLimitCalled).toBe(true);
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    const response = await promise;
+    expect(response.status).toBe(200);
+
+    ws.close();
   });
 
   it("passes previous_response_id without store/stream fields", async () => {

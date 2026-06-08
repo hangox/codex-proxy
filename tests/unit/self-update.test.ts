@@ -2,7 +2,7 @@
  * Tests for self-update — deploy mode detection, version info, update checking, and applying.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mock variables (closure-based, safe across resetModules) ──────────
 
@@ -354,6 +354,15 @@ describe("self-update", () => {
   // ── applyProxySelfUpdate ──────────────────────────────────────────
 
   describe("applyProxySelfUpdate", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+
     // Default mock for the happy path: branch=master, clean tree, then any
     // subsequent git/npm calls succeed silently.
     function mockCleanMaster(): void {

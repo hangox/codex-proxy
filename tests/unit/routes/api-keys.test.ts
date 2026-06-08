@@ -395,7 +395,6 @@ describe("api key routes", () => {
         provider: "openai",
         models: ["gpt-5.4"],
         apiKey: "sk-openai",
-        baseUrl: "https://api.openai.com/v1",
         label: "A",
         capabilities: ["chat", "embeddings"],
         wire: "chat",

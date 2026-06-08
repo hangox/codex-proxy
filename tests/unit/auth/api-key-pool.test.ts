@@ -232,7 +232,7 @@ describe("ApiKeyPool", () => {
     expect(exported[0].apiKey).toBe("sk-1234567890abcdef");
   });
 
-  it("exportForReimport returns all keys in importable format", () => {
+  it("exportForReimport omits builtin baseUrl so exports can be imported again", () => {
     pool.add({
       provider: "anthropic",
       model: "claude-opus-4-6",
@@ -246,10 +246,25 @@ describe("ApiKeyPool", () => {
       provider: "anthropic",
       model: "claude-opus-4-6",
       apiKey: "k1",
-      baseUrl: "https://api.anthropic.com/v1",
       label: "Prod",
       capabilities: ["chat", "embeddings"],
       wire: "anthropic",
+    });
+    expect(pool.importMany(exported).failed).toBe(0);
+  });
+
+  it("exportForReimport keeps custom baseUrl", () => {
+    pool.add({
+      provider: "custom",
+      model: "custom-model",
+      apiKey: "k1",
+      baseUrl: "https://custom.example.com/v1",
+      wire: "responses",
+    });
+    expect(pool.exportForReimport()[0]).toMatchObject({
+      provider: "custom",
+      baseUrl: "https://custom.example.com/v1",
+      wire: "responses",
     });
   });
 

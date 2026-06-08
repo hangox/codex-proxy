@@ -260,7 +260,7 @@ export class ApiKeyPool {
     provider: ApiKeyProvider;
     model: string;
     apiKey: string;
-    baseUrl: string;
+    baseUrl?: string;
     label: string | null;
     capabilities: ApiKeyCapability[];
     wire: ApiKeyWire;
@@ -269,7 +269,7 @@ export class ApiKeyPool {
       provider: e.provider,
       model: e.model,
       apiKey: e.apiKey,
-      baseUrl: e.baseUrl,
+      ...(e.provider === "custom" ? { baseUrl: e.baseUrl } : {}),
       label: e.label,
       capabilities: e.capabilities,
       wire: e.wire,

@@ -26,6 +26,12 @@ const ApiKeyBindingSchema = z.object({
 }).refine(
   (d) => d.provider !== "custom" || Boolean(d.baseUrl),
   { message: "baseUrl is required for custom providers" },
+).refine(
+  (d) => d.provider === "custom" || !d.baseUrl,
+  { message: "baseUrl is only supported for custom providers" },
+).refine(
+  (d) => isProviderWireAllowed(d.provider, d.wire),
+  { message: "wire is not supported for this provider" },
 );
 
 const FetchProviderModelsSchema = z.object({
@@ -36,6 +42,12 @@ const FetchProviderModelsSchema = z.object({
 }).refine(
   (d) => d.provider !== "custom" || Boolean(d.baseUrl),
   { message: "baseUrl is required for custom providers" },
+).refine(
+  (d) => d.provider === "custom" || !d.baseUrl,
+  { message: "baseUrl is only supported for custom providers" },
+).refine(
+  (d) => isProviderWireAllowed(d.provider, d.wire),
+  { message: "wire is not supported for this provider" },
 );
 
 const BulkImportSchema = z.object({
@@ -43,6 +55,15 @@ const BulkImportSchema = z.object({
 });
 
 type ApiKeyBindingInput = z.infer<typeof ApiKeyBindingSchema>;
+
+type Provider = typeof VALID_PROVIDERS[number];
+
+function isProviderWireAllowed(provider: Provider, wire: z.infer<typeof WireSchema>): boolean {
+  if (!wire) return true;
+  if (provider === "custom") return true;
+  if (provider === "openai" || provider === "openrouter") return wire === "chat" || wire === "responses";
+  return wire === provider;
+}
 
 function addEntries(pool: ApiKeyPool, items: ApiKeyBindingInput[]): {
   added: number;

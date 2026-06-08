@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { mockWithFetchDispatcher } = vi.hoisted(() => ({
+  mockWithFetchDispatcher: vi.fn((init: RequestInit) => ({ ...init, dispatcher: "mock-dispatcher" })),
+}));
+
+vi.mock("@src/proxy/fetch-dispatcher.js", () => ({
+  withFetchDispatcher: mockWithFetchDispatcher,
+}));
+
 import { createAdapterForEntry } from "@src/proxy/adapter-factory.js";
 import { OpenAIUpstream } from "@src/proxy/openai-upstream.js";
 import { ResponsesUpstream } from "@src/proxy/responses-upstream.js";
@@ -74,8 +83,10 @@ describe("createAdapterForEntry — wire routing", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe("https://anthropic.example.com/v1/messages");
+    expect(mockWithFetchDispatcher).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: "POST",
+      dispatcher: "mock-dispatcher",
       headers: {
         "x-api-key": "sk-ant",
         "anthropic-version": "2023-06-01",

@@ -88,7 +88,7 @@ describe("api key routes", () => {
     });
   });
 
-  it("sends Anthropic version header when fetching Anthropic models", async () => {
+  it("sends Anthropic API-key and version headers when fetching Anthropic models", async () => {
     const res = await app.request("/auth/api-keys/models", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -98,7 +98,7 @@ describe("api key routes", () => {
     expect(res.status).toBe(200);
     expect(fetchFn.mock.calls[0][1]).toEqual({
       headers: {
-        Authorization: "Bearer sk-ant",
+        "x-api-key": "sk-ant",
         Accept: "application/json",
         "anthropic-version": "2023-06-01",
       },
@@ -118,6 +118,17 @@ describe("api key routes", () => {
     await expect(res.json()).resolves.toEqual({ models: [{ id: "gemini-test", displayName: "Gemini Test" }] });
     expect(String(fetchFn.mock.calls[0][0])).toContain("key=gem-key");
     expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://generativelanguage.googleapis.com/v1beta/models"]);
+  });
+
+  it("rejects custom-only wires when fetching built-in provider models", async () => {
+    const res = await app.request("/auth/api-keys/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "openai", apiKey: "sk-openai", wire: "gemini" }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it("fetches custom provider models from base URL models endpoint", async () => {
@@ -151,7 +162,7 @@ describe("api key routes", () => {
     await expect(res.json()).resolves.toEqual({ models: [{ id: "claude-custom", displayName: "Claude Custom" }] });
     expect(fetchFn).toHaveBeenCalledWith("https://anthropic.example.com/v1/models", {
       headers: {
-        Authorization: "Bearer custom-ant",
+        "x-api-key": "custom-ant",
         Accept: "application/json",
         "anthropic-version": "2023-06-01",
       },
@@ -176,7 +187,7 @@ describe("api key routes", () => {
     await expect(res.json()).resolves.toEqual({ models: [{ id: "gemini-custom", displayName: "Gemini Custom" }] });
     expect(String(fetchFn.mock.calls[0][0])).toBe("https://gemini.example.com/v1beta/models?key=custom-gem");
     expect(fetchFn.mock.calls[0][1]).toEqual({ headers: { Accept: "application/json" } });
-    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://gemini.example.com/v1beta/models"]);
+    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://gemini.example.com/v1beta/models#wire=gemini"]);
   });
 
   it("uses URL-keyed cache for repeated model fetches", async () => {
@@ -261,6 +272,40 @@ describe("api key routes", () => {
         provider: "custom",
         models: ["custom-model"],
         apiKey: "secret",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Invalid request");
+  });
+
+  it("rejects custom-only wires for built-in providers", async () => {
+    const res = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "openai",
+        models: ["gpt-5.4"],
+        apiKey: "sk-openai",
+        wire: "gemini",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Invalid request");
+  });
+
+  it("rejects baseUrl for built-in providers", async () => {
+    const res = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "anthropic",
+        models: ["claude-test"],
+        apiKey: "sk-ant",
+        baseUrl: "https://wrong.example.com/v1",
       }),
     });
 

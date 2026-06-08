@@ -168,8 +168,9 @@ export class ApiKeyPool {
     capabilities?: ApiKeyCapability[];
     wire?: ApiKeyWire;
   }): ApiKeyEntry {
-    const baseUrl = input.baseUrl
-      ?? (isBuiltinProvider(input.provider) ? PROVIDER_CATALOG[input.provider].defaultBaseUrl : "");
+    const baseUrl = isBuiltinProvider(input.provider)
+      ? PROVIDER_CATALOG[input.provider].defaultBaseUrl
+      : input.baseUrl ?? "";
 
     const entry: ApiKeyEntry = {
       id: randomBytes(8).toString("hex"),
@@ -179,7 +180,7 @@ export class ApiKeyPool {
       baseUrl,
       label: input.label ?? null,
       capabilities: normalizeCapabilities(input.capabilities),
-      wire: normalizeWire(input.wire),
+      wire: normalizeWireForProvider(input.provider, input.wire),
       status: "active",
       addedAt: new Date().toISOString(),
       lastUsedAt: null,
@@ -310,11 +311,26 @@ function normalizeWire(value: unknown): ApiKeyWire {
   return isApiKeyWire(value) ? value : "chat";
 }
 
+function normalizeWireForProvider(provider: ApiKeyProvider, value: unknown): ApiKeyWire {
+  const wire = normalizeWire(value);
+  if (provider === "custom") return wire;
+  if (provider === "openai" || provider === "openrouter") {
+    return wire === "responses" ? "responses" : "chat";
+  }
+  if (provider === "anthropic") return "anthropic";
+  if (provider === "gemini") return "gemini";
+  return "chat";
+}
+
 function normalizeEntry(entry: PersistedApiKeyEntry): ApiKeyEntry {
+  const baseUrl = isBuiltinProvider(entry.provider)
+    ? PROVIDER_CATALOG[entry.provider].defaultBaseUrl
+    : entry.baseUrl;
   return {
     ...entry,
+    baseUrl,
     capabilities: normalizeCapabilities(entry.capabilities),
-    wire: normalizeWire(entry.wire),
+    wire: normalizeWireForProvider(entry.provider, entry.wire),
   };
 }
 

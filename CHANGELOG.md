@@ -33,6 +33,8 @@
 
 ### Fixed
 
+- 修复自定义 API Key 原生 wire 的 provider/wire 一致性问题：后端拒绝 built-in provider 的无效 wire/baseUrl 组合，custom 模型缓存按 wire 隔离，Anthropic 模型发现改用 x-api-key，Anthropic 上游请求接入 fetch dispatcher，Embeddings 路由拒绝 custom Anthropic/Gemini wire，并在前端切换 custom wire 时清空旧模型列表（src/routes/api-keys.ts、src/auth/api-key-model-cache.ts、src/proxy/anthropic-upstream.ts、src/routes/embeddings.ts、web/src/components/ApiKeyManager.tsx）。
+
 - 修复 Windows 本地缺少 POSIX shell 时 CI 脚本单测失败、Electron bundle 动态导入路径以及 `full-update` 子进程启动路径含空格的问题（`tests/unit/ci/*`、`packages/electron/__tests__/build.test.ts`、`scripts/build/full-update.ts`）。
 
 - 修复 Settings → API 配置默认模型下拉混入写死、别名和过期权限模型的问题：模型目录改为使用当前成功拉取的账号/plan 快照与缓存快照，成功刷新后不再增量保留已失效模型；缓存按 plan 持久化以保留未刷新 plan 的冷启动 fallback，并避免本地 custom models 被写入 backend cache；同时过滤非文本 chat 模型（`config/models.yaml`、`src/models/model-store.ts`、`src/routes/models.ts`、`shared/hooks/use-status.ts`）。

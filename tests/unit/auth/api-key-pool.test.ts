@@ -249,7 +249,7 @@ describe("ApiKeyPool", () => {
       baseUrl: "https://api.anthropic.com/v1",
       label: "Prod",
       capabilities: ["chat", "embeddings"],
-      wire: "chat",
+      wire: "anthropic",
     });
   });
 
@@ -267,8 +267,12 @@ describe("ApiKeyPool", () => {
 
   // ── Wire protocol ─────────────────────────────────────────────
 
-  it("defaults wire to chat on add and preserves explicit responses", () => {
+  it("normalizes wire by provider on add", () => {
     expect(pool.add({ provider: "openai", model: "gpt-5.5", apiKey: "k" }).wire).toBe("chat");
+    expect(pool.add({ provider: "openai", model: "gpt-5.5", apiKey: "k", wire: "gemini" }).wire).toBe("chat");
+    expect(pool.add({ provider: "openai", model: "gpt-5.5", apiKey: "k", wire: "responses" }).wire).toBe("responses");
+    expect(pool.add({ provider: "anthropic", model: "claude", apiKey: "k", wire: "chat" }).wire).toBe("anthropic");
+    expect(pool.add({ provider: "gemini", model: "gemini", apiKey: "k", wire: "chat" }).wire).toBe("gemini");
     expect(pool.add({ provider: "custom", model: "m", apiKey: "k", baseUrl: "https://x.dev/v1", wire: "responses" }).wire).toBe("responses");
   });
 

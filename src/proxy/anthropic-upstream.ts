@@ -20,6 +20,7 @@ import type { CodexResponsesRequest, CodexSSEEvent } from "./codex-types.js";
 import { CodexApiError } from "./codex-types.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToAnthropicRequest } from "../translation/codex-request-to-anthropic.js";
+import { withFetchDispatcher } from "./fetch-dispatcher.js";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -47,7 +48,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
     const modelId = extractModelId(req.model);
     const body = translateCodexToAnthropicRequest(req, modelId);
 
-    const response = await fetch(`${this.baseUrl}/messages`, {
+    const response = await fetch(`${this.baseUrl}/messages`, withFetchDispatcher({
       method: "POST",
       headers: {
         "x-api-key": this.apiKey,
@@ -57,7 +58,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
       },
       body: JSON.stringify(body),
       signal,
-    });
+    }));
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => `HTTP ${response.status}`);

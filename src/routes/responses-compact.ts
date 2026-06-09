@@ -9,7 +9,8 @@ import { clearCfChallengeCooldown } from "../auth/cf-challenge-cooldown.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { CodexApi, CodexApiError } from "../proxy/codex-api.js";
-import type { CodexCompactRequest, CodexInputItem } from "../proxy/codex-api.js";
+import type { CodexCompactRequest } from "../proxy/codex-api.js";
+import { sanitizeCodexInputItems } from "../proxy/reasoning-input-sanitizer.js";
 import type { UsageInfo } from "../translation/codex-event-extractor.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { parseModelName, resolveModelId } from "../models/model-store.js";
@@ -61,7 +62,7 @@ export async function handleCompact(
 
   const compactRequest: CodexCompactRequest = {
     model: modelId,
-    input: Array.isArray(body.input) ? (body.input as CodexInputItem[]) : [],
+    input: Array.isArray(body.input) ? sanitizeCodexInputItems(body.input) : [],
     instructions: typeof body.instructions === "string" ? body.instructions : "",
   };
   if (Array.isArray(body.tools) && body.tools.length > 0) {

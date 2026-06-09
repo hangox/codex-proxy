@@ -86,8 +86,8 @@ describeIfBash("generate-release-notes.sh bash behavior", () => {
 
     const notes = runNotes(cwd, "v1.0.1");
 
-    expect(notes).toContain("- fix: direct stable fix (#1)");
-    expect(notes).not.toContain("docs: update readme");
+    expect(notes).toContain("direct stable fix (#1)");
+    expect(notes).not.toContain("update readme");
   });
 
   it("falls back to dev history when a stable tag only contains a squash promotion", () => {
@@ -96,7 +96,7 @@ describeIfBash("generate-release-notes.sh bash behavior", () => {
     writeText(cwd, "src/app.txt", "real fix\n");
     commitAll(cwd, "fix: real user-facing fix (#10)");
     writeText(cwd, "src/helper.txt", "cleanup\n");
-    commitAll(cwd, "refactor: internal helper cleanup (#11)");
+    commitAll(cwd, "feat: user-visible helper feature (#11)");
     git(cwd, ["update-ref", "refs/remotes/origin/dev", "dev"]);
 
     git(cwd, ["checkout", "master"]);
@@ -111,8 +111,8 @@ describeIfBash("generate-release-notes.sh bash behavior", () => {
 
     const notes = runNotes(cwd, "v1.0.1");
 
-    expect(notes).toContain("- fix: real user-facing fix (#10)");
-    expect(notes).toContain("- refactor: internal helper cleanup (#11)");
+    expect(notes).toContain("real user-facing fix (#10)");
+    expect(notes).toContain("user-visible helper feature (#11)");
     expect(notes).not.toContain("promote dev release fixes");
   });
 
@@ -139,11 +139,49 @@ describeIfBash("generate-release-notes.sh bash behavior", () => {
     const notes = runNotes(cwd, "v1.0.2-beta.1");
 
     // The release notes should only contain the commits since the last release (v1.0.1)
-    expect(notes).toContain("- fix: critical v1.0.2 bugfix (#100)");
-    expect(notes).not.toContain("- fix: intermediary stable fix (#50)");
+    expect(notes).toContain("critical v1.0.2 bugfix (#100)");
+    expect(notes).not.toContain("intermediary stable fix (#50)");
   });
 
-  it("translates the release notes to Chinese and generates bilingual output", () => {
+  it("filters refactor/test/style commits in line with the bump trigger filter", () => {
+    const cwd = createRepo();
+    writeText(cwd, "src/app.txt", "fix\n");
+    commitAll(cwd, "fix: user-facing fix (#1)");
+    writeText(cwd, "src/r.txt", "r\n");
+    commitAll(cwd, "refactor: internal cleanup (#2)");
+    writeText(cwd, "src/t.txt", "t\n");
+    commitAll(cwd, "test: add coverage (#3)");
+    git(cwd, ["tag", "v1.0.1"]);
+
+    const notes = runNotes(cwd, "v1.0.1");
+
+    expect(notes).toContain("user-facing fix (#1)");
+    expect(notes).not.toContain("internal cleanup");
+    expect(notes).not.toContain("add coverage");
+  });
+
+  it("falls back to the raw commit list when node itself dies (notes must never block a release)", () => {
+    const cwd = createRepo();
+    writeText(cwd, "src/app.txt", "fix\n");
+    commitAll(cwd, "fix: survives node crash (#1)");
+    git(cwd, ["tag", "v1.0.1"]);
+
+    // fake `node` that always fails, first on PATH
+    const shimDir = join(cwd, "shim");
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(join(shimDir, "node"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    const notes = execFileSync("bash", [SCRIPT, "v1.0.1"], {
+      cwd,
+      encoding: "utf-8",
+      env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    expect(notes).toContain("- fix: survives node crash (#1)");
+  });
+
+  it("produces grouped English fallback (not dictionary word salad) without LLM env", () => {
     const cwd = createRepo();
     writeText(cwd, "src/app.txt", "translation fix\n");
     commitAll(cwd, "fix(translation): preserve anthropic message roles (#1)");
@@ -151,13 +189,11 @@ describeIfBash("generate-release-notes.sh bash behavior", () => {
 
     const notes = runNotes(cwd, "v1.0.1");
 
-    // Must contain English header and raw commit
-    expect(notes).toContain("## 🌐 English / 英文版");
-    expect(notes).toContain("- fix(translation): preserve anthropic message roles (#1)");
-
-    // Must contain Chinese header and translated commit
-    expect(notes).toContain("## 🇨🇳 中文版 (翻译)");
-    expect(notes).toContain("- 修复(翻译)：保留 anthropic 消息角色 (#1)");
+    expect(notes).toContain("### Fixes");
+    expect(notes).toContain("preserve anthropic message roles (#1)");
+    // the dictionary translator and its headers are gone
+    expect(notes).not.toContain("中文版 (翻译)");
+    expect(notes).not.toContain("修复(翻译)");
   });
 });
 

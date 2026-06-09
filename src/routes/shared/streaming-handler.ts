@@ -12,6 +12,7 @@ import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
 import { streamResponse } from "./response-processor.js";
 import { createResponseMetadataCollector } from "./response-metadata-collector.js";
 import { logProxyUsage } from "./proxy-usage-log.js";
+import { getReasoningReplayCache } from "../../proxy/reasoning-replay-cache.js";
 
 export interface HandleStreamingOptions {
   c: Context;
@@ -64,6 +65,7 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
   let responseCompleted = false;
   let streamCompletedWithoutError = false;
   const metadataCollector = createResponseMetadataCollector();
+  const reasoningReplayCache = getReasoningReplayCache();
 
   return stream(c, async (s) => {
     s.onAbort(() => {
@@ -92,6 +94,22 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
         Array.from(metadataCollector.responseFunctionCallIds),
         variantHash,
       );
+      if (!metadataCollector.invalidReasoningReplay && metadataCollector.reasoningReplayItems.length > 0) {
+        reasoningReplayCache.record({
+          responseId: capturedResponseId,
+          entryId: capturedEntryId,
+          conversationId,
+          variantHash,
+          items: metadataCollector.reasoningReplayItems,
+        });
+      }
+    };
+    const evictReasoningReplayIdentity = (): void => {
+      reasoningReplayCache.evictByIdentity({
+        entryId: capturedEntryId,
+        conversationId,
+        variantHash,
+      });
     };
     try {
       await streamResponse({
@@ -117,6 +135,9 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
         usageHint,
         onResponseMetadata: (metadata) => {
           metadataCollector.onResponseMetadata(metadata);
+          if (metadataCollector.invalidReasoningReplay) {
+            evictReasoningReplayIdentity();
+          }
           recordStreamAffinity();
         },
         diagnostics: {

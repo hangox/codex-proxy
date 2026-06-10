@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Docker 镜像版本号显示错误（始终显示 2.0.77 而非实际发布版本）：`docker-publish.yml` 构建时通过 `--build-arg PROXY_VERSION` 将版本注入镜像，`Dockerfile` 将其写入 `ENV PROXY_VERSION`，`getProxyInfo()` 优先读取该环境变量，容器内无 `.git` 时也能正确报告版本。（#676）
+
 ### Changed
 
 - 重构：消除类型守卫 `isRecord` 的多处重复声明（收拢翻译层与路由层到 `shared-utils.ts`）

@@ -31,7 +31,7 @@ ENV CODEX_PROXY_HOST=0.0.0.0
 
 # Proxy version injected at build time via --build-arg PROXY_VERSION=x.y.z
 # Falls back to package.json at runtime if not set.
-ARG PROXY_VERSION
+ARG PROXY_VERSION=unknown
 ENV PROXY_VERSION=${PROXY_VERSION}
 
 # curl: needed by full-update.ts

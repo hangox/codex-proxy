@@ -128,7 +128,9 @@ export function getProxyInfo(): ProxyInfo {
   // 1. Build-time injected version (e.g. Docker --build-arg PROXY_VERSION=x.y.z)
   //    This is the most reliable source in containerised environments that lack .git.
   const envVersion = process.env.PROXY_VERSION?.trim();
-  if (envVersion && envVersion !== "1.0.0") {
+  // "unknown" is the Dockerfile ARG default when --build-arg PROXY_VERSION is omitted;
+  // treat it as absent so we fall back to git-tag / package.json.
+  if (envVersion && envVersion !== "unknown") {
     version = envVersion;
   } else {
     // 2. Collect version from both sources, pick the higher one

@@ -195,8 +195,10 @@ export function translateAnthropicToCodexRequest(
   modelConfig?: ModelConfigOverride,
   options?: { injectHostedWebSearch?: boolean; mapClaudeCodeWebSearch?: boolean },
 ): CodexResponsesRequest {
-  // Extract system instructions
-  let userInstructions: string;
+  // Extract the user-supplied system prompt (empty when none provided). The
+  // synthetic default below is intentionally kept out of `userInstructions` so
+  // it is never treated as real user content by the inline strategy.
+  let userInstructions = "";
   if (req.system) {
     if (typeof req.system === "string") {
       userInstructions = normalizeSystemInstructionText(req.system);
@@ -206,9 +208,10 @@ export function translateAnthropicToCodexRequest(
         .filter(Boolean)
         .join("\n\n");
     }
-  } else {
-    userInstructions = "You are a helpful assistant.";
   }
+  // Text that goes into the top-level `instructions` field in the default
+  // (non-inline) strategy. Falls back to a generic assistant prompt.
+  const instructionsText = userInstructions || "You are a helpful assistant.";
   const cfg = modelConfig ?? getConfig().model;
 
   // system_prompt_strategy controls where the user-supplied system prompt is
@@ -217,9 +220,11 @@ export function translateAnthropicToCodexRequest(
   // Codex backend's built-in base prompt prior when it overrides `instructions`.
   const strategy = cfg.system_prompt_strategy ?? "instructions";
   const inlineSystem = strategy === "developer_inline" || strategy === "system_inline";
-  // In inline modes keep `instructions` empty of user content (so desktop
-  // context can still be injected) and carry userInstructions inline instead.
-  const instructions = buildInstructions(inlineSystem ? "" : userInstructions, cfg);
+  // In inline modes keep `instructions` free of user content (so desktop
+  // context can still be injected) and carry the real user system inline
+  // instead. The synthetic default is dropped in inline modes (nothing to
+  // bypass when the user supplied no system).
+  const instructions = buildInstructions(inlineSystem ? "" : instructionsText, cfg);
 
   // Build input items from messages
   const input: CodexInputItem[] = [];

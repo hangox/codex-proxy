@@ -58,6 +58,9 @@ function inputItemsToGeminiContents(input: CodexInputItem[]): GeminiContent[] {
     if ("role" in item) {
       const role = item.role;
       if (role === "system") continue; // handled by system_instruction
+      // `developer` is only produced on the outbound Codex path
+      // (system_prompt_strategy); inbound client requests never carry it, so it
+      // safely falls through to the user branch here.
       const geminiRole = role === "assistant" ? "model" as const : "user" as const;
 
       if (typeof item.content === "string") {

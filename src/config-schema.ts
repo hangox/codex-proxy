@@ -86,6 +86,9 @@ export const ConfigSchema = z.object({
     custom_models: z.array(CustomModelSchema).default([]),
     inject_desktop_context: z.boolean().default(false),
     suppress_desktop_directives: z.boolean().default(true),
+    system_prompt_strategy: z
+      .enum(["instructions", "developer_inline", "system_inline"])
+      .default("instructions"),
   }),
   auth: z.object({
     jwt_token: z.string().nullable().default(null),

@@ -50,7 +50,6 @@ vi.mock("@src/models/model-store.js", () => ({
 
 import { translateAnthropicToCodexRequest } from "@src/translation/anthropic-to-codex.js";
 import { anthropicToolsToCodex, anthropicToolChoiceToCodex } from "@src/translation/tool-format.js";
-import { buildInstructions } from "@src/translation/shared-utils.js";
 import type { ModelConfigOverride } from "@src/translation/shared-utils.js";
 import type { AnthropicMessagesRequest } from "@src/types/anthropic.js";
 
@@ -959,7 +958,12 @@ describe("translateAnthropicToCodexRequest", () => {
       expect(first.content[0].text).toBe("x");
     });
 
-    it("case 8: desktop context 与 inline 共存", () => {
+    // 合约测试：inline 模式下 user system 走 inline item，instructions 字段
+    // 拿到的是 buildInstructions("", cfg) 的结果——即 user 内容不进 instructions，
+    // 给 desktop context 留出注入口（inject_desktop_context 仍可往该字段注入 ctx）。
+    // 注：本文件把 buildInstructions mock 成 identity，故传入空串时可观测结果为 ""；
+    // 真实 buildInstructions 的 ctx 注入行为由 shared-utils.test.ts 覆盖，这里只验合约。
+    it("case 8: developer_inline 下 instructions 不含 user 内容（给 ctx 注入留口）", () => {
       const cfg = makeModelConfig({
         system_prompt_strategy: "developer_inline",
         inject_desktop_context: true,
@@ -969,14 +973,13 @@ describe("translateAnthropicToCodexRequest", () => {
         cfg,
       );
 
-      // instructions 等于 buildInstructions("", cfg)：desktop ctx 仍能注入，
-      // 但 user system 不重复进 instructions。动态比对，不硬编码 ctx 文本。
-      expect(result.instructions).toBe(buildInstructions("", cfg));
+      // 传给 buildInstructions 的 user 内容为空串 → mock identity → instructions === ""
+      expect(result.instructions).toBe("");
+      expect(result.instructions).not.toContain("hello");
 
       const first = result.input[0] as any;
       expect(first.role).toBe("developer");
       expect(first.content[0].text).toBe("hello");
-      expect(result.instructions).not.toContain("hello");
     });
   });
 });

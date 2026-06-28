@@ -210,7 +210,16 @@ export function translateAnthropicToCodexRequest(
     userInstructions = "You are a helpful assistant.";
   }
   const cfg = modelConfig ?? getConfig().model;
-  const instructions = buildInstructions(userInstructions, cfg);
+
+  // system_prompt_strategy controls where the user-supplied system prompt is
+  // delivered. With the two `_inline` modes the prompt is moved out of the
+  // top-level `instructions` field into the first input item, bypassing the
+  // Codex backend's built-in base prompt prior when it overrides `instructions`.
+  const strategy = cfg.system_prompt_strategy ?? "instructions";
+  const inlineSystem = strategy === "developer_inline" || strategy === "system_inline";
+  // In inline modes keep `instructions` empty of user content (so desktop
+  // context can still be injected) and carry userInstructions inline instead.
+  const instructions = buildInstructions(inlineSystem ? "" : userInstructions, cfg);
 
   // Build input items from messages
   const input: CodexInputItem[] = [];
@@ -225,6 +234,17 @@ export function translateAnthropicToCodexRequest(
   // Ensure at least one input message
   if (input.length === 0) {
     input.push({ role: "user", content: "" });
+  }
+
+  // Inline strategy: prepend the user system prompt as the first input item.
+  // ChatGPT Codex backend accepts a {role, content:[{type:"input_text"}]} item
+  // for developer/system roles (no item-level `type: "message"`).
+  if (inlineSystem && userInstructions) {
+    const role = strategy === "developer_inline" ? "developer" : "system";
+    input.unshift({
+      role,
+      content: [{ type: "input_text", text: userInstructions }],
+    });
   }
 
   // Resolve model (suffix parsing extracts service_tier and reasoning_effort)

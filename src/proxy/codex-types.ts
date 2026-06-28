@@ -90,7 +90,9 @@ export type CodexContentPart =
 export type CodexInputItem =
   | { role: "user"; content: string | CodexContentPart[] }
   | { role: "assistant"; content: string }
-  | { role: "system"; content: string }
+  // system/developer roles accept structured content so the user system prompt
+  // can be delivered as an inline input item (system_prompt_strategy).
+  | { role: "system" | "developer"; content: string | CodexContentPart[] }
   | { type: "function_call"; id?: string; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string };
 

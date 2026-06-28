@@ -50,6 +50,8 @@ vi.mock("@src/models/model-store.js", () => ({
 
 import { translateAnthropicToCodexRequest } from "@src/translation/anthropic-to-codex.js";
 import { anthropicToolsToCodex, anthropicToolChoiceToCodex } from "@src/translation/tool-format.js";
+import { buildInstructions } from "@src/translation/shared-utils.js";
+import type { ModelConfigOverride } from "@src/translation/shared-utils.js";
 import type { AnthropicMessagesRequest } from "@src/types/anthropic.js";
 
 function makeRequest(overrides: Partial<AnthropicMessagesRequest> = {}): AnthropicMessagesRequest {
@@ -59,6 +61,23 @@ function makeRequest(overrides: Partial<AnthropicMessagesRequest> = {}): Anthrop
     messages: [{ role: "user", content: "Hello" }],
     ...overrides,
   } as AnthropicMessagesRequest;
+}
+
+/**
+ * 构造一份 ModelConfigOverride 直传给 translateAnthropicToCodexRequest，
+ * 避免依赖全局 config mock。默认对齐 schema 默认值，逐 case 覆盖。
+ */
+function makeModelConfig(
+  overrides: Partial<ModelConfigOverride> = {},
+): ModelConfigOverride {
+  return {
+    default_reasoning_effort: null,
+    default_service_tier: null,
+    inject_desktop_context: false,
+    suppress_desktop_directives: false,
+    system_prompt_strategy: "instructions",
+    ...overrides,
+  };
 }
 
 describe("translateAnthropicToCodexRequest", () => {
@@ -820,6 +839,144 @@ describe("translateAnthropicToCodexRequest", () => {
         }),
       );
       expect(result.instructions).toBe("Only one block.");
+    });
+  });
+
+  // ── system_prompt_strategy 开关 ──────────────────────────────────────
+  // buildInstructions 在本文件被 mock 成 identity ((text) => text)，因此
+  // instructions 字段直接等于传入的文本，便于断言「user system 是否进 instructions」。
+  describe("system_prompt_strategy", () => {
+    it("case 1: baseline 默认 — system 进 instructions 字段", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        makeModelConfig(),
+      );
+
+      expect(result.instructions).toContain("hello");
+      expect(result.input.length).toBe(1);
+      const item = result.input[0] as any;
+      expect(item.role).toBe("user");
+      expect(item.content).toBe("Hello");
+    });
+
+    it("case 2: developer_inline 生效 — system 挪到 input[0] developer 消息", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      expect(result.instructions).not.toContain("hello");
+      expect(result.input.length).toBe(2);
+      const first = result.input[0] as any;
+      const second = result.input[1] as any;
+      expect(first.role).toBe("developer");
+      expect(first.content[0].text).toBe("hello");
+      expect(second.role).toBe("user");
+    });
+
+    it("case 3: system_inline 生效 — system 挪到 input[0] system 消息", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        makeModelConfig({ system_prompt_strategy: "system_inline" }),
+      );
+
+      const first = result.input[0] as any;
+      expect(first.role).toBe("system");
+      expect(first.content[0].text).toBe("hello");
+      expect(result.input.length).toBe(2);
+      expect(result.instructions).not.toContain("hello");
+    });
+
+    it("case 4: 多 block system 数组 join", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            { type: "text" as const, text: "a" },
+            { type: "text" as const, text: "b" },
+          ],
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0] as any;
+      expect(first.content[0].text).toBe("a\n\nb");
+    });
+
+    it("case 5: userInstructions 空（system 缺省）→ 不 unshift", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: undefined }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      expect(result.input.length).toBe(1);
+      const item = result.input[0] as any;
+      expect(item.role).toBe("user");
+    });
+
+    it("case 5b: 全空 block → 不 unshift", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            { type: "text" as const, text: "" },
+            { type: "text" as const, text: "   " },
+          ],
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      expect(result.input.length).toBe(1);
+      const item = result.input[0] as any;
+      expect(item.role).toBe("user");
+    });
+
+    it("case 6: billing header 仍被过滤", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            { type: "text" as const, text: "x-anthropic-billing-header: cc_version=2.1.185;" },
+            { type: "text" as const, text: "real prompt" },
+          ],
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0] as any;
+      expect(first.content[0].text).toBe("real prompt");
+      expect(first.content[0].text).not.toContain("billing");
+      expect(first.content[0].text).not.toContain("cc_version");
+    });
+
+    it("case 7: inline item 形态严格 — 只有 role+content，无 type 字段", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "x" }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0] as any;
+      expect(first).not.toHaveProperty("type");
+      expect(Object.keys(first).sort()).toEqual(["content", "role"]);
+      expect(first.content[0].type).toBe("input_text");
+      expect(first.content[0].text).toBe("x");
+    });
+
+    it("case 8: desktop context 与 inline 共存", () => {
+      const cfg = makeModelConfig({
+        system_prompt_strategy: "developer_inline",
+        inject_desktop_context: true,
+      });
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        cfg,
+      );
+
+      // instructions 等于 buildInstructions("", cfg)：desktop ctx 仍能注入，
+      // 但 user system 不重复进 instructions。动态比对，不硬编码 ctx 文本。
+      expect(result.instructions).toBe(buildInstructions("", cfg));
+
+      const first = result.input[0] as any;
+      expect(first.role).toBe("developer");
+      expect(first.content[0].text).toBe("hello");
+      expect(result.instructions).not.toContain("hello");
     });
   });
 });

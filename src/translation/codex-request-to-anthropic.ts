@@ -50,9 +50,10 @@ function inputItemsToAnthropicMessages(input: CodexInputItem[]): AnthropicMessag
       const role = item.role;
       if (role === "system") continue; // handled via top-level system field
 
-      // `developer` is only produced on the outbound Codex path
-      // (system_prompt_strategy); inbound client requests never carry it, so
-      // this conversion only needs to handle user/assistant here.
+      // `developer` is produced on the outbound Codex path
+      // (system_prompt_strategy) and is not expected on inbound requests in the
+      // current pipeline (there is no runtime role validation), so this
+      // conversion treats it as a user/assistant message.
       const oaiRole = role as "user" | "assistant";
       if (typeof item.content === "string") {
         messages.push({ role: oaiRole, content: item.content });

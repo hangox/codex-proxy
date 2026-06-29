@@ -981,5 +981,39 @@ describe("translateAnthropicToCodexRequest", () => {
       expect(first.role).toBe("developer");
       expect(first.content[0].text).toBe("hello");
     });
+
+    // 根因 bug 回归：Claude Code custom-model 路径把 system 作为单个 string 下发，
+    // 首行是 billing header、空行后才是真 prompt。旧的整串 startsWith 判断会把
+    // 真 prompt 一起丢掉。修复后按行剥离 billing 行，保留真 prompt。
+    it("case 9: string-typed system with billing first line strips only that line", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system:
+            "x-anthropic-billing-header: cc_version=2.1.195.c5e; cc_entrypoint=cli;\n\nReal prompt content here.",
+        }),
+        makeModelConfig(),
+      );
+
+      expect(result.instructions).toBe("Real prompt content here.");
+      expect(result.instructions).not.toContain("billing");
+      expect(result.instructions).not.toContain("cc_version");
+    });
+
+    it("case 10: string-typed system + billing + developer_inline puts real prompt into input[0]", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system:
+            "x-anthropic-billing-header: cc_version=2.1.195.c5e;\n\nReal prompt content here.",
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0] as any;
+      expect(first.role).toBe("developer");
+      expect(first.content[0].text).toBe("Real prompt content here.");
+      expect(first.content[0].type).toBe("input_text");
+      // inline 模式合约：instructions 字段不含 user 内容
+      expect(result.instructions).toBe("");
+    });
   });
 });

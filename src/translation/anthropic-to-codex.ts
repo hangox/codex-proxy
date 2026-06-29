@@ -56,8 +56,16 @@ function extractTextContent(
 const BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 
 function normalizeSystemInstructionText(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.startsWith(BILLING_HEADER_PREFIX) ? "" : trimmed;
+  // Strip billing-header lines individually rather than discarding the whole
+  // string. Claude Code's custom-model path sends `system` as a single string
+  // with the billing header on the first line and the real prompt after a
+  // blank line; a whole-string startsWith check would drop the real prompt too.
+  // The array-of-blocks path is unaffected: a pure billing block still collapses
+  // to "" here and is removed by the caller's filter(Boolean).
+  const lines = text
+    .split("\n")
+    .filter((line) => !line.trim().startsWith(BILLING_HEADER_PREFIX));
+  return lines.join("\n").trim();
 }
 
 /**

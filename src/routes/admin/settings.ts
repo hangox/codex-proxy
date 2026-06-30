@@ -137,6 +137,8 @@ export function createSettingsRoutes(): Hono {
       force_http11: config.tls.force_http11,
       inject_desktop_context: config.model.inject_desktop_context,
       suppress_desktop_directives: config.model.suppress_desktop_directives,
+      allow_client_system_prompt_strategy: config.model.allow_client_system_prompt_strategy,
+      system_prompt_strategy: config.model.system_prompt_strategy,
       default_model: config.model.default,
       default_reasoning_effort: config.model.default_reasoning_effort,
       model_aliases: config.model.aliases,
@@ -176,6 +178,8 @@ export function createSettingsRoutes(): Hono {
       force_http11?: boolean;
       inject_desktop_context?: boolean;
       suppress_desktop_directives?: boolean;
+      allow_client_system_prompt_strategy?: boolean;
+      system_prompt_strategy?: string;
       default_model?: string;
       default_reasoning_effort?: string | null;
       model_aliases?: unknown;
@@ -220,6 +224,20 @@ export function createSettingsRoutes(): Hono {
       ) {
         c.status(400);
         return c.json({ error: `default_reasoning_effort must be one of: ${validEfforts.join(", ")} or null` });
+      }
+    }
+
+    if (body.system_prompt_strategy !== undefined) {
+      const validStrategies = ["instructions", "developer_inline", "system_inline"];
+      if (!validStrategies.includes(body.system_prompt_strategy)) {
+        c.status(400);
+        return c.json({ error: `system_prompt_strategy must be one of: ${validStrategies.join(", ")}` });
+      }
+
+      const effectiveAllow = body.allow_client_system_prompt_strategy ?? config.model.allow_client_system_prompt_strategy;
+      if (!effectiveAllow) {
+        c.status(400);
+        return c.json({ error: "system_prompt_strategy requires enabling allow_client_system_prompt_strategy first" });
       }
     }
 
@@ -305,6 +323,14 @@ export function createSettingsRoutes(): Hono {
       if (body.suppress_desktop_directives !== undefined) {
         if (!data.model) data.model = {};
         (data.model as Record<string, unknown>).suppress_desktop_directives = body.suppress_desktop_directives;
+      }
+      if (body.allow_client_system_prompt_strategy !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).allow_client_system_prompt_strategy = body.allow_client_system_prompt_strategy;
+      }
+      if (body.system_prompt_strategy !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).system_prompt_strategy = body.system_prompt_strategy;
       }
       if (body.default_model !== undefined) {
         if (!data.model) data.model = {};
@@ -395,6 +421,8 @@ export function createSettingsRoutes(): Hono {
       force_http11: updated.tls.force_http11,
       inject_desktop_context: updated.model.inject_desktop_context,
       suppress_desktop_directives: updated.model.suppress_desktop_directives,
+      allow_client_system_prompt_strategy: updated.model.allow_client_system_prompt_strategy,
+      system_prompt_strategy: updated.model.system_prompt_strategy,
       default_model: updated.model.default,
       default_reasoning_effort: updated.model.default_reasoning_effort,
       model_aliases: updated.model.aliases,

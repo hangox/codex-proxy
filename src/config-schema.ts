@@ -86,6 +86,7 @@ export const ConfigSchema = z.object({
     custom_models: z.array(CustomModelSchema).default([]),
     inject_desktop_context: z.boolean().default(false),
     suppress_desktop_directives: z.boolean().default(true),
+    allow_client_system_prompt_strategy: z.boolean().default(false),
     system_prompt_strategy: z
       .enum(["instructions", "developer_inline", "system_inline"])
       .default("instructions"),

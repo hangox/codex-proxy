@@ -40,6 +40,7 @@ describe("ConfigSchema", () => {
     expect(result.model.default_reasoning_effort).toBeNull();
     expect(result.model.aliases).toEqual({});
     expect(result.model.custom_models).toEqual([]);
+    expect(result.model.allow_client_system_prompt_strategy).toBe(false);
     expect(result.tls.force_http11).toBe(false);
     expect(result.usage_stats.snapshot_interval_minutes).toBe(5);
     expect(result.usage_stats.history_retention_days).toBeNull();

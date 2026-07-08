@@ -30,10 +30,14 @@ vi.mock("@src/translation/shared-utils.js", () => ({
   }),
 }));
 
-vi.mock("@src/translation/tool-format.js", () => ({
-  anthropicToolsToCodex: vi.fn((tools: unknown[]) => tools),
-  anthropicToolChoiceToCodex: vi.fn(() => undefined),
-}));
+vi.mock("@src/translation/tool-format.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@src/translation/tool-format.js")>();
+  return {
+    ...actual,
+    anthropicToolsToCodex: vi.fn(actual.anthropicToolsToCodex),
+    anthropicToolChoiceToCodex: vi.fn(() => undefined),
+  };
+});
 
 vi.mock("@src/models/model-store.js", () => ({
   parseModelName: vi.fn((input: string) => {
@@ -417,13 +421,22 @@ describe("translateAnthropicToCodexRequest", () => {
   // ── Tools ────────────────────────────────────────────────────────────
 
   describe("tools", () => {
-    it("delegates tools array to anthropicToolsToCodex", () => {
+    it("converts Anthropic function tools with explicit strict:false", () => {
       const tools = [
-        { name: "search", description: "Search the web", input_schema: {} },
+        { name: "search", description: "Search the web", input_schema: { type: "object" as const } },
       ];
-      translateAnthropicToCodexRequest(makeRequest({ tools }));
+      const result = translateAnthropicToCodexRequest(makeRequest({ tools }));
 
       expect(anthropicToolsToCodex).toHaveBeenCalledWith(tools);
+      expect(result.tools).toEqual([
+        {
+          type: "function",
+          name: "search",
+          strict: false,
+          description: "Search the web",
+          parameters: { type: "object", properties: {} },
+        },
+      ]);
     });
 
     it("delegates tool_choice to anthropicToolChoiceToCodex", () => {
@@ -488,7 +501,7 @@ describe("translateAnthropicToCodexRequest", () => {
         { injectHostedWebSearch: true },
       );
 
-      expect(result.tools).toEqual([{ type: "web_search", name: "web_search" }]);
+      expect(result.tools).toEqual([{ type: "web_search" }]);
     });
   });
 

@@ -378,6 +378,7 @@ describe("upstream direct routing without Codex auth", () => {
           type: "object",
           properties: { query: { type: "string" } },
         },
+        strict: false,
       },
     ]);
     expect(directReq.codexRequest.tool_choice).toEqual({ type: "function", name: "WebSearch" });

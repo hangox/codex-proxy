@@ -225,6 +225,7 @@ export function anthropicToolsToCodex(
     const def: CodexToolDefinition = {
       type: "function",
       name: t.name,
+      strict: false,
     };
     if (isRecord(t) && typeof t.description === "string") def.description = t.description;
     if (isRecord(t) && isRecord(t.input_schema)) {

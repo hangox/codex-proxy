@@ -180,7 +180,7 @@ export function createChatRoutes(
     }
 
     // Auth check for Codex route only
-    if (!accountPool.isAuthenticated()) {
+    if (!accountPool.hasAnyActiveAccount()) {
       c.status(401);
       return c.json({
         error: {

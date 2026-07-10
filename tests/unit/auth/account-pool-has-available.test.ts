@@ -247,3 +247,129 @@ describe("AccountPool.isAuthenticated", () => {
     expect(pool.isAuthenticated()).toBe(false);
   });
 });
+
+describe("AccountPool.hasAnyActiveAccount", () => {
+  let pool: AccountPool;
+
+  beforeEach(() => {
+    vi.mocked(isTokenExpired).mockReturnValue(false);
+    pool = new AccountPool({ rotationStrategy: "least_used" });
+  });
+
+  it("returns false for empty pool", () => {
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+
+  it("returns true when an account with no rate limiting exists", () => {
+    pool.addAccount("token-a");
+    expect(pool.hasAnyActiveAccount()).toBe(true);
+  });
+
+  it("returns false when the only account is expired", () => {
+    const id = pool.addAccount("token-a");
+    pool.markStatus(id, "expired");
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+
+  it("returns false when the only account is disabled", () => {
+    const id = pool.addAccount("token-a");
+    pool.markStatus(id, "disabled");
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+
+  it("returns false when the only account is banned", () => {
+    const id = pool.addAccount("token-a");
+    pool.markStatus(id, "banned");
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+
+  it("returns false when the only account is refreshing", () => {
+    const id = pool.addAccount("token-a");
+    pool.markStatus(id, "refreshing");
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+
+  it("returns true when the only account has status quota_exhausted (hard 402 exclusion, not just cachedQuota)", () => {
+    // Distinct from the soft-exclusion (429) path: handleCodexApiError's 402
+    // branch calls markStatus(entryId, "quota_exhausted") directly, actually
+    // mutating entry.status away from "active" — applyRateLimit429 never
+    // does this. hasAnyActiveAccount() must still treat this as "logged in".
+    const id = pool.addAccount("token-a");
+    pool.markStatus(id, "quota_exhausted");
+    expect(pool.hasAnyActiveAccount()).toBe(true);
+    // Contrast: isAuthenticated() requires status === "active", so a
+    // quota_exhausted account is NOT authenticated for "immediately usable" purposes.
+    expect(pool.isAuthenticated()).toBe(false);
+  });
+
+  it("returns true when all accounts are quota_exhausted (all-hard-exhausted pool is still authenticated)", () => {
+    const id1 = pool.addAccount("token-a");
+    const id2 = pool.addAccount("token-b");
+    pool.markStatus(id1, "quota_exhausted");
+    pool.markStatus(id2, "quota_exhausted");
+    expect(pool.hasAnyActiveAccount()).toBe(true);
+  });
+
+  it("returns true when the only account is active but primary quota is exhausted (quota-blind, differs from isAuthenticated)", () => {
+    const id = pool.addAccount("token-a");
+    pool.updateCachedQuota(id, makeQuota({
+      rate_limit: {
+        allowed: false,
+        limit_reached: true,
+        used_percent: 100,
+        reset_at: Math.floor(Date.now() / 1000) + 3600,
+        limit_window_seconds: 3600,
+      },
+    }));
+    // Contrast: isAuthenticated() would return false here (skip_exhausted=true
+    // default excludes quota-exhausted accounts). hasAnyActiveAccount() must
+    // stay true — the account is logged in, just temporarily out of capacity.
+    expect(pool.hasAnyActiveAccount()).toBe(true);
+    expect(pool.isAuthenticated()).toBe(false);
+  });
+
+  it("returns true when the only account is active but secondary quota is exhausted (quota-blind)", () => {
+    const id = pool.addAccount("token-a");
+    pool.updateCachedQuota(id, makeQuota({
+      secondary_rate_limit: {
+        limit_reached: true,
+        used_percent: 100,
+        reset_at: Math.floor(Date.now() / 1000) + 3600,
+        limit_window_seconds: 3600,
+      },
+    }));
+    expect(pool.hasAnyActiveAccount()).toBe(true);
+    expect(pool.isAuthenticated()).toBe(false);
+  });
+
+  it("returns true when one account is expired and another is active-but-quota-exhausted", () => {
+    const id1 = pool.addAccount("token-a");
+    const id2 = pool.addAccount("token-b");
+    pool.markStatus(id1, "expired");
+    pool.updateCachedQuota(id2, makeQuota({
+      rate_limit: {
+        allowed: false,
+        limit_reached: true,
+        used_percent: 100,
+        reset_at: Math.floor(Date.now() / 1000) + 3600,
+        limit_window_seconds: 3600,
+      },
+    }));
+    // Only status matters here, not quota — id2 is "active" so this is true.
+    expect(pool.hasAnyActiveAccount()).toBe(true);
+  });
+
+  it("returns false when all accounts are expired", () => {
+    const id1 = pool.addAccount("token-a");
+    const id2 = pool.addAccount("token-b");
+    pool.markStatus(id1, "expired");
+    pool.markStatus(id2, "expired");
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+
+  it("detects expired tokens via refreshStatus", () => {
+    pool.addAccount("token-a");
+    vi.mocked(isTokenExpired).mockReturnValue(true);
+    expect(pool.hasAnyActiveAccount()).toBe(false);
+  });
+});

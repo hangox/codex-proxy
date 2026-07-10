@@ -415,4 +415,31 @@ describe("E2E: POST /v1/messages", () => {
       noAuth.accountPool.destroy();
     }
   });
+
+  it("all accounts rate-limited: returns 529 overloaded_error, not 401", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const id = app.accountPool.addAccount(createValidJwt({
+        accountId: "acct-messages-rl",
+        email: "messages-rl@test.com",
+        planType: "plus",
+      }));
+      app.accountPool.applyRateLimit429(id, { retryAfterSec: 3600 });
+
+      const res = await app.app.request("/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(529);
+
+      const body = await res.json() as { type: string; error: { type: string } };
+      expect(body.type).toBe("error");
+      expect(body.error.type).toBe("overloaded_error");
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
 });

@@ -238,6 +238,36 @@ describe("E2E: POST /v1/responses", () => {
     }
   });
 
+  it("all accounts rate-limited: returns 503, not 401", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const id = app.accountPool.addAccount(createValidJwt({
+        accountId: "acct-responses-rl",
+        email: "responses-rl@test.com",
+        planType: "plus",
+      }));
+      app.accountPool.applyRateLimit429(id, { retryAfterSec: 3600 });
+
+      // Non-streaming: the no-account error goes through the JSON response
+      // path (c.status + c.json). For stream:true requests, respondWithNoAccount
+      // instead emits an SSE "response.failed" event over a 200 response —
+      // that path is covered by the existing stream-error-format tests, not here.
+      const res = await app.app.request("/v1/responses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody({ stream: false })),
+      });
+      expect(res.status).toBe(503);
+
+      const body = await res.json() as { error: { code: string } };
+      expect(body.error.code).toBe("no_available_accounts");
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
+
   it("invalid JSON: returns 400 with invalid_json", async () => {
     const res = await ctx.app.request("/v1/responses", {
       method: "POST",

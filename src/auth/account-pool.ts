@@ -242,6 +242,11 @@ export class AccountPool {
     return this.registry.isAuthenticated();
   }
 
+  /** "Is there any logged-in account at all?" — see AccountRegistry.hasAnyActiveAccount. */
+  hasAnyActiveAccount(): boolean {
+    return this.registry.hasAnyActiveAccount();
+  }
+
   /** @deprecated Use getAccounts() instead. */
   getUserInfo(): { email?: string; accountId?: string; planType?: string } | null {
     return this.registry.getUserInfo();

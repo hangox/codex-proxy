@@ -59,6 +59,7 @@ import { createResponsesRoutes } from "@src/routes/responses.js";
 function createMockAccountPool() {
   return {
     isAuthenticated: vi.fn(() => true),
+    hasAnyActiveAccount: vi.fn(() => true),
     validateProxyApiKey: vi.fn(() => true),
     acquire: vi.fn(() => ({
       entryId: "entry_1",

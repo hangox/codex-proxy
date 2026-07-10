@@ -314,6 +314,47 @@ export class AccountRegistry {
     return false;
   }
 
+  /**
+   * "Is there any logged-in account at all?" — pure authentication check,
+   * deliberately independent of *why* an account is currently unusable for a
+   * new request. Two kinds of exclusion must NOT be conflated with "never
+   * logged in":
+   *
+   *   - Soft exclusion (cachedQuota rate_limit/secondary_rate_limit from a
+   *     429): entry.status stays "active" — {@link applyRateLimit429}
+   *     deliberately never mutates status, see its docstring. Already
+   *     quota-blind here since we only look at status.
+   *   - Hard exclusion via status "quota_exhausted" (a 402 from upstream —
+   *     see handleCodexApiError in proxy-error-handler.ts): entry.status is
+   *     mutated away from "active", so a naive `status === "active"` check
+   *     would wrongly treat an all-quota_exhausted pool as "never logged
+   *     in" → 401, when the account genuinely has valid credentials and is
+   *     just temporarily out of capacity → should be 503 instead.
+   *
+   * So "active" and "quota_exhausted" both count as "has valid credentials"
+   * here. Only "expired" (bad/stale token), "disabled" (operator opt-out),
+   * "banned" (upstream banned), and "refreshing" (mid token-refresh, not yet
+   * known-good) are treated as "not really logged in" for this check.
+   *
+   * Callers that need "authenticated AND immediately usable right now"
+   * should use {@link isAuthenticated} instead — that one intentionally
+   * excludes both quota-exhaustion mechanisms.
+   *
+   * Route-level 401 checks (checkAuth in responses.ts/chat.ts/gemini.ts/
+   * messages.ts) must use this method, not isAuthenticated(), so that an
+   * all-exhausted pool (soft or hard) falls through to acquireAccount() and
+   * gets the correct 503 "No available accounts" response instead of a
+   * misleading 401 "Not authenticated".
+   */
+  hasAnyActiveAccount(): boolean {
+    const now = new Date();
+    for (const entry of this.accounts.values()) {
+      this.refreshStatus(entry, now);
+      if (entry.status === "active" || entry.status === "quota_exhausted") return true;
+    }
+    return false;
+  }
+
   /** Fast check: is there at least one active account not in the exclude list? */
   hasAvailableAccounts(excludeIds?: string[]): boolean {
     const now = new Date();

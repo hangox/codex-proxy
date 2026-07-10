@@ -583,7 +583,7 @@ function checkAuth(
   accountPool: AccountPool,
   allowUnauthenticated: boolean = false,
 ): Response | null {
-  if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+  if (!allowUnauthenticated && !accountPool.hasAnyActiveAccount()) {
     c.status(401);
     return c.json({
       type: "error",

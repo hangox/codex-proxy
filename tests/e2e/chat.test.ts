@@ -342,6 +342,152 @@ describe("E2E: POST /v1/chat/completions", () => {
     }
   });
 
+  it("accounts exist but all expired: returns 401 invalid_api_key", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const id = app.accountPool.addAccount(createValidJwt({
+        accountId: "acct-expired",
+        email: "expired@test.com",
+        planType: "plus",
+      }));
+      app.accountPool.markStatus(id, "expired");
+
+      const res = await app.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(401);
+
+      const body = await res.json() as { error: { code: string } };
+      expect(body.error.code).toBe("invalid_api_key");
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
+
+  it("accounts active but all rate-limited: returns 503, not 401", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const ids = [0, 1, 2].map((i) =>
+        app.accountPool.addAccount(createValidJwt({
+          accountId: `acct-rl-${i}`,
+          email: `rl${i}@test.com`,
+          planType: "plus",
+        })),
+      );
+      for (const id of ids) {
+        app.accountPool.applyRateLimit429(id, { retryAfterSec: 3600 });
+      }
+
+      const res = await app.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(503);
+
+      const body = await res.json() as { error: { code: string; message: string } };
+      expect(body.error.code).toBe("no_available_accounts");
+      expect(body.error.message).toContain("rate-limited");
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
+
+  it("accounts active but all hard quota_exhausted (402): returns 503, not 401", async () => {
+    // Distinct exclusion mechanism from the 429 soft rate-limit test above:
+    // handleCodexApiError's 402 branch calls markStatus(id, "quota_exhausted"),
+    // which actually mutates entry.status away from "active" (unlike
+    // applyRateLimit429, which only writes cachedQuota and leaves status
+    // untouched). checkAuth must still fall through to 503, not 401.
+    const app = buildApp({ noAccount: true });
+    try {
+      const ids = [0, 1, 2].map((i) =>
+        app.accountPool.addAccount(createValidJwt({
+          accountId: `acct-qe-${i}`,
+          email: `qe${i}@test.com`,
+          planType: "plus",
+        })),
+      );
+      for (const id of ids) {
+        app.accountPool.markStatus(id, "quota_exhausted");
+      }
+
+      const res = await app.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(503);
+
+      const body = await res.json() as { error: { code: string } };
+      expect(body.error.code).toBe("no_available_accounts");
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
+
+  it("partial rate-limited: at least one active account still serves the request", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const ids = [0, 1, 2].map((i) =>
+        app.accountPool.addAccount(createValidJwt({
+          accountId: `acct-partial-${i}`,
+          email: `partial${i}@test.com`,
+          planType: "plus",
+        })),
+      );
+      // Rate-limit all but the last account.
+      for (const id of ids.slice(0, -1)) {
+        app.accountPool.applyRateLimit429(id, { retryAfterSec: 3600 });
+      }
+
+      const res = await app.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(200);
+      expect(getMockTransport().post).toHaveBeenCalled();
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
+
+  it("rate limit reset_at already in the past: account is treated as available again", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const id = app.accountPool.addAccount(createValidJwt({
+        accountId: "acct-reset",
+        email: "reset@test.com",
+        planType: "plus",
+      }));
+      // Negative retry-after puts reset_at in the past; refreshStatus should
+      // auto-clear the exhaustion flag before checkAuth/acquire runs.
+      app.accountPool.applyRateLimit429(id, { retryAfterSec: -1 });
+
+      const res = await app.app.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
+
   // ── Request validation ────────────────────────────────────────
 
   it("invalid JSON: returns 400 invalid_json", async () => {

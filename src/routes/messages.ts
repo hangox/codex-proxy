@@ -285,7 +285,7 @@ export function createMessagesRoutes(
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
 
     // Auth check
-    if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+    if (!allowUnauthenticated && !accountPool.hasAnyActiveAccount()) {
       c.status(401);
       return c.json(
         makeError("authentication_error", "Not authenticated. Please login first at /"),

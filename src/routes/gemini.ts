@@ -128,7 +128,7 @@ export function createGeminiRoutes(
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
 
     // Auth check
-    if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+    if (!allowUnauthenticated && !accountPool.hasAnyActiveAccount()) {
       c.status(401);
       return c.json(
         makeError(401, "Not authenticated. Please login first at /"),

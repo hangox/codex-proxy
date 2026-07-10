@@ -4,7 +4,9 @@
  * Validates that the secondary rate limit (e.g. weekly cap) is properly
  * considered during account rotation — accounts with secondary exhaustion
  * are skipped, backoff uses max(primary, secondary) reset_at, and all-
- * exhausted yields 401 (isAuthenticated=false when no active accounts).
+ * exhausted yields 503 (accounts remain "active"/authenticated but have
+ * no available capacity — acquireAccount fails and respondWithNoAccount
+ * returns 503, not 401).
  */
 
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -480,7 +482,7 @@ describe("secondary quota rotation", () => {
       vi.mocked(getMockTransport().post).mockClear();
     });
 
-    it("returns 401 when all accounts are cachedQuota-exhausted (not authenticated)", async () => {
+    it("returns 503 when all accounts are cachedQuota-exhausted (rate-limited, not unauthenticated)", async () => {
       ctx = buildApp(3);
 
       // Mark all accounts as quota-exhausted with long backoff
@@ -492,20 +494,28 @@ describe("secondary quota rotation", () => {
       const accounts = ctx.accountPool.getAccounts();
       expect(accounts.every((a) => isQuotaExhausted(a.quota))).toBe(true);
 
-      // Fire 6 concurrent requests — all should get 401 (isAuthenticated=false)
+      // Accounts still have status "active" (they're logged in, just rate-limited),
+      // so checkAuth's hasAnyActiveAccount() passes and the request falls through
+      // to acquireAccount(), which fails and yields 503 "No available accounts" —
+      // not 401 "Not authenticated" (that's reserved for an empty/expired pool).
       const responses = await Promise.all(
         Array.from({ length: 6 }, () => chatRequest(ctx.app, defaultBody())),
       );
 
       for (const res of responses) {
-        expect(res.status).toBe(401);
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as { error: { code: string; message: string } };
+        expect(body.error.code).toBe("no_available_accounts");
+        expect(body.error.message).toBe(
+          "No available accounts. All accounts are expired or rate-limited.",
+        );
       }
 
       // Transport should never have been called
       expect(getMockTransport().post).not.toHaveBeenCalled();
     });
 
-    it("concurrent burst returns 401 when all have secondary exhaustion", async () => {
+    it("concurrent burst returns 503 when all have secondary exhaustion", async () => {
       ctx = buildApp(3);
 
       // Set cached quota with secondary exhaustion + mark rate_limited
@@ -534,7 +544,7 @@ describe("secondary quota rotation", () => {
         Array.from({ length: 10 }, () => chatRequest(ctx.app, defaultBody())),
       );
 
-      expect(responses.every((r) => r.status === 401)).toBe(true);
+      expect(responses.every((r) => r.status === 503)).toBe(true);
       expect(getMockTransport().post).not.toHaveBeenCalled();
     });
   });

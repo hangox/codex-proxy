@@ -218,4 +218,30 @@ describe("E2E: Gemini endpoints", () => {
       noAuth.accountPool.destroy();
     }
   });
+
+  it("all accounts rate-limited: returns 503 UNAVAILABLE, not 401", async () => {
+    const app = buildApp({ noAccount: true });
+    try {
+      const id = app.accountPool.addAccount(createValidJwt({
+        accountId: "acct-gemini-rl",
+        email: "gemini-rl@test.com",
+        planType: "plus",
+      }));
+      app.accountPool.applyRateLimit429(id, { retryAfterSec: 3600 });
+
+      const res = await app.app.request("/v1beta/models/codex:generateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(defaultBody()),
+      });
+      expect(res.status).toBe(503);
+
+      const body = await res.json() as { error: { code: number; status: string } };
+      expect(body.error.status).toBe("UNAVAILABLE");
+    } finally {
+      app.cookieJar.destroy();
+      app.proxyPool.destroy();
+      app.accountPool.destroy();
+    }
+  });
 });

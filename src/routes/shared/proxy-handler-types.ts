@@ -40,6 +40,17 @@ export interface ResponseMetadata {
   functionCallIds?: string[];
   reasoningReplayItems?: ReasoningReplayItem[];
   invalidReasoningReplay?: boolean;
+  /** The upstream stream ended before a terminal event (response.completed /
+   *  response.failed) without a classifiable error. When implicit resume was
+   *  active, the `previous_response_id` chain for this conversation must be
+   *  treated as poisoned — the client's retry would otherwise replay the same
+   *  stale prev id into the same silent failure. */
+  prematureClose?: boolean;
+  /** The upstream stream ended with a terminal failure frame (`error` /
+   *  `response.failed`) instead of `response.completed`. Tracked separately
+   *  from `prematureClose` for diagnostics; both poison an implicit-resume
+   *  chain the same way. */
+  terminalFailure?: boolean;
 }
 
 export interface FormatStreamTranslatorOptions {

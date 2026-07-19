@@ -157,6 +157,56 @@ describe("PersistentWs", () => {
     expect(onDead).toHaveBeenCalled();
   });
 
+  describe("response start timeout", () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("rejects and evicts when upstream sends only provisional metadata", async () => {
+      const { ws, persistent, onDead } = newPersistentWs({ pingIntervalMs: 0 });
+      persistent.tryAcquire();
+      const promise = persistent.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: false,
+        responseStartTimeoutMs: 1_000,
+      });
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      ws.pushMessage({ type: "response.created", response: { id: "resp_waiting" } });
+      ws.pushMessage({ type: "codex.response.metadata", headers: { "x-test": "1" } });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).rejects.toThrow("WebSocket response start timeout after 1000ms");
+      expect(persistent.isAlive()).toBe(false);
+      expect(ws.closeReason).toBe("response start timeout");
+      expect(onDead).toHaveBeenCalledTimes(1);
+    });
+
+    it("clears the deadline after the first client-visible event", async () => {
+      const { ws, persistent } = newPersistentWs({ pingIntervalMs: 0 });
+      persistent.tryAcquire();
+      const promise = persistent.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: false,
+        responseStartTimeoutMs: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      ws.pushMessage({ type: "response.created", response: { id: "resp_started" } });
+      ws.pushMessage({ type: "response.output_text.delta", delta: "started" });
+      const response = await promise;
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(persistent.isAlive()).toBe(true);
+      ws.pushMessage({ type: "response.completed", response: { id: "resp_started" } });
+      await expect(response.text()).resolves.toContain("response.completed");
+    });
+  });
+
   it("errors the response stream when the WS closes after a visible frame without terminal event", async () => {
     const { ws, persistent, onDead } = newPersistentWs();
     persistent.tryAcquire();

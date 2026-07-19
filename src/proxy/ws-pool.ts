@@ -82,6 +82,7 @@ interface InFlightSession {
   abortListener: (() => void) | null;
   signal: AbortSignal | undefined;
   streamClosed: boolean;
+  responseStartTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /** Subset of the `ws` module's WebSocket interface that PersistentWs needs.
@@ -182,6 +183,11 @@ export const DEFAULT_PING_INTERVAL_MS = 25_000;
  *  third would tick — at which point the connection is almost certainly dead
  *  and re-using it would cost a real-request cache miss. */
 export const DEFAULT_LIVENESS_TIMEOUT_MULTIPLIER = 2.5;
+
+/** Maximum time to wait for the first non-metadata response event. This keeps
+ *  an upstream that sends only provisional metadata from occupying a pooled
+ *  connection indefinitely. */
+export const DEFAULT_WS_RESPONSE_START_TIMEOUT_MS = 180_000;
 
 export class PersistentWs {
   readonly id: string;
@@ -301,6 +307,7 @@ export class PersistentWs {
     signal: AbortSignal | undefined;
     onRateLimits: ((rl: ParsedRateLimit) => void) | undefined;
     reused: boolean;
+    responseStartTimeoutMs?: number;
   }): Promise<Response> {
     if (!this.busy) {
       throw new Error("PersistentWs.send called without prior tryAcquire");
@@ -335,7 +342,18 @@ export class PersistentWs {
             abortListener: null,
             signal: opts.signal,
             streamClosed: false,
+            responseStartTimer: undefined,
           };
+
+          const responseStartTimeoutMs =
+            opts.responseStartTimeoutMs ?? DEFAULT_WS_RESPONSE_START_TIMEOUT_MS;
+          if (responseStartTimeoutMs > 0) {
+            this.currentSession.responseStartTimer = setTimeout(
+              () => this.handleResponseStartTimeout(responseStartTimeoutMs),
+              responseStartTimeoutMs,
+            );
+            this.currentSession.responseStartTimer.unref?.();
+          }
 
           if (opts.signal) {
             const listener = () => this.handleAbort();
@@ -379,14 +397,31 @@ export class PersistentWs {
       this.pingTimer = undefined;
     }
     try { this.ws.close(1000, reason.slice(0, 120)); } catch { /* already closing */ }
-    if (this.currentSession && !this.currentSession.streamClosed) {
-      try { this.currentSession.controller.close(); } catch { /* already closed */ }
-      this.currentSession.streamClosed = true;
+    if (this.currentSession) {
+      this.clearResponseStartTimer(this.currentSession);
+      if (!this.currentSession.streamClosed) {
+        try { this.currentSession.controller.close(); } catch { /* already closed */ }
+        this.currentSession.streamClosed = true;
+      }
     }
     this.detachAbortListener();
     this.busy = false;
     this.currentSession = null;
     try { this.hooks.onDead(); } catch { /* hook errors must not propagate */ }
+  }
+
+  private handleResponseStartTimeout(timeoutMs: number): void {
+    const sess = this.currentSession;
+    if (!sess || sess.earlyDecisionMade) return;
+    sess.earlyDecisionMade = true;
+    sess.reject(new Error(`WebSocket response start timeout after ${timeoutMs}ms`));
+    this.markDead("response start timeout");
+  }
+
+  private clearResponseStartTimer(sess: InFlightSession): void {
+    if (!sess.responseStartTimer) return;
+    clearTimeout(sess.responseStartTimer);
+    sess.responseStartTimer = undefined;
   }
 
   private detachAbortListener(): void {
@@ -414,6 +449,7 @@ export class PersistentWs {
   private resolveSessionResponse(sess: InFlightSession): void {
     if (sess.earlyDecisionMade) return;
     sess.earlyDecisionMade = true;
+    this.clearResponseStartTimer(sess);
     sess.resolveResponse();
     for (const chunk of sess.earlyMetadataChunks.splice(0)) {
       this.enqueueSessionChunk(sess, chunk);
@@ -557,6 +593,7 @@ export class PersistentWs {
    *  treat early errors as account-level and keep the WS open only if the
    *  error wasn't connection-fatal. */
   private releaseAfterEarlyError(): void {
+    if (this.currentSession) this.clearResponseStartTimer(this.currentSession);
     this.detachAbortListener();
     this.currentSession = null;
     this.busy = false;

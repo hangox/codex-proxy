@@ -266,6 +266,60 @@ describe("createWebSocketResponse", () => {
     await expect(promise).rejects.toThrow("WebSocket closed before terminal event");
   });
 
+  it("rejects and closes a one-shot WS that sends only provisional metadata", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = lastWs();
+      ws.emit("message", JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_waiting" },
+      }));
+      ws.emit("message", JSON.stringify({
+        type: "codex.response.metadata",
+        headers: { "x-test": "1" },
+      }));
+
+      await vi.advanceTimersByTimeAsync(180_000);
+
+      await expect(promise).rejects.toThrow("WebSocket response start timeout after 180000ms");
+      expect(ws.readyState).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the one-shot deadline after the first client-visible event", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = lastWs();
+      ws.emit("message", JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_started" },
+      }));
+      ws.emit("message", JSON.stringify({
+        type: "response.output_text.delta",
+        delta: "started",
+      }));
+      const response = await promise;
+
+      await vi.advanceTimersByTimeAsync(360_000);
+
+      expect(ws.readyState).toBe(1);
+      ws.emit("message", JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_started" },
+      }));
+      await expect(readStream(response)).resolves.toContain("response.completed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores codex.rate_limits for early response resolution", async () => {
     let rateLimitCalled = false;
     const onRateLimits = () => { rateLimitCalled = true; };

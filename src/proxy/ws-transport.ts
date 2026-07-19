@@ -24,6 +24,7 @@ import { CodexApiError, PreviousResponseWebSocketError } from "./codex-types.js"
 import { getProxyUrl } from "../tls/proxy.js";
 import { isPreviousResponseNotFoundError } from "./error-classification.js";
 import {
+  DEFAULT_WS_RESPONSE_START_TIMEOUT_MS,
   PersistentWs,
   WsReusedConnectionError,
   type PersistentWsHooks,
@@ -362,6 +363,7 @@ async function openOneShotWs(
     let expectedCloseBeforeOpen = false;
     const earlyMetadataChunks: Uint8Array[] = [];
     let pingTimer: ReturnType<typeof setInterval> | undefined;
+    let responseStartTimer: ReturnType<typeof setTimeout> | undefined;
 
     // Open timeout: if the WS handshake never completes, reject after 20s.
     const openTimer = setTimeout(() => {
@@ -373,8 +375,15 @@ async function openOneShotWs(
       }
     }, 20_000);
 
+    function clearResponseStartTimer() {
+      if (!responseStartTimer) return;
+      clearTimeout(responseStartTimer);
+      responseStartTimer = undefined;
+    }
+
     function cleanupTimers() {
       clearTimeout(openTimer);
+      clearResponseStartTimer();
       if (pingTimer) {
         clearInterval(pingTimer);
         pingTimer = undefined;
@@ -420,6 +429,7 @@ async function openOneShotWs(
     function resolveResponse() {
       if (earlyDecisionMade) return;
       earlyDecisionMade = true;
+      clearResponseStartTimer();
       resolve(buildResponse());
       for (const chunk of earlyMetadataChunks.splice(0)) {
         enqueueChunk(chunk);
@@ -472,6 +482,16 @@ async function openOneShotWs(
       console.log(`[WS-Open] 🟢 WebSocket successfully opened for request. wsUrl: ${wsUrl}`);
       clearTimeout(openTimer);
       ws.send(JSON.stringify(request));
+      responseStartTimer = setTimeout(() => {
+        if (earlyDecisionMade) return;
+        earlyDecisionMade = true;
+        cleanupTimers();
+        closeWs(1000, "response start timeout");
+        reject(new Error(
+          `WebSocket response start timeout after ${DEFAULT_WS_RESPONSE_START_TIMEOUT_MS}ms`,
+        ));
+      }, DEFAULT_WS_RESPONSE_START_TIMEOUT_MS);
+      responseStartTimer.unref?.();
       pingTimer = setInterval(() => {
         try { ws.ping(); } catch { /* ws already closed */ }
       }, 25_000);

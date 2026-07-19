@@ -266,10 +266,17 @@ describe("createWebSocketResponse", () => {
     await expect(promise).rejects.toThrow("WebSocket closed before terminal event");
   });
 
-  it("rejects and closes a one-shot WS that sends only provisional metadata", async () => {
+  it("rejects, detaches abort handling, and closes a metadata-only one-shot WS", async () => {
     vi.useFakeTimers();
     try {
-      const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+      const abortController = new AbortController();
+      const removeAbortListener = vi.spyOn(abortController.signal, "removeEventListener");
+      const promise = createWebSocketResponse(
+        "wss://test/ws",
+        {},
+        BASE_REQUEST,
+        abortController.signal,
+      );
       promise.catch(() => undefined);
       await vi.advanceTimersByTimeAsync(0);
       const ws = lastWs();
@@ -282,8 +289,9 @@ describe("createWebSocketResponse", () => {
         headers: { "x-test": "1" },
       }));
 
-      await vi.advanceTimersByTimeAsync(180_000);
+      vi.advanceTimersByTime(180_000);
 
+      expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
       await expect(promise).rejects.toThrow("WebSocket response start timeout after 180000ms");
       expect(ws.readyState).toBe(3);
     } finally {

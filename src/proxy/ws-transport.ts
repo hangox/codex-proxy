@@ -484,12 +484,13 @@ async function openOneShotWs(
       ws.send(JSON.stringify(request));
       responseStartTimer = setTimeout(() => {
         if (earlyDecisionMade) return;
-        earlyDecisionMade = true;
-        cleanupTimers();
-        closeWs(1000, "response start timeout");
-        reject(new Error(
+        const timeoutError = new Error(
           `WebSocket response start timeout after ${DEFAULT_WS_RESPONSE_START_TIMEOUT_MS}ms`,
-        ));
+        );
+        earlyDecisionMade = true;
+        errorStream(timeoutError);
+        closeWs(1000, "response start timeout");
+        reject(timeoutError);
       }, DEFAULT_WS_RESPONSE_START_TIMEOUT_MS);
       responseStartTimer.unref?.();
       pingTimer = setInterval(() => {

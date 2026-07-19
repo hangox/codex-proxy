@@ -184,6 +184,29 @@ describe("PersistentWs", () => {
       expect(onDead).toHaveBeenCalledTimes(1);
     });
 
+    it("classifies a continuation timeout as a reused-connection failure", async () => {
+      const { ws, persistent } = newPersistentWs({ pingIntervalMs: 0 });
+      persistent.tryAcquire();
+      const promise = persistent.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: true,
+        responseStartTimeoutMs: 1_000,
+      });
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      ws.pushMessage({ type: "response.created", response: { id: "resp_waiting" } });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).rejects.toMatchObject({
+        name: "WsReusedConnectionError",
+        message: "WebSocket response start timeout after 1000ms",
+      });
+      expect(persistent.isAlive()).toBe(false);
+    });
+
     it("clears the deadline after the first client-visible event", async () => {
       const { ws, persistent } = newPersistentWs({ pingIntervalMs: 0 });
       persistent.tryAcquire();

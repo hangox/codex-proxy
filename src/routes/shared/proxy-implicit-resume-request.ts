@@ -1,7 +1,6 @@
 import type { ProxyRequest, UsageHint } from "./proxy-handler-types.js";
 
 export interface ImplicitResumeAffinityLookup {
-  lookupTurnState(responseId: string): string | null;
   lookupInputTokens(responseId: string): number | null;
 }
 
@@ -55,9 +54,6 @@ export function applyImplicitResumeRequest(
     ...reasoningReplayItems,
     ...request.codexRequest.input.slice(continuationInputStart),
   ];
-  const implicitTurnState = affinityMap.lookupTurnState(implicitPrevRespId);
-  if (implicitTurnState) request.codexRequest.turnState = implicitTurnState;
-
   return {
     reusedInputTokensUpperBound: affinityMap.lookupInputTokens(implicitPrevRespId) ?? undefined,
   };

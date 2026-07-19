@@ -74,6 +74,16 @@ describe("classifyRetryAction", () => {
     });
   });
 
+  it("fails closed instead of stripping an explicit previous_response_id", () => {
+    const result = classifyRetryAction(prevRespNotFound, {
+      ...defaultState,
+      previousResponseId: "resp_explicit",
+      explicitPreviousResponseId: true,
+    }, neverReplayable);
+
+    expect(result).toEqual({ type: "error_handler_decides" });
+  });
+
   describe("priority 3: error handler", () => {
     it("delegates 429 to error handler", () => {
       const result = classifyRetryAction(rateLimitErr, defaultState, neverReplayable);

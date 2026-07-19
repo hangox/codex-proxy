@@ -6,7 +6,7 @@ import type { AccountPool } from "../../auth/account-pool.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import { EmptyResponseError, UpstreamPrematureCloseError } from "../../translation/codex-event-extractor.js";
-import type { SessionAffinityMap } from "../../auth/session-affinity.js";
+import type { ChainAdvanceTicket, SessionAffinityMap } from "../../auth/session-affinity.js";
 import type { FormatAdapter, ProxyRequest, UsageHint } from "./proxy-handler-types.js";
 import {
   retryNonStreamingEmptyResponse,
@@ -48,6 +48,7 @@ export interface HandleNonStreamingOptions {
   buildPoolCtx?: (forEntryId: string) => WsPoolContext | undefined;
   setActiveAccount?: (entryId: string, api: CodexApi) => void;
   variantHash?: string;
+  chainAdvanceTicket?: ChainAdvanceTicket;
 }
 
 export async function handleNonStreaming(options: HandleNonStreamingOptions): Promise<Response> {
@@ -72,6 +73,7 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
     buildPoolCtx,
     setActiveAccount,
     variantHash,
+    chainAdvanceTicket,
   } = options;
   let currentEntryId = initialEntryId;
   let currentApi = initialApi;
@@ -108,6 +110,7 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         inputTokens: result.usage.input_tokens,
         responseFunctionCallIds,
         variantHash,
+        chainAdvanceTicket,
       });
       if (result.responseId && conversationId && variantHash && reasoningReplayItems.length > 0) {
         getReasoningReplayCache().record({

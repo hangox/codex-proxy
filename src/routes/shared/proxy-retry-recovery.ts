@@ -19,6 +19,24 @@ export type ProxyRetryRecoveryDecision =
   }
   | { action: "none" };
 
+export interface InvalidateRejectedPreviousResponseOptions {
+  err: unknown;
+  previousResponseId: string | undefined;
+  affinityMap: Pick<SessionAffinityMap, "forget">;
+  forgetResponseOwner: (responseId: string) => void;
+}
+
+/** Clear both logical and physical ownership after upstream explicitly rejects an ID. */
+export function invalidateRejectedPreviousResponse(
+  options: InvalidateRejectedPreviousResponseOptions,
+): boolean {
+  const { err, previousResponseId, affinityMap, forgetResponseOwner } = options;
+  if (!previousResponseId || !isPreviousResponseNotFoundError(err)) return false;
+  forgetResponseOwner(previousResponseId);
+  affinityMap.forget(previousResponseId);
+  return true;
+}
+
 export interface BuildProxyRetryRecoveryDecisionOptions {
   err: unknown;
   tag: string;
@@ -94,6 +112,9 @@ export function applyProxyRetryRecoveryDecision(
   restoreImplicitResumeRequest();
   request.codexRequest.previous_response_id = undefined;
   request.codexRequest.turnState = undefined;
+  // This path now applies only to an implicit chain, for which the proxy owns
+  // a full request snapshot. Rebuild an owner on WebSocket when possible.
+  request.codexRequest.useWebSocket = true;
   return true;
 }
 
@@ -132,6 +153,17 @@ export function applyCascadingBanDefense({
     acquiredEntryId === preferredEntryId ||
     (!request.codexRequest.previous_response_id && !request.codexRequest.turnState)
   ) {
+    return false;
+  }
+
+  // An explicit Responses continuation may contain only the current delta.
+  // Keep the ID intact: the physical-owner guard will fail closed before any
+  // cross-account WebSocket send instead of silently dropping history.
+  if (explicitPrevRespId) {
+    console.warn(
+      `[${tag}] Account switched from explicit response owner ${preferredEntryId} to ${acquiredEntryId}; ` +
+      `preserving previous_response_id for fail-closed continuity enforcement`,
+    );
     return false;
   }
 

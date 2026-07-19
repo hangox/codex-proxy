@@ -19,6 +19,9 @@ export interface RetryState {
   modelRetried: boolean;
   implicitResumeActive: boolean;
   previousResponseId: string | undefined;
+  /** True when the downstream client supplied previous_response_id explicitly.
+   *  The proxy has no guaranteed full transcript for this request. */
+  explicitPreviousResponseId?: boolean;
 }
 
 export type RetryAction =
@@ -53,8 +56,10 @@ export function classifyRetryAction(
     return { type: "implicit_resume_replay" };
   }
 
-  // Priority 2: strip stale previous_response_id (only once)
-  if (!state.stripAndRetryDone) {
+  // Priority 2: strip stale implicit previous_response_id (only once).
+  // Explicit Responses continuations may contain delta-only input, so stripping
+  // their ID would silently lose history; fail closed through the error handler.
+  if (!state.stripAndRetryDone && !state.explicitPreviousResponseId) {
     if (isPreviousResponseNotFoundError(err)) {
       return { type: "strip_and_retry", kind: "previous_response_not_found" };
     }

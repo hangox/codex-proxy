@@ -290,19 +290,16 @@ describe("createWebSocketResponse", () => {
     ws.close();
   });
 
-  it("passes previous_response_id without store/stream fields", async () => {
+  it("fails closed before opening a one-shot when previous_response_id has no pool owner", async () => {
     const req: WsCreateRequest = {
       ...BASE_REQUEST,
       previous_response_id: "resp_prev_123",
     };
 
-    const { ws } = await startConnect(req);
-    const sent = JSON.parse(ws.sentMessages[0]);
-    expect(sent.previous_response_id).toBe("resp_prev_123");
-    expect(sent.store).toBeUndefined();
-    expect(sent.stream).toBeUndefined();
-
-    ws.close();
+    await expect(createWebSocketResponse("wss://test/ws", {}, req)).rejects.toMatchObject({
+      name: "PreviousResponseWebSocketError",
+    });
+    expect(wsInstances).toHaveLength(0);
   });
 
   it("preserves message ordering", async () => {

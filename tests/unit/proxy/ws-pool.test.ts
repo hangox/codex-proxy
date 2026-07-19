@@ -588,6 +588,147 @@ describe("WsConnectionPool", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
+  it("registers a response owner only after response.completed", async () => {
+    const { factory, created } = makeFactory();
+    const acquired = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in acquired)) throw new Error("expected acquire success");
+    const send = acquired.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: false,
+    });
+    const mock = created[0]["ws"] as unknown as MockWs;
+    mock.pushMessage({ type: "response.created", response: { id: "resp_A" } });
+    expect(pool.ownerWsId("resp_A")).toBeNull();
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_A" } });
+    await send;
+    expect(pool.ownerWsId("resp_A")).toBe(acquired.ws.id);
+  });
+
+  it("keeps only the most recent response owner per physical WS", async () => {
+    const { factory, created } = makeFactory();
+    const first = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in first)) throw new Error("expected acquire success");
+    const mock = created[0]["ws"] as unknown as MockWs;
+    const firstSend = first.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: false,
+    });
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_A" } });
+    await firstSend;
+    await nextTick();
+
+    const second = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in second)) throw new Error("expected acquire success");
+    const secondSend = second.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: true,
+    });
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_B" } });
+    await secondSend;
+
+    expect(pool.ownerWsId("resp_A")).toBeNull();
+    expect(pool.ownerWsId("resp_B")).toBe(second.ws.id);
+  });
+
+  it("acquireForResponse fails closed on missing, busy, dead, and account-mismatched owners", async () => {
+    const { factory, created } = makeFactory();
+    expect(pool.acquireForResponse("entry-A", "resp_missing")).toEqual({ bypass: "missing_owner" });
+
+    const acquired = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in acquired)) throw new Error("expected acquire success");
+    const mock = created[0]["ws"] as unknown as MockWs;
+    const send = acquired.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: false,
+    });
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_A" } });
+    await send;
+    await nextTick();
+
+    expect(pool.acquireForResponse("entry-B", "resp_A")).toEqual({ bypass: "account_mismatch" });
+    const owner = pool.acquireForResponse("entry-A", "resp_A");
+    expect("ws" in owner).toBe(true);
+    expect(pool.acquireForResponse("entry-A", "resp_A")).toEqual({ bypass: "busy" });
+    mock.pushClose(1006, "gone");
+    expect(pool.acquireForResponse("entry-A", "resp_A")).toEqual({ bypass: "missing_owner" });
+  });
+
+  it("does not let a discarded same-key factory loser remove the winning connection", async () => {
+    const pending: Array<{
+      deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks };
+      resolve: (ws: PersistentWs) => void;
+    }> = [];
+    const factory = vi.fn((deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) =>
+      new Promise<PersistentWs>((resolve) => pending.push({ deps, resolve })),
+    );
+
+    const firstPromise = pool.acquire("entry-A", "entry-A:conv-race", factory);
+    const secondPromise = pool.acquire("entry-A", "entry-A:conv-race", factory);
+    await nextTick();
+    expect(pending).toHaveLength(2);
+
+    const winner = new PersistentWs({
+      ws: new MockWs(),
+      entryId: pending[1].deps.entryId,
+      poolKey: pending[1].deps.poolKey,
+      hooks: pending[1].deps.hooks,
+    });
+    pending[1].resolve(winner);
+    const second = await secondPromise;
+    expect("ws" in second && second.ws).toBe(winner);
+
+    const loser = new PersistentWs({
+      ws: new MockWs(),
+      entryId: pending[0].deps.entryId,
+      poolKey: pending[0].deps.poolKey,
+      hooks: pending[0].deps.hooks,
+    });
+    pending[0].resolve(loser);
+    expect(await firstPromise).toEqual({ bypass: "busy" });
+    await nextTick();
+
+    expect(pool.size()).toBe(1);
+    expect(pool.countByEntryId("entry-A")).toBe(1);
+  });
+
+  it("expires a response owner before allowing continuation", async () => {
+    let now = 0;
+    const expiringPool = new WsConnectionPool({ maxAgeMs: 100 }, { startGc: false });
+    const mock = new MockWs();
+    const factory = vi.fn(async (deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) =>
+      new PersistentWs({ ...deps, ws: mock, now: () => now }),
+    );
+    try {
+      const acquired = await expiringPool.acquire("entry-A", "entry-A:conv-expire", factory);
+      if (!("ws" in acquired)) throw new Error("expected acquire success");
+      const sent = acquired.ws.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: false,
+      });
+      mock.pushMessage({ type: "response.completed", response: { id: "resp_expired" } });
+      await sent;
+      await nextTick();
+      expect(expiringPool.ownerWsId("resp_expired")).toBe(acquired.ws.id);
+
+      now = 101;
+      expect(expiringPool.acquireForResponse("entry-A", "resp_expired")).toEqual({ bypass: "expired" });
+      expect(expiringPool.ownerWsId("resp_expired")).toBeNull();
+      expect(expiringPool.size()).toBe(0);
+    } finally {
+      await expiringPool.shutdown();
+    }
+  });
+
   it("evictByEntryId closes all connections for that entry and frees the cap", async () => {
     const capped = new WsConnectionPool({ maxPerAccount: 2 }, { startGc: false });
     const { factory } = makeFactory();

@@ -649,6 +649,8 @@ export interface PersistentWsFactory {
 export class WsConnectionPool {
   private readonly map = new Map<string, PersistentWs>();
   private readonly byEntry = new Map<string, Set<string>>();
+  /** In-progress factories count against the per-account cap. */
+  private readonly pendingCreatesByEntry = new Map<string, number>();
   /** Response IDs are valid only on the physical WS that completed them. */
   private readonly ownerByResponse = new Map<string, string>();
   /** The upstream keeps only the most recent response per physical WS. */
@@ -700,32 +702,40 @@ export class WsConnectionPool {
       return { bypass: "busy" };
     }
 
-    // Miss: enforce per-account cap before creating.
+    // Miss: reserve capacity before awaiting the factory so concurrent
+    // different-key acquires cannot all pass the same per-account cap check.
     const keys = this.byEntry.get(entryId);
-    if (keys && keys.size >= this.config.maxPerAccount) {
+    const pendingCreates = this.pendingCreatesByEntry.get(entryId) ?? 0;
+    if ((keys?.size ?? 0) + pendingCreates >= this.config.maxPerAccount) {
       return { bypass: "cap" };
     }
+    this.pendingCreatesByEntry.set(entryId, pendingCreates + 1);
 
     let freshRef: PersistentWs | undefined;
-    const fresh = await factory({
-      entryId,
-      poolKey,
-      hooks: {
-        onDead: () => {
-          // A same-key connection may have won the factory race. Never let a
-          // discarded fresh connection remove that winner from the pool.
-          if (freshRef && this.map.get(poolKey) === freshRef) {
-            this.removeEntryByKey(poolKey);
-          }
+    let fresh: PersistentWs;
+    try {
+      fresh = await factory({
+        entryId,
+        poolKey,
+        hooks: {
+          onDead: () => {
+            // A same-key connection may have won the factory race. Never let a
+            // discarded fresh connection remove that winner from the pool.
+            if (freshRef && this.map.get(poolKey) === freshRef) {
+              this.removeEntryByKey(poolKey);
+            }
+          },
+          onResponseCompleted: (responseId) => {
+            if (freshRef && this.map.get(poolKey) === freshRef) {
+              this.registerResponseOwner(poolKey, responseId);
+            }
+          },
         },
-        onResponseCompleted: (responseId) => {
-          if (freshRef && this.map.get(poolKey) === freshRef) {
-            this.registerResponseOwner(poolKey, responseId);
-          }
-        },
-      },
-    });
-    freshRef = fresh;
+      });
+      freshRef = fresh;
+    } finally {
+      this.releasePendingCreate(entryId);
+    }
 
     // Race: another acquire for the same key may have completed during
     // factory() await. If so, prefer the one already in the map.
@@ -842,6 +852,7 @@ export class WsConnectionPool {
     // acquires would fail the disabled check anyway.
     this.map.clear();
     this.byEntry.clear();
+    this.pendingCreatesByEntry.clear();
     this.ownerByResponse.clear();
     this.responseByPoolKey.clear();
   }
@@ -854,6 +865,15 @@ export class WsConnectionPool {
         ws.closeGracefully();
       }
     }
+  }
+
+  private releasePendingCreate(entryId: string): void {
+    const pendingCreates = this.pendingCreatesByEntry.get(entryId);
+    if (!pendingCreates || pendingCreates <= 1) {
+      this.pendingCreatesByEntry.delete(entryId);
+      return;
+    }
+    this.pendingCreatesByEntry.set(entryId, pendingCreates - 1);
   }
 
   private registerResponseOwner(poolKey: string, responseId: string): void {

@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "child_process";
 import { createServer, type Server } from "http";
+import type { AddressInfo } from "net";
 
 let server: Server;
 let responseStatus = 200;
+let serverPort: number;
 
 beforeAll(async () => {
   server = createServer((_req, res) => {
@@ -13,7 +15,10 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(8080, "127.0.0.1", () => resolve());
+    server.listen(0, "127.0.0.1", () => {
+      serverPort = (server.address() as AddressInfo).port;
+      resolve();
+    });
   });
 });
 
@@ -37,6 +42,7 @@ function runHealthcheck(): Promise<number | null> {
         all_proxy: "http://127.0.0.1:9",
         NO_PROXY: "",
         no_proxy: "",
+        PORT: String(serverPort),
       },
       stdio: "ignore",
     });

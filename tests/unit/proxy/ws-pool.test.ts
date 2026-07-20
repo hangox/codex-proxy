@@ -646,6 +646,51 @@ describe("WsConnectionPool", () => {
     await capped.shutdown();
   });
 
+  it("counts pending factories against the per-account cap", async () => {
+    const capped = new WsConnectionPool({ maxPerAccount: 1 }, { startGc: false });
+    let resolveFactory: ((ws: PersistentWs) => void) | undefined;
+    const factory = vi.fn((deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) =>
+      new Promise<PersistentWs>((resolve) => {
+        resolveFactory = resolve;
+      }),
+    );
+
+    const firstPromise = capped.acquire("entry-A", "entry-A:conv-1", factory);
+    await nextTick();
+    const second = await capped.acquire("entry-A", "entry-A:conv-2", factory);
+
+    expect(second).toEqual({ bypass: "cap" });
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    const firstDeps = factory.mock.calls[0][0];
+    resolveFactory?.(new PersistentWs({
+      ws: new MockWs(),
+      entryId: firstDeps.entryId,
+      poolKey: firstDeps.poolKey,
+      hooks: firstDeps.hooks,
+    }));
+    await expect(firstPromise).resolves.toMatchObject({ reused: false });
+    expect(capped.countByEntryId("entry-A")).toBe(1);
+    await capped.shutdown();
+  });
+
+  it("releases pending capacity when a factory fails", async () => {
+    const capped = new WsConnectionPool({ maxPerAccount: 1 }, { startGc: false });
+    const failedFactory = vi.fn(async () => {
+      throw new Error("connect failed");
+    });
+    await expect(
+      capped.acquire("entry-A", "entry-A:conv-failed", failedFactory),
+    ).rejects.toThrow("connect failed");
+
+    const { factory } = makeFactory();
+    await expect(
+      capped.acquire("entry-A", "entry-A:conv-retry", factory),
+    ).resolves.toMatchObject({ reused: false });
+    expect(factory).toHaveBeenCalledTimes(1);
+    await capped.shutdown();
+  });
+
   it("dead connection is treated as a miss on next acquire", async () => {
     const factories: MockWs[] = [];
     const factory = vi.fn(async (deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) => {

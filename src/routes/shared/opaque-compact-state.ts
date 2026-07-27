@@ -88,25 +88,12 @@ function canonicalJson(value: unknown): string {
       .sort(([left], [right]) => left.localeCompare(right));
     return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
   }
-  return JSON.stringify(value);
-}
-
-function canonicalStructuredString(value: string): string {
-  try {
-    return canonicalJson(JSON.parse(value));
-  } catch {
-    return value;
-  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 function canonicalPreservedToolItem(item: CodexInputItem): string {
-  if (!("type" in item)) return canonicalJson(item);
-  if (item.type === "function_call") {
-    return canonicalJson({ ...item, arguments: canonicalStructuredString(item.arguments) });
-  }
-  if (item.type === "function_call_output") {
-    return canonicalJson({ ...item, output: canonicalStructuredString(item.output) });
-  }
+  // arguments/output 是上游协议的原始字符串。不能 JSON.parse 后再比较，否则超过
+  // Number.MAX_SAFE_INTEGER 的数字、-0 和指数写法会发生精度或词法折叠。
   return canonicalJson(item);
 }
 
@@ -281,29 +268,68 @@ function stripMarkerReferences(item: CodexInputItem, marker: string): CodexInput
   return content.length > 0 ? { ...item, content } as CodexInputItem : null;
 }
 
+function findOpaqueMarkerBoundaryIndex(input: CodexInputItem[], marker: string): number {
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index]!;
+    if (!("role" in item)) continue;
+    if (typeof item.content === "string") {
+      if (markerBoundary(item.content, marker) !== null) return index;
+      continue;
+    }
+    if (item.content.some((part) =>
+      (part.type === "input_text" || part.type === "output_text") && markerBoundary(part.text, marker) !== null)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+export function removeOpaquePreservedTailReplay(
+  input: CodexInputItem[],
+  marker: string,
+  preservedTail: CodexInputItem[],
+): CodexInputItem[] {
+  if (preservedTail.length === 0) return input;
+  const boundaryIndex = findOpaqueMarkerBoundaryIndex(input, marker);
+  if (boundaryIndex < 0) throw new OpaqueCompactStateError("preserved_tail_conflict");
+
+  const expected = new Map<string, string>();
+  for (const item of preservedTail) {
+    const key = preservedToolItemKey(item);
+    if (key === null || expected.has(key)) throw new OpaqueCompactStateError("preserved_tail_conflict");
+    expected.set(key, canonicalPreservedToolItem(item));
+  }
+
+  const seen = new Set<string>();
+  const retained: CodexInputItem[] = [];
+  for (const [index, item] of input.entries()) {
+    if (index <= boundaryIndex) {
+      retained.push(item);
+      continue;
+    }
+    const key = preservedToolItemKey(item);
+    if (key === null || !expected.has(key)) {
+      retained.push(item);
+      continue;
+    }
+    if (seen.has(key) || canonicalPreservedToolItem(item) !== expected.get(key)) {
+      throw new OpaqueCompactStateError("preserved_tail_conflict");
+    }
+    seen.add(key);
+  }
+
+  if (seen.size === 0) return input;
+  if (seen.size !== expected.size) throw new OpaqueCompactStateError("preserved_tail_conflict");
+  return retained;
+}
+
 export function restoreOpaqueCompactInput(
   input: CodexInputItem[],
   marker: string,
   output: unknown[],
   preservedTail: CodexInputItem[] = [],
 ): CodexInputItem[] {
-  let boundaryIndex = -1;
-  for (let index = input.length - 1; index >= 0; index -= 1) {
-    const item = input[index]!;
-    if (!("role" in item)) continue;
-    if (typeof item.content === "string") {
-      if (markerBoundary(item.content, marker) !== null) {
-        boundaryIndex = index;
-        break;
-      }
-      continue;
-    }
-    if (item.content.some((part) =>
-      (part.type === "input_text" || part.type === "output_text") && markerBoundary(part.text, marker) !== null)) {
-      boundaryIndex = index;
-      break;
-    }
-  }
+  const boundaryIndex = findOpaqueMarkerBoundaryIndex(input, marker);
   if (boundaryIndex < 0) return [...output as CodexInputItem[], ...preservedTail];
 
   const retained: CodexInputItem[] = [];

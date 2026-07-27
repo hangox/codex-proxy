@@ -691,8 +691,11 @@ describe("E2E: POST /v1/messages", () => {
           stream: true,
           messages: [
             { role: "assistant", content: markerOne },
-            { role: "assistant", content: [oldCall, newCall] },
-            { role: "user", content: [oldResult, newResult, { type: "text", text: compactPrompt }] },
+            { role: "assistant", content: [oldCall] },
+            { role: "user", content: [oldResult] },
+            { role: "user", content: "continuation between preserved chains" },
+            { role: "assistant", content: [newCall] },
+            { role: "user", content: [newResult, { type: "text", text: compactPrompt }] },
           ],
         }), { "x-claude-code-session-id": "session-repeat-compact" });
         const markerTwo = extractMarkerFromResponse(await second.text());
@@ -714,6 +717,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(urls[2]).not.toContain("/compact");
         expect(JSON.stringify(bodies[0])).not.toContain("old-tool-canary");
         expect(JSON.stringify(bodies[1])).toContain("opaque-generation-one");
+        expect(JSON.stringify(bodies[1])).toContain("continuation between preserved chains");
         expect(JSON.stringify(bodies[1])).not.toContain("old-tool-canary");
         expect(JSON.stringify(bodies[1])).not.toContain("new-tool-canary");
         expect(JSON.stringify(bodies[1])).not.toContain("codex-opaque-state:v1");
@@ -761,6 +765,43 @@ describe("E2E: POST /v1/messages", () => {
 
         expect(conflicting.status).toBe(409);
         expect(await conflicting.text()).toContain("could not be compacted on its original account");
+        expect(urls).toHaveLength(1);
+        expect(urls[0]).toContain("/codex/responses/compact");
+      });
+
+      it("opaque compact bridge: rejects a partial replay of a preserved tail", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        const urls: string[] = [];
+        setTransportPost(async (url) => {
+          urls.push(url);
+          return makeErrorTransportResponse(200, JSON.stringify({
+            output: [{ type: "reasoning", encrypted_content: "opaque-partial", summary: [] }],
+          }));
+        });
+
+        const first = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: [{ type: "tool_use", id: "tool-partial", name: "Read", input: { file_path: "/tmp/a" } }] },
+            { role: "user", content: [
+              { type: "tool_result", tool_use_id: "tool-partial", content: "original" },
+              { type: "text", text: compactPrompt },
+            ] },
+          ],
+        }), { "x-claude-code-session-id": "session-repeat-partial" });
+        const marker = extractMarkerFromResponse(await first.text());
+
+        const partial = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: marker },
+            { role: "assistant", content: [{ type: "tool_use", id: "tool-partial", name: "Read", input: { file_path: "/tmp/a" } }] },
+            { role: "user", content: compactPrompt },
+          ],
+        }), { "x-claude-code-session-id": "session-repeat-partial" });
+
+        expect(partial.status).toBe(409);
+        expect(await partial.text()).toContain("could not be compacted on its original account");
         expect(urls).toHaveLength(1);
         expect(urls[0]).toContain("/codex/responses/compact");
       });

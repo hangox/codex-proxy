@@ -10,6 +10,7 @@ import {
   extractOpaqueCompactStateMarker,
   mergeOpaquePreservedTails,
   opaqueCompactStateStore,
+  removeOpaquePreservedTailReplay,
   restoreOpaqueCompactInput,
 } from "./opaque-compact-state.js";
 
@@ -101,6 +102,11 @@ export async function respondWithOpaqueCompactMarker(options: {
     opaqueRequest.preservedTail,
   );
   if (previousMarker && previousOutput) {
+    compactRequest.input = removeOpaquePreservedTailReplay(
+      compactRequest.input,
+      previousMarker,
+      previousPreservedTail ?? [],
+    );
     compactRequest.input = restoreOpaqueCompactInput(compactRequest.input, previousMarker, previousOutput);
   }
   const compact = await executeCompactOnly({

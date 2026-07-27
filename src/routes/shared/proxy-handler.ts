@@ -299,8 +299,12 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
         continue;
       }
 
+      // opaque restore 之后的 continuation 也走这条路径。safeLog 必须跟随
+      // hard-bound 标志，否则 429/401/403/CF 等分支仍会打印明文账号与邮箱，
+      // 并写进持久化 error log。
       const decision = handleCodexApiError(
         err, accountPool, entryId, req.codexRequest.model, fmt.tag, modelRetried, cookieJar,
+        req.requiredAccountEntryId !== undefined,
       );
       if (req.requiredAccountEntryId !== undefined && decision.action === "retry") {
         releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);

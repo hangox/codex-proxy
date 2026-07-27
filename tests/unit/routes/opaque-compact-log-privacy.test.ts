@@ -61,6 +61,37 @@ describe("opaque restore 诊断日志", () => {
   });
 });
 
+describe("redactJson — 值级第二道防线", () => {
+  it("marker 出现在任意字段都被抹掉，包括裸字符串", async () => {
+    const { redactJson } = await import("@src/logs/redact.js");
+    const marker =
+      "<analysis>Opaque compact state retained locally.</analysis>\n" +
+      "<summary>codex-opaque-state:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:BBBB:CCCC</summary>";
+
+    // 主防线是路由层"opaque 请求不捕获 body"，但那依赖一串 if 判定正确。
+    // 这里是第二道：marker 无论藏在哪个字段都不得原样落盘。
+    const redactedBare = redactJson(marker);
+    expect(String(redactedBare)).not.toContain("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+    const nested = redactJson({
+      messages: [{ role: "assistant", content: marker }],
+      note: `prefix ${marker} suffix`,
+    });
+    expect(JSON.stringify(nested)).not.toContain("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  });
+
+  it("encrypted_content / preservedTail 按 key 名整体脱敏", async () => {
+    const { redactJson } = await import("@src/logs/redact.js");
+    const redacted = redactJson({
+      output: [{ type: "reasoning", encrypted_content: "opaque-secret-canary" }],
+      preservedTail: [{ type: "function_call_output", output: "tool-secret-canary" }],
+    });
+    const text = JSON.stringify(redacted);
+    expect(text).not.toContain("opaque-secret-canary");
+    expect(text).not.toContain("tool-secret-canary");
+  });
+});
+
 describe("源码级合同 — 相关模块不得出现明文账号模板", () => {
   it.each([
     "opaque-compact-bridge.ts",
@@ -73,6 +104,7 @@ describe("源码级合同 — 相关模块不得出现明文账号模板", () =>
     "non-streaming-empty-response-exhausted.ts",
     "non-streaming-premature-close.ts",
     "proxy-retry-recovery.ts",
+    "non-streaming-empty-response-retry.ts",
   ])("%s 不含 entry=${entryId} / Account ${entryId} 模板", async (file) => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
@@ -84,6 +116,8 @@ describe("源码级合同 — 相关模块不得出现明文账号模板", () =>
     expect(source).not.toMatch(/entry=\$\{entryId\}/);
     expect(source).not.toMatch(/entry=\$\{lease\.entryId\}/);
     expect(source).not.toMatch(/Account \$\{entryId\}/);
+    // 空响应重试用的是 currentEntryId，此前漏在扫描之外。
+    expect(source).not.toMatch(/Account \$\{currentEntryId\}/);
   });
 
   it("proxy-error-handler 的 safeLog 分支不输出 entryId/email", async () => {

@@ -612,11 +612,16 @@ export class OpaqueCompactStateStore {
   }
 
   delete(marker: string): void {
+    let stateId: string;
     try {
-      this.deleteState(this.parse(marker).stateId);
+      stateId = this.parse(marker).stateId;
     } catch {
-      // Invalid markers have no state to delete.
+      // 只有 marker 本身无法解析才可忽略——那种情况下根本没有对应的 state。
+      return;
     }
+    // 持久化删除失败（权限/IO/损坏）必须向上传播：吞掉会让 store 故障
+    // 伪装成"删除成功"，readiness 也不会反映真实状态。
+    this.deleteState(stateId);
   }
 
   size(): number {
@@ -874,6 +879,77 @@ export function getOpaqueCompactStateReadiness(): {
 } {
   if (runtimeStore !== null) return { ready: true, reason: null };
   return { ready: false, reason: runtimeUnavailableReason ?? "store_unavailable" };
+}
+
+/**
+ * 判定一个失败是否属于"store 本身坏了"。
+ *
+ * 这类错误不能只影响当前请求：它们意味着后续请求同样不可信，因此必须原子地
+ * 把 runtime 转成 NOT_READY 并保留稳定 reason。相对地，session/model/variant
+ * 不匹配、marker 过期、CAS 落败等是**单请求**语义错误，store 依然健康。
+ */
+function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
+  switch (reason) {
+    case "store_unavailable":
+    case "store_locked":
+    case "schema_unsupported":
+    case "key_unavailable":
+    case "key_mismatch":
+    case "state_corrupt":
+    case "store_reset_detected":
+    case "key_policy_invalid":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * 统一的动态故障入口。
+ *
+ * 运行期发现 store 级故障时调用：原子移除 runtimeStore、记录精确 reason，
+ * 于是当前请求、后续请求、/health 与 Admin readiness 拿到的是**同一个**
+ * 机器可判定的原因，而不是"当前请求泛化 409、readiness 仍显示 ready"。
+ */
+export function reportOpaqueCompactStoreFault(error: unknown): OpaqueCompactStateFailure | null {
+  // 只有 store 自己抛出的结构化错误才可能是 store 故障。上游 4xx/5xx、网络
+  // 错误等一律不是——把它们也判成 fault 会让一次普通的上游失败把整个
+  // opaque 功能打成 NOT_READY，并且阻断本该允许的首次 compact 回退。
+  if (!(error instanceof OpaqueCompactStateError)) return null;
+  const reason = error.reason;
+  if (!isFatalStoreFailure(reason)) return null;
+  setOpaqueCompactStateUnavailable(reason);
+  console.warn(`[ClaudeOpaqueCompact] phase=store_fault reason=${reason}`);
+  return reason;
+}
+
+/**
+ * 冷启动语义校验：解封后的 payload 必须结构合法，且关键字段与行元数据一致。
+ * 供 repository 在 recover 阶段调用（注入方式避免循环依赖）。
+ */
+export function validatePersistedPayloadForRecovery(
+  keyring: OpaqueCompactKeyring,
+  repository: OpaqueCompactRepository,
+  plaintext: Buffer,
+  meta: OpaqueCompactRecordMeta,
+): boolean {
+  let payload: PersistedStatePayload;
+  try {
+    payload = parsePersistedPayload(plaintext);
+  } catch {
+    return false;
+  }
+  // 时间字段必须与行元数据一致：任一侧漂移都说明记录不可信。
+  if (payload.createdAt !== meta.createdAt || payload.expiresAt !== meta.expiresAt) return false;
+  // binding 必须能由 payload 自身的 session/model/variant 重算出来，
+  // 否则索引与内容已经对不上（迁移 bug 或人为拼装）。
+  if (repository.bindingFor(payload.sessionId, payload.model, payload.variantHash) !== meta.binding) {
+    return false;
+  }
+  // compHash 必须与实际内容一致。
+  if (statePayloadHash(payload.output, payload.preservedTail) !== payload.compHash) return false;
+  void keyring;
+  return true;
 }
 
 /** 测试专用：安装一个纯内存 store。 */

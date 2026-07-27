@@ -187,15 +187,32 @@ describe("Claude Code compact bridge fingerprint", () => {
     ]))).toBe(prompt);
   });
 
-  it("rejects mixed blocks and a compact prompt followed by non-empty text", () => {
+  it("accepts a strict trailing prompt alongside preserved non-text blocks", () => {
     const prompt = compactPrompt();
     expect(extractClaudeCodeCompactPrompt(request([
       { type: "image", source: { type: "base64", media_type: "image/png", data: "x" } },
       { type: "text", text: prompt },
-    ]))).toBeNull();
+    ]))).toBe(prompt);
+    expect(extractClaudeCodeCompactPrompt(request([
+      { type: "text", text: prompt },
+      { type: "tool_result", tool_use_id: "tool-1", content: "preserved result" },
+    ]))).toBe(prompt);
+    expect(extractClaudeCodeCompactPrompt(request([
+      { type: "tool_result", tool_use_id: "tool-1", content: "preserved result" },
+      { type: "text", text: prompt },
+    ]))).toBe(prompt);
+  });
+
+  it("rejects trailing ordinary text and ambiguous strict prompt candidates", () => {
+    const prompt = compactPrompt();
     expect(extractClaudeCodeCompactPrompt(request([
       { type: "text", text: prompt },
       { type: "text", text: "ordinary trailing text" },
+    ]))).toBeNull();
+    expect(extractClaudeCodeCompactPrompt(request([
+      { type: "text", text: prompt },
+      { type: "tool_result", tool_use_id: "tool-1", content: "preserved result" },
+      { type: "text", text: prompt },
     ]))).toBeNull();
   });
 
@@ -306,6 +323,40 @@ describe("Claude Code compact bridge requests", () => {
       { role: "user", content: [{ type: "input_text", text: "first preceding text" }] },
       { role: "user", content: [{ type: "input_text", text: "second preceding text" }] },
       { role: "user", content: [{ type: "input_text", text: " \n" }] },
+    ]);
+    expect(JSON.stringify(compact.input)).not.toContain(PREFIX);
+  });
+
+  it("removes only the mixed-message compact prompt and preserves sibling blocks in order", () => {
+    const prompt = compactPrompt();
+    const req: AnthropicMessagesRequest = {
+      ...request(prompt),
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "preceding text" },
+          { type: "text", text: prompt },
+          { type: "tool_result", tool_use_id: "tool-1", content: "preserved result" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } },
+        ],
+      }],
+    };
+
+    const compact = buildClaudeCodeCompactRequest(req, translated());
+    expect(compact.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "preceding text" }] },
+      {
+        type: "function_call_output",
+        call_id: "tool-1",
+        output: JSON.stringify({
+          anthropic_tool_result: {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "preserved result",
+          },
+        }),
+      },
+      { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aW1hZ2U=" }] },
     ]);
     expect(JSON.stringify(compact.input)).not.toContain(PREFIX);
   });

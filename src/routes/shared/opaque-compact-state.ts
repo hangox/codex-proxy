@@ -1,6 +1,15 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { CodexInputItem } from "../../proxy/codex-types.js";
 import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
+import {
+  computeMarkerSignature,
+  safeEqualBuffers,
+  type OpaqueCompactKeyring,
+} from "./opaque-compact-keyring.js";
+import {
+  OpaqueCompactRepository,
+  OpaqueCompactRepositoryError,
+} from "./opaque-compact-repository.js";
 
 const MARKER_PREFIX = "codex-opaque-state:v1";
 const MARKER_ANALYSIS = "Opaque compact state retained locally.";
@@ -30,7 +39,22 @@ export type OpaqueCompactStateFailure =
   | "variant_mismatch"
   | "comp_hash_mismatch"
   | "preserved_tail_conflict"
-  | "state_too_large";
+  | "state_too_large"
+  // ── 持久化相关的结构化失败原因 ──────────────────────────────
+  /** opaque 已开启但 store 未就绪（未初始化、被隔离、锁被别的实例持有）。 */
+  | "store_unavailable"
+  /** 第二实例试图开启 opaque store。 */
+  | "store_locked"
+  /** 磁盘 schema 版本与当前构建不兼容。 */
+  | "schema_unsupported"
+  /** 密钥环缺失。 */
+  | "key_unavailable"
+  /** 记录引用的 keyId 不在当前密钥环内。 */
+  | "key_mismatch"
+  /** 记录存在但 AEAD 校验失败。 */
+  | "state_corrupt"
+  /** 并发 recompact 落败方：另一个 compact 已经推进了 generation。 */
+  | "stale_generation";
 
 export class OpaqueCompactStateError extends Error {
   constructor(readonly reason: OpaqueCompactStateFailure) {
@@ -64,6 +88,22 @@ export interface OpaqueCompactStateStoreOptions {
   ttlMs?: number;
   now?: () => number;
   secret?: Buffer;
+  /** 提供后启用加密持久化；省略则退回纯内存（仅测试与默认关闭路径使用）。 */
+  keyring?: OpaqueCompactKeyring;
+  repository?: OpaqueCompactRepository;
+}
+
+/** 落盘前的 state 明文投影。sessionId/model/variant 只以 HMAC binding 形式入库。 */
+interface PersistedStatePayload {
+  output: unknown[];
+  preservedTail: CodexInputItem[];
+  sessionId: string;
+  model: string;
+  accountEntryId: string;
+  variantHash: string;
+  compHash: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 function base64Url(value: Buffer): string {
@@ -366,6 +406,15 @@ export function restoreOpaqueCompactInput(
   return [...output as CodexInputItem[], ...preservedTail, ...retained];
 }
 
+/**
+ * State store。
+ *
+ * 两种模式共用同一套 marker 语义：
+ * - **持久化模式**（传入 keyring + repository）：marker 用 keyring 派生的稳定
+ *   HMAC 子密钥签名，state 以 AEAD 密文落在 SQLite 里，因此重启后 marker 仍有效。
+ * - **内存模式**（仅传 secret 或什么都不传）：保留原有纯 RAM 行为，供单测和
+ *   "功能默认关闭时不碰磁盘"这条硬约束使用。
+ */
 export class OpaqueCompactStateStore {
   private readonly states = new Map<string, OpaqueCompactState>();
   private readonly stateBytes = new Map<string, number>();
@@ -374,6 +423,8 @@ export class OpaqueCompactStateStore {
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly secret: Buffer;
+  private readonly keyring: OpaqueCompactKeyring | null;
+  private readonly repository: OpaqueCompactRepository | null;
   private totalBytes = 0;
 
   constructor(options: OpaqueCompactStateStoreOptions = {}) {
@@ -382,6 +433,13 @@ export class OpaqueCompactStateStore {
     this.ttlMs = options.ttlMs ?? 30 * 60_000;
     this.now = options.now ?? Date.now;
     this.secret = options.secret ?? randomBytes(32);
+    this.keyring = options.keyring ?? null;
+    this.repository = options.repository ?? null;
+  }
+
+  /** 是否处于持久化模式。 */
+  get persistent(): boolean {
+    return this.keyring !== null && this.repository !== null;
   }
 
   save(options: {
@@ -391,15 +449,19 @@ export class OpaqueCompactStateStore {
     model: string;
     accountEntryId: string;
     variantHash?: string;
-  }): { marker: string; state: OpaqueCompactState } {
+    /** 重复 compact 时传入 resolve 得到的 generation；首次为 0。 */
+    expectedGeneration?: number;
+  }): { marker: string; state: OpaqueCompactState; generation: number } {
     const stateId = base64Url(randomBytes(24));
     const preservedTail = options.preservedTail ?? [];
     const compHash = statePayloadHash(options.output, preservedTail);
-    const signature = this.sign(stateId, compHash);
     const createdAt = this.now();
     const state: OpaqueCompactState = {
-      ...options,
+      output: options.output,
       preservedTail,
+      sessionId: options.sessionId,
+      model: options.model,
+      accountEntryId: options.accountEntryId,
       variantHash: options.variantHash ?? "",
       compHash,
       createdAt,
@@ -407,22 +469,15 @@ export class OpaqueCompactStateStore {
     };
     const bytes = Buffer.byteLength(JSON.stringify(state), "utf8");
     if (bytes > this.maxBytes) throw new OpaqueCompactStateError("state_too_large");
-    for (const [existingId, existing] of this.states) {
-      if (
-        existing.sessionId === state.sessionId &&
-        existing.model === state.model &&
-        existing.variantHash === state.variantHash
-      ) {
-        this.deleteState(existingId);
-      }
-    }
-    this.states.set(stateId, state);
-    this.stateBytes.set(stateId, bytes);
-    this.totalBytes += bytes;
-    this.trimToBounds();
+
+    const generation = this.persistent
+      ? this.persistState(stateId, state, options.expectedGeneration ?? 0)
+      : this.storeInMemory(stateId, state, bytes);
+
     return {
-      marker: `<analysis>${MARKER_ANALYSIS}</analysis>\n<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${signature}</summary>`,
+      marker: `<analysis>${MARKER_ANALYSIS}</analysis>\n<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${this.sign(stateId, compHash)}</summary>`,
       state,
+      generation,
     };
   }
 
@@ -432,15 +487,17 @@ export class OpaqueCompactStateStore {
     model: string;
     accountEntryId?: string;
     variantHash?: string;
-  }): OpaqueCompactState {
+  }): OpaqueCompactState & { generation: number } {
     const parsed = this.parse(options.marker);
-    const expectedSignature = this.sign(parsed.stateId, parsed.compHash);
-    if (!this.safeEqual(parsed.signature, expectedSignature)) {
+    if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) {
       throw new OpaqueCompactStateError("tampered");
     }
 
-    const state = this.states.get(parsed.stateId);
-    if (!state) throw new OpaqueCompactStateError("missing");
+    const loaded = this.persistent
+      ? this.loadPersisted(parsed.stateId, options)
+      : this.loadFromMemory(parsed.stateId);
+    const { state, generation } = loaded;
+
     if (state.expiresAt <= this.now()) {
       this.deleteState(parsed.stateId);
       throw new OpaqueCompactStateError("expired");
@@ -460,9 +517,12 @@ export class OpaqueCompactStateStore {
       throw new OpaqueCompactStateError("comp_hash_mismatch");
     }
 
-    this.states.delete(parsed.stateId);
-    this.states.set(parsed.stateId, state);
-    return state;
+    if (!this.persistent) {
+      // 内存模式维持 LRU 顺序。
+      this.states.delete(parsed.stateId);
+      this.states.set(parsed.stateId, state);
+    }
+    return { ...state, generation };
   }
 
   delete(marker: string): void {
@@ -474,7 +534,7 @@ export class OpaqueCompactStateStore {
   }
 
   size(): number {
-    return this.states.size;
+    return this.repository !== null ? this.repository.stats().count : this.states.size;
   }
 
   clear(): void {
@@ -482,6 +542,106 @@ export class OpaqueCompactStateStore {
     this.stateBytes.clear();
     this.totalBytes = 0;
   }
+
+  // ── 持久化路径 ──────────────────────────────────────────────
+
+  private persistState(
+    stateId: string,
+    state: OpaqueCompactState,
+    expectedGeneration: number,
+  ): number {
+    const repository = this.repository!;
+    const key = this.keyring!.active();
+    const binding = repository.bindingFor(key, state.sessionId, state.model, state.variantHash);
+    const payload: PersistedStatePayload = {
+      output: state.output,
+      preservedTail: state.preservedTail,
+      sessionId: state.sessionId,
+      model: state.model,
+      accountEntryId: state.accountEntryId,
+      variantHash: state.variantHash,
+      compHash: state.compHash,
+      createdAt: state.createdAt,
+      expiresAt: state.expiresAt,
+    };
+    try {
+      const saved = repository.saveWithCas({
+        stateId,
+        binding,
+        expectedGeneration,
+        plaintext: Buffer.from(JSON.stringify(payload), "utf-8"),
+        createdAt: state.createdAt,
+        expiresAt: state.expiresAt,
+      });
+      return saved.generation;
+    } catch (error) {
+      throw toStateError(error);
+    }
+  }
+
+  private loadPersisted(
+    stateId: string,
+    options: { sessionId: string; model: string; variantHash?: string },
+  ): { state: OpaqueCompactState; generation: number } {
+    const repository = this.repository!;
+    // binding 用 active key 计算；轮换后旧记录的 binding 由旧 key 生成，
+    // 因此这里不能强绑 binding，改为解封后逐字段核验（更严格且与密钥无关）。
+    void options;
+    let loaded: ReturnType<OpaqueCompactRepository["load"]>;
+    try {
+      loaded = repository.load(stateId, null);
+    } catch (error) {
+      throw toStateError(error);
+    }
+    if (loaded === null) throw new OpaqueCompactStateError("missing");
+    let payload: PersistedStatePayload;
+    try {
+      payload = JSON.parse(loaded.plaintext.toString("utf-8")) as PersistedStatePayload;
+    } catch {
+      throw new OpaqueCompactStateError("state_corrupt");
+    }
+    return {
+      state: {
+        output: payload.output,
+        preservedTail: payload.preservedTail,
+        sessionId: payload.sessionId,
+        model: payload.model,
+        accountEntryId: payload.accountEntryId,
+        variantHash: payload.variantHash,
+        compHash: payload.compHash,
+        createdAt: payload.createdAt,
+        expiresAt: payload.expiresAt,
+      },
+      generation: loaded.meta.generation,
+    };
+  }
+
+  // ── 内存路径 ────────────────────────────────────────────────
+
+  private storeInMemory(stateId: string, state: OpaqueCompactState, bytes: number): number {
+    for (const [existingId, existing] of this.states) {
+      if (
+        existing.sessionId === state.sessionId &&
+        existing.model === state.model &&
+        existing.variantHash === state.variantHash
+      ) {
+        this.deleteState(existingId);
+      }
+    }
+    this.states.set(stateId, state);
+    this.stateBytes.set(stateId, bytes);
+    this.totalBytes += bytes;
+    this.trimToBounds();
+    return 0;
+  }
+
+  private loadFromMemory(stateId: string): { state: OpaqueCompactState; generation: number } {
+    const state = this.states.get(stateId);
+    if (!state) throw new OpaqueCompactStateError("missing");
+    return { state, generation: 0 };
+  }
+
+  // ── marker 签名 ─────────────────────────────────────────────
 
   private parse(marker: string): ParsedMarker {
     const normalized = marker.replace(/\r\n?/g, "\n").trim();
@@ -497,16 +657,36 @@ export class OpaqueCompactStateStore {
   }
 
   private sign(stateId: string, compHash: string): string {
-    return base64Url(createHmac("sha256", this.secret).update(`${MARKER_PREFIX}:${stateId}:${compHash}`).digest());
+    const message = `${MARKER_PREFIX}:${stateId}:${compHash}`;
+    if (this.keyring !== null) {
+      return base64Url(computeMarkerSignature(this.keyring.active(), message));
+    }
+    return base64Url(createHmac("sha256", this.secret).update(message).digest());
   }
 
-  private safeEqual(left: string, right: string): boolean {
-    const a = Buffer.from(left);
-    const b = Buffer.from(right);
-    return a.length === b.length && timingSafeEqual(a, b);
+  /**
+   * 验签。持久化模式下要遍历整个 key ring：轮换之后，上一代密钥签发的 marker
+   * 在 previous key 的保留窗口内必须继续有效，否则轮换等同于强制所有会话重来。
+   */
+  private verify(stateId: string, compHash: string, signature: string): boolean {
+    const message = `${MARKER_PREFIX}:${stateId}:${compHash}`;
+    const provided = Buffer.from(signature, "base64url");
+    if (this.keyring !== null) {
+      return this.keyring.keys.some((key) =>
+        safeEqualBuffers(provided, computeMarkerSignature(key, message)),
+      );
+    }
+    return safeEqualBuffers(
+      provided,
+      createHmac("sha256", this.secret).update(message).digest(),
+    );
   }
 
   private deleteState(stateId: string): void {
+    if (this.repository !== null) {
+      this.repository.delete(stateId);
+      return;
+    }
     const bytes = this.stateBytes.get(stateId) ?? 0;
     this.states.delete(stateId);
     this.stateBytes.delete(stateId);
@@ -522,4 +702,63 @@ export class OpaqueCompactStateStore {
   }
 }
 
-export const opaqueCompactStateStore = new OpaqueCompactStateStore();
+/** 把仓库层的失败原因映射成对客户端可见的结构化 409 原因。 */
+function toStateError(error: unknown): OpaqueCompactStateError {
+  if (error instanceof OpaqueCompactStateError) return error;
+  if (error instanceof OpaqueCompactRepositoryError) {
+    switch (error.reason) {
+      case "stale_generation":
+        return new OpaqueCompactStateError("stale_generation");
+      case "schema_unsupported":
+        return new OpaqueCompactStateError("schema_unsupported");
+      case "key_mismatch":
+        return new OpaqueCompactStateError("key_mismatch");
+      case "state_corrupt":
+        return new OpaqueCompactStateError("state_corrupt");
+      case "binding_mismatch":
+        return new OpaqueCompactStateError("session_mismatch");
+      default:
+        return new OpaqueCompactStateError("store_unavailable");
+    }
+  }
+  return new OpaqueCompactStateError("store_unavailable");
+}
+
+// ── 运行时 store 句柄 ─────────────────────────────────────────
+//
+// 功能默认关闭，所以模块加载时**不能**创建任何 store：那会在 opaque=false 的
+// 部署上凭空产生 DB、keyring 和锁文件。改为由 startServer() 显式安装。
+
+let runtimeStore: OpaqueCompactStateStore | null = null;
+let runtimeUnavailableReason: OpaqueCompactStateFailure | null = null;
+
+export function setOpaqueCompactStateStore(store: OpaqueCompactStateStore | null): void {
+  runtimeStore = store;
+  if (store !== null) runtimeUnavailableReason = null;
+}
+
+/** store 初始化失败时记录原因，让后续请求返回精确的结构化 409。 */
+export function setOpaqueCompactStateUnavailable(reason: OpaqueCompactStateFailure): void {
+  runtimeStore = null;
+  runtimeUnavailableReason = reason;
+}
+
+export function getOpaqueCompactStateStore(): OpaqueCompactStateStore {
+  if (runtimeStore === null) {
+    throw new OpaqueCompactStateError(runtimeUnavailableReason ?? "store_unavailable");
+  }
+  return runtimeStore;
+}
+
+export function isOpaqueCompactStateStoreReady(): boolean {
+  return runtimeStore !== null;
+}
+
+/** 测试专用：安装一个纯内存 store。 */
+export function installInMemoryOpaqueCompactStateStore(
+  options: OpaqueCompactStateStoreOptions = {},
+): OpaqueCompactStateStore {
+  const store = new OpaqueCompactStateStore(options);
+  setOpaqueCompactStateStore(store);
+  return store;
+}

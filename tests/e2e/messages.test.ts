@@ -32,7 +32,10 @@ import { Hono } from "hono";
 import { requestId } from "@src/middleware/request-id.js";
 import { errorHandler } from "@src/middleware/error-handler.js";
 import { createMessagesRoutes } from "@src/routes/messages.js";
-import { opaqueCompactStateStore } from "@src/routes/shared/opaque-compact-state.js";
+import {
+  installInMemoryOpaqueCompactStateStore,
+  type OpaqueCompactStateStore,
+} from "@src/routes/shared/opaque-compact-state.js";
 import { createModelRoutes } from "@src/routes/models.js";
 import { createWebRoutes } from "@src/routes/web.js";
 import { AccountPool } from "@src/auth/account-pool.js";
@@ -73,9 +76,13 @@ function buildApp(opts?: { noAccount?: boolean }): TestContext {
   return { app, accountPool, cookieJar, proxyPool };
 }
 
+let opaqueCompactStateStore: OpaqueCompactStateStore;
+
 beforeEach(() => {
   resetTransportState();
-  opaqueCompactStateStore.clear();
+  // 每个用例装一个全新的内存 store：默认关闭时生产不会创建任何 store，
+  // 测试也不应该依赖模块级单例。
+  opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore();
   setTransportPost(async () =>
     makeTransportResponse(buildTextStreamChunks("resp_msg_1", "Hello!")),
   );

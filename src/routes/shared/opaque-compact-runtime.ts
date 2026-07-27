@@ -33,6 +33,7 @@ import {
   OpaqueCompactRepository,
   OpaqueCompactRepositoryError,
 } from "./opaque-compact-repository.js";
+import { quarantineOpaqueCompactStore } from "./opaque-compact-quarantine.js";
 import {
   commitOpaqueCompactSentinel,
   loadOpaqueCompactSentinel,
@@ -315,10 +316,20 @@ export function startOpaqueCompactRuntime(
     const recovered = repository.recover();
     if (recovered.unreadable > 0) {
       repository.close();
+      // 真实隔离：把损坏的 DB/WAL/SHM 原始字节整体移出正常路径，保留取证快照。
+      // 只打日志 + not-ready 是不够的——原库仍在原地，下次启动会照常撞上它，
+      // 而且没有任何持久证据可供运维分析。
+      const quarantined = quarantineOpaqueCompactStore({
+        databasePath,
+        reason: "recover_unreadable",
+        stamp: new Date(config.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, "-"),
+      });
+      // 隔离必须在释放锁之前完成：否则第二实例可能在移动过程中抢进来。
       lock.release();
       console.warn(
         `[ClaudeOpaqueCompact] phase=quarantined unreadable=${recovered.unreadable}` +
-          ` retained=${recovered.retained}`,
+          ` retained=${recovered.retained} isolated=${quarantined.ok}` +
+          ` files=${quarantined.moved.length}`,
       );
       setOpaqueCompactStateUnavailable("state_corrupt");
       current = { token, repository: null, lock: null };

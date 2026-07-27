@@ -919,8 +919,10 @@ describe("冷启动恢复 — 必须做真正的 AEAD 验证", () => {
     openHandles.push(second);
     expect(second.ready).toBe(false);
     expect(second.reason).toBe("state_corrupt");
-    // 原始字节必须保留，交由运维处置。
-    const check = new DatabaseSync(resolve(dir, "state.db"));
+    // 真实隔离后原库已移出正常路径；证据在隔离快照里逐字节保留。
+    expect(existsSync(resolve(dir, "state.db"))).toBe(false);
+    const snapshot = resolve(dir, "quarantine", readdirSync(resolve(dir, "quarantine"))[0]!);
+    const check = new DatabaseSync(resolve(snapshot, "state.db"));
     const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
     check.close();
     expect(count.n).toBe(1);
@@ -965,7 +967,10 @@ describe("successor 映射 — 与 state 同等的认证标准", () => {
     expect(handle.ready).toBe(false);
     expect(handle.reason).toBe("state_corrupt");
 
-    const check = new DatabaseSync(resolve(dir, "state.db"));
+    // 同上：证据随整库一起进入隔离快照，而不是留在原路径。
+    expect(existsSync(resolve(dir, "state.db"))).toBe(false);
+    const snapshot = resolve(dir, "quarantine", readdirSync(resolve(dir, "quarantine"))[0]!);
+    const check = new DatabaseSync(resolve(snapshot, "state.db"));
     const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number };
     check.close();
     expect(count.n).toBe(1);
@@ -1164,6 +1169,52 @@ describe("successor 冷启动语义校验", () => {
     openHandles.push(second);
     expect(second.ready).toBe(false);
     expect(second.reason).toBe("state_corrupt");
+  });
+});
+
+describe("真实 quarantine — 证据保全且原路径不可复用", () => {
+  it("损坏后把原库移入隔离目录，字节保真并留下清单", () => {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
+    saveCanaryState(getOpaqueCompactStateStore());
+    first.close();
+
+    const databasePath = resolve(dir, "state.db");
+    const sizeBefore = statSync(databasePath).size;
+
+    const db = new DatabaseSync(databasePath);
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, row.lookup_digest);
+    db.close();
+
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
+    expect(second.ready).toBe(false);
+    expect(second.reason).toBe("state_corrupt");
+
+    // 只打日志 + not-ready 不算隔离：原库必须离开正常路径，
+    // 否则下次启动照样撞上它，且没有任何取证快照。
+    expect(existsSync(databasePath)).toBe(false);
+
+    const quarantineDir = resolve(dir, "quarantine");
+    expect(existsSync(quarantineDir)).toBe(true);
+    const snapshots = readdirSync(quarantineDir);
+    expect(snapshots).toHaveLength(1);
+
+    const snapshot = resolve(quarantineDir, snapshots[0]!);
+    const preserved = resolve(snapshot, "state.db");
+    // 证据必须字节保真——rename 不读写内容，因此大小完全一致。
+    expect(existsSync(preserved)).toBe(true);
+    expect(statSync(preserved).size).toBe(sizeBefore);
+    // 清单供运维取证，只含结构信息。
+    const manifest = JSON.parse(
+      readFileSync(resolve(snapshot, "QUARANTINE.json"), "utf-8"),
+    ) as { reason: string; files: { name: string; bytes: number }[] };
+    expect(manifest.reason).toBe("recover_unreadable");
+    expect(manifest.files.some((f) => f.name === "state.db")).toBe(true);
   });
 });
 

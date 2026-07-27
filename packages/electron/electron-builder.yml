@@ -18,15 +18,9 @@ files:
   - dist-electron/**/*
   - config/**/*
   - public/**/*
-  - node_modules/ws/**/*
-  - node_modules/https-proxy-agent/**/*
-  - node_modules/socks-proxy-agent/**/*
-  - node_modules/agent-base/**/*
-  - node_modules/debug/**/*
-  - node_modules/ip-address/**/*
-  - node_modules/ms/**/*
-  - node_modules/smart-buffer/**/*
-  - node_modules/socks/**/*
+  # Runtime externals are declared in package.json; electron-builder packages
+  # their full production dependency graph, including nested version conflicts.
+  - node_modules/**/*
   - electron/assets/**/*
   - package.json
   - "!node_modules/.bin/**/*"

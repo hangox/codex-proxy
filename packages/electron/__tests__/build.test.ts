@@ -19,7 +19,7 @@ describe("electron build (esbuild)", () => {
 
   beforeAll(async () => {
     releaseLock = await acquireElectronTestLock();
-  });
+  }, 180_000);
 
   // Build once for all tests in this suite
   const buildOnce = (() => {

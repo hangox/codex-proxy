@@ -214,17 +214,23 @@ export const ConfigSchema = z.object({
   }).default({}),
   /** Explicit model → provider name routing table. */
   model_routing: z.record(z.string(), z.string()).default({}),
-  /** Persistence bounds for Claude Code opaque compact state. Entirely inert
-   *  unless `model.claude_code_opaque_compact_experimental` is true — no
-   *  database, keyring, or lock file is created while the feature is off. */
+  /** Claude Code opaque compact state 的持久化参数。
+   *  仅当 `model.claude_code_opaque_compact_experimental` 为 true 时才生效；
+   *  功能关闭时不会创建数据库、密钥环或锁文件。 */
   opaque_compact_state: z.object({
-    /** State lifetime. Previous keyring entries are retained for at least this
-     *  long so a key rotation doesn't invalidate live markers. */
+    /** state 存活时长。previous 密钥的保留窗口至少覆盖它，
+     *  这样密钥轮换不会让仍在有效期内的 marker 失效。 */
     ttl_minutes: z.number().int().min(1).max(24 * 60).default(30),
-    /** Maximum retained states before LRU eviction. */
+    /** LRU 淘汰前保留的最大条目数。 */
     capacity: z.number().int().min(1).max(10_000).default(128),
-    /** Total ciphertext budget across all retained states. */
+    /** 所有 state 密文的总字节预算。 */
     max_bytes: z.number().int().min(64 * 1024).default(64 * 1024 * 1024),
+    /** 外部密钥环文件的绝对路径。
+     *
+     *  必须位于 data 目录之外：master key 与 state DB 同卷存放时，拿到数据卷
+     *  或备份就同时拿到密文和钥匙，记录级加密提供不了 at-rest 隔离。
+     *  未配置时 opaque 功能 fail-closed，且绝不自动生成密钥。 */
+    keyring_file: z.string().trim().min(1).nullable().default(null),
   }).default({}),
 });
 

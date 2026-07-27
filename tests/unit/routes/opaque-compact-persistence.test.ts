@@ -35,6 +35,7 @@ import {
   OpaqueCompactKeyringError,
   rotateOpaqueCompactKeyring,
   sealRecord,
+  sealedSizeFor,
 } from "@src/routes/shared/opaque-compact-keyring.js";
 import {
   OpaqueCompactRepository,
@@ -57,6 +58,7 @@ import {
   startOpaqueCompactRuntime,
 } from "@src/routes/shared/opaque-compact-runtime.js";
 import { opaqueCompactVariantHash } from "@src/routes/shared/opaque-compact-bridge.js";
+import { getDataDir } from "@src/paths.js";
 
 const CANARIES = {
   session: "session-canary-8f2a",
@@ -80,10 +82,12 @@ const PRESERVED_TAIL = [
 const TTL_MS = 30 * 60_000;
 
 let dir: string;
+let keyDir: string;
 const openHandles: { close(): void }[] = [];
 
 beforeEach(() => {
   dir = mkdtempSync(resolve(tmpdir(), "opaque-persist-"));
+  keyDir = mkdtempSync(resolve(tmpdir(), "opaque-keys-"));
 });
 
 afterEach(() => {
@@ -97,10 +101,12 @@ afterEach(() => {
   setOpaqueCompactStateStore(null);
   forgetOpaqueCompactRuntimeForTesting();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(keyDir, { recursive: true, force: true });
 });
 
+/** 密钥环刻意放在 store 目录之外——生产要求密钥与密文不同卷。 */
 function keyringFile(): string {
-  return resolve(dir, "keyring.json");
+  return resolve(keyDir, "keyring.json");
 }
 
 function freshKeyring(allowCreate = true) {
@@ -114,7 +120,7 @@ function makeStore(options: { capacity?: number; maxBytes?: number; now?: () => 
     databasePath: resolve(dir, "state.db"),
     keyring,
     storeId: sentinel.storeId,
-    sentinelCreated: sentinel.created,
+    sentinelCreated: !sentinel.ready,
     capacity: options.capacity ?? 128,
     maxBytes: options.maxBytes ?? 64 * 1024 * 1024,
     ...(options.now ? { now: options.now } : {}),
@@ -171,6 +177,8 @@ function runtimeConfig(overrides: Record<string, unknown> = {}) {
     capacity: 128,
     maxBytes: 1024 * 1024,
     directory: dir,
+    keyringFile: keyringFile(),
+    allowKeyringBootstrap: true,
     ...overrides,
   };
 }
@@ -703,6 +711,258 @@ describe("runtime — 生命周期与 readiness", () => {
     // 清零库与全新空库在 SQLite 层面不可区分，只有 DB 外的 sentinel 能兜住。
     expect(second.ready).toBe(false);
     expect(second.reason).toBe("store_reset_detected");
+  });
+});
+
+describe("元数据篡改 — 必须先认证再采取任何动作", () => {
+  /** 直接改库里的某一列，模拟磁盘攻击者。 */
+  function tamperColumn(column: string, value: unknown): void {
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare(`UPDATE opaque_states SET ${column} = ?`).run(value as never);
+    db.close();
+  }
+
+  it("改短 expires_at 不能把损坏记录静默删掉、销毁证据", () => {
+    const first = makeStore();
+    const { marker } = saveCanaryState(first.store);
+    first.repository.close();
+
+    // 先破坏密文，再把过期时间改到过去。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ?, expires_at = ?")
+      .run(corrupted, 1);
+    db.close();
+
+    const reopened = makeStore();
+    // 若先信任 expires_at，这条记录会被当作"过期"直接删掉，
+    // 攻击者因此可以抹掉损坏证据并绕过 state_corrupt。
+    expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
+    const check = new DatabaseSync(resolve(dir, "state.db"));
+    const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
+    check.close();
+    expect(count.n).toBe(1);
+  });
+
+  it("把 byte_size 改成 0 无法绕过字节预算", () => {
+    const first = makeStore();
+    const { marker } = saveCanaryState(first.store);
+    first.repository.close();
+    tamperColumn("byte_size", 0);
+
+    const reopened = makeStore();
+    // byte_size 必须与密文实测长度比对；只把实测值塞进 AAD 而不校验列，
+    // 等于让 stats/prune 按 0 计预算。
+    expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
+  });
+
+  it.each([
+    ["generation", 999],
+    ["binding", "forged-binding"],
+    ["account_binding", "forged-account"],
+    ["created_at", 1],
+    ["key_id", "forged-key"],
+  ])("翻转 AAD 字段 %s 后必须 fail-closed", (column, value) => {
+    const first = makeStore();
+    const { marker } = saveCanaryState(first.store);
+    first.repository.close();
+    tamperColumn(column, value);
+
+    const reopened = makeStore();
+    // 每个进 AAD 的字段都必须真正参与认证。
+    expect(() => resolveCanary(reopened.store, marker)).toThrowError(OpaqueCompactStateError);
+  });
+});
+
+describe("账号绑定 — payload 必须与实际解密账号一致", () => {
+  it("用 A 的密钥封装但 payload 声称 B 时拒绝返回", () => {
+    const { store, repository, keyring } = makeStore();
+    const { marker } = saveCanaryState(store);
+    repository.close();
+
+    // 构造"A 封装、payload 声称 B"的记录：正常写入不可能产生，
+    // 只会来自迁移 bug 或恶意构造。若信任 payload，A 的 opaque output
+    // 就会被当作 B 的状态路由出去（requiredEntryId 来自 payload）。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT * FROM opaque_states LIMIT 1").get() as Record<string, unknown>;
+    const key = keyring.get(String(row.key_id))!;
+    const dataKey = deriveAccountKey(keyring, key, CANARIES.account);
+    const forged = {
+      version: 1,
+      output: OUTPUT,
+      preservedTail: PRESERVED_TAIL,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: "entry-victim-b",
+      variantHash: CANARIES.variant,
+      compHash: String(row.lookup_digest),
+      createdAt: Number(row.created_at),
+      expiresAt: Number(row.expires_at),
+    };
+    const plaintext = Buffer.from(JSON.stringify(forged), "utf-8");
+    const byteSize = sealedSizeFor(plaintext.length);
+    const aad = encodeTuple([
+      "schema:1",
+      String((JSON.parse(readFileSync(resolve(dir, "store.sentinel"), "utf-8")) as { storeId: string }).storeId),
+      String(row.key_id),
+      String(row.lookup_digest),
+      String(row.generation),
+      String(row.binding),
+      String(row.account_binding),
+      String(row.created_at),
+      String(row.expires_at),
+      String(byteSize),
+      "",
+    ]);
+    const sealed = sealRecord(dataKey, aad, plaintext);
+    db.prepare(
+      "UPDATE opaque_states SET nonce = ?, tag = ?, ciphertext = ?, byte_size = ? WHERE lookup_digest = ?",
+    ).run(sealed.nonce, sealed.tag, sealed.ciphertext, byteSize, String(row.lookup_digest));
+    db.close();
+
+    const reopened = makeStore();
+    expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
+  });
+});
+
+describe("payload schema — 合法密文也要结构校验", () => {
+  it("output 非数组等畸形 payload 报 state_corrupt 而不是崩溃", () => {
+    const { store, repository, keyring } = makeStore();
+    const { marker } = saveCanaryState(store);
+    repository.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT * FROM opaque_states LIMIT 1").get() as Record<string, unknown>;
+    const key = keyring.get(String(row.key_id))!;
+    const dataKey = deriveAccountKey(keyring, key, CANARIES.account);
+    // 合法 AEAD、但 output 不是数组：裸 JSON.parse 会让它一路穿到 .length 崩溃。
+    const malformed = Buffer.from(JSON.stringify({
+      version: 1,
+      output: "not-an-array",
+      preservedTail: [],
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      compHash: "x",
+      createdAt: 1,
+      expiresAt: Number(row.expires_at),
+    }), "utf-8");
+    const byteSize = sealedSizeFor(malformed.length);
+    const storeId = (JSON.parse(readFileSync(resolve(dir, "store.sentinel"), "utf-8")) as { storeId: string }).storeId;
+    const sealed = sealRecord(dataKey, encodeTuple([
+      "schema:1", storeId, String(row.key_id), String(row.lookup_digest),
+      String(row.generation), String(row.binding), String(row.account_binding),
+      String(row.created_at), String(row.expires_at), String(byteSize), "",
+    ]), malformed);
+    db.prepare(
+      "UPDATE opaque_states SET nonce = ?, tag = ?, ciphertext = ?, byte_size = ? WHERE lookup_digest = ?",
+    ).run(sealed.nonce, sealed.tag, sealed.ciphertext, byteSize, String(row.lookup_digest));
+    db.close();
+
+    const reopened = makeStore();
+    expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
+  });
+});
+
+describe("冷启动恢复 — 必须做真正的 AEAD 验证", () => {
+  it("bit flip 之后 recover 报告 unreadable，且不删除证据", () => {
+    const { store, repository } = makeStore();
+    saveCanaryState(store);
+    repository.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, row.lookup_digest);
+    db.close();
+
+    const reopened = makeStore();
+    const recovered = reopened.repository.recover();
+    // 只查"非空"是不够的：冷启动必须真的验证 AEAD，否则 bit flip 后
+    // store 看起来完全健康。
+    expect(recovered.unreadable).toBe(1);
+    expect(recovered.retained).toBe(0);
+    expect(reopened.repository.stats().count).toBe(1);
+  });
+
+  it("发现损坏时 runtime 整体进入 not-ready（quarantine）", () => {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
+    saveCanaryState(getOpaqueCompactStateStore());
+    first.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, row.lookup_digest);
+    db.close();
+
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
+    expect(second.ready).toBe(false);
+    expect(second.reason).toBe("state_corrupt");
+    // 原始字节必须保留，交由运维处置。
+    const check = new DatabaseSync(resolve(dir, "state.db"));
+    const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
+    check.close();
+    expect(count.n).toBe(1);
+  });
+});
+
+describe("外部密钥边界", () => {
+  it("未配置 keyring_file 时 fail-closed，且不碰磁盘", () => {
+    const handle = startOpaqueCompactRuntime(runtimeConfig({ keyringFile: null }));
+    openHandles.push(handle);
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("key_unavailable");
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("拒绝把密钥环放在 data 目录内", () => {
+    const handle = startOpaqueCompactRuntime(runtimeConfig({
+      keyringFile: resolve(getDataDir(), "opaque-compact", "keyring.json"),
+    }));
+    openHandles.push(handle);
+    // 钥匙与密文同卷时，拿到数据卷或备份即可全量解密。
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("key_unavailable");
+  });
+
+  it("已初始化的 store 不允许自动重建密钥环", () => {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
+    saveCanaryState(getOpaqueCompactStateStore());
+    first.close();
+    rmSync(keyringFile());
+
+    // 即使允许 bootstrap，store 已 ready 就不能再造新密钥。
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
+    expect(second.ready).toBe(false);
+    expect(second.reason).toBe("key_unavailable");
+    expect(existsSync(keyringFile())).toBe(false);
+  });
+});
+
+describe("初始化可重入 — sentinel 两阶段", () => {
+  it("sentinel 已写但 keyring/DB 未建时，下次启动可以补完而不是永久失败", () => {
+    // 模拟"首次启动写完 sentinel 后立刻被 SIGKILL"。
+    const sentinel = loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), { allowCreate: true })!;
+    expect(sentinel.created).toBe(true);
+    expect(sentinel.ready).toBe(false);
+
+    // 只看"sentinel 是否存在"会误判为"store 已存在但密钥丢了"，永久 key_unavailable。
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(true);
   });
 });
 

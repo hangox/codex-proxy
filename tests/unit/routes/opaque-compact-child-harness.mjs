@@ -25,12 +25,17 @@ const runtime = await import(pathToFileURL(resolve(SRC, "opaque-compact-runtime.
 const state = await import(pathToFileURL(resolve(SRC, "opaque-compact-state.ts")).href);
 const keyringMod = await import(pathToFileURL(resolve(SRC, "opaque-compact-keyring.ts")).href);
 
+// 密钥环位于 store 目录之外（生产硬性要求）；测试用 fixture 允许 bootstrap。
+const KEYRING_FILE = payload.keyringFile ?? `${dir}-keys/keyring.json`;
+
 const CONFIG = {
   enabled: true,
   ttlMinutes: payload.ttlMinutes ?? 30,
   capacity: payload.capacity ?? 128,
   maxBytes: payload.maxBytes ?? 64 * 1024 * 1024,
   directory: dir,
+  keyringFile: KEYRING_FILE,
+  allowKeyringBootstrap: true,
 };
 
 const OUTPUT = [
@@ -176,7 +181,7 @@ switch (command) {
 
   // 轮换 keyring（indexRoot 保持不变），报告新旧 keyId。
   case "rotate": {
-    const result = keyringMod.rotateOpaqueCompactKeyring(resolve(dir, "keyring.json"));
+    const result = keyringMod.rotateOpaqueCompactKeyring(KEYRING_FILE);
     emit({ ok: true, ...result });
     break;
   }

@@ -3,6 +3,11 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import { getConfig, getLocalConfigPath, reloadAllConfigs, ROTATION_STRATEGIES } from "../../config.js";
 import { logStore } from "../../logs/store.js";
 import { mutateYaml } from "../../utils/yaml-mutate.js";
+import {
+  buildOpaqueCompactRuntimeConfig,
+  reconfigureOpaqueCompactRuntime,
+} from "../shared/opaque-compact-runtime.js";
+import { getOpaqueCompactStateReadiness } from "../shared/opaque-compact-state.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,6 +144,7 @@ export function createSettingsRoutes(): Hono {
       suppress_desktop_directives: config.model.suppress_desktop_directives,
       claude_code_compact_bridge: config.model.claude_code_compact_bridge,
       claude_code_opaque_compact_experimental: config.model.claude_code_opaque_compact_experimental,
+      opaque_compact_state_readiness: getOpaqueCompactStateReadiness(),
       allow_client_system_prompt_strategy: config.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: config.model.system_prompt_strategy,
       default_model: config.model.default,
@@ -423,6 +429,23 @@ export function createSettingsRoutes(): Hono {
     }
 
     const updated = getConfig();
+
+    // opaque 开关变化必须同步驱动 runtime 生命周期。只 reload 配置的话，
+    // false→true 后配置已是 true 但 store 从未初始化（请求全部 409），
+    // true→false 后 runtime 仍持有 DB/密钥/锁并继续触盘，既违反关闭时
+    // zero-touch，也会白白挡住第二个实例。
+    if (body.claude_code_opaque_compact_experimental !== undefined) {
+      try {
+        reconfigureOpaqueCompactRuntime(buildOpaqueCompactRuntimeConfig(updated));
+      } catch (error) {
+        // 重配置失败不能让设置保存整体 500——配置已经落盘，此时 store 已被
+        // 置空（fail-closed），readiness 会如实反映原因，运维据此处置即可。
+        console.warn(
+          `[ClaudeOpaqueCompact] phase=reconfigure_failed` +
+            ` detail=${error instanceof Error ? error.name : "UnknownError"}`,
+        );
+      }
+    }
     const restartRequired =
       (body.port !== undefined && body.port !== oldPort) ||
       (body.default_model !== undefined && body.default_model !== oldDefaultModel);
@@ -435,6 +458,8 @@ export function createSettingsRoutes(): Hono {
       suppress_desktop_directives: updated.model.suppress_desktop_directives,
       claude_code_compact_bridge: updated.model.claude_code_compact_bridge,
       claude_code_opaque_compact_experimental: updated.model.claude_code_opaque_compact_experimental,
+      // reason 与 /health、路由 409 三处同名同义，便于运维与 E2E 断言。
+      opaque_compact_state_readiness: getOpaqueCompactStateReadiness(),
       allow_client_system_prompt_strategy: updated.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: updated.model.system_prompt_strategy,
       default_model: updated.model.default,

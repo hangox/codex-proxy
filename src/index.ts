@@ -49,7 +49,11 @@ import { startOllamaBridge, stopOllamaBridge } from "./ollama/server.js";
 import { createOfficialAgentRoutes } from "./routes/official-agent.js";
 import { installUncaughtErrorHandlers } from "./logs/error-log.js";
 import { awaitServerListening } from "./utils/await-listening.js";
-import { startOpaqueCompactRuntime } from "./routes/shared/opaque-compact-runtime.js";
+import {
+  buildOpaqueCompactRuntimeConfig,
+  closeCurrentOpaqueCompactRuntime,
+  startOpaqueCompactRuntime,
+} from "./routes/shared/opaque-compact-runtime.js";
 
 export interface ServerHandle {
   close: () => Promise<void>;
@@ -164,16 +168,10 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const upstreamRouter = createRuntimeUpstreamRouter(adapters, cfg.model_routing, apiKeyPool);
   if (hasApiKeys) console.log(`[Init] API key pool: ${apiKeyPool.getAll().length} key(s) loaded`);
 
-  // Opaque compact state persistence. Default-off: when the feature flag is
-  // false this creates no database, keyring, or lock file at all. When on, it
-  // takes an exclusive single-instance lock — a second instance refuses to
-  // serve opaque compact rather than racing generations against the first.
-  const opaqueCompactRuntime = startOpaqueCompactRuntime({
-    enabled: cfg.model.claude_code_opaque_compact_experimental,
-    ttlMinutes: cfg.opaque_compact_state.ttl_minutes,
-    capacity: cfg.opaque_compact_state.capacity,
-    maxBytes: cfg.opaque_compact_state.max_bytes,
-  });
+  // Opaque compact state 持久化。默认关闭：flag 为 false 时不会创建任何
+  // 数据库、密钥环或锁文件。开启时获取单实例独占锁——第二个实例会拒绝提供
+  // opaque compact 服务，而不是与第一个实例竞争 generation。
+  startOpaqueCompactRuntime(buildOpaqueCompactRuntimeConfig(cfg));
 
   // Mount routes
   const authRoutes = createAuthRoutes(accountPool, refreshScheduler);
@@ -274,9 +272,10 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
 
   const close = async (): Promise<void> => {
     await stopOllamaBridge();
-    // Best-effort only: crash consistency comes from WAL + synchronous=FULL,
-    // never from this path running.
-    opaqueCompactRuntime.close();
+    // 关闭"当前"runtime 而不是启动时那个 handle：Admin 热切换可能已经换过
+    // 实例，陈旧 handle 会清空新 store 却漏关新的 repository/lock。
+    // 这里只是尽力而为——崩溃一致性来自 WAL + synchronous=FULL，不依赖本路径。
+    closeCurrentOpaqueCompactRuntime();
     return new Promise((resolve) => {
       server.close(() => {
         stopUpdateChecker();

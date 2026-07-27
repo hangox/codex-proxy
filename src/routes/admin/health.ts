@@ -8,6 +8,7 @@ import { getConfigDir, getDataDir, getBinDir, isEmbedded } from "../../paths.js"
 import { getTransportInfo } from "../../tls/transport.js";
 import { getProxyUrl } from "../../tls/proxy.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
+import { getOpaqueCompactStateReadiness } from "../shared/opaque-compact-state.js";
 
 export function createHealthRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -15,10 +16,17 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
   app.get("/health", async (c) => {
     const authenticated = accountPool.isAuthenticated();
     const poolSummary = accountPool.getPoolSummary();
+    const config = getConfig();
     return c.json({
       status: "ok",
       authenticated,
       pool: { total: poolSummary.total, active: poolSummary.active },
+      // opaque state readiness。reason 与 Admin、路由 409 三处同名同义，
+      // 且只含封闭枚举值——不含 session/account/stateId/路径等可识别信息。
+      opaque_compact_state: {
+        enabled: config.model.claude_code_opaque_compact_experimental,
+        ...getOpaqueCompactStateReadiness(),
+      },
       timestamp: new Date().toISOString(),
     });
   });

@@ -26,6 +26,7 @@ import type { FormatAdapter } from "./proxy-handler-types.js";
 import { buildCodexApi } from "./proxy-handler-utils.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
 import { streamResponse } from "./response-processor.js";
+import { auditAccountTag } from "./opaque-compact-audit.js";
 
 const COMPACT_PROMPT_PREFIX = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.";
 const COMPACT_PROMPT_SECTION_INTRO = "Your summary should include the following sections:";
@@ -472,13 +473,13 @@ export async function executeCompactOnly(options: Omit<ExecuteCompactRenderOptio
     try {
       await staggerIfNeeded(acquired.prevSlotMs, {}, signal);
       const compactStarted = Date.now();
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_start entry=${entryId} items=${compactRequest.input.length}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_start acct=${auditAccountTag(entryId)} items=${compactRequest.input.length}`);
       const compactResult = await withRetry(
         () => api.createCompactResponse(compactRequest, signal),
         { tag, signal },
       );
       const compactLatencyMs = Date.now() - compactStarted;
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_end entry=${entryId} items=${compactResult.output.length} latency_ms=${compactLatencyMs}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_end acct=${auditAccountTag(entryId)} items=${compactResult.output.length} latency_ms=${compactLatencyMs}`);
       releaseAccount(accountPool, entryId, undefined, released);
       return { output: compactResult.output, entryId, compactLatencyMs };
     } catch (error) {
@@ -509,7 +510,7 @@ export async function executeCompactOnly(options: Omit<ExecuteCompactRenderOptio
       entryId = acquired.entryId;
       triedEntryIds.push(entryId);
       api = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry entry=${entryId}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry acct=${auditAccountTag(entryId)}`);
     }
   }
 }

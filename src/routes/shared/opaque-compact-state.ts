@@ -98,8 +98,12 @@ export interface OpaqueCompactStateStoreOptions {
   repository?: OpaqueCompactRepository;
 }
 
+/** 落盘 payload 的 schema 版本。升级/回滚靠它划边界。 */
+const PERSISTED_PAYLOAD_VERSION = 1;
+
 /** 落盘前的 state 明文投影。sessionId/model/variant 只以 HMAC binding 形式入库。 */
 interface PersistedStatePayload {
+  version: number;
   output: unknown[];
   preservedTail: CodexInputItem[];
   sessionId: string;
@@ -109,6 +113,47 @@ interface PersistedStatePayload {
   compHash: string;
   createdAt: number;
   expiresAt: number;
+}
+
+/**
+ * 严格校验解封后的 payload。
+ *
+ * AEAD 通过只证明"这段密文是我们自己用对应密钥写的"，不证明它的结构符合
+ * 当前版本的预期——旧版本写入、迁移 bug 或部分回滚都可能产出合法密文但畸形
+ * 内容。裸 `JSON.parse(...) as T` 会让 `output` 非数组、`preservedTail`
+ * undefined 这类值一路穿到 `.length` 处崩溃，或让非字符串字段绕过错误分类。
+ */
+function parsePersistedPayload(raw: Buffer): PersistedStatePayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.toString("utf-8"));
+  } catch {
+    throw new OpaqueCompactStateError("state_corrupt");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new OpaqueCompactStateError("state_corrupt");
+  }
+  const candidate = parsed as Record<string, unknown>;
+
+  if (candidate.version !== PERSISTED_PAYLOAD_VERSION) {
+    // 未知 payload 版本按 schema 不兼容处理，而不是硬猜字段。
+    throw new OpaqueCompactStateError("schema_unsupported");
+  }
+  if (!Array.isArray(candidate.output)) throw new OpaqueCompactStateError("state_corrupt");
+  if (!Array.isArray(candidate.preservedTail)) throw new OpaqueCompactStateError("state_corrupt");
+  for (const field of ["sessionId", "model", "accountEntryId", "variantHash", "compHash"]) {
+    if (typeof candidate[field] !== "string") throw new OpaqueCompactStateError("state_corrupt");
+  }
+  for (const field of ["createdAt", "expiresAt"]) {
+    const value = candidate[field];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new OpaqueCompactStateError("state_corrupt");
+    }
+  }
+  if ((candidate.createdAt as number) > (candidate.expiresAt as number)) {
+    throw new OpaqueCompactStateError("state_corrupt");
+  }
+  return candidate as unknown as PersistedStatePayload;
 }
 
 function base64Url(value: Buffer): string {
@@ -592,6 +637,7 @@ export class OpaqueCompactStateStore {
     // binding 来自稳定索引域，跨 master key 轮换不变 —— CAS 因此不会在轮换后分裂。
     const binding = repository.bindingFor(state.sessionId, state.model, state.variantHash);
     const payload: PersistedStatePayload = {
+      version: PERSISTED_PAYLOAD_VERSION,
       output: state.output,
       preservedTail: state.preservedTail,
       sessionId: state.sessionId,
@@ -641,10 +687,13 @@ export class OpaqueCompactStateStore {
       throw toStateError(error);
     }
     if (loaded === null) throw new OpaqueCompactStateError("missing");
-    let payload: PersistedStatePayload;
-    try {
-      payload = JSON.parse(loaded.plaintext.toString("utf-8")) as PersistedStatePayload;
-    } catch {
+    const payload = parsePersistedPayload(loaded.plaintext);
+
+    // 交叉验证：解封用的是候选账号 A 的数据密钥，但 payload 自己声称账号 B 时，
+    // 若直接信任 payload，就会把 A 的 opaque output 当作 B 的状态路由出去
+    // （requiredEntryId 来自 payload）。正常写入两者必然一致；不一致只可能来自
+    // 迁移 bug 或恶意构造，一律 fail-closed。
+    if (payload.accountEntryId !== loaded.matchedAccountEntryId) {
       throw new OpaqueCompactStateError("state_corrupt");
     }
     return {

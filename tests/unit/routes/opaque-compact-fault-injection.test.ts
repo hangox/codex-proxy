@@ -27,10 +27,13 @@ const HARNESS = resolve(ROOT, "tests/unit/routes/opaque-compact-child-harness.mj
 const CHILD_TIMEOUT_MS = 90_000;
 
 let dir: string;
+/** 密钥环目录与 store 目录分离——生产要求密钥不与密文同卷。 */
+let keyDir: string;
 const children: ChildProcessWithoutNullStreams[] = [];
 
 beforeEach(() => {
   dir = mkdtempSync(resolve(tmpdir(), "opaque-fault-"));
+  keyDir = `${dir}-keys`;
 });
 
 afterEach(() => {
@@ -44,6 +47,7 @@ afterEach(() => {
     }
   }
   rmSync(dir, { recursive: true, force: true });
+  rmSync(keyDir, { recursive: true, force: true });
 });
 
 interface HarnessResult {
@@ -238,7 +242,7 @@ describe("opaque compact — 密钥轮换跨进程", () => {
     expect(seed.ok).toBe(true);
     expect(seed.generation).toBe(1);
 
-    const indexRootBefore = (JSON.parse(readFileSync(resolve(dir, "keyring.json"), "utf-8")) as {
+    const indexRootBefore = (JSON.parse(readFileSync(resolve(keyDir, "keyring.json"), "utf-8")) as {
       indexRoot: string;
     }).indexRoot;
 
@@ -267,7 +271,7 @@ describe("opaque compact — 密钥轮换跨进程", () => {
     expect(stale.reason).toBe("stale_generation");
 
     // indexRoot 本身不得随轮换改变——直接读盘证明，不依赖间接推断。
-    const keyring = JSON.parse(readFileSync(resolve(dir, "keyring.json"), "utf-8")) as {
+    const keyring = JSON.parse(readFileSync(resolve(keyDir, "keyring.json"), "utf-8")) as {
       indexRoot: string;
       activeKeyId: string;
     };
@@ -320,13 +324,13 @@ describe("opaque compact — 清零库不得伪装成首次初始化", () => {
   it("keyring 丢失但 sentinel/DB 仍在时 fail-closed，绝不重新生成密钥", async () => {
     const seed = await runHarness("save-and-close");
     expect(seed.ok).toBe(true);
-    rmSync(resolve(dir, "keyring.json"));
+    rmSync(resolve(keyDir, "keyring.json"));
 
     const probed = await runHarness("probe-readiness");
     expect(probed.ready).toBe(false);
     expect(probed.reason).toBe("key_unavailable");
     // 没有偷偷造一把新密钥把既有密文变成永久垃圾。
-    expect(readdirSync(dir)).not.toContain("keyring.json");
+    expect(readdirSync(keyDir)).not.toContain("keyring.json");
   }, 240_000);
 });
 

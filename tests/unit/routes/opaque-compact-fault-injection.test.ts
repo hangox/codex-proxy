@@ -20,6 +20,11 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
+// 注意：本文件会派生大量 `node --import tsx` 子进程（每个都要重新编译 TS）。
+// 它被 vitest.config.ts 的 poolMatchGlobs 归入独立的 forks 池并单线程执行，
+// 以免与其它同样派生子进程的测试（如 update-scripts-path）争抢 CPU 造成
+// 对方偶发超时——那是资源竞争，与被测逻辑无关。
+
 const ROOT = resolve(import.meta.dirname, "../../..");
 const HARNESS = resolve(ROOT, "tests/unit/routes/opaque-compact-child-harness.mjs");
 

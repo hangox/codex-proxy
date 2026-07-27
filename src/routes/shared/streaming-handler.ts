@@ -205,6 +205,7 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
       recordStreamAffinity();
       if (usageInfo) {
         logProxyUsage({
+          sensitive: options.req.requiredAccountEntryId !== undefined,
           tag: fmt.tag,
           entryId: currentEntryId,
           requestId,

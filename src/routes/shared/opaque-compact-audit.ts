@@ -18,3 +18,20 @@ const AUDIT_SALT = randomBytes(32);
 export function auditAccountTag(accountEntryId: string): string {
   return createHmac("sha256", AUDIT_SALT).update(accountEntryId).digest("hex").slice(0, 8);
 }
+
+/**
+ * 统一的日志账号呈现。
+ *
+ * opaque compact 的 hard-bound 请求会流经通用 proxy 链路（usage/ws/重试/错误
+ * 等日志都在那里），因此不能只改 compact 自己的日志——必须把"这条请求受隐私
+ * 合同约束"的信号一路带下去。`sensitive=true` 时只输出不可逆短标签，
+ * 绝不输出 entryId 或邮箱。
+ */
+export function formatAccount(
+  entryId: string,
+  sensitive: boolean | undefined,
+  email?: string,
+): string {
+  if (sensitive === true) return `acct=${auditAccountTag(entryId)}`;
+  return email === undefined ? `Account ${entryId}` : `Account ${entryId} (${email})`;
+}

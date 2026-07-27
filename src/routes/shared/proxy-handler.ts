@@ -188,6 +188,8 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
 
   const buildPoolCtx = (forEntryId: string = entryId) =>
     buildWsPoolContext({
+      // opaque hard-bound 请求受隐私合同约束，下游日志一律脱敏。
+      sensitive: req.requiredAccountEntryId !== undefined,
       useWebSocket: req.codexRequest.useWebSocket,
       conversationId: sessionContext.chainConversationId,
       entryId: forEntryId,
@@ -279,6 +281,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       }
 
       const retryRecovery = buildProxyRetryRecoveryDecision({
+        sensitive: req.requiredAccountEntryId !== undefined,
         err,
         tag: fmt.tag,
         entryId,

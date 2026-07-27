@@ -1,8 +1,11 @@
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
+import { formatAccount } from "./opaque-compact-audit.js";
 
 export interface LogProxyUsageOptions {
   tag: string;
   entryId: string;
+  /** true 表示本请求受 opaque 隐私合同约束，日志不得含明文账号。 */
+  sensitive?: boolean;
   requestId: string;
   usage: UsageInfo;
   includeImageTokens?: boolean;
@@ -15,6 +18,7 @@ export function logProxyUsage(options: LogProxyUsageOptions): void {
   const {
     tag,
     entryId,
+    sensitive,
     requestId,
     usage,
     includeImageTokens = false,
@@ -30,7 +34,7 @@ export function logProxyUsage(options: LogProxyUsageOptions): void {
   const imgOut = usage.image_output_tokens ?? 0;
 
   log(
-    `[${tag}] Account ${entryId} | rid=${requestId.slice(0, 8)} | Usage: in=${usage.input_tokens}` +
+    `[${tag}] ${formatAccount(entryId, sensitive)} | rid=${requestId.slice(0, 8)} | Usage: in=${usage.input_tokens}` +
     (usage.cached_tokens ? ` (cached=${usage.cached_tokens} uncached=${uncached})` : "") +
     ` out=${usage.output_tokens}` +
     (usage.reasoning_tokens ? ` reasoning=${usage.reasoning_tokens}` : "") +

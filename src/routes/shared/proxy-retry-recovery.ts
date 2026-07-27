@@ -5,6 +5,7 @@ import {
 import type { SessionAffinityMap } from "../../auth/session-affinity.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import { stripCodexErrorPrefix } from "./proxy-handler-utils.js";
+import { formatAccount } from "./opaque-compact-audit.js";
 
 export type ProxyRetryRecoveryKind =
   | "previous_response_not_found"
@@ -23,6 +24,8 @@ export interface BuildProxyRetryRecoveryDecisionOptions {
   err: unknown;
   tag: string;
   entryId: string;
+  /** true 表示本请求受 opaque 隐私合同约束，日志不得含明文账号。 */
+  sensitive?: boolean;
   stripAndRetryDone: boolean;
   previousResponseId: string | undefined;
 }
@@ -43,6 +46,7 @@ export function buildProxyRetryRecoveryDecision({
   err,
   tag,
   entryId,
+  sensitive,
   stripAndRetryDone,
   previousResponseId,
 }: BuildProxyRetryRecoveryDecisionOptions): ProxyRetryRecoveryDecision {
@@ -56,7 +60,7 @@ export function buildProxyRetryRecoveryDecision({
       kind: "previous_response_not_found",
       staleId: previousResponseId,
       logMessage:
-        `[${tag}] Account ${entryId} | previous_response_not_found (id=${previousResponseId ?? "?"}), stripping and retrying same account`,
+        `[${tag}] ${formatAccount(entryId, sensitive)} | previous_response_not_found (id=${previousResponseId ?? "?"}), stripping and retrying same account`,
     };
   }
 
@@ -67,7 +71,7 @@ export function buildProxyRetryRecoveryDecision({
       kind: "unanswered_function_call",
       staleId: previousResponseId,
       logMessage:
-        `[${tag}] Account ${entryId} | unanswered_function_call (id=${previousResponseId ?? "?"}): ${message}, stripping and retrying same account`,
+        `[${tag}] ${formatAccount(entryId, sensitive)} | unanswered_function_call (id=${previousResponseId ?? "?"}): ${message}, stripping and retrying same account`,
     };
   }
 

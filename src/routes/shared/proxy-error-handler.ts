@@ -24,6 +24,7 @@ import {
   normalizePromptTooLongMessage,
   promptTooLongStatus,
 } from "../../proxy/prompt-too-long-error.js";
+import { auditAccountTag } from "./opaque-compact-audit.js";
 
 /** Consecutive CF path-blocks before the account is auto-disabled. */
 const CF_PATH_BLOCK_DISABLE_THRESHOLD = 3;
@@ -69,7 +70,12 @@ export function handleCodexApiError(
   cookieJar?: CookieJar,
   safeLog = false,
 ): ErrorAction {
+  // safeLog 用于 opaque compact 等受隐私合同约束的调用方：这些路径的审计日志
+  // 不得出现明文账号标识或邮箱。此前 safeLog 只隐藏 err.message，entryId/email
+  // 仍然逐条泄漏在每个错误分支里。
   const email = pool.getEntry(entryId)?.email ?? "?";
+  const acct = safeLog ? `acct=${auditAccountTag(entryId)}` : `Account ${entryId} (${email})`;
+  const acctShort = safeLog ? `acct=${auditAccountTag(entryId)}` : `Account ${entryId}`;
 
   if (isPromptTooLongLike(err.body) || isPromptTooLongLike(err.message)) {
     const status = promptTooLongStatus(err.status);
@@ -81,7 +87,7 @@ export function handleCodexApiError(
   if (isModelNotSupportedError(err)) {
     if (!modelRetried) {
       console.warn(
-        `[${tag}] Account ${entryId} (${email}) | Model "${model}" not supported, trying different account...`,
+        `[${tag}] ${acct} | Model "${model}" not supported, trying different account...`,
       );
       const fallbackStatus = toErrorStatus(err.status);
       return {
@@ -94,7 +100,7 @@ export function handleCodexApiError(
   }
 
   console.error(
-    `[${tag}] Account ${entryId} | Codex API error status=${err.status}` +
+    `[${tag}] ${acctShort} | Codex API error status=${err.status}` +
       (safeLog ? "" : ` message=${err.message}`),
   );
 
@@ -106,7 +112,7 @@ export function handleCodexApiError(
     pool.applyRateLimit429(entryId, { retryAfterSec, countRequest: true });
     const backoffDisplay = retryAfterSec != null ? Math.round(retryAfterSec) : null;
     console.warn(
-      `[${tag}] Account ${entryId} (${email}) | 429 rate limited` +
+      `[${tag}] ${acct} | 429 rate limited` +
         (backoffDisplay != null ? ` (resets in ${backoffDisplay}s)` : "") +
         `, trying different account...`,
     );
@@ -117,7 +123,7 @@ export function handleCodexApiError(
   if (isQuotaExhaustedError(err)) {
     pool.markStatus(entryId, "quota_exhausted");
     console.warn(
-      `[${tag}] Account ${entryId} (${email}) | 402 quota exhausted, trying different account...`,
+      `[${tag}] ${acct} | 402 quota exhausted, trying different account...`,
     );
     return { action: "retry", status: 402, message: err.message };
   }
@@ -126,7 +132,7 @@ export function handleCodexApiError(
   if (isBanError(err)) {
     pool.markStatus(entryId, "banned");
     console.warn(
-      `[${tag}] Account ${entryId} (${email}) | 403 banned, trying different account...`,
+      `[${tag}] ${acct} | 403 banned, trying different account...`,
     );
     return { action: "retry", status: 403, message: err.message };
   }
@@ -137,7 +143,7 @@ export function handleCodexApiError(
     const newStatus = isDeactivated ? "banned" : "expired";
     pool.markStatus(entryId, newStatus);
     console.warn(
-      `[${tag}] Account ${entryId} (${email}) | 401 ${isDeactivated ? "deactivated (banned)" : "token invalidated"}, trying different account...`,
+      `[${tag}] ${acct} | 401 ${isDeactivated ? "deactivated (banned)" : "token invalidated"}, trying different account...`,
     );
     return { action: "retry", status: 401, message: err.message };
   }
@@ -156,7 +162,7 @@ export function handleCodexApiError(
     if (blockCount >= CF_PATH_BLOCK_DISABLE_THRESHOLD) {
       pool.markStatus(entryId, "disabled");
       console.warn(
-        `[${tag}] Account ${entryId} (${email}) | Cloudflare path-block 404 ×${blockCount} — auto-disabling account`,
+        `[${tag}] ${acct} | Cloudflare path-block 404 ×${blockCount} — auto-disabling account`,
       );
       appendErrorLog({
         source: "server",
@@ -164,11 +170,14 @@ export function handleCodexApiError(
           name: "CfPathBlockAutoDisable",
           message: `Account auto-disabled after ${blockCount} consecutive Cloudflare path-block 404s on /codex/responses`,
         },
-        context: { entryId, email, model, tag, blockCount },
+        // safeLog 路径同样不能把明文账号写进持久化错误日志。
+        context: safeLog
+          ? { acct: auditAccountTag(entryId), model, tag, blockCount }
+          : { entryId, email, model, tag, blockCount },
       });
     } else {
       console.warn(
-        `[${tag}] Account ${entryId} (${email}) | Cloudflare path-block 404 ×${blockCount}, cleared cookies and retrying...`,
+        `[${tag}] ${acct} | Cloudflare path-block 404 ×${blockCount}, cleared cookies and retrying...`,
       );
     }
     return {

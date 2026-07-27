@@ -160,6 +160,7 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
       // released Set guards against double-release on terminal paths).
       if (collectErr instanceof CodexApiError) {
         rethrowNonStreamingCodexApiErrorDuringCollect({
+          sensitive: req.requiredAccountEntryId !== undefined,
           err: collectErr,
           tag: fmt.tag,
           entryId: currentEntryId,
@@ -167,6 +168,7 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
       }
       if (collectErr instanceof EmptyResponseError) {
         const responsePlan = handleNonStreamingEmptyResponseExhausted({
+          sensitive: req.requiredAccountEntryId !== undefined,
           accountPool,
           entryId: currentEntryId,
           req,

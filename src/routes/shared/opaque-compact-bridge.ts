@@ -133,6 +133,8 @@ export async function respondWithOpaqueCompactMarker(options: {
   // 客户端。此时客户端会拿着 predecessor marker 重试——直接回放已经生成的
   // successor marker，不要再打一次上游。
   if (previousMarker && requiredEntryId) {
+    // 这里**不吞**异常：损坏/密钥不符/账号不符都必须冒泡成结构化 409，
+    // 否则会退化成"重打一次上游"，随后撞上 stale_generation 并掩盖真实原因。
     const replayed = getOpaqueCompactStateStore().findSuccessorMarker(previousMarker, requiredEntryId);
     if (replayed !== null) {
       console.log(

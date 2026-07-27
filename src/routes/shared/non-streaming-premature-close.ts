@@ -4,6 +4,7 @@ import type { UpstreamPrematureCloseError } from "../../translation/codex-event-
 import { releaseAccount } from "./account-acquisition.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
+import { formatAccount } from "./opaque-compact-audit.js";
 
 export interface NonStreamingPrematureCloseResponsePlan {
   status: 504;
@@ -13,6 +14,8 @@ export interface NonStreamingPrematureCloseResponsePlan {
 export interface HandleNonStreamingPrematureCloseOptions {
   accountPool: AccountPool;
   entryId: string;
+  /** true 表示本请求受 opaque 隐私合同约束，日志不得含明文账号。 */
+  sensitive?: boolean;
   err: UpstreamPrematureCloseError;
   req: ProxyRequest;
   tag: string;
@@ -28,6 +31,7 @@ export function handleNonStreamingPrematureClose(
   const {
     accountPool,
     entryId,
+    sensitive,
     err,
     req,
     tag,
@@ -39,7 +43,7 @@ export function handleNonStreamingPrematureClose(
 
   const email = accountPool.getEntry(entryId)?.email ?? "?";
   logWarn(
-    `[${tag}] Account ${entryId} (${email}) | upstream premature close (hadReasoning=${err.hadReasoning} events=${err.eventCount}) — failing fast, not retrying`,
+    `[${tag}] ${formatAccount(entryId, sensitive, email)} | upstream premature close (hadReasoning=${err.hadReasoning} events=${err.eventCount}) — failing fast, not retrying`,
   );
   recordStreamCloseEvent({
     kind: "upstream-premature",

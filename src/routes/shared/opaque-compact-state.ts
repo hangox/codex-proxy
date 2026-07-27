@@ -99,7 +99,7 @@ export interface OpaqueCompactStateStoreOptions {
 }
 
 /** 落盘 payload 的 schema 版本。升级/回滚靠它划边界。 */
-const PERSISTED_PAYLOAD_VERSION = 1;
+const PERSISTED_PAYLOAD_VERSION = 2;
 
 /** 落盘前的 state 明文投影。sessionId/model/variant 只以 HMAC binding 形式入库。 */
 interface PersistedStatePayload {
@@ -545,13 +545,17 @@ export class OpaqueCompactStateStore {
     try {
       parsed = this.parse(predecessorMarker);
     } catch {
+      // marker 本身不是有效格式 → 没有可回放的映射，走正常 compact 流程。
       return null;
     }
     if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) return null;
     try {
       return this.repository!.findSuccessorMarker(parsed.stateId, accountEntryId);
-    } catch {
-      return null;
+    } catch (error) {
+      // 只有"没有映射"才返回 null。损坏/密钥不符/账号不符都必须向上抛：
+      // 吞掉会让进程重打一次上游、随后撞上 stale_generation，把真正的
+      // 损坏原因彻底掩盖。
+      throw toStateError(error);
     }
   }
 

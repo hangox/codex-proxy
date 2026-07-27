@@ -83,18 +83,21 @@ describe("electron-builder.yml", () => {
     expect(globs).toContain("public/**/*");
   });
 
-  it("files list includes external runtime dependencies", () => {
+  it("files list includes the production runtime dependency graph", () => {
     const globs = config.files.filter((f): f is string => typeof f === "string");
-    expect(globs).toContain("node_modules/ws/**/*");
-    expect(globs).toContain("node_modules/https-proxy-agent/**/*");
-    expect(globs).toContain("node_modules/socks-proxy-agent/**/*");
-    expect(globs).toContain("node_modules/agent-base/**/*");
-    expect(globs).toContain("node_modules/debug/**/*");
-    expect(globs).toContain("node_modules/ip-address/**/*");
-    expect(globs).toContain("node_modules/ms/**/*");
-    expect(globs).toContain("node_modules/smart-buffer/**/*");
-    expect(globs).toContain("node_modules/socks/**/*");
+    expect(globs).toContain("node_modules/**/*");
     expect(globs).not.toContain("!node_modules");
+  });
+
+  it("declares every backend external as an Electron production dependency", () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(PKG_DIR, "package.json"), "utf-8"),
+    ) as { dependencies?: Record<string, string> };
+    expect(pkg.dependencies).toMatchObject({
+      ws: expect.any(String),
+      "https-proxy-agent": expect.any(String),
+      "socks-proxy-agent": expect.any(String),
+    });
   });
 
   it("root source directories for prepare-pack actually exist", () => {

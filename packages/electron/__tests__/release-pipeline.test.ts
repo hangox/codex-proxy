@@ -7,21 +7,36 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, rmSync, readFileSync, statSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync, statSync } from "fs";
+import { tmpdir } from "os";
 import { resolve } from "path";
 import { execFileSync } from "child_process";
+import asar from "@electron/asar";
 import { acquireElectronTestLock } from "./test-lock.js";
 
 const PKG_DIR = resolve(import.meta.dirname, "..");
 const ROOT_DIR = resolve(PKG_DIR, "..", "..");
 const DIST_ELECTRON = resolve(PKG_DIR, "dist-electron");
+const PACKED_APP = resolve(PKG_DIR, "release", "mac-arm64", "Codex Proxy.app");
+const APP_ASAR = resolve(PACKED_APP, "Contents", "Resources", "app.asar");
+const RUNTIME_PACKAGES = [
+  "ws",
+  "https-proxy-agent",
+  "socks-proxy-agent",
+  "agent-base",
+  "debug",
+  "ms",
+  "socks",
+  "ip-address",
+  "smart-buffer",
+] as const;
 
 describe("release pipeline", () => {
   let releaseLock: (() => void) | null = null;
 
   beforeAll(async () => {
     releaseLock = await acquireElectronTestLock();
-  });
+  }, 180_000);
 
   afterAll(() => {
     // Clean up build artifacts
@@ -77,6 +92,71 @@ describe("release pipeline", () => {
     expect(existsSync(resolve(PKG_DIR, "electron", "assets", "icon.png"))).toBe(true);
     expect(existsSync(resolve(PKG_DIR, "package.json"))).toBe(true);
   });
+
+  it("packaged ASAR cold-starts without repository node_modules and serves health", async () => {
+    execFileSync("node", ["electron/prepare-pack.mjs"], { cwd: PKG_DIR, timeout: 10_000 });
+    execFileSync(
+      "npx",
+      ["electron-builder", "--config", "electron-builder.yml", "--dir", "--arm64"],
+      { cwd: PKG_DIR, timeout: 120_000, stdio: "pipe" },
+    );
+
+    expect(existsSync(APP_ASAR)).toBe(true);
+    const contents = asar.listPackage(APP_ASAR);
+    for (const pkgName of RUNTIME_PACKAGES) {
+      expect(contents, `app.asar 缺少运行时依赖 ${pkgName}`).toContain(
+        `/node_modules/${pkgName}/package.json`,
+      );
+    }
+    expect(contents).toContain(
+      "/node_modules/socks-proxy-agent/node_modules/agent-base/package.json",
+    );
+
+    const isolatedRoot = mkdtempSync(resolve(tmpdir(), "codex-proxy-packaged-health-"));
+    const extracted = resolve(isolatedRoot, "app");
+    const dataDir = resolve(isolatedRoot, "data");
+    try {
+      asar.extractAll(APP_ASAR, extracted);
+      const resources = resolve(PACKED_APP, "Contents", "Resources");
+      const script = `
+        const { resolve } = await import("node:path");
+        const { pathToFileURL } = await import("node:url");
+        const root = ${JSON.stringify(extracted)};
+        const resources = ${JSON.stringify(resources)};
+        const mod = await import(pathToFileURL(resolve(root, "dist-electron/server.mjs")).href);
+        mod.setPaths({
+          rootDir: root,
+          configDir: resolve(resources, "app.asar.unpacked/config"),
+          dataDir: ${JSON.stringify(dataDir)},
+          binDir: resolve(resources, "bin"),
+          publicDir: resolve(resources, "app.asar.unpacked/public"),
+        });
+        const handle = await mod.startServer({ host: "127.0.0.1", port: 0 });
+        try {
+          const response = await fetch("http://127.0.0.1:" + handle.port + "/health");
+          const body = await response.json();
+          if (!response.ok || body.status !== "ok") throw new Error(JSON.stringify(body));
+          console.log("PACKAGED_HEALTH_OK:" + handle.port);
+        } finally {
+          await handle.close();
+        }
+      `;
+      const stdout = execFileSync(
+        "node",
+        ["--input-type=module", "-e", script],
+        {
+          cwd: isolatedRoot,
+          timeout: 30_000,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "" },
+        },
+      );
+      expect(stdout).toContain("PACKAGED_HEALTH_OK:");
+    } finally {
+      rmSync(isolatedRoot, { recursive: true, force: true });
+    }
+  }, 150_000);
 
   it("version is consistent between root and electron package", () => {
     const rootPkg = JSON.parse(

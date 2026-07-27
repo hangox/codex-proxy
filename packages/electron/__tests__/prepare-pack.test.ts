@@ -24,7 +24,7 @@ describe("prepare-pack.mjs", () => {
 
   beforeAll(async () => {
     releaseLock = await acquireElectronTestLock();
-  });
+  }, 180_000);
 
   // Clean up any leftover copies before/after each test
   function cleanCopies(): void {

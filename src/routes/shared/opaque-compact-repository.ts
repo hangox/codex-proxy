@@ -25,9 +25,11 @@ import {
   computeIndexBinding,
   computeLookupDigest,
   deriveAccountKey,
+  deriveAccountKeyFromBinding,
   encodeTuple,
   openRecord,
   sealRecord,
+  sealedSizeFor,
   type OpaqueCompactKeyring,
 } from "./opaque-compact-keyring.js";
 
@@ -129,6 +131,30 @@ function buildAad(fields: {
   ]);
 }
 
+/** successor 映射的 AAD。字段集合与 state 行同样必须完整覆盖生命周期。 */
+function buildSuccessorAad(fields: {
+  storeId: string;
+  keyId: string;
+  predecessorLookup: string;
+  accountBinding: string;
+  binding: string;
+  createdAt: number;
+  expiresAt: number;
+  byteSize: number;
+}): Buffer {
+  return encodeTuple([
+    `successor:${OPAQUE_REPOSITORY_SCHEMA_VERSION}`,
+    fields.storeId,
+    fields.keyId,
+    fields.predecessorLookup,
+    fields.accountBinding,
+    fields.binding,
+    String(fields.createdAt),
+    String(fields.expiresAt),
+    String(fields.byteSize),
+  ]);
+}
+
 function assertRegularFile(path: string, label: string): void {
   if (!existsSync(path)) return;
   const stats = lstatSync(path);
@@ -162,6 +188,7 @@ export class OpaqueCompactRepository {
   private readonly stmtSelectSuccessor: StatementSync;
   private readonly stmtDeleteSuccessor: StatementSync;
   private readonly stmtDeleteSuccessorExpired: StatementSync;
+  private readonly stmtSuccessorTotals: StatementSync;
 
   constructor(options: OpaqueCompactRepositoryOptions) {
     this.keyring = options.keyring;
@@ -185,14 +212,26 @@ export class OpaqueCompactRepository {
       assertRegularFile(`${options.databasePath}-shm`, "database SHM");
     }
 
+    // 注意：constructor 抛错时 `new` 不返回，外层拿不到实例，也就无法 close()。
+    // 因此这里必须自己兜底关闭已经打开的连接，否则 DB/WAL 的 fd 会一直泄漏，
+    // 影响后续启动与隔离操作。
+    let opened: DatabaseSync | null = null;
     try {
-      this.db = new DatabaseSync(options.databasePath);
+      opened = new DatabaseSync(options.databasePath);
+      this.db = opened;
       this.db.exec("PRAGMA journal_mode = WAL");
       this.db.exec("PRAGMA synchronous = FULL");
       this.db.exec("PRAGMA foreign_keys = ON");
       this.verifyDurabilityPragmas(options.databasePath);
       this.initSchema();
     } catch (error) {
+      if (opened !== null) {
+        try {
+          opened.close();
+        } catch {
+          /* 已经关闭或从未成功打开 */
+        }
+      }
       if (error instanceof OpaqueCompactRepositoryError) throw error;
       throw new OpaqueCompactRepositoryError(
         "store_unavailable",
@@ -228,8 +267,9 @@ export class OpaqueCompactRepository {
     this.stmtAllRows = this.db.prepare("SELECT * FROM opaque_states");
     this.stmtInsertSuccessor = this.db.prepare(
       `INSERT OR REPLACE INTO opaque_successors
-         (predecessor_lookup, binding, created_at, expires_at, nonce, tag, ciphertext)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (predecessor_lookup, key_id, account_binding, binding, created_at, expires_at,
+          byte_size, nonce, tag, ciphertext)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.stmtSelectSuccessor = this.db.prepare(
       "SELECT * FROM opaque_successors WHERE predecessor_lookup = ?",
@@ -239,6 +279,9 @@ export class OpaqueCompactRepository {
     );
     this.stmtDeleteSuccessorExpired = this.db.prepare(
       "DELETE FROM opaque_successors WHERE expires_at <= ?",
+    );
+    this.stmtSuccessorTotals = this.db.prepare(
+      "SELECT COALESCE(SUM(byte_size), 0) AS bytes FROM opaque_successors",
     );
   }
 
@@ -336,9 +379,12 @@ export class OpaqueCompactRepository {
       this.db.exec(
         `CREATE TABLE IF NOT EXISTS opaque_successors (
            predecessor_lookup TEXT PRIMARY KEY,
+           key_id             TEXT NOT NULL,
+           account_binding    TEXT NOT NULL,
            binding            TEXT NOT NULL,
            created_at         INTEGER NOT NULL,
            expires_at         INTEGER NOT NULL,
+           byte_size          INTEGER NOT NULL,
            nonce              BLOB NOT NULL,
            tag                BLOB NOT NULL,
            ciphertext         BLOB NOT NULL
@@ -419,7 +465,12 @@ export class OpaqueCompactRepository {
 
     // 单条超预算必须在 COMMIT 之前拒绝：绝不能既落了行又返回失败，
     // 也不能返回一个指向被立刻淘汰的行的 marker。
-    if (byteSize > this.maxBytes) {
+    // predecessor 与 successor 映射都受保护、不可被本次修剪淘汰，
+    // 因此预算判定必须把它们一起算进来。
+    const successorBytes = predecessorLookup === null
+      ? 0
+      : sealedSizeFor(Buffer.byteLength(options.successorMarker, "utf-8"));
+    if (byteSize + successorBytes > this.maxBytes) {
       throw new OpaqueCompactRepositoryError("state_too_large");
     }
 
@@ -462,20 +513,29 @@ export class OpaqueCompactRepository {
       // predecessor → successor marker 的加密映射，与 state 行同事务落盘。
       // 崩溃后客户端拿旧 marker 重试时据此幂等返回同一个 successor marker。
       if (predecessorLookup !== null) {
-        const mapAad = encodeTuple([
-          `successor:${OPAQUE_REPOSITORY_SCHEMA_VERSION}`,
-          this.storeId,
-          key.id,
-          predecessorLookup,
-          options.binding,
-          String(options.expiresAt),
-        ]);
-        const sealedMarker = sealRecord(dataKey, mapAad, Buffer.from(options.successorMarker, "utf-8"));
+        const markerBytes = Buffer.from(options.successorMarker, "utf-8");
+        const sealedMarker = sealRecord(
+          dataKey,
+          buildSuccessorAad({
+            storeId: this.storeId,
+            keyId: key.id,
+            predecessorLookup,
+            accountBinding,
+            binding: options.binding,
+            createdAt: options.createdAt,
+            expiresAt: options.expiresAt,
+            byteSize: successorBytes,
+          }),
+          markerBytes,
+        );
         this.stmtInsertSuccessor.run(
           predecessorLookup,
+          key.id,
+          accountBinding,
           options.binding,
           options.createdAt,
           options.expiresAt,
+          successorBytes,
           sealedMarker.nonce,
           sealedMarker.tag,
           sealedMarker.ciphertext,
@@ -508,74 +568,111 @@ export class OpaqueCompactRepository {
     const row = this.stmtSelectSuccessor.get(predecessorLookup) as
       | {
           predecessor_lookup: string;
+          key_id: string;
+          account_binding: string;
           binding: string;
+          created_at: number;
           expires_at: number;
+          byte_size: number;
           nonce: Uint8Array;
           tag: Uint8Array;
           ciphertext: Uint8Array;
         }
       | undefined;
+    // 没有映射是正常情况（首次 compact），返回 null 让调用方去打上游。
     if (row === undefined) return null;
+
+    // 以下任何一项失败都是**异常**，不能再返回 null 装作"没有映射"——
+    // 那会让进程去重打一次上游，随后撞上 stale_generation，把真正的损坏
+    // 原因掩盖掉。
+    const key = this.keyring.get(row.key_id);
+    if (key === undefined) {
+      throw new OpaqueCompactRepositoryError("key_mismatch", "successor key id is not in the keyring");
+    }
+    const accountBinding = this.accountBindingFor(accountEntryId);
+    if (accountBinding !== row.account_binding) {
+      throw new OpaqueCompactRepositoryError("binding_mismatch", "successor belongs to another account");
+    }
+    const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
+    if (Number(row.byte_size) !== actualByteSize) {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "successor byte size does not match");
+    }
+
+    const dataKey = deriveAccountKey(this.keyring, key, accountEntryId);
+    let marker: string;
+    try {
+      marker = openRecord(
+        dataKey,
+        buildSuccessorAad({
+          storeId: this.storeId,
+          keyId: row.key_id,
+          predecessorLookup: row.predecessor_lookup,
+          accountBinding: row.account_binding,
+          binding: row.binding,
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+          byteSize: actualByteSize,
+        }),
+        {
+          nonce: Buffer.from(row.nonce),
+          tag: Buffer.from(row.tag),
+          ciphertext: Buffer.from(row.ciphertext),
+        },
+      ).toString("utf-8");
+    } catch {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "successor failed AEAD verification");
+    }
+
+    // 认证之后才信任 expires_at。反序会让攻击者改短 expires 来销毁
+    // post-commit 幂等映射，重新打开崩溃窗口。
     if (row.expires_at <= this.now()) {
       this.stmtDeleteSuccessor.run(predecessorLookup);
       return null;
     }
-    // 映射可能由任意一代 key 封装；逐 key 尝试，失败即视为不可用而非损坏。
-    for (const key of this.keyring.keys) {
-      const dataKey = deriveAccountKey(this.keyring, key, accountEntryId);
-      const mapAad = encodeTuple([
-        `successor:${OPAQUE_REPOSITORY_SCHEMA_VERSION}`,
-        this.storeId,
-        key.id,
-        row.predecessor_lookup,
-        row.binding,
-        String(row.expires_at),
-      ]);
-      try {
-        return openRecord(dataKey, mapAad, {
-          nonce: Buffer.from(row.nonce),
-          tag: Buffer.from(row.tag),
-          ciphertext: Buffer.from(row.ciphertext),
-        }).toString("utf-8");
-      } catch {
-        continue;
-      }
-    }
-    return null;
+    return marker;
   }
 
   /**
-   * 读取并解封。失败一律抛错；过期记录顺带删除。
+   * 读取并解封。
    *
-   * `accountCandidates` 是当前进程已知的账号集合。数据密钥按账号派生，因此
-   * 必须由调用方提供候选；先用 account_binding 常数级筛出唯一匹配项，再解封。
+   * 顺序是安全关键，不可调换：
+   * 1. 先做 AEAD 认证（含 byte_size 与列值比对）；
+   * 2. 认证通过后才读取 expires_at 做 TTL 判定与删除。
+   *
+   * 反过来（先信任 expires_at 再解封）会给磁盘攻击者一条捷径：把 expires_at
+   * 改早即可让损坏记录被静默删除，绕过 state_corrupt 并销毁证据。所有依赖
+   * 元数据的删除/预算动作都必须在认证之后。
+   *
+   * `accountCandidates` 是当前进程已知的账号集合。数据密钥按账号派生，
    * 候选里没有匹配账号 → 该记录不属于本实例可访问的任何账号，fail-closed。
    */
   load(stateId: string, accountCandidates: readonly string[]): {
     plaintext: Buffer;
     meta: OpaqueCompactRecordMeta;
+    /** 实际派生出数据密钥的账号——调用方必须与 payload 交叉验证。 */
+    matchedAccountEntryId: string;
   } | null {
     const lookupDigest = this.lookupFor(stateId);
     const row = this.stmtSelectByLookup.get(lookupDigest) as RecordRow | undefined;
     if (row === undefined) return null;
-    if (row.expires_at <= this.now()) {
-      this.stmtDeleteByLookup.run(lookupDigest);
-      return null;
-    }
+
     const key = this.keyring.get(row.key_id);
     if (key === undefined) {
       // 密钥已轮换出保留窗口，或换成了错误的密钥环：不能猜，也不能删。
       throw new OpaqueCompactRepositoryError("key_mismatch", "record key id is not in the keyring");
     }
-    // 账号未知时无法派生数据密钥——这正是账号域隔离的体现：调用方必须先知道
-    // 自己是哪个账号，否则连解封都做不到。
-    const candidates = accountCandidates;
-    if (candidates.length === 0) {
+    if (accountCandidates.length === 0) {
       throw new OpaqueCompactRepositoryError("key_mismatch", "account is required to open a record");
     }
-    // byteSize 用密文实测值重算，不信任列里的数字。
+
+    // byte_size 参与 AAD，但必须先与密文实测值比对：只把实测值塞进 AAD 而
+    // 从不校验列值，等于让攻击者把列改成 0 来绕过 maxBytes 预算。
     const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
-    for (const account of candidates) {
+    if (Number(row.byte_size) !== actualByteSize) {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "record byte size does not match");
+    }
+
+    for (const account of accountCandidates) {
       const accountBinding = this.accountBindingFor(account);
       if (accountBinding !== row.account_binding) continue;
       const aad = buildAad({
@@ -601,9 +698,17 @@ export class OpaqueCompactRepository {
       } catch {
         throw new OpaqueCompactRepositoryError("state_corrupt", "record failed AEAD verification");
       }
+
+      // 认证通过之后才敢相信 expires_at，此时删除过期记录是安全的。
+      if (row.expires_at <= this.now()) {
+        this.stmtDeleteByLookup.run(lookupDigest);
+        return null;
+      }
+
       this.stmtTouch.run(this.now(), lookupDigest);
       return {
         plaintext,
+        matchedAccountEntryId: account,
         meta: {
           lookupDigest: row.lookup_digest,
           keyId: row.key_id,
@@ -644,15 +749,22 @@ export class OpaqueCompactRepository {
   }
 
   /**
-   * 启动恢复验证。**只读**：既不改 last_used_at（那会抹掉重启前的 LRU 顺序），
-   * 也不删除损坏记录（销毁证据后调用方就无法做 quarantine 决策了）。
-   * 过期清理是唯一的写操作，且与损坏无关。
+   * 启动恢复：对全库做**真正的 AEAD 验证**，且严格只读。
+   *
+   * 两条纪律：
+   * - **不 touch**：不改 last_used_at，否则重启就抹平了逐出顺序；
+   * - **不删除**：损坏记录必须原样保留。先 DELETE 再让调用方"决定是否
+   *   quarantine"是自相矛盾的——证据已经没了。过期清理同样推迟到认证之后。
+   *
+   * 能在不知道 raw 账号的情况下验证，是因为数据密钥实际只依赖
+   * account_binding，而它就在 row 里。
    */
   recover(): { retained: number; expired: number; unreadable: number } {
-    const expired = Number(this.stmtDeleteExpired.run(this.now()).changes ?? 0);
-    this.stmtDeleteSuccessorExpired.run(this.now());
     let retained = 0;
     let unreadable = 0;
+    const expiredLookups: string[] = [];
+    const now = this.now();
+
     const rows = this.stmtAllRows.all() as unknown as RecordRow[];
     for (const row of rows) {
       const key = this.keyring.get(row.key_id);
@@ -660,20 +772,103 @@ export class OpaqueCompactRepository {
         unreadable += 1;
         continue;
       }
-      // 恢复阶段不知道账号，无法解封——账号域隔离的必然结果。
-      // 这里只验证结构完整性：AEAD 验证推迟到真正的读取路径。
-      if (row.ciphertext.length === 0 || row.nonce.length === 0 || row.tag.length === 0) {
+      const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
+      if (Number(row.byte_size) !== actualByteSize) {
         unreadable += 1;
+        continue;
+      }
+      const dataKey = deriveAccountKeyFromBinding(key, row.account_binding);
+      try {
+        openRecord(
+          dataKey,
+          buildAad({
+            storeId: this.storeId,
+            keyId: row.key_id,
+            lookupDigest: row.lookup_digest,
+            generation: row.generation,
+            binding: row.binding,
+            accountBinding: row.account_binding,
+            createdAt: row.created_at,
+            expiresAt: row.expires_at,
+            byteSize: actualByteSize,
+            predecessorLookup: row.predecessor_lookup,
+          }),
+          {
+            nonce: Buffer.from(row.nonce),
+            tag: Buffer.from(row.tag),
+            ciphertext: Buffer.from(row.ciphertext),
+          },
+        );
+      } catch {
+        // bit flip 在这里就会被抓到，冷启动不再"看起来健康"。
+        unreadable += 1;
+        continue;
+      }
+      // 认证通过之后，expires_at 才是可信的。
+      if (row.expires_at <= now) {
+        expiredLookups.push(row.lookup_digest);
         continue;
       }
       retained += 1;
     }
-    return { retained, expired, unreadable };
+
+    // 只有在没有任何损坏记录时才动手清理过期项：一旦发现损坏，整库进入
+    // 待隔离状态，此时任何写操作都可能破坏证据。
+    if (unreadable === 0) {
+      for (const lookup of expiredLookups) {
+        this.stmtDeleteByLookup.run(lookup);
+      }
+      this.cleanExpiredSuccessors(now);
+    }
+    return { retained, expired: expiredLookups.length, unreadable };
   }
 
+  /** successor 映射的过期清理，同样必须在认证之后调用。 */
+  private cleanExpiredSuccessors(now: number): void {
+    this.stmtDeleteSuccessorExpired.run(now);
+  }
+
+  /**
+   * 只读探测：磁盘上已存在记录的最晚过期时间。
+   *
+   * 用于密钥保留策略——不能只按当前配置 TTL 裁剪 previous key，否则调小
+   * ttl_minutes 后重启会裁掉仍存活 state 依赖的密钥。这是一个不需要密钥、
+   * 不需要认证的纯元数据查询，可在 keyring 加载前调用。
+   */
+  static peekMaxExpiresAt(databasePath: string): number {
+    let db: DatabaseSync | null = null;
+    try {
+      db = new DatabaseSync(databasePath);
+      const row = db
+        .prepare("SELECT MAX(expires_at) AS max_expires FROM opaque_states")
+        .get() as { max_expires: number | null } | undefined;
+      return Number(row?.max_expires ?? 0);
+    } catch {
+      // 库不存在 / 无此表 / 无法打开都当作"没有存活记录"，
+      // 真正的可用性判定由后续正式打开流程负责。
+      return 0;
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * 容量与字节统计。
+   *
+   * successor 映射也占磁盘，必须计入预算——否则大量重复 compact 会让
+   * successor 表无限增长却不触发任何淘汰，绕过 maxBytes。
+   */
   stats(): { count: number; bytes: number } {
     const row = this.stmtTotals.get() as { count: number; bytes: number } | undefined;
-    return { count: Number(row?.count ?? 0), bytes: Number(row?.bytes ?? 0) };
+    const successors = this.stmtSuccessorTotals.get() as { bytes: number } | undefined;
+    return {
+      count: Number(row?.count ?? 0),
+      bytes: Number(row?.bytes ?? 0) + Number(successors?.bytes ?? 0),
+    };
   }
 
   close(): void {
@@ -684,7 +879,14 @@ export class OpaqueCompactRepository {
     }
   }
 
-  /** TTL + 容量 + 字节预算修剪。必须在事务内调用，且不得删掉刚写入的记录或其 predecessor。 */
+  /**
+   * TTL + 容量 + 字节预算修剪。必须在事务内调用，且不得删掉刚写入的记录或其
+   * predecessor。
+   *
+   * 前置条件：启动时 `recover()` 已对全库完成 AEAD 验证且没有发现损坏记录
+   * （否则 runtime 会进入 quarantine 而根本不会走到写入路径）。因此这里按
+   * byte_size / last_used_at 做淘汰是安全的——这些列都已被认证过。
+   */
   private pruneWithinTransaction(
     now: number,
     protectedLookup: string,

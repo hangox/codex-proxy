@@ -1,4 +1,5 @@
 import type { ProxyRequest } from "./proxy-handler-types.js";
+import { auditAccountTag } from "./opaque-compact-audit.js";
 
 export interface BuildRequestDiagnosticsOptions {
   tag: string;
@@ -105,10 +106,12 @@ export function logRequestDiagnostics(options: LogRequestDiagnosticsOptions): Re
 export function logOpaqueStateDiagnostics(
   options: LogOpaqueStateDiagnosticsOptions,
 ): RequestDiagnostics {
+  // opaque 审计日志不得出现明文账号标识：改用进程级盐的不可逆短标签，
+  // 既保留"是否同一账号"的可关联性，又无法反推 entryId 或跨进程追踪。
   const diagnostics = {
     summary:
       `[${options.tag}] Opaque state restored | ` +
-      `rid=${options.requestId.slice(0, 8)} entry=${options.entryId}`,
+      `rid=${options.requestId.slice(0, 8)} acct=${auditAccountTag(options.entryId)}`,
     payloadBytes: 0,
   };
   (options.log ?? console.log)(diagnostics.summary);

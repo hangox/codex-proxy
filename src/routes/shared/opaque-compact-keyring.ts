@@ -66,6 +66,9 @@ const AEAD_TAG_BYTES = 16;
 /** 轮换后 previous key 至少还要能用这么久（在 state TTL 之外的安全余量）。 */
 export const KEY_RETENTION_SAFETY_MARGIN_MS = 60 * 60_000;
 
+/** keyId 允许的形态。进 AAD 和日志，必须受限。 */
+const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
 export type OpaqueCompactKeyringFailure =
   | "key_unavailable"
   | "key_invalid"
@@ -109,6 +112,15 @@ export interface LoadOpaqueCompactKeyringOptions {
   allowCreate: boolean;
   /** 实际 state TTL。retention 必须覆盖它，否则拒绝开启。 */
   stateTtlMs: number;
+  /**
+   * 已落盘记录中最大的 expires_at（没有记录时省略）。
+   *
+   * 只按"当前配置 TTL"裁剪 previous key 是不够的：管理员把 ttl_minutes 调小后
+   * 重启，会用新的短窗口裁掉那些以长 TTL 创建、尚未过期的 state 所对应的密钥，
+   * 于是仍在有效期内的 marker 直接失效。retention 必须同时覆盖磁盘上真实存活
+   * 的记录。
+   */
+  liveStateExpiresAtMax?: number;
   now?: () => number;
   /** previous key 保留窗口；默认 TTL + 安全余量。 */
   previousKeyRetentionMs?: number;
@@ -192,27 +204,48 @@ function parseStoredKeyring(raw: string): StoredKeyring {
       throw new OpaqueCompactKeyringError("key_invalid", "key entry must be an object");
     }
     const key = entry as Record<string, unknown>;
-    if (typeof key.id !== "string" || key.id.length === 0) {
-      throw new OpaqueCompactKeyringError("key_invalid", "key id missing");
+    // keyId 限定字符集与长度：它会进 AAD 与日志，超长/异常值既无意义也不该被回显。
+    if (typeof key.id !== "string" || !KEY_ID_PATTERN.test(key.id)) {
+      throw new OpaqueCompactKeyringError("key_invalid", "key id is missing or malformed");
     }
     // 重复 id 会让 Map 后项静默覆盖前项，等于丢失一把仍被引用的密钥。
     if (seen.has(key.id)) {
-      throw new OpaqueCompactKeyringError("key_invalid", `duplicate key id ${key.id}`);
+      throw new OpaqueCompactKeyringError("key_invalid", "duplicate key id");
     }
     seen.add(key.id);
     if (typeof key.material !== "string" || key.material.length === 0) {
       throw new OpaqueCompactKeyringError("key_invalid", "key material missing");
     }
-    const createdAt = typeof key.createdAt === "number" && Number.isFinite(key.createdAt)
-      ? key.createdAt
-      : 0;
-    const retiredAt = typeof key.retiredAt === "number" && Number.isFinite(key.retiredAt)
-      ? key.retiredAt
-      : null;
-    keys.push({ id: key.id, material: key.material, createdAt, retiredAt });
+    if (typeof key.createdAt !== "number" || !Number.isFinite(key.createdAt) || key.createdAt < 0) {
+      throw new OpaqueCompactKeyringError("key_invalid", "key createdAt is invalid");
+    }
+    let retiredAt: number | null = null;
+    if (key.retiredAt !== undefined && key.retiredAt !== null) {
+      if (typeof key.retiredAt !== "number" || !Number.isFinite(key.retiredAt)) {
+        throw new OpaqueCompactKeyringError("key_invalid", "key retiredAt is invalid");
+      }
+      // 退役时间早于创建时间说明文件被改坏或时钟异常，退役判定不可信。
+      if (key.retiredAt < key.createdAt) {
+        throw new OpaqueCompactKeyringError("key_invalid", "key retiredAt precedes createdAt");
+      }
+      retiredAt = key.retiredAt;
+    }
+    keys.push({ id: key.id, material: key.material, createdAt: key.createdAt, retiredAt });
   }
-  if (!keys.some((key) => key.id === candidate.activeKeyId)) {
+  const activeEntry = keys.find((key) => key.id === candidate.activeKeyId);
+  if (activeEntry === undefined) {
     throw new OpaqueCompactKeyringError("key_invalid", "activeKeyId not present in keys");
+  }
+  // active 必须未退役：否则一把被标记退役的密钥仍在签发新 marker，
+  // 而 retention 逻辑又随时可能把它裁掉。
+  if (activeEntry.retiredAt !== null) {
+    throw new OpaqueCompactKeyringError("key_invalid", "active key is marked retired");
+  }
+  // previous 必须有退役时间：没有的话永远不会过期，密钥环只增不减。
+  for (const key of keys) {
+    if (key.id !== candidate.activeKeyId && key.retiredAt === null) {
+      throw new OpaqueCompactKeyringError("key_invalid", "previous key is missing retiredAt");
+    }
   }
   return {
     version: OPAQUE_KEYRING_VERSION,
@@ -390,14 +423,20 @@ export function loadOpaqueCompactKeyring(
   }
   const stored = parseStoredKeyring(raw);
 
-  // 按 retiredAt 退役，不按 createdAt。尚未标记 retiredAt 的 previous key
-  // 保守保留（缺少退役时间时无法证明它已经过期）。
+  // 按 retiredAt 退役，不按 createdAt。
+  //
+  // 除了配置 retention，还要保证覆盖磁盘上真实存活记录的最晚过期时间：
+  // 管理员调小 TTL 后重启，不能把仍未过期 state 所依赖的密钥裁掉。
+  const current = now();
+  const liveFloor = options.liveStateExpiresAtMax ?? 0;
   const pruned: StoredKeyring = {
     ...stored,
     keys: stored.keys.filter((key) => {
       if (key.id === stored.activeKeyId) return true;
       if (key.retiredAt === null || key.retiredAt === undefined) return true;
-      return now() - key.retiredAt <= retentionMs;
+      if (current - key.retiredAt <= retentionMs) return true;
+      // 仍有记录活到那个时刻 → 密钥必须留着，否则那些 marker 会立刻失效。
+      return liveFloor > current;
     }),
   };
   return buildKeyring(pruned);
@@ -409,11 +448,26 @@ export function loadOpaqueCompactKeyring(
  */
 export function rotateOpaqueCompactKeyring(
   keyringFile: string,
-  options: { now?: () => number } = {},
-): { previousKeyId: string; activeKeyId: string } {
+  options: { now?: () => number; expectedActiveKeyId?: string } = {},
+): { previousKeyId: string; activeKeyId: string; alreadyRotated: boolean } {
   const now = options.now ?? Date.now;
   assertKeyringFileSafe(keyringFile);
   const stored = parseStoredKeyring(readFileSync(keyringFile, "utf-8"));
+
+  // 幂等保护：rename 成功但目录 fsync 失败时，提交状态是不确定的——盲目重试
+  // 会再轮换一次，白白多产生一代密钥。调用方传入它开始时看到的 activeKeyId；
+  // 若磁盘上已经不是那个值，说明上一次其实已经提交成功，直接返回既有结果。
+  if (options.expectedActiveKeyId !== undefined && stored.activeKeyId !== options.expectedActiveKeyId) {
+    const previous = stored.keys
+      .filter((key) => key.id !== stored.activeKeyId && key.retiredAt !== null)
+      .sort((left, right) => (right.retiredAt ?? 0) - (left.retiredAt ?? 0))[0];
+    return {
+      previousKeyId: previous?.id ?? options.expectedActiveKeyId,
+      activeKeyId: stored.activeKeyId,
+      alreadyRotated: true,
+    };
+  }
+
   const rotatedAt = now();
   const activeKeyId = `k${rotatedAt.toString(36)}${randomBytes(4).toString("hex")}`;
   const rotated: StoredKeyring = {
@@ -431,7 +485,7 @@ export function rotateOpaqueCompactKeyring(
     ],
   };
   writeKeyringAtomically(keyringFile, rotated);
-  return { previousKeyId: stored.activeKeyId, activeKeyId };
+  return { previousKeyId: stored.activeKeyId, activeKeyId, alreadyRotated: false };
 }
 
 /**
@@ -483,9 +537,31 @@ export function deriveAccountKey(
   key: OpaqueCompactKey,
   accountEntryId: string,
 ): Buffer {
-  const accountBinding = createHmac("sha256", keyring.indexKey)
+  return deriveAccountKeyFromBinding(key, computeAccountBinding(keyring, accountEntryId));
+}
+
+/** 账号绑定：不可逆，落库与 AAD 都用它，raw 账号 ID 不上盘。 */
+export function computeAccountBinding(
+  keyring: OpaqueCompactKeyring,
+  accountEntryId: string,
+): string {
+  return createHmac("sha256", keyring.indexKey)
     .update(encodeTuple(["account", accountEntryId]))
     .digest("hex");
+}
+
+/**
+ * 直接由 account binding 派生数据密钥。
+ *
+ * 这是解开"冷启动恢复死结"的关键：启动时没有 raw 账号 ID，但 row 里存着
+ * account_binding，而密钥派生实际只依赖 binding。因此恢复阶段可以在完全
+ * 不知道账号是谁的情况下完成 AEAD 验证；raw 账号 ID 的核对留到真正的读取
+ * 路径（解封后用 payload 里的账号重算 binding 比对）。
+ */
+export function deriveAccountKeyFromBinding(
+  key: OpaqueCompactKey,
+  accountBinding: string,
+): Buffer {
   return Buffer.from(
     hkdfSync(
       "sha256",
@@ -501,6 +577,17 @@ export interface SealedRecord {
   nonce: Buffer;
   ciphertext: Buffer;
   tag: Buffer;
+}
+
+/**
+ * 封装后的总字节数（nonce + ciphertext + tag）。
+ *
+ * AES-GCM 是流式模式，密文长度恒等于明文长度，因此这个值可以在封装之前
+ * 确定性算出。调用方需要它是因为 byteSize 要进 AAD——否则就得先封一次拿到
+ * 长度、再用真实长度重封一次。
+ */
+export function sealedSizeFor(plaintextLength: number): number {
+  return plaintextLength + AEAD_NONCE_BYTES + AEAD_TAG_BYTES;
 }
 
 /** 记录级 AEAD 封装。dataKey 必须来自 deriveAccountKey。 */

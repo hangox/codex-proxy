@@ -46,14 +46,26 @@ export class OpaqueCompactSentinelError extends Error {
 
 export interface OpaqueCompactSentinel {
   storeId: string;
-  /** true 表示本次调用刚刚创建了 sentinel（即真正的首次初始化）。 */
+  /** true 表示本次调用刚刚创建了 sentinel。 */
   created: boolean;
+  /**
+   * true 表示上一次初始化**完整走完**（keyring 与 DB 都已就绪）。
+   *
+   * 分两个阶段是为了让初始化可重入：首次启动先写 phase=init，全部就绪后才
+   * 原子改写成 phase=ready。若在 sentinel 之后、keyring/DB 之前被 SIGKILL，
+   * 下次启动看到 phase=init，知道可以安全地把剩余步骤补完；若只看 "sentinel
+   * 是否存在"，就会误判为"store 已存在但密钥没了"，永久 key_unavailable。
+   */
+  ready: boolean;
 }
+
+type SentinelPhase = "init" | "ready";
 
 interface StoredSentinel {
   version: number;
   storeId: string;
   createdAt: number;
+  phase: SentinelPhase;
 }
 
 function writeSentinelAtomically(path: string, sentinel: StoredSentinel): void {
@@ -74,6 +86,8 @@ function writeSentinelAtomically(path: string, sentinel: StoredSentinel): void {
     );
   };
 
+  // 临时文件用 wx（保证是自己新建的），最终通过 rename 原子替换目标——
+  // 因此目标已存在（init → ready 的提升）也能安全覆盖。
   let fd: number | null = null;
   try {
     fd = openSync(tmp, "wx", 0o600);
@@ -136,9 +150,10 @@ export function loadOpaqueCompactSentinel(
       version: OPAQUE_SENTINEL_VERSION,
       storeId: randomBytes(16).toString("hex"),
       createdAt: now(),
+      phase: "init",
     };
     writeSentinelAtomically(sentinelFile, created);
-    return { storeId: created.storeId, created: true };
+    return { storeId: created.storeId, created: true, ready: false };
   }
 
   const stats = lstatSync(sentinelFile);
@@ -165,5 +180,26 @@ export function loadOpaqueCompactSentinel(
   if (typeof candidate.storeId !== "string" || candidate.storeId.length === 0) {
     throw new OpaqueCompactSentinelError("sentinel_invalid", "sentinel storeId missing");
   }
-  return { storeId: candidate.storeId, created: false };
+  const phase = candidate.phase;
+  if (phase !== "init" && phase !== "ready") {
+    throw new OpaqueCompactSentinelError("sentinel_invalid", "sentinel phase is invalid");
+  }
+  return { storeId: candidate.storeId, created: false, ready: phase === "ready" };
+}
+
+/**
+ * 把 sentinel 从 init 提升为 ready。
+ * 只有 keyring 与 DB 都确认就绪之后才可以调用——这一步之前的崩溃都能重入。
+ */
+export function commitOpaqueCompactSentinel(
+  sentinelFile: string,
+  storeId: string,
+  now: () => number,
+): void {
+  writeSentinelAtomically(sentinelFile, {
+    version: OPAQUE_SENTINEL_VERSION,
+    storeId,
+    createdAt: now(),
+    phase: "ready",
+  });
 }

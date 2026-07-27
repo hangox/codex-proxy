@@ -86,23 +86,36 @@ export function acquireOpaqueCompactStoreLock(lockPath: string): OpaqueCompactSt
   }
 
   let db: DatabaseSync;
-  try {
-    db = new DatabaseSync(lockPath);
-    // busy_timeout=0：争用时立刻失败，不要等待。第二实例应当明确拒绝启动，
-    // 而不是挂在这里让运维以为进程卡死。
-    db.exec("PRAGMA busy_timeout = 0");
-    db.exec("CREATE TABLE IF NOT EXISTS opaque_store_lock (id INTEGER PRIMARY KEY)");
-  } catch (error) {
-    if (isBusyError(error)) {
+  {
+    // 与 repository 同理：打开成功但后续语句失败时，必须自己关闭连接，
+    // 否则调用方拿不到 handle 也就无从释放，fd 会泄漏。
+    let opened: DatabaseSync | null = null;
+    try {
+      opened = new DatabaseSync(lockPath);
+      // busy_timeout=0：争用时立刻失败，不要等待。第二实例应当明确拒绝启动，
+      // 而不是挂在这里让运维以为进程卡死。
+      opened.exec("PRAGMA busy_timeout = 0");
+      opened.exec("CREATE TABLE IF NOT EXISTS opaque_store_lock (id INTEGER PRIMARY KEY)");
+      db = opened;
+    } catch (error) {
+      if (opened !== null) {
+        try {
+          opened.close();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (isBusyError(error)) {
+        throw new OpaqueCompactStoreLockError(
+          "store_locked",
+          "another instance holds the opaque compact store",
+        );
+      }
       throw new OpaqueCompactStoreLockError(
-        "store_locked",
-        "another instance holds the opaque compact store",
+        "store_unavailable",
+        error instanceof Error ? error.message : String(error),
       );
     }
-    throw new OpaqueCompactStoreLockError(
-      "store_unavailable",
-      error instanceof Error ? error.message : String(error),
-    );
   }
 
   try {
@@ -148,12 +161,24 @@ export function acquireOpaqueCompactStoreLock(lockPath: string): OpaqueCompactSt
   };
 }
 
-/** 只读探测锁是否被占用，供 readiness/健康检查使用，不获取锁。 */
-export function isOpaqueCompactStoreLockHeld(lockPath: string): boolean {
+/**
+ * 只读探测锁状态，供 readiness/健康检查使用，不获取锁。
+ *
+ * 返回结构化结果而非 boolean：把"锁库损坏/权限不足"折叠成 `held=false`
+ * 会让 readiness 把不可用误报成空闲，正好是 fail-closed 的反面。
+ */
+export function probeOpaqueCompactStoreLock(lockPath: string): {
+  held: boolean;
+  unavailable: boolean;
+  reason?: string;
+} {
   try {
     statSync(lockPath);
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { held: false, unavailable: false };
+    }
+    return { held: false, unavailable: true, reason: "lock path is not accessible" };
   }
   let probe: DatabaseSync | null = null;
   try {
@@ -161,9 +186,15 @@ export function isOpaqueCompactStoreLockHeld(lockPath: string): boolean {
     probe.exec("PRAGMA busy_timeout = 0");
     probe.exec("BEGIN EXCLUSIVE");
     probe.exec("ROLLBACK");
-    return false;
+    return { held: false, unavailable: false };
   } catch (error) {
-    return isBusyError(error);
+    if (isBusyError(error)) return { held: true, unavailable: false };
+    // 损坏、权限、非 SQLite 文件等都属于"锁不可用"，绝不能当作未占用。
+    return {
+      held: false,
+      unavailable: true,
+      reason: error instanceof Error ? error.name : "unknown",
+    };
   } finally {
     try {
       probe?.close();

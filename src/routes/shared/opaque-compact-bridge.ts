@@ -8,11 +8,22 @@ import { buildClaudeCodeOpaqueCompactRequest, executeCompactOnly } from "./codex
 import {
   OpaqueCompactStateError,
   extractOpaqueCompactStateMarker,
+  getOpaqueCompactStateStore,
   mergeOpaquePreservedTails,
-  opaqueCompactStateStore,
   removeOpaquePreservedTailReplay,
   restoreOpaqueCompactInput,
 } from "./opaque-compact-state.js";
+import { computeVariantHash } from "./variant-hash.js";
+
+/**
+ * 计算 opaque state 的 variant 绑定。
+ *
+ * 必须与实际发往上游的请求形状一致，否则同一会话里主线程和子代理会共享同一
+ * 条 state。之前生产链路没有传这个值（恒为 ""），variant 隔离只存在于单测中。
+ */
+export function opaqueCompactVariantHash(translated: CodexResponsesRequest): string {
+  return computeVariantHash(translated.instructions, translated.tools);
+}
 
 function formatAnthropicSse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -76,6 +87,8 @@ export async function respondWithOpaqueCompactMarker(options: {
   previousOutput?: unknown[];
   previousPreservedTail?: CodexInputItem[];
   requiredEntryId?: string;
+  /** 重复 compact 时 resolve 得到的 generation，用于 CAS；首次为 0。 */
+  expectedGeneration?: number;
 }): Promise<Response> {
   const {
     c,
@@ -91,6 +104,7 @@ export async function respondWithOpaqueCompactMarker(options: {
     previousOutput,
     previousPreservedTail,
     requiredEntryId,
+    expectedGeneration,
   } = options;
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
@@ -119,17 +133,21 @@ export async function respondWithOpaqueCompactMarker(options: {
     requiredEntryId,
   });
   if (abortController.signal.aborted) throw new DOMException("Aborted", "AbortError");
-  const stored = opaqueCompactStateStore.save({
+  // save() 内部在一个事务里完成 CAS + 落盘；只有它正常返回（COMMIT 成功）
+  // 之后 marker 才会发给客户端，避免客户端拿到一个数据库里不存在的 marker。
+  const stored = getOpaqueCompactStateStore().save({
     output: compact.output,
     preservedTail,
     sessionId: clientConversationId,
     model: translated.model,
     accountEntryId: compact.entryId,
+    variantHash: opaqueCompactVariantHash(translated),
+    expectedGeneration: expectedGeneration ?? 0,
   });
   console.log(
     `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=state_saved entry=${compact.entryId}` +
       ` output_items=${compact.output.length} preserved_items=${preservedTail.length}` +
-      ` compact_ms=${compact.compactLatencyMs}` +
+      ` generation=${stored.generation} compact_ms=${compact.compactLatencyMs}` +
       ` total_ms=${Date.now() - started} marker_chars=${stored.marker.length}`,
   );
   return makeMarkerResponse(stored.marker, model);
@@ -146,15 +164,17 @@ export function restoreOpaqueCompactRequest(options: {
   marker?: string;
   output?: unknown[];
   preservedTail?: CodexInputItem[];
+  generation?: number;
   error?: OpaqueCompactStateError;
 } {
   const marker = extractOpaqueCompactStateMarker(options.req);
   if (!marker) return { restored: false };
   try {
-    const state = opaqueCompactStateStore.resolve({
+    const state = getOpaqueCompactStateStore().resolve({
       marker,
       sessionId: options.clientConversationId,
       model: options.translated.model,
+      variantHash: opaqueCompactVariantHash(options.translated),
     });
     options.translated.input = restoreOpaqueCompactInput(
       options.translated.input,
@@ -165,7 +185,7 @@ export function restoreOpaqueCompactRequest(options: {
     console.log(
       `[ClaudeOpaqueCompact] rid=${options.requestId.slice(0, 8)} phase=state_restored` +
         ` entry=${state.accountEntryId} output_items=${state.output.length}` +
-        ` preserved_items=${state.preservedTail.length}`,
+        ` preserved_items=${state.preservedTail.length} generation=${state.generation}`,
     );
     return {
       restored: true,
@@ -173,6 +193,7 @@ export function restoreOpaqueCompactRequest(options: {
       marker,
       output: state.output,
       preservedTail: state.preservedTail,
+      generation: state.generation,
     };
   } catch (error) {
     const stateError = error instanceof OpaqueCompactStateError

@@ -46,6 +46,7 @@ import {
 import {
   extractOpaqueCompactStateMarker,
   hasOpaqueCompactStateReference,
+  isOpaqueCompactStateStoreReady,
 } from "./shared/opaque-compact-state.js";
 
 function makeError(
@@ -444,6 +445,15 @@ export function createMessagesRoutes(
     };
 
     if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && opaqueCompactEnabled) {
+      // store 不可用时必须在打上游之前 fail-closed：否则会白花一次 compact 调用，
+      // 拿到 output 后却无处保存，最终仍要报错。
+      if (!isOpaqueCompactStateStoreReady()) {
+        c.status(409);
+        return c.json(makeError(
+          "invalid_request_error",
+          "Opaque compact state store is unavailable (store_unavailable). Run /compact again after the proxy recovers.",
+        ));
+      }
       try {
         return await respondWithOpaqueCompactMarker({
           c,
@@ -460,6 +470,7 @@ export function createMessagesRoutes(
           ...(opaqueRestore.output ? { previousOutput: opaqueRestore.output } : {}),
           ...(opaqueRestore.preservedTail ? { previousPreservedTail: opaqueRestore.preservedTail } : {}),
           ...(opaqueRestore.requiredEntryId ? { requiredEntryId: opaqueRestore.requiredEntryId } : {}),
+          ...(opaqueRestore.generation !== undefined ? { expectedGeneration: opaqueRestore.generation } : {}),
         });
       } catch (error) {
         if (c.req.raw.signal.aborted) throw error;

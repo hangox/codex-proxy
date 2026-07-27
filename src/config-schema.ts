@@ -214,6 +214,18 @@ export const ConfigSchema = z.object({
   }).default({}),
   /** Explicit model → provider name routing table. */
   model_routing: z.record(z.string(), z.string()).default({}),
+  /** Persistence bounds for Claude Code opaque compact state. Entirely inert
+   *  unless `model.claude_code_opaque_compact_experimental` is true — no
+   *  database, keyring, or lock file is created while the feature is off. */
+  opaque_compact_state: z.object({
+    /** State lifetime. Previous keyring entries are retained for at least this
+     *  long so a key rotation doesn't invalidate live markers. */
+    ttl_minutes: z.number().int().min(1).max(24 * 60).default(30),
+    /** Maximum retained states before LRU eviction. */
+    capacity: z.number().int().min(1).max(10_000).default(128),
+    /** Total ciphertext budget across all retained states. */
+    max_bytes: z.number().int().min(64 * 1024).default(64 * 1024 * 1024),
+  }).default({}),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

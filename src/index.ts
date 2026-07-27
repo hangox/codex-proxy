@@ -49,6 +49,7 @@ import { startOllamaBridge, stopOllamaBridge } from "./ollama/server.js";
 import { createOfficialAgentRoutes } from "./routes/official-agent.js";
 import { installUncaughtErrorHandlers } from "./logs/error-log.js";
 import { awaitServerListening } from "./utils/await-listening.js";
+import { startOpaqueCompactRuntime } from "./routes/shared/opaque-compact-runtime.js";
 
 export interface ServerHandle {
   close: () => Promise<void>;
@@ -163,6 +164,17 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const upstreamRouter = createRuntimeUpstreamRouter(adapters, cfg.model_routing, apiKeyPool);
   if (hasApiKeys) console.log(`[Init] API key pool: ${apiKeyPool.getAll().length} key(s) loaded`);
 
+  // Opaque compact state persistence. Default-off: when the feature flag is
+  // false this creates no database, keyring, or lock file at all. When on, it
+  // takes an exclusive single-instance lock — a second instance refuses to
+  // serve opaque compact rather than racing generations against the first.
+  const opaqueCompactRuntime = startOpaqueCompactRuntime({
+    enabled: cfg.model.claude_code_opaque_compact_experimental,
+    ttlMinutes: cfg.opaque_compact_state.ttl_minutes,
+    capacity: cfg.opaque_compact_state.capacity,
+    maxBytes: cfg.opaque_compact_state.max_bytes,
+  });
+
   // Mount routes
   const authRoutes = createAuthRoutes(accountPool, refreshScheduler);
   const accountRoutes = createAccountRoutes(accountPool, refreshScheduler, cookieJar, proxyPool);
@@ -262,6 +274,9 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
 
   const close = async (): Promise<void> => {
     await stopOllamaBridge();
+    // Best-effort only: crash consistency comes from WAL + synchronous=FULL,
+    // never from this path running.
+    opaqueCompactRuntime.close();
     return new Promise((resolve) => {
       server.close(() => {
         stopUpdateChecker();

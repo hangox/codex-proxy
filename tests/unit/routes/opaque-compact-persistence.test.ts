@@ -1014,6 +1014,52 @@ describe("容量上限 — 不可满足时必须回滚", () => {
   });
 });
 
+describe("可变元数据 last_used_at — 必须认证", () => {
+  it("篡改 last_used_at 后冷启动判为不可读，不能用于定向逐出", () => {
+    const { store, repository } = makeStore();
+    saveCanaryState(store);
+    repository.close();
+
+    // last_used_at 决定 LRU victim。它不在记录 AAD 里（每次读取都会变），
+    // 因此必须有独立 MAC；否则攻击者改这一列就能在容量压力下点名逐出。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("UPDATE opaque_states SET last_used_at = 1").run();
+    db.close();
+
+    const reopened = makeStore();
+    expect(reopened.repository.recover().unreadable).toBe(1);
+  });
+});
+
+describe("初始化零副作用", () => {
+  it("peekMaxExpiresAt 不得创建空库（否则两阶段初始化不可重入）", () => {
+    const databasePath = resolve(dir, "state.db");
+    expect(existsSync(databasePath)).toBe(false);
+
+    OpaqueCompactRepository.peekMaxExpiresAt(databasePath);
+
+    // 默认 DatabaseSync 是读写打开，库不存在时会留下 0 字节 0644 文件；
+    // 那会让后续 keyring 失败后的重启误判成 store_reset_detected。
+    expect(existsSync(databasePath)).toBe(false);
+  });
+});
+
+describe("格式版本 — 与 store 重置区分", () => {
+  it("旧版本 sentinel 报 schema_unsupported 而不是 store_reset_detected", () => {
+    // 旧格式是"需要升级/回滚"，不是"store 被重置"——后者会诱导运维重建 store。
+    writeFileSync(
+      resolve(dir, "store.sentinel"),
+      JSON.stringify({ version: 1, storeId: "abc123", createdAt: 1 }),
+      { mode: 0o600 },
+    );
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("schema_unsupported");
+  });
+});
+
 describe("外部密钥边界", () => {
   it("未配置 keyring_file 时 fail-closed，且不碰磁盘", () => {
     const handle = startOpaqueCompactRuntime(runtimeConfig({ keyringFile: null }));

@@ -20,10 +20,27 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-// 注意：本文件会派生大量 `node --import tsx` 子进程（每个都要重新编译 TS）。
-// 它被 vitest.config.ts 的 poolMatchGlobs 归入独立的 forks 池并单线程执行，
-// 以免与其它同样派生子进程的测试（如 update-scripts-path）争抢 CPU 造成
-// 对方偶发超时——那是资源竞争，与被测逻辑无关。
+// 注意：本文件为每个用例派生 `node --import tsx` 子进程（都要重新编译 TS）。
+// 峰值负载会与其它同样派生子进程的测试争抢 CPU。这里不改全局调度配置——
+// 那会影响全仓测试语义、也不该混进产品候选；改为在本文件内自我约束：
+// 同一时刻最多允许 MAX_CONCURRENT_CHILDREN 个子进程存活。
+const MAX_CONCURRENT_CHILDREN = 2;
+let liveChildren = 0;
+const childWaiters: (() => void)[] = [];
+
+async function acquireChildSlot(): Promise<void> {
+  if (liveChildren < MAX_CONCURRENT_CHILDREN) {
+    liveChildren += 1;
+    return;
+  }
+  await new Promise<void>((resolvePromise) => childWaiters.push(resolvePromise));
+  liveChildren += 1;
+}
+
+function releaseChildSlot(): void {
+  liveChildren = Math.max(0, liveChildren - 1);
+  childWaiters.shift()?.();
+}
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const HARNESS = resolve(ROOT, "tests/unit/routes/opaque-compact-child-harness.mjs");
@@ -71,17 +88,21 @@ interface HarnessResult {
 }
 
 function spawnHarness(command: string, payload: unknown = {}): ChildProcessWithoutNullStreams {
+  liveChildren += 1;
   const child = spawn(
     process.execPath,
     ["--import", "tsx", HARNESS, command, dir, JSON.stringify(payload)],
     { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] },
   );
+  child.once("close", () => releaseChildSlot());
   children.push(child);
   return child;
 }
 
 /** 运行到子进程自然退出，返回它输出的最后一行 JSON。 */
-function runHarness(command: string, payload: unknown = {}): Promise<HarnessResult> {
+async function runHarness(command: string, payload: unknown = {}): Promise<HarnessResult> {
+  await acquireChildSlot();
+  releaseChildSlot(); // spawnHarness 自己记账，这里只做节流等待
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawnHarness(command, payload);
     let stdout = "";

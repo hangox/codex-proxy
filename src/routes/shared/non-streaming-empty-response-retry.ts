@@ -10,6 +10,7 @@ import { toErrorStatus } from "./proxy-error-handler.js";
 import { recordProxyEgressLog } from "./proxy-egress-log.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome, buildCodexApi } from "./proxy-handler-utils.js";
+import { formatAccount } from "./opaque-compact-audit.js";
 
 export type NonStreamingEmptyResponseRetryResult =
   | {
@@ -67,9 +68,12 @@ export async function retryNonStreamingEmptyResponse(
     logWarn = (message) => console.warn(message),
   } = options;
 
+  // 脱敏判定必须在打印之前：此前这行日志先于下面的 hard-bound 检查执行，
+  // opaque 请求的空响应必然泄漏明文账号。
+  const sensitive = req.requiredAccountEntryId !== undefined;
   const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
   logWarn(
-    `[${tag}] Account ${currentEntryId} (${email}) | Empty response (attempt ${attempt}/${maxRetries + 1}), switching account...`,
+    `[${tag}] ${formatAccount(currentEntryId, sensitive, email)} | Empty response (attempt ${attempt}/${maxRetries + 1}), switching account...`,
   );
   accountPool.recordEmptyResponse(currentEntryId);
   releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen), released);

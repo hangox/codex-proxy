@@ -24,6 +24,7 @@ import { dirname } from "node:path";
 import {
   computeIndexBinding,
   computeLookupDigest,
+  computeMutableMetaMac,
   deriveAccountKey,
   deriveAccountKeyFromBinding,
   encodeTuple,
@@ -79,10 +80,20 @@ export interface OpaqueCompactRepositoryOptions {
   capacity: number;
   maxBytes: number;
   now?: () => number;
+  /**
+   * 冷启动语义校验器（由 state 层注入，避免循环依赖）。
+   *
+   * AEAD 通过只证明"这段密文是我们自己写的"，不证明它符合当前版本的结构与
+   * 元数据约束。没有这一步，AEAD-valid 但 payload 版本过旧/字段畸形/绑定
+   * 漂移的记录会让 readiness=ready，直到用户真正 restore 才暴露。
+   * 返回 false 即视为不可读。
+   */
+  validatePayload?: (plaintext: Buffer, meta: OpaqueCompactRecordMeta) => boolean;
 }
 
 interface SuccessorRow {
   predecessor_lookup: string;
+  successor_lookup: string;
   key_id: string;
   account_binding: string;
   binding: string;
@@ -102,6 +113,7 @@ interface RecordRow {
   created_at: number;
   expires_at: number;
   last_used_at: number;
+  last_used_mac: string;
   byte_size: number;
   account_binding: string;
   predecessor_lookup: string | null;
@@ -149,6 +161,7 @@ function buildSuccessorAad(fields: {
   storeId: string;
   keyId: string;
   predecessorLookup: string;
+  successorLookup: string;
   accountBinding: string;
   binding: string;
   createdAt: number;
@@ -160,6 +173,7 @@ function buildSuccessorAad(fields: {
     fields.storeId,
     fields.keyId,
     fields.predecessorLookup,
+    fields.successorLookup,
     fields.accountBinding,
     fields.binding,
     String(fields.createdAt),
@@ -187,6 +201,7 @@ export class OpaqueCompactRepository {
   private readonly capacity: number;
   private readonly maxBytes: number;
   private readonly now: () => number;
+  private validatePayload: ((plaintext: Buffer, meta: OpaqueCompactRecordMeta) => boolean) | null;
 
   private readonly stmtInsert: StatementSync;
   private readonly stmtSelectMaxGeneration: StatementSync;
@@ -211,6 +226,7 @@ export class OpaqueCompactRepository {
     this.capacity = options.capacity;
     this.maxBytes = options.maxBytes;
     this.now = options.now ?? Date.now;
+    this.validatePayload = options.validatePayload ?? null;
 
     if (options.databasePath !== ":memory:") {
       try {
@@ -256,8 +272,8 @@ export class OpaqueCompactRepository {
     this.stmtInsert = this.db.prepare(
       `INSERT INTO opaque_states
          (lookup_digest, key_id, binding, generation, created_at, expires_at, last_used_at,
-          byte_size, account_binding, predecessor_lookup, nonce, tag, ciphertext)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          last_used_mac, byte_size, account_binding, predecessor_lookup, nonce, tag, ciphertext)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.stmtSelectMaxGeneration = this.db.prepare(
       "SELECT MAX(generation) AS generation FROM opaque_states WHERE binding = ?",
@@ -269,7 +285,7 @@ export class OpaqueCompactRepository {
       "DELETE FROM opaque_states WHERE lookup_digest = ?",
     );
     this.stmtTouch = this.db.prepare(
-      "UPDATE opaque_states SET last_used_at = ? WHERE lookup_digest = ?",
+      "UPDATE opaque_states SET last_used_at = ?, last_used_mac = ? WHERE lookup_digest = ?",
     );
     this.stmtDeleteExpired = this.db.prepare("DELETE FROM opaque_states WHERE expires_at <= ?");
     this.stmtTotals = this.db.prepare(
@@ -281,9 +297,9 @@ export class OpaqueCompactRepository {
     this.stmtAllRows = this.db.prepare("SELECT * FROM opaque_states");
     this.stmtInsertSuccessor = this.db.prepare(
       `INSERT OR REPLACE INTO opaque_successors
-         (predecessor_lookup, key_id, account_binding, binding, created_at, expires_at,
-          byte_size, nonce, tag, ciphertext)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (predecessor_lookup, successor_lookup, key_id, account_binding, binding,
+          created_at, expires_at, byte_size, nonce, tag, ciphertext)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.stmtSelectSuccessor = this.db.prepare(
       "SELECT * FROM opaque_successors WHERE predecessor_lookup = ?",
@@ -295,7 +311,7 @@ export class OpaqueCompactRepository {
       "DELETE FROM opaque_successors WHERE expires_at <= ?",
     );
     this.stmtSuccessorTotals = this.db.prepare(
-      "SELECT COALESCE(SUM(byte_size), 0) AS bytes FROM opaque_successors",
+      "SELECT COUNT(*) AS count, COALESCE(SUM(byte_size), 0) AS bytes FROM opaque_successors",
     );
     this.stmtAllSuccessors = this.db.prepare("SELECT * FROM opaque_successors");
   }
@@ -383,6 +399,7 @@ export class OpaqueCompactRepository {
            created_at         INTEGER NOT NULL,
            expires_at         INTEGER NOT NULL,
            last_used_at       INTEGER NOT NULL,
+           last_used_mac      TEXT NOT NULL,
            byte_size          INTEGER NOT NULL,
            account_binding    TEXT NOT NULL,
            predecessor_lookup TEXT,
@@ -394,6 +411,7 @@ export class OpaqueCompactRepository {
       this.db.exec(
         `CREATE TABLE IF NOT EXISTS opaque_successors (
            predecessor_lookup TEXT PRIMARY KEY,
+           successor_lookup   TEXT NOT NULL,
            key_id             TEXT NOT NULL,
            account_binding    TEXT NOT NULL,
            binding            TEXT NOT NULL,
@@ -422,6 +440,13 @@ export class OpaqueCompactRepository {
       }
       throw error;
     }
+  }
+
+  /** 注入冷启动语义校验器（构造后设置，避免与 state 层循环依赖）。 */
+  setPayloadValidator(
+    validator: (plaintext: Buffer, meta: OpaqueCompactRecordMeta) => boolean,
+  ): void {
+    this.validatePayload = validator;
   }
 
   /** 稳定索引绑定：跨 master key 轮换不变。 */
@@ -517,6 +542,7 @@ export class OpaqueCompactRepository {
         options.createdAt,
         options.expiresAt,
         options.createdAt,
+        computeMutableMetaMac(this.keyring, lookupDigest, "last_used_at", options.createdAt),
         byteSize,
         accountBinding,
         predecessorLookup,
@@ -535,6 +561,7 @@ export class OpaqueCompactRepository {
             storeId: this.storeId,
             keyId: key.id,
             predecessorLookup,
+            successorLookup: lookupDigest,
             accountBinding,
             binding: options.binding,
             createdAt: options.createdAt,
@@ -545,6 +572,7 @@ export class OpaqueCompactRepository {
         );
         this.stmtInsertSuccessor.run(
           predecessorLookup,
+          lookupDigest,
           key.id,
           accountBinding,
           options.binding,
@@ -611,6 +639,7 @@ export class OpaqueCompactRepository {
           storeId: this.storeId,
           keyId: row.key_id,
           predecessorLookup: row.predecessor_lookup,
+          successorLookup: row.successor_lookup,
           accountBinding: row.account_binding,
           binding: row.binding,
           createdAt: row.created_at,
@@ -709,7 +738,12 @@ export class OpaqueCompactRepository {
         return null;
       }
 
-      this.stmtTouch.run(this.now(), lookupDigest);
+      const touchedAt = this.now();
+      this.stmtTouch.run(
+        touchedAt,
+        computeMutableMetaMac(this.keyring, lookupDigest, "last_used_at", touchedAt),
+        lookupDigest,
+      );
       return {
         plaintext,
         matchedAccountEntryId: account,
@@ -798,6 +832,7 @@ export class OpaqueCompactRepository {
             storeId: this.storeId,
             keyId: row.key_id,
             predecessorLookup: row.predecessor_lookup,
+            successorLookup: row.successor_lookup,
             accountBinding: row.account_binding,
             binding: row.binding,
             createdAt: row.created_at,
@@ -829,9 +864,19 @@ export class OpaqueCompactRepository {
         unreadable += 1;
         continue;
       }
+      // last_used_at 决定 LRU 逐出。它可变、无法进记录 AAD，因此用独立 MAC
+      // 认证；否则攻击者改这一列就能在容量压力下定向逐出任意 state。
+      if (
+        row.last_used_mac !==
+        computeMutableMetaMac(this.keyring, row.lookup_digest, "last_used_at", row.last_used_at)
+      ) {
+        unreadable += 1;
+        continue;
+      }
       const dataKey = deriveAccountKeyFromBinding(key, row.account_binding);
+      let plaintext: Buffer;
       try {
-        openRecord(
+        plaintext = openRecord(
           dataKey,
           buildAad({
             storeId: this.storeId,
@@ -855,6 +900,23 @@ export class OpaqueCompactRepository {
         // bit flip 在这里就会被抓到，冷启动不再"看起来健康"。
         unreadable += 1;
         continue;
+      }
+      // 语义校验：版本/结构/绑定漂移同样属于"启动期就该发现"的问题。
+      if (this.validatePayload !== null) {
+        const meta: OpaqueCompactRecordMeta = {
+          lookupDigest: row.lookup_digest,
+          keyId: row.key_id,
+          binding: row.binding,
+          generation: row.generation,
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+          byteSize: actualByteSize,
+          predecessorLookup: row.predecessor_lookup,
+        };
+        if (!this.validatePayload(plaintext, meta)) {
+          unreadable += 1;
+          continue;
+        }
       }
       // 认证通过之后，expires_at 才是可信的。
       if (row.expires_at <= now) {
@@ -887,9 +949,15 @@ export class OpaqueCompactRepository {
    * 不需要认证的纯元数据查询，可在 keyring 加载前调用。
    */
   static peekMaxExpiresAt(databasePath: string): number {
+    // 必须先确认文件存在：`new DatabaseSync(path)` 默认以读写方式打开，
+    // 库不存在时会**创建一个 0 字节 0644 的空文件**。runtime 在 keyring
+    // 加载之前调用本方法，一旦留下空库，随后 keyring 失败/崩溃就会让下次
+    // 启动看到「sentinel 已存在但 DB 无 schema」→ store_reset_detected，
+    // 两阶段初始化不再可重入；顺带还违反 0600 权限要求。
+    if (!existsSync(databasePath)) return 0;
     let db: DatabaseSync | null = null;
     try {
-      db = new DatabaseSync(databasePath);
+      db = new DatabaseSync(databasePath, { readOnly: true });
       const row = db
         .prepare("SELECT MAX(expires_at) AS max_expires FROM opaque_states")
         .get() as { max_expires: number | null } | undefined;
@@ -915,9 +983,13 @@ export class OpaqueCompactRepository {
    */
   stats(): { count: number; bytes: number } {
     const row = this.stmtTotals.get() as { count: number; bytes: number } | undefined;
-    const successors = this.stmtSuccessorTotals.get() as { bytes: number } | undefined;
+    const successors = this.stmtSuccessorTotals.get() as
+      | { count: number; bytes: number }
+      | undefined;
+    // successor 行同样占用容量与字节：只计 bytes 不计 count 时，
+    // capacity=2 的库放 2 条 state + 1 条 successor 仍会被当作 count=2 放行。
     return {
-      count: Number(row?.count ?? 0),
+      count: Number(row?.count ?? 0) + Number(successors?.count ?? 0),
       bytes: Number(row?.bytes ?? 0) + Number(successors?.bytes ?? 0),
     };
   }
@@ -951,14 +1023,22 @@ export class OpaqueCompactRepository {
 
       // 只在受保护记录之外挑最旧的一条淘汰。刚写入的行和它的 predecessor
       // 都不能动：predecessor 还要支撑崩溃重试的幂等回放。
+      // 受保护集合：刚写入的行、它的 predecessor，以及**所有**仍待交付的
+      // successor 映射两端。漏掉后者会让会话 B 的容量压力删掉会话 A 尚未
+      // confirm 的 predecessor 或 successor 目标，破坏 post-commit 恢复承诺。
       const victim = this.db
         .prepare(
-          `SELECT lookup_digest FROM opaque_states
-           WHERE lookup_digest <> ? AND (? IS NULL OR lookup_digest <> ?)
+          `SELECT lookup_digest, last_used_at, last_used_mac FROM opaque_states
+           WHERE lookup_digest <> ?
+             AND (? IS NULL OR lookup_digest <> ?)
+             AND lookup_digest NOT IN (SELECT predecessor_lookup FROM opaque_successors)
+             AND lookup_digest NOT IN (
+               SELECT successor_lookup FROM opaque_successors WHERE successor_lookup IS NOT NULL
+             )
            ORDER BY last_used_at ASC, created_at ASC LIMIT 1`,
         )
         .get(protectedLookup, predecessorLookup, predecessorLookup ?? "") as
-        | { lookup_digest: string }
+        | { lookup_digest: string; last_used_at: number; last_used_mac: string }
         | undefined;
 
       if (victim === undefined) {
@@ -968,6 +1048,17 @@ export class OpaqueCompactRepository {
         throw new OpaqueCompactRepositoryError(
           "state_too_large",
           "capacity or byte budget cannot be satisfied without evicting protected records",
+        );
+      }
+      // 逐出前重新认证 last_used_at：启动时验过不等于运行期没被改。
+      // MAC 不符说明有人在运行中动了排序依据，此时删除任何记录都不安全。
+      if (
+        victim.last_used_mac !==
+        computeMutableMetaMac(this.keyring, victim.lookup_digest, "last_used_at", victim.last_used_at)
+      ) {
+        throw new OpaqueCompactRepositoryError(
+          "state_corrupt",
+          "eviction candidate has unauthenticated last_used_at",
         );
       }
       this.stmtDeleteByLookup.run(victim.lookup_digest);

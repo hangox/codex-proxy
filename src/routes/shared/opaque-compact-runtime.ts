@@ -45,6 +45,7 @@ import {
 } from "./opaque-compact-store-lock.js";
 import {
   OpaqueCompactStateStore,
+  validatePersistedPayloadForRecovery,
   setOpaqueCompactStateStore,
   setOpaqueCompactStateUnavailable,
   type OpaqueCompactStateFailure,
@@ -121,7 +122,11 @@ function classify(error: unknown): OpaqueCompactStateFailure {
     }
   }
   if (error instanceof OpaqueCompactSentinelError) {
-    return "store_reset_detected";
+    // 版本不受支持 = 格式漂移，必须与"store 被重置"区分开，
+    // 否则 route/health 会给出误导性原因。
+    return error.reason === "sentinel_unsupported_version"
+      ? "schema_unsupported"
+      : "store_reset_detected";
   }
   if (error instanceof OpaqueCompactRepositoryError) {
     switch (error.reason) {
@@ -260,6 +265,11 @@ export function startOpaqueCompactRuntime(
       maxBytes: config.maxBytes,
       ...(config.now ? { now: config.now } : {}),
     });
+    // 冷启动不仅要过 AEAD，还要通过结构与绑定校验；否则版本/形状漂移
+    // 要等到用户真正 restore 才暴露。
+    const repositoryForValidation = repository;
+    repository.setPayloadValidator((plaintext, meta) =>
+      validatePersistedPayloadForRecovery(keyring, repositoryForValidation, plaintext, meta));
 
     // 5) 全库 AEAD 验证。发现任何不可读记录即整体 quarantine。
     const recovered = repository.recover();

@@ -35,7 +35,11 @@ import { dirname, resolve } from "node:path";
 
 export const OPAQUE_SENTINEL_VERSION = 2;
 
-export type OpaqueCompactSentinelFailure = "sentinel_invalid" | "sentinel_write_failed";
+export type OpaqueCompactSentinelFailure =
+  | "sentinel_invalid"
+  | "sentinel_write_failed"
+  /** 合法但版本不受支持——是格式漂移，不是 store 被重置/损坏。 */
+  | "sentinel_unsupported_version";
 
 export class OpaqueCompactSentinelError extends Error {
   constructor(readonly reason: OpaqueCompactSentinelFailure, message?: string) {
@@ -172,8 +176,10 @@ export function loadOpaqueCompactSentinel(
   }
   const candidate = parsed as Record<string, unknown>;
   if (candidate.version !== OPAQUE_SENTINEL_VERSION) {
+    // 与"损坏/身份被换掉"分开建模：把旧版本误报成 store_reset_detected 会
+    // 诱导运维去重建 store，而正确动作是升级/迁移或回滚。
     throw new OpaqueCompactSentinelError(
-      "sentinel_invalid",
+      "sentinel_unsupported_version",
       `unsupported sentinel version ${String(candidate.version)}`,
     );
   }

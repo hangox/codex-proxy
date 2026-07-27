@@ -47,6 +47,7 @@ import {
   extractOpaqueCompactStateMarker,
   getOpaqueCompactStateReadiness,
   hasOpaqueCompactStateReference,
+  reportOpaqueCompactStoreFault,
 } from "./shared/opaque-compact-state.js";
 
 function makeError(
@@ -301,6 +302,10 @@ export function createMessagesRoutes(
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
     const hasOpaqueReference = hasOpaqueCompactStateReference(req);
     const opaqueStateReference = extractOpaqueCompactStateMarker(req);
+    // 只要**任一**检测认为请求里带 opaque 内容，就按敏感请求处理。
+    // 两个函数对"什么算 opaque 引用"的判定可能分歧（严格 marker vs 宽松包含），
+    // 日志侧必须取并集，否则分歧就是一条完整 body 落盘的通道。
+    const opaqueSensitive = hasOpaqueReference || opaqueStateReference !== null;
     const clientConversationId = extractAnthropicClientConversationId(
       req,
       c.req.header("x-claude-code-session-id"),
@@ -383,7 +388,10 @@ export function createMessagesRoutes(
             compact_mode: opaqueCompactEnabled ? "opaque_state" : "render",
             ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
           }
-        : opaqueMarkerCandidate
+        // 判定条件用 opaqueSensitive 而非 opaqueMarkerCandidate：后者额外要求
+        // clientConversationId 非空，于是"带 marker 但无 conversationId"的请求
+        // 会两个分支都不命中，落到下面把完整 body 写盘。
+        : opaqueSensitive
           ? {
               body_type: "anthropic.messages",
               model: req.model,
@@ -442,6 +450,10 @@ export function createMessagesRoutes(
         })
       : { restored: false };
     if (opaqueRestore.error) {
+      // store 级故障（损坏/密钥/schema）与单请求语义错误（session 不匹配、
+      // marker 过期）走同一个出口，但前者要同时把 runtime 转成 NOT_READY，
+      // 让 /health 与后续请求给出同一个 reason。
+      reportOpaqueCompactStoreFault(opaqueRestore.error);
       c.status(409);
       return c.json(makeError(
         "invalid_request_error",
@@ -491,6 +503,20 @@ export function createMessagesRoutes(
         });
       } catch (error) {
         if (c.req.raw.signal.aborted) throw error;
+        // store 级故障必须原子转 NOT_READY，并且当前请求返回同一个机器码。
+        // 否则会出现"当前请求泛化 409、/health 仍显示 ready"，且失败可能被
+        // 降级成 classic/普通路径继续跑——那等于把持久化保证悄悄丢掉。
+        const faultReason = reportOpaqueCompactStoreFault(error);
+        if (faultReason !== null) {
+          console.warn(
+            `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=store_fault reason=${faultReason}`,
+          );
+          c.status(409);
+          return c.json(makeError(
+            "invalid_request_error",
+            `Opaque compact state store is unavailable (${faultReason}). Run /compact again after the proxy recovers.`,
+          ));
+        }
         console.warn(
           `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=fallback` +
             ` error=${error instanceof Error ? error.name : "UnknownError"}`,

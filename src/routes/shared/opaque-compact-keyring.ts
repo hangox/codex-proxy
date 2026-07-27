@@ -511,6 +511,25 @@ export function computeIndexBinding(
   return createHmac("sha256", keyring.indexKey).update(encodeTuple(parts)).digest("hex");
 }
 
+/**
+ * 可变元数据的 MAC（当前只有 last_used_at）。
+ *
+ * last_used_at 决定 LRU 逐出，但它每次读取都会更新，因此不能放进记录 AAD
+ * （那要求每次 touch 重新封装整条密文）。改为对 (lookup, value) 单独做 MAC：
+ * 磁盘攻击者改了列却给不出配套 MAC，逐出决策因此仍然只基于可认证的数据。
+ * 用稳定 index 域，跨 master key 轮换不失效。
+ */
+export function computeMutableMetaMac(
+  keyring: OpaqueCompactKeyring,
+  lookupDigest: string,
+  field: string,
+  value: number,
+): string {
+  return createHmac("sha256", keyring.indexKey)
+    .update(encodeTuple(["meta", lookupDigest, field, String(value)]))
+    .digest("hex");
+}
+
 /** stateId → 落库用的不可逆 lookup 摘要。DB 中不出现原始 stateId。 */
 export function computeLookupDigest(keyring: OpaqueCompactKeyring, stateId: string): string {
   return createHmac("sha256", keyring.lookupKey).update(encodeTuple([stateId])).digest("hex");

@@ -324,6 +324,49 @@ describe("E2E: POST /v1/messages", () => {
   });
 
   it.each([
+    [
+      "mixed image content followed by ordinary text",
+      [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } },
+        { type: "text", text: compactPrompt },
+        { type: "text", text: "ordinary trailing text" },
+      ],
+    ],
+    [
+      "a duplicate strict compact prompt",
+      [
+        { type: "text", text: compactPrompt },
+        { type: "tool_result", tool_use_id: "tool-ambiguous", content: "preserved result" },
+        { type: "text", text: compactPrompt },
+      ],
+    ],
+    [
+      "a strict compact prompt followed by ordinary text",
+      [
+        { type: "text", text: compactPrompt },
+        { type: "text", text: "ordinary trailing text" },
+        { type: "tool_result", tool_use_id: "tool-trailing", content: "preserved result" },
+      ],
+    ],
+  ])("opaque compact bridge: does not match %s", async (_case, content) => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("resp_not_compact", "ordinary response"));
+    });
+
+    const res = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content }],
+    }), { "x-claude-code-session-id": "session-mixed-negative" });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("ordinary response");
+    expect(urls).toEqual([expect.not.stringContaining("/compact")]);
+  });
+
+  it.each([
         ["tampered", (marker: string) => marker.replace(
           /:([A-Za-z0-9_-])([A-Za-z0-9_-]{42})<\/summary>$/,
           (_match, first: string, rest: string) => ":" + (first === "A" ? "B" : "A") + rest + "</summary>",

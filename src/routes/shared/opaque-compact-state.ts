@@ -918,9 +918,22 @@ export function reportOpaqueCompactStoreFault(error: unknown): OpaqueCompactStat
   if (!(error instanceof OpaqueCompactStateError)) return null;
   const reason = error.reason;
   if (!isFatalStoreFailure(reason)) return null;
-  setOpaqueCompactStateUnavailable(reason);
-  console.warn(`[ClaudeOpaqueCompact] phase=store_fault reason=${reason}`);
-  return reason;
+  // 交给 runtime 层执行真正的 detach：只清指针会留下 DB/锁仍被持有的
+  // 半下线状态，后续任何 start 都会撞上 store_locked（已实测）。
+  return runtimeFaultHandler !== null
+    ? runtimeFaultHandler(reason)
+    : (setOpaqueCompactStateUnavailable(reason), reason);
+}
+
+/**
+ * runtime 在启动时注册的故障接管回调（注入以避免 state ↔ runtime 循环依赖）。
+ */
+let runtimeFaultHandler: ((reason: OpaqueCompactStateFailure) => OpaqueCompactStateFailure) | null = null;
+
+export function setOpaqueCompactRuntimeFaultHandler(
+  handler: ((reason: OpaqueCompactStateFailure) => OpaqueCompactStateFailure) | null,
+): void {
+  runtimeFaultHandler = handler;
 }
 
 /**

@@ -62,22 +62,33 @@ describe("opaque restore 诊断日志", () => {
 });
 
 describe("redactJson — 值级第二道防线", () => {
-  it("marker 出现在任意字段都被抹掉，包括裸字符串", async () => {
+  it("完整 marker 的三段（stateId/compHash/signature）全部零命中", async () => {
     const { redactJson } = await import("@src/logs/redact.js");
-    const marker =
+    // 必须用**真实长度**的 canary：早期用 4 字符占位时，正则只遮住第一段
+    // 也能让断言通过，属于假阴性。真实 marker 是 32/43/43。
+    const stateId = "A".repeat(32);
+    const compHash = "B".repeat(43);
+    const signature = "C".repeat(43);
+    const token = `codex-opaque-state:v1:${stateId}:${compHash}:${signature}`;
+    const wrapped =
       "<analysis>Opaque compact state retained locally.</analysis>\n" +
-      "<summary>codex-opaque-state:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:BBBB:CCCC</summary>";
+      `<summary>${token}</summary>`;
 
-    // 主防线是路由层"opaque 请求不捕获 body"，但那依赖一串 if 判定正确。
-    // 这里是第二道：marker 无论藏在哪个字段都不得原样落盘。
-    const redactedBare = redactJson(marker);
-    expect(String(redactedBare)).not.toContain("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-
-    const nested = redactJson({
-      messages: [{ role: "assistant", content: marker }],
-      note: `prefix ${marker} suffix`,
-    });
-    expect(JSON.stringify(nested)).not.toContain("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    const cases = [
+      redactJson(token),
+      redactJson(wrapped),
+      redactJson({ messages: [{ role: "assistant", content: wrapped }] }),
+      redactJson({ note: `prefix ${token} suffix` }),
+      redactJson({ two: `${token} and ${token}` }),
+      // 截断/畸形前缀同样不得残留可关联片段。
+      redactJson({ truncated: `codex-opaque-state:v1:${stateId}` }),
+    ];
+    for (const value of cases) {
+      const text = JSON.stringify(value);
+      expect(text).not.toContain(stateId);
+      expect(text).not.toContain(compHash);
+      expect(text).not.toContain(signature);
+    }
   });
 
   it("encrypted_content / preservedTail 按 key 名整体脱敏", async () => {

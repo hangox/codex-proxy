@@ -39,6 +39,34 @@ describe("opaque compact state store", () => {
     expect(store.resolve({ marker, sessionId: "session-a", model: "gpt-5.4", accountEntryId: "entry-a" }).output).toEqual(OUTPUT);
   });
 
+  it("binds preserved tool tails into the marker digest and restores them in order", () => {
+    const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 13) });
+    const preservedTail = [
+      { type: "function_call", call_id: "tool-1", name: "Read", arguments: "{}" },
+      { type: "function_call_output", call_id: "tool-1", output: "tool-only-canary" },
+    ] as const;
+    const { marker, state } = store.save({
+      output: OUTPUT,
+      preservedTail: [...preservedTail],
+      sessionId: "session-a",
+      model: "gpt-5.4",
+      accountEntryId: "entry-a",
+    });
+
+    expect(store.resolve({ marker, sessionId: "session-a", model: "gpt-5.4" }).preservedTail).toEqual(preservedTail);
+    expect(restoreOpaqueCompactInput([
+      { role: "assistant", content: marker },
+      { role: "user", content: "continue" },
+    ], marker, OUTPUT, [...preservedTail])).toEqual([
+      ...OUTPUT,
+      ...preservedTail,
+      { role: "user", content: "continue" },
+    ]);
+
+    state.preservedTail[1] = { type: "function_call_output", call_id: "tool-1", output: "tampered" };
+    expectReason(() => store.resolve({ marker, sessionId: "session-a", model: "gpt-5.4" }), "comp_hash_mismatch");
+  });
+
   it("rejects tampered, missing, expired, session, model, account, and comp-hash mismatches", () => {
     let now = 1000;
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 2), ttlMs: 100, now: () => now });

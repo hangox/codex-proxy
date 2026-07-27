@@ -1,10 +1,10 @@
 import type { Context } from "hono";
 import type { AccountPool } from "../../auth/account-pool.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
-import type { CodexResponsesRequest } from "../../proxy/codex-types.js";
+import type { CodexInputItem, CodexResponsesRequest } from "../../proxy/codex-types.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
-import { buildClaudeCodeCompactRequest, executeCompactOnly } from "./codex-compact-service.js";
+import { buildClaudeCodeOpaqueCompactRequest, executeCompactOnly } from "./codex-compact-service.js";
 import {
   OpaqueCompactStateError,
   extractOpaqueCompactStateMarker,
@@ -72,6 +72,7 @@ export async function respondWithOpaqueCompactMarker(options: {
   requestId: string;
   previousMarker?: string;
   previousOutput?: unknown[];
+  previousPreservedTail?: CodexInputItem[];
   requiredEntryId?: string;
 }): Promise<Response> {
   const {
@@ -86,12 +87,18 @@ export async function respondWithOpaqueCompactMarker(options: {
     requestId,
     previousMarker,
     previousOutput,
+    previousPreservedTail,
     requiredEntryId,
   } = options;
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
   const started = Date.now();
-  const compactRequest = buildClaudeCodeCompactRequest(req, translated);
+  const opaqueRequest = buildClaudeCodeOpaqueCompactRequest(req, translated);
+  const { compactRequest } = opaqueRequest;
+  const preservedTail = [
+    ...(previousPreservedTail ?? []),
+    ...opaqueRequest.preservedTail,
+  ];
   if (previousMarker && previousOutput) {
     compactRequest.input = restoreOpaqueCompactInput(compactRequest.input, previousMarker, previousOutput);
   }
@@ -107,13 +114,15 @@ export async function respondWithOpaqueCompactMarker(options: {
   if (abortController.signal.aborted) throw new DOMException("Aborted", "AbortError");
   const stored = opaqueCompactStateStore.save({
     output: compact.output,
+    preservedTail,
     sessionId: clientConversationId,
     model: translated.model,
     accountEntryId: compact.entryId,
   });
   console.log(
     `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=state_saved entry=${compact.entryId}` +
-      ` output_items=${compact.output.length} compact_ms=${compact.compactLatencyMs}` +
+      ` output_items=${compact.output.length} preserved_items=${preservedTail.length}` +
+      ` compact_ms=${compact.compactLatencyMs}` +
       ` total_ms=${Date.now() - started} marker_chars=${stored.marker.length}`,
   );
   return makeMarkerResponse(stored.marker, model);
@@ -124,7 +133,14 @@ export function restoreOpaqueCompactRequest(options: {
   translated: CodexResponsesRequest;
   clientConversationId: string;
   requestId: string;
-}): { restored: boolean; requiredEntryId?: string; marker?: string; output?: unknown[]; error?: OpaqueCompactStateError } {
+}): {
+  restored: boolean;
+  requiredEntryId?: string;
+  marker?: string;
+  output?: unknown[];
+  preservedTail?: CodexInputItem[];
+  error?: OpaqueCompactStateError;
+} {
   const marker = extractOpaqueCompactStateMarker(options.req);
   if (!marker) return { restored: false };
   try {
@@ -133,12 +149,24 @@ export function restoreOpaqueCompactRequest(options: {
       sessionId: options.clientConversationId,
       model: options.translated.model,
     });
-    options.translated.input = restoreOpaqueCompactInput(options.translated.input, marker, state.output);
+    options.translated.input = restoreOpaqueCompactInput(
+      options.translated.input,
+      marker,
+      state.output,
+      state.preservedTail,
+    );
     console.log(
       `[ClaudeOpaqueCompact] rid=${options.requestId.slice(0, 8)} phase=state_restored` +
-        ` entry=${state.accountEntryId} output_items=${state.output.length}`,
+        ` entry=${state.accountEntryId} output_items=${state.output.length}` +
+        ` preserved_items=${state.preservedTail.length}`,
     );
-    return { restored: true, requiredEntryId: state.accountEntryId, marker, output: state.output };
+    return {
+      restored: true,
+      requiredEntryId: state.accountEntryId,
+      marker,
+      output: state.output,
+      preservedTail: state.preservedTail,
+    };
   } catch (error) {
     const stateError = error instanceof OpaqueCompactStateError
       ? error

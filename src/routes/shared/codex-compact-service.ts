@@ -279,6 +279,72 @@ function messagesBeforeCompactPrompt(
   ];
 }
 
+export interface ClaudeCodeOpaqueCompactRequest {
+  compactRequest: CodexCompactRequest;
+  preservedTail: CodexInputItem[];
+}
+
+function isFunctionCallItem(
+  item: CodexInputItem | undefined,
+): item is Extract<CodexInputItem, { type: "function_call" }> {
+  return item !== undefined && "type" in item && item.type === "function_call";
+}
+
+function isFunctionCallOutputItem(
+  item: CodexInputItem | undefined,
+): item is Extract<CodexInputItem, { type: "function_call_output" }> {
+  return item !== undefined && "type" in item && item.type === "function_call_output";
+}
+
+function splitTrailingCompletedToolChain(input: CodexInputItem[]): {
+  compactInput: CodexInputItem[];
+  preservedTail: CodexInputItem[];
+} {
+  let outputStart = input.length;
+  while (outputStart > 0 && isFunctionCallOutputItem(input[outputStart - 1])) {
+    outputStart -= 1;
+  }
+  if (outputStart === input.length) return { compactInput: input, preservedTail: [] };
+
+  let callStart = outputStart;
+  while (callStart > 0 && isFunctionCallItem(input[callStart - 1])) {
+    callStart -= 1;
+  }
+  if (callStart === outputStart) return { compactInput: input, preservedTail: [] };
+
+  const calls = input.slice(callStart, outputStart).filter(isFunctionCallItem);
+  const outputs = input.slice(outputStart).filter(isFunctionCallOutputItem);
+  const callIds = calls.map((item) => item.call_id);
+  const outputIds = outputs.map((item) => item.call_id);
+  const uniqueCallIds = new Set(callIds);
+  const uniqueOutputIds = new Set(outputIds);
+  if (
+    uniqueCallIds.size !== calls.length ||
+    uniqueOutputIds.size !== outputs.length ||
+    uniqueCallIds.size !== uniqueOutputIds.size ||
+    [...uniqueCallIds].some((callId) => !uniqueOutputIds.has(callId))
+  ) {
+    return { compactInput: input, preservedTail: [] };
+  }
+
+  return {
+    compactInput: input.slice(0, callStart),
+    preservedTail: input.slice(callStart),
+  };
+}
+
+export function buildClaudeCodeOpaqueCompactRequest(
+  req: AnthropicMessagesRequest,
+  translated: CodexResponsesRequest,
+): ClaudeCodeOpaqueCompactRequest {
+  const compactRequest = buildClaudeCodeCompactRequest(req, translated);
+  const split = splitTrailingCompletedToolChain(compactRequest.input);
+  return {
+    compactRequest: { ...compactRequest, input: split.compactInput },
+    preservedTail: split.preservedTail,
+  };
+}
+
 export function buildClaudeCodeCompactRequest(
   req: AnthropicMessagesRequest,
   translated: CodexResponsesRequest,

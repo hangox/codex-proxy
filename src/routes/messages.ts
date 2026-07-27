@@ -458,6 +458,7 @@ export function createMessagesRoutes(
           requestId,
           ...(opaqueRestore.marker ? { previousMarker: opaqueRestore.marker } : {}),
           ...(opaqueRestore.output ? { previousOutput: opaqueRestore.output } : {}),
+          ...(opaqueRestore.preservedTail ? { previousPreservedTail: opaqueRestore.preservedTail } : {}),
           ...(opaqueRestore.requiredEntryId ? { requiredEntryId: opaqueRestore.requiredEntryId } : {}),
         });
       } catch (error) {

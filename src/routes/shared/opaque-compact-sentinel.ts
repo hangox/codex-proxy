@@ -33,7 +33,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-export const OPAQUE_SENTINEL_VERSION = 1;
+export const OPAQUE_SENTINEL_VERSION = 2;
 
 export type OpaqueCompactSentinelFailure = "sentinel_invalid" | "sentinel_write_failed";
 

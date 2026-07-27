@@ -1,11 +1,14 @@
 import { getWsPool } from "../../proxy/ws-pool.js";
 import type { WsConnectionPool } from "../../proxy/ws-pool.js";
 import type { WsPoolContext } from "../../proxy/codex-api.js";
+import { formatAccount } from "./opaque-compact-audit.js";
 
 export interface BuildWsPoolContextOptions {
   useWebSocket?: boolean;
   conversationId: string | null | undefined;
   entryId: string;
+  /** true 表示本请求受 opaque 隐私合同约束，日志不得含明文账号。 */
+  sensitive?: boolean;
   variantHash: string;
   requestId: string;
   tag: string;
@@ -42,7 +45,7 @@ export function buildWsPoolContext(
         : decision.kind === "retry-after-stale-reuse"
           ? `retry-after-stale-reuse:${decision.wsId}`
           : `${decision.kind}:${decision.wsId}`;
-      log(`[${options.tag}] Account ${entryId} | rid=${ridShort} | ws=${wsTag}`);
+      log(`[${options.tag}] ${formatAccount(entryId, options.sensitive)} | rid=${ridShort} | ws=${wsTag}`);
     },
   };
 }

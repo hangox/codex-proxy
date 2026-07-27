@@ -34,7 +34,7 @@ import {
 } from "./opaque-compact-keyring.js";
 
 /** 记录 schema 版本。任何不兼容的列变更都必须 +1。 */
-export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 1;
+export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 2;
 
 export type OpaqueCompactRepositoryFailure =
   | "store_unavailable"
@@ -79,6 +79,19 @@ export interface OpaqueCompactRepositoryOptions {
   capacity: number;
   maxBytes: number;
   now?: () => number;
+}
+
+interface SuccessorRow {
+  predecessor_lookup: string;
+  key_id: string;
+  account_binding: string;
+  binding: string;
+  created_at: number;
+  expires_at: number;
+  byte_size: number;
+  nonce: Uint8Array;
+  tag: Uint8Array;
+  ciphertext: Uint8Array;
 }
 
 interface RecordRow {
@@ -189,6 +202,7 @@ export class OpaqueCompactRepository {
   private readonly stmtDeleteSuccessor: StatementSync;
   private readonly stmtDeleteSuccessorExpired: StatementSync;
   private readonly stmtSuccessorTotals: StatementSync;
+  private readonly stmtAllSuccessors: StatementSync;
 
   constructor(options: OpaqueCompactRepositoryOptions) {
     this.keyring = options.keyring;
@@ -283,6 +297,7 @@ export class OpaqueCompactRepository {
     this.stmtSuccessorTotals = this.db.prepare(
       "SELECT COALESCE(SUM(byte_size), 0) AS bytes FROM opaque_successors",
     );
+    this.stmtAllSuccessors = this.db.prepare("SELECT * FROM opaque_successors");
   }
 
   /** PRAGMA 设置必须读回验证：设置成功不等于生效（只读介质、旧版本等）。 */
@@ -565,19 +580,8 @@ export class OpaqueCompactRepository {
    */
   findSuccessorMarker(predecessorStateId: string, accountEntryId: string): string | null {
     const predecessorLookup = this.lookupFor(predecessorStateId);
-    const row = this.stmtSelectSuccessor.get(predecessorLookup) as
-      | {
-          predecessor_lookup: string;
-          key_id: string;
-          account_binding: string;
-          binding: string;
-          created_at: number;
-          expires_at: number;
-          byte_size: number;
-          nonce: Uint8Array;
-          tag: Uint8Array;
-          ciphertext: Uint8Array;
-        }
+    const row = this.stmtSelectSuccessor.get(predecessorLookup) as unknown as
+      | SuccessorRow
       | undefined;
     // 没有映射是正常情况（首次 compact），返回 null 让调用方去打上游。
     if (row === undefined) return null;
@@ -735,12 +739,18 @@ export class OpaqueCompactRepository {
       this.stmtDeleteByLookup.run(meta.predecessorLookup);
       this.stmtDeleteSuccessor.run(meta.predecessorLookup);
       this.db.exec("COMMIT");
-    } catch {
+    } catch (error) {
       try {
         this.db.exec("ROLLBACK");
       } catch {
         /* ignore */
       }
+      // 不能吞：回收失败意味着 predecessor 仍然存在，调用方需要知道
+      // store 出了问题，否则故障会被掩盖成"一切正常"。
+      throw new OpaqueCompactRepositoryError(
+        "store_unavailable",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 
@@ -763,7 +773,49 @@ export class OpaqueCompactRepository {
     let retained = 0;
     let unreadable = 0;
     const expiredLookups: string[] = [];
+    const expiredSuccessors: string[] = [];
     const now = this.now();
+
+    // successor 映射与 state 行同等重要：它承载 post-commit 幂等回放。
+    // 若不认证就按 expires_at 批量删除，攻击者改短 TTL 即可销毁映射，
+    // 重新打开"新 marker 没收到、旧 marker 已失效"的双失窗口。
+    const successorRows = this.stmtAllSuccessors.all() as unknown as SuccessorRow[];
+    for (const row of successorRows) {
+      const key = this.keyring.get(row.key_id);
+      if (key === undefined) {
+        unreadable += 1;
+        continue;
+      }
+      const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
+      if (Number(row.byte_size) !== actualByteSize) {
+        unreadable += 1;
+        continue;
+      }
+      try {
+        openRecord(
+          deriveAccountKeyFromBinding(key, row.account_binding),
+          buildSuccessorAad({
+            storeId: this.storeId,
+            keyId: row.key_id,
+            predecessorLookup: row.predecessor_lookup,
+            accountBinding: row.account_binding,
+            binding: row.binding,
+            createdAt: row.created_at,
+            expiresAt: row.expires_at,
+            byteSize: actualByteSize,
+          }),
+          {
+            nonce: Buffer.from(row.nonce),
+            tag: Buffer.from(row.tag),
+            ciphertext: Buffer.from(row.ciphertext),
+          },
+        );
+      } catch {
+        unreadable += 1;
+        continue;
+      }
+      if (row.expires_at <= now) expiredSuccessors.push(row.predecessor_lookup);
+    }
 
     const rows = this.stmtAllRows.all() as unknown as RecordRow[];
     for (const row of rows) {
@@ -814,18 +866,17 @@ export class OpaqueCompactRepository {
 
     // 只有在没有任何损坏记录时才动手清理过期项：一旦发现损坏，整库进入
     // 待隔离状态，此时任何写操作都可能破坏证据。
+    // 注意删除的是**逐行认证过**的那些 lookup，而不是按 SQL 条件批量删——
+    // 后者会连同未认证的行一起清掉。
     if (unreadable === 0) {
       for (const lookup of expiredLookups) {
         this.stmtDeleteByLookup.run(lookup);
       }
-      this.cleanExpiredSuccessors(now);
+      for (const lookup of expiredSuccessors) {
+        this.stmtDeleteSuccessor.run(lookup);
+      }
     }
     return { retained, expired: expiredLookups.length, unreadable };
-  }
-
-  /** successor 映射的过期清理，同样必须在认证之后调用。 */
-  private cleanExpiredSuccessors(now: number): void {
-    this.stmtDeleteSuccessorExpired.run(now);
   }
 
   /**
@@ -897,25 +948,30 @@ export class OpaqueCompactRepository {
     for (let guard = 0; guard < 10_000; guard += 1) {
       const { count, bytes } = this.stats();
       if (count <= this.capacity && bytes <= this.maxBytes) return;
-      const oldest = this.stmtOldest.get() as { lookup_digest: string } | undefined;
-      if (oldest === undefined) return;
-      // 刚写入的行和它的 predecessor 都不能被本次修剪淘汰：predecessor 还要
-      // 支撑崩溃重试的幂等回放。
-      if (oldest.lookup_digest === protectedLookup) return;
-      if (predecessorLookup !== null && oldest.lookup_digest === predecessorLookup) {
-        // 跳过 predecessor，转而淘汰次旧的一条。
-        const alternate = this.db
-          .prepare(
-            `SELECT lookup_digest FROM opaque_states
-             WHERE lookup_digest NOT IN (?, ?)
-             ORDER BY last_used_at ASC, created_at ASC LIMIT 1`,
-          )
-          .get(protectedLookup, predecessorLookup) as { lookup_digest: string } | undefined;
-        if (alternate === undefined) return;
-        this.stmtDeleteByLookup.run(alternate.lookup_digest);
-        continue;
+
+      // 只在受保护记录之外挑最旧的一条淘汰。刚写入的行和它的 predecessor
+      // 都不能动：predecessor 还要支撑崩溃重试的幂等回放。
+      const victim = this.db
+        .prepare(
+          `SELECT lookup_digest FROM opaque_states
+           WHERE lookup_digest <> ? AND (? IS NULL OR lookup_digest <> ?)
+           ORDER BY last_used_at ASC, created_at ASC LIMIT 1`,
+        )
+        .get(protectedLookup, predecessorLookup, predecessorLookup ?? "") as
+        | { lookup_digest: string }
+        | undefined;
+
+      if (victim === undefined) {
+        // 已经没有可淘汰的记录，但预算仍不满足 —— 此时**必须**抛错让整个
+        // 事务回滚。此前这里是 return，导致 save 继续 COMMIT，capacity=1 时
+        // 盘上会留下 2 条 state，直接违反配置上限。
+        throw new OpaqueCompactRepositoryError(
+          "state_too_large",
+          "capacity or byte budget cannot be satisfied without evicting protected records",
+        );
       }
-      this.stmtDeleteByLookup.run(oldest.lookup_digest);
+      this.stmtDeleteByLookup.run(victim.lookup_digest);
     }
+    throw new OpaqueCompactRepositoryError("state_too_large", "prune did not converge");
   }
 }

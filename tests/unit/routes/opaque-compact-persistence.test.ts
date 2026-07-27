@@ -614,8 +614,12 @@ describe("交付语义 — predecessor 不在 COMMIT 时立即销毁", () => {
 
     const replayed = store.findSuccessorMarker(first.marker, CANARIES.account);
     expect(replayed).toBe(second.marker);
-    // 账号不对时拿不到映射。
-    expect(store.findSuccessorMarker(first.marker, "entry-other")).toBeNull();
+    // 账号不对是安全边界，必须抛结构化错误而不是返回 null——
+    // 返回 null 会让调用方以为"没有映射"，重打一次上游并掩盖真实原因。
+    expectReason(
+      () => store.findSuccessorMarker(first.marker, "entry-other"),
+      "account_mismatch",
+    );
   });
 
   it("客户端用上 successor 之后才回收 predecessor", () => {
@@ -915,6 +919,98 @@ describe("冷启动恢复 — 必须做真正的 AEAD 验证", () => {
     const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
     check.close();
     expect(count.n).toBe(1);
+  });
+});
+
+describe("successor 映射 — 与 state 同等的认证标准", () => {
+  /** 建立 predecessor → successor 映射，返回两代 marker。 */
+  function seedSuccessor(): { first: string; second: string } {
+    const { store, repository } = makeStore();
+    const first = saveCanaryState(store);
+    const resolved = resolveCanary(store, first.marker);
+    const second = store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: resolved.generation,
+      predecessorStateId: resolved.stateId,
+    });
+    repository.close();
+    return { first: first.marker, second: second.marker };
+  }
+
+  it("篡改 successor 密文后冷启动必须 quarantine，且不删除证据", () => {
+    seedSuccessor();
+
+    // 同时破坏密文并把 TTL 改到过去：若 recover 先信任 expires_at 批量删除，
+    // 攻击者就能销毁 post-commit 幂等映射，重新打开"双失"窗口。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT predecessor_lookup, ciphertext FROM opaque_successors LIMIT 1")
+      .get() as { predecessor_lookup: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_successors SET ciphertext = ?, expires_at = 1 WHERE predecessor_lookup = ?")
+      .run(corrupted, row.predecessor_lookup);
+    db.close();
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("state_corrupt");
+
+    const check = new DatabaseSync(resolve(dir, "state.db"));
+    const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number };
+    check.close();
+    expect(count.n).toBe(1);
+  });
+
+  it("successor 损坏时查询抛结构化错误，而不是伪装成没有映射", () => {
+    const { first } = seedSuccessor();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT predecessor_lookup, ciphertext FROM opaque_successors LIMIT 1")
+      .get() as { predecessor_lookup: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_successors SET ciphertext = ? WHERE predecessor_lookup = ?")
+      .run(corrupted, row.predecessor_lookup);
+    db.close();
+
+    const reopened = makeStore();
+    // 返回 null 会让调用方重打一次上游、随后撞 stale_generation，
+    // 把真正的损坏原因彻底掩盖。
+    expectReason(
+      () => reopened.store.findSuccessorMarker(first, CANARIES.account),
+      "state_corrupt",
+    );
+  });
+});
+
+describe("容量上限 — 不可满足时必须回滚", () => {
+  it("capacity=1 时 recompact 被拒绝，盘上仍只有一条 state", () => {
+    const { store, repository } = makeStore({ capacity: 1 });
+    const first = saveCanaryState(store);
+    const resolved = resolveCanary(store, first.marker);
+
+    // 新 state 与 predecessor 都受保护、不可淘汰，因此 capacity=1 无法满足。
+    // 此前 prune 遇到这种情况直接 return，save 仍 COMMIT，盘上留下 2 条。
+    expectReason(() => store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: resolved.generation,
+      predecessorStateId: resolved.stateId,
+    }), "state_too_large");
+
+    repository.close();
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    expect((db.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number }).n).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number }).n).toBe(0);
+    db.close();
   });
 });
 

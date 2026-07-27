@@ -533,12 +533,12 @@ export async function executeCompactRender(options: ExecuteCompactRenderOptions)
     try {
       await staggerIfNeeded(acquired.prevSlotMs, {}, signal);
       const compactStarted = Date.now();
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_start entry=${entryId} items=${compactRequest.input.length}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_start acct=${auditAccountTag(entryId)} items=${compactRequest.input.length}`);
       const compactResult = await withRetry(
         () => api.createCompactResponse(compactRequest, signal),
         { tag, signal },
       );
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_end entry=${entryId} items=${compactResult.output.length} latency_ms=${Date.now() - compactStarted}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_end acct=${auditAccountTag(entryId)} items=${compactResult.output.length} latency_ms=${Date.now() - compactStarted}`);
 
       const renderStarted = Date.now();
       const requestWithOutput = buildClaudeCodeRenderRequest(
@@ -547,7 +547,7 @@ export async function executeCompactRender(options: ExecuteCompactRenderOptions)
         compactPrompt,
         renderTemplate.useWebSocket === true,
       );
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=render_start entry=${entryId} items=${requestWithOutput.input.length}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=render_start acct=${auditAccountTag(entryId)} items=${requestWithOutput.input.length}`);
       const response = await withRetry(
         () => api.createResponse(requestWithOutput, signal),
         { tag, signal },
@@ -556,7 +556,7 @@ export async function executeCompactRender(options: ExecuteCompactRenderOptions)
         rejectPreContentError(iterateCodexEvents(api, response)),
         { includeReasoning: renderRequestWantsThinking(requestWithOutput) },
       );
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=render_preflight entry=${entryId} latency_ms=${Date.now() - renderStarted}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=render_preflight acct=${auditAccountTag(entryId)} latency_ms=${Date.now() - renderStarted}`);
       return { response: preflight.stream, api, entryId, released };
     } catch (error) {
       if (signal.aborted) {
@@ -585,7 +585,7 @@ export async function executeCompactRender(options: ExecuteCompactRenderOptions)
       entryId = acquired.entryId;
       triedEntryIds.push(entryId);
       api = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry entry=${entryId}`);
+      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry acct=${auditAccountTag(entryId)}`);
     }
   }
 }
@@ -607,7 +607,7 @@ export async function respondWithCompactRender(options: {
   return stream(c, async (writer) => {
     writer.onAbort(() => {
       abortController.abort();
-      console.warn(`[ClaudeCompactBridge] rid=${requestId.slice(0, 8)} phase=client_abort entry=${lease.entryId}`);
+      console.warn(`[ClaudeCompactBridge] rid=${requestId.slice(0, 8)} phase=client_abort acct=${auditAccountTag(lease.entryId)}`);
     });
     try {
       await streamResponse({

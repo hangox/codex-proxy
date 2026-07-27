@@ -21,7 +21,8 @@
  *    quarantine：保留原库字节、停止写入，由运维处置。不静默删除、不继续服务。
  */
 
-import { resolve, sep } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 import { getDataDir } from "../../paths.js";
 import {
   loadOpaqueCompactKeyring,
@@ -79,6 +80,30 @@ export interface OpaqueCompactRuntimeHandle {
 
 function resolveDirectory(config: OpaqueCompactRuntimeConfig): string {
   return config.directory ?? resolve(getDataDir(), DEFAULT_DIR_NAME);
+}
+
+/**
+ * 判断密钥环是否落在 data 目录内（含目录本身）。
+ *
+ * 对已存在的路径优先用 realpath 比较，这样 symlink 指回 data 卷也会被识破；
+ * 路径尚不存在时退回其父目录的 realpath，覆盖"密钥文件还没创建"的首次启动。
+ */
+function isInsideDataDir(keyringFile: string): boolean {
+  const canonical = (target: string): string => {
+    try {
+      return realpathSync(target);
+    } catch {
+      // 尚不存在：用父目录的真实路径 + 文件名拼出规范形式。
+      try {
+        return resolve(realpathSync(dirname(target)), basename(target));
+      } catch {
+        return resolve(target);
+      }
+    }
+  };
+  const dataDir = canonical(getDataDir());
+  const key = canonical(keyringFile);
+  return key === dataDir || key.startsWith(dataDir + sep);
 }
 
 function classify(error: unknown): OpaqueCompactStateFailure {
@@ -191,9 +216,9 @@ export function startOpaqueCompactRuntime(
       "opaque_compact_state.keyring_file is not configured",
     );
   }
-  const dataDir = resolve(getDataDir());
-  if (resolve(keyringFile).startsWith(dataDir + sep)) {
-    // 与密文同卷存放钥匙，等于备份/卷泄漏即全量泄漏。
+  // 与密文同卷存放钥匙，等于备份/卷泄漏即全量泄漏。
+  // 用 realpath 比较，避免 symlink 绕过；同时排除 keyring 就是 data 目录本身。
+  if (isInsideDataDir(keyringFile)) {
     return fail(token, "key_unavailable", "keyring must live outside the data directory");
   }
 
@@ -304,21 +329,35 @@ export function forgetOpaqueCompactRuntimeForTesting(): void {
   current = null;
 }
 
-/** 从应用配置构造 runtime 配置。启动与 Admin 热切换共用，避免两处漂移。 */
+/** 与 config-schema 保持一致的默认值。 */
+const RUNTIME_DEFAULTS = {
+  ttlMinutes: 30,
+  capacity: 128,
+  maxBytes: 64 * 1024 * 1024,
+} as const;
+
+/**
+ * 从应用配置构造 runtime 配置。启动与 Admin 热切换共用，避免两处漂移。
+ *
+ * 对缺失的 `opaque_compact_state` 段回退到 schema 默认值：升级后尚未写入该段的
+ * 旧配置（以及测试里的部分 config double）不应触发运行时 TypeError。缺 keyring
+ * 路径本身仍会在 start 时 fail-closed，安全性不受影响。
+ */
 export function buildOpaqueCompactRuntimeConfig(config: {
-  model: { claude_code_opaque_compact_experimental: boolean };
-  opaque_compact_state: {
-    ttl_minutes: number;
-    capacity: number;
-    max_bytes: number;
-    keyring_file: string | null;
+  model?: { claude_code_opaque_compact_experimental?: boolean };
+  opaque_compact_state?: {
+    ttl_minutes?: number;
+    capacity?: number;
+    max_bytes?: number;
+    keyring_file?: string | null;
   };
 }): OpaqueCompactRuntimeConfig {
+  const section = config.opaque_compact_state ?? {};
   return {
-    enabled: config.model.claude_code_opaque_compact_experimental,
-    ttlMinutes: config.opaque_compact_state.ttl_minutes,
-    capacity: config.opaque_compact_state.capacity,
-    maxBytes: config.opaque_compact_state.max_bytes,
-    keyringFile: config.opaque_compact_state.keyring_file,
+    enabled: config.model?.claude_code_opaque_compact_experimental === true,
+    ttlMinutes: section.ttl_minutes ?? RUNTIME_DEFAULTS.ttlMinutes,
+    capacity: section.capacity ?? RUNTIME_DEFAULTS.capacity,
+    maxBytes: section.max_bytes ?? RUNTIME_DEFAULTS.maxBytes,
+    keyringFile: section.keyring_file ?? null,
   };
 }

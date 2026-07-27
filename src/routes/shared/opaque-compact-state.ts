@@ -9,6 +9,7 @@ import {
 import {
   OpaqueCompactRepository,
   OpaqueCompactRepositoryError,
+  type OpaqueCompactRecordMeta,
 } from "./opaque-compact-repository.js";
 
 const MARKER_PREFIX = "codex-opaque-state:v1";
@@ -54,7 +55,11 @@ export type OpaqueCompactStateFailure =
   /** 记录存在但 AEAD 校验失败。 */
   | "state_corrupt"
   /** 并发 recompact 落败方：另一个 compact 已经推进了 generation。 */
-  | "stale_generation";
+  | "stale_generation"
+  /** sentinel 表明 store 曾初始化，但库被清零/删除/换掉。 */
+  | "store_reset_detected"
+  /** keyring retention 策略不足以覆盖 state TTL。 */
+  | "key_policy_invalid";
 
 export class OpaqueCompactStateError extends Error {
   constructor(readonly reason: OpaqueCompactStateFailure) {
@@ -451,6 +456,8 @@ export class OpaqueCompactStateStore {
     variantHash?: string;
     /** 重复 compact 时传入 resolve 得到的 generation；首次为 0。 */
     expectedGeneration?: number;
+    /** 本次 compact 所基于的 predecessor stateId，用于崩溃后幂等回放。 */
+    predecessorStateId?: string | null;
   }): { marker: string; state: OpaqueCompactState; generation: number } {
     const stateId = base64Url(randomBytes(24));
     const preservedTail = options.preservedTail ?? [];
@@ -470,24 +477,49 @@ export class OpaqueCompactStateStore {
     const bytes = Buffer.byteLength(JSON.stringify(state), "utf8");
     if (bytes > this.maxBytes) throw new OpaqueCompactStateError("state_too_large");
 
+    const marker =
+      `<analysis>${MARKER_ANALYSIS}</analysis>\n<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${this.sign(stateId, compHash)}</summary>`;
+
     const generation = this.persistent
-      ? this.persistState(stateId, state, options.expectedGeneration ?? 0)
+      ? this.persistState(stateId, state, options.expectedGeneration ?? 0, {
+          predecessorStateId: options.predecessorStateId ?? null,
+          successorMarker: marker,
+        })
       : this.storeInMemory(stateId, state, bytes);
 
-    return {
-      marker: `<analysis>${MARKER_ANALYSIS}</analysis>\n<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${this.sign(stateId, compHash)}</summary>`,
-      state,
-      generation,
-    };
+    return { marker, state, generation };
+  }
+
+  /**
+   * 崩溃恢复用的幂等查询：若客户端手里的 predecessor marker 已经产生过
+   * successor（COMMIT 成功但响应没送达），直接返回那个 marker，不再打上游。
+   */
+  findSuccessorMarker(predecessorMarker: string, accountEntryId: string): string | null {
+    if (!this.persistent) return null;
+    let parsed: ParsedMarker;
+    try {
+      parsed = this.parse(predecessorMarker);
+    } catch {
+      return null;
+    }
+    if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) return null;
+    try {
+      return this.repository!.findSuccessorMarker(parsed.stateId, accountEntryId);
+    } catch {
+      return null;
+    }
   }
 
   resolve(options: {
     marker: string;
     sessionId: string;
     model: string;
+    /** 严格账号断言：给定时记录必须属于该账号。 */
     accountEntryId?: string;
+    /** 本实例已知的账号集合；持久化模式下解封数据密钥必需。 */
+    accountCandidates?: readonly string[];
     variantHash?: string;
-  }): OpaqueCompactState & { generation: number } {
+  }): OpaqueCompactState & { generation: number; stateId: string } {
     const parsed = this.parse(options.marker);
     if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) {
       throw new OpaqueCompactStateError("tampered");
@@ -517,12 +549,17 @@ export class OpaqueCompactStateStore {
       throw new OpaqueCompactStateError("comp_hash_mismatch");
     }
 
-    if (!this.persistent) {
+    if (this.persistent) {
+      // 客户端确实在使用这个 successor —— 现在才可以安全回收它的 predecessor。
+      // 这是 predecessor 被删除的唯一入口，保证了"COMMIT 后崩溃"时旧 marker 仍可用。
+      const meta = (loaded as { meta?: OpaqueCompactRecordMeta }).meta;
+      if (meta !== undefined) this.repository!.confirmSuccessorUsed(meta);
+    } else {
       // 内存模式维持 LRU 顺序。
       this.states.delete(parsed.stateId);
       this.states.set(parsed.stateId, state);
     }
-    return { ...state, generation };
+    return { ...state, generation, stateId: parsed.stateId };
   }
 
   delete(marker: string): void {
@@ -549,10 +586,11 @@ export class OpaqueCompactStateStore {
     stateId: string,
     state: OpaqueCompactState,
     expectedGeneration: number,
+    delivery: { predecessorStateId: string | null; successorMarker: string },
   ): number {
     const repository = this.repository!;
-    const key = this.keyring!.active();
-    const binding = repository.bindingFor(key, state.sessionId, state.model, state.variantHash);
+    // binding 来自稳定索引域，跨 master key 轮换不变 —— CAS 因此不会在轮换后分裂。
+    const binding = repository.bindingFor(state.sessionId, state.model, state.variantHash);
     const payload: PersistedStatePayload = {
       output: state.output,
       preservedTail: state.preservedTail,
@@ -568,10 +606,13 @@ export class OpaqueCompactStateStore {
       const saved = repository.saveWithCas({
         stateId,
         binding,
+        accountEntryId: state.accountEntryId,
         expectedGeneration,
         plaintext: Buffer.from(JSON.stringify(payload), "utf-8"),
         createdAt: state.createdAt,
         expiresAt: state.expiresAt,
+        predecessorStateId: delivery.predecessorStateId,
+        successorMarker: delivery.successorMarker,
       });
       return saved.generation;
     } catch (error) {
@@ -581,15 +622,21 @@ export class OpaqueCompactStateStore {
 
   private loadPersisted(
     stateId: string,
-    options: { sessionId: string; model: string; variantHash?: string },
-  ): { state: OpaqueCompactState; generation: number } {
+    options: {
+      sessionId: string;
+      model: string;
+      accountEntryId?: string;
+      accountCandidates?: readonly string[];
+    },
+  ): { state: OpaqueCompactState; generation: number; meta: OpaqueCompactRecordMeta } {
     const repository = this.repository!;
-    // binding 用 active key 计算；轮换后旧记录的 binding 由旧 key 生成，
-    // 因此这里不能强绑 binding，改为解封后逐字段核验（更严格且与密钥无关）。
-    void options;
+    // 账号域隔离：不知道账号就派生不出数据密钥，连解封都做不到。
+    // 生产 restore 传入本实例已知的账号集合；集合为空时 fail-closed。
+    const candidates = options.accountCandidates
+      ?? (options.accountEntryId !== undefined ? [options.accountEntryId] : []);
     let loaded: ReturnType<OpaqueCompactRepository["load"]>;
     try {
-      loaded = repository.load(stateId, null);
+      loaded = repository.load(stateId, candidates);
     } catch (error) {
       throw toStateError(error);
     }
@@ -613,6 +660,7 @@ export class OpaqueCompactStateStore {
         expiresAt: payload.expiresAt,
       },
       generation: loaded.meta.generation,
+      meta: loaded.meta,
     };
   }
 
@@ -639,6 +687,17 @@ export class OpaqueCompactStateStore {
     const state = this.states.get(stateId);
     if (!state) throw new OpaqueCompactStateError("missing");
     return { state, generation: 0 };
+  }
+
+  private deleteByStateId(stateId: string): void {
+    if (this.repository !== null) {
+      this.repository.deleteByStateId(stateId);
+      return;
+    }
+    const bytes = this.stateBytes.get(stateId) ?? 0;
+    this.states.delete(stateId);
+    this.stateBytes.delete(stateId);
+    this.totalBytes = Math.max(0, this.totalBytes - bytes);
   }
 
   // ── marker 签名 ─────────────────────────────────────────────
@@ -683,14 +742,7 @@ export class OpaqueCompactStateStore {
   }
 
   private deleteState(stateId: string): void {
-    if (this.repository !== null) {
-      this.repository.delete(stateId);
-      return;
-    }
-    const bytes = this.stateBytes.get(stateId) ?? 0;
-    this.states.delete(stateId);
-    this.stateBytes.delete(stateId);
-    this.totalBytes = Math.max(0, this.totalBytes - bytes);
+    this.deleteByStateId(stateId);
   }
 
   private trimToBounds(): void {
@@ -716,7 +768,12 @@ function toStateError(error: unknown): OpaqueCompactStateError {
       case "state_corrupt":
         return new OpaqueCompactStateError("state_corrupt");
       case "binding_mismatch":
-        return new OpaqueCompactStateError("session_mismatch");
+        // 记录属于别的账号 —— 这是账号隔离边界，不是会话不匹配。
+        return new OpaqueCompactStateError("account_mismatch");
+      case "store_reset_detected":
+        return new OpaqueCompactStateError("store_reset_detected");
+      case "state_too_large":
+        return new OpaqueCompactStateError("state_too_large");
       default:
         return new OpaqueCompactStateError("store_unavailable");
     }
@@ -752,6 +809,18 @@ export function getOpaqueCompactStateStore(): OpaqueCompactStateStore {
 
 export function isOpaqueCompactStateStoreReady(): boolean {
   return runtimeStore !== null;
+}
+
+/**
+ * 只读 readiness。reason 是稳定、非敏感的枚举值，供路由返回结构化 409、
+ * 以及运维/E2E 断言使用；不含路径、错误详情等可泄漏信息。
+ */
+export function getOpaqueCompactStateReadiness(): {
+  ready: boolean;
+  reason: OpaqueCompactStateFailure | null;
+} {
+  if (runtimeStore !== null) return { ready: true, reason: null };
+  return { ready: false, reason: runtimeUnavailableReason ?? "store_unavailable" };
 }
 
 /** 测试专用：安装一个纯内存 store。 */

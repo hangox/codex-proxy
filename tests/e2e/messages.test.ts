@@ -639,7 +639,9 @@ describe("E2E: POST /v1/messages", () => {
           messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
         }), { "x-claude-code-session-id": "session-disabled-state" });
         expect(replay.status).toBe(409);
-        expect(await replay.text()).toContain("disabled or was lost after restart");
+        // 状态已经持久化，"restart 后丢失"不再是关闭开关的后果，
+        // 因此这里的措辞收敛为纯粹的"功能已关闭"。
+        expect(await replay.text()).toContain("support is disabled");
         expect(getMockTransport().post).toHaveBeenCalledTimes(1);
       });
 

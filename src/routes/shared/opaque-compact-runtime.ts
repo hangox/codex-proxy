@@ -45,6 +45,7 @@ import {
 } from "./opaque-compact-store-lock.js";
 import {
   OpaqueCompactStateStore,
+  setOpaqueCompactRuntimeFaultHandler,
   validatePersistedPayloadForRecovery,
   setOpaqueCompactStateStore,
   setOpaqueCompactStateUnavailable,
@@ -158,6 +159,9 @@ interface RuntimeSlot {
 
 let current: RuntimeSlot | null = null;
 
+// 让 state 层的动态故障最终由 runtime 执行资源释放。
+setOpaqueCompactRuntimeFaultHandler((reason) => reportOpaqueCompactRuntimeFault(reason));
+
 /** 关闭当前 runtime（幂等）。进程 shutdown 应当调用它，而不是任何历史 handle。 */
 export function closeCurrentOpaqueCompactRuntime(): void {
   if (current === null) return;
@@ -166,6 +170,26 @@ export function closeCurrentOpaqueCompactRuntime(): void {
   setOpaqueCompactStateStore(null);
   slot.repository?.close();
   slot.lock?.release();
+}
+
+/**
+ * 运行期发现 store 级致命错误时的统一入口。
+ *
+ * 必须由 runtime 层接管，而不是让 state 层单改全局指针：只清 store 指针会
+ * 留下"readiness=not-ready，但 DB 连接和独占锁仍被持有"的半下线状态——
+ * 实测后果是任何后续 start 都拿不到锁（`store_locked`），且旧 handle 的
+ * close() 也失效（current 已被失败的 start 覆盖），形成永久锁泄漏。
+ *
+ * 这里基于当前 slot 原子地 detach + close + release，然后把 reason 固定
+ * 下来，使当前请求、后续请求、/health、Admin readiness 得到同一个机器码。
+ */
+export function reportOpaqueCompactRuntimeFault(
+  reason: OpaqueCompactStateFailure,
+): OpaqueCompactStateFailure {
+  closeCurrentOpaqueCompactRuntime();
+  setOpaqueCompactStateUnavailable(reason);
+  console.warn(`[ClaudeOpaqueCompact] phase=store_fault reason=${reason}`);
+  return reason;
 }
 
 /** 只有仍是当前实例时才真正关闭，避免陈旧 handle 误伤新 runtime。 */

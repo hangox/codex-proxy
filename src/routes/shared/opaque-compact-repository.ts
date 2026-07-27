@@ -35,7 +35,7 @@ import {
 } from "./opaque-compact-keyring.js";
 
 /** 记录 schema 版本。任何不兼容的列变更都必须 +1。 */
-export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 2;
+export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 3;
 
 export type OpaqueCompactRepositoryFailure =
   | "store_unavailable"
@@ -732,6 +732,16 @@ export class OpaqueCompactRepository {
         throw new OpaqueCompactRepositoryError("state_corrupt", "record failed AEAD verification");
       }
 
+      // 在任何 touch 之前先验证**旧** MAC。否则攻击者可以先改 last_used_at，
+      // 再诱导一次正常 resolve —— touch 会用篡改后的顺序重新签一个有效 MAC，
+      // 等于把运行期篡改洗白成合法状态。
+      if (
+        row.last_used_mac !==
+        computeMutableMetaMac(this.keyring, row.lookup_digest, "last_used_at", row.last_used_at)
+      ) {
+        throw new OpaqueCompactRepositoryError("state_corrupt", "last_used_at is not authenticated");
+      }
+
       // 认证通过之后才敢相信 expires_at，此时删除过期记录是安全的。
       if (row.expires_at <= this.now()) {
         this.stmtDeleteByLookup.run(lookupDigest);
@@ -1015,8 +1025,9 @@ export class OpaqueCompactRepository {
     protectedLookup: string,
     predecessorLookup: string | null,
   ): void {
-    this.stmtDeleteExpired.run(now);
-    this.stmtDeleteSuccessorExpired.run(now);
+    // 刻意**不**在这里按 expires_at 批量 DELETE：那会信任运行期可能已被
+    // 篡改的列，攻击者改短 TTL 即可静默删除任意记录。过期清理只在启动
+    // recover 的逐行认证之后进行；这里仅按已认证的 LRU 顺序做容量淘汰。
     for (let guard = 0; guard < 10_000; guard += 1) {
       const { count, bytes } = this.stats();
       if (count <= this.capacity && bytes <= this.maxBytes) return;

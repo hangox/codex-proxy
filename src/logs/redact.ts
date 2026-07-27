@@ -6,7 +6,8 @@ const SECRET_KEY_RE = /(authorization|x-api-key|api_key|apikey|token|refresh_tok
  * 按 **key 名** 脱敏的字段。opaque compact 的敏感载荷不在原有 SECRET_KEY_RE
  * 里（它只覆盖凭据类字段名），因此这里单独列出。
  */
-const OPAQUE_PAYLOAD_KEY_RE = /^(encrypted_content|preservedTail|opaque_output)$/i;
+const OPAQUE_PAYLOAD_KEY_RE =
+  /^(encrypted_content|preserved_tail|preservedTail|opaque_output|opaqueOutput)$/i;
 
 /**
  * 按 **值** 匹配的 opaque marker。
@@ -14,8 +15,14 @@ const OPAQUE_PAYLOAD_KEY_RE = /^(encrypted_content|preservedTail|opaque_output)$
  * 这是第二道防线：日志侧的主防线是路由层判定「这是 opaque 请求 → 不捕获
  * body」，但那依赖一串 if 判定正确。marker 一旦出现在任何字符串值里，
  * 无论它藏在哪个字段、来自哪条路径，这里都直接抹掉。
+ *
+ * 注意匹配范围必须覆盖 **整个 token**（版本 + stateId + compHash + signature）。
+ * 只匹配到第一个冒号段会把 marker 变成
+ * `codex-opaque-state:***:<compHash>:<signature>` —— stateId 遮住了，
+ * 但完整的 compHash 与 HMAC signature 仍原样落盘，等于没遮。
+ * 因此这里贪婪吃掉后续所有 `:段`，并对畸形/截断前缀也一并处理。
  */
-const OPAQUE_MARKER_VALUE_RE = /codex-opaque-state:v\d+:[A-Za-z0-9_-]+/g;
+const OPAQUE_MARKER_VALUE_RE = /codex-opaque-state:[A-Za-z0-9_-]*(?::[A-Za-z0-9_-]*)*/g;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);

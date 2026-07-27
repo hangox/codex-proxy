@@ -230,7 +230,7 @@ describe("opaque compact — 跨进程单实例锁", () => {
 });
 
 describe("opaque compact — 真正并发的 generation CAS", () => {
-  it("两个竞争者读到同一 generation 后先后提交，恰好一个 winner，另一个 stale_generation", async () => {
+  it("两个并发请求在 await 边界重叠、读到同一 generation，恰好一个 winner", async () => {
     const seed = await runHarness("save-and-close");
     expect(seed.ok).toBe(true);
     const marker = seed.marker!;
@@ -241,6 +241,9 @@ describe("opaque compact — 真正并发的 generation CAS", () => {
     const race = await runHarness("cas-race", { marker });
     expect(race.ok).toBe(true);
     expect(race.phase).toBe("race-complete");
+    // 断言两个请求确实在 await 边界重叠过——否则这就退化成顺序调用，
+    // 证明不了任何竞态。
+    expect((race as unknown as { readersOverlapped: boolean }).readersOverlapped).toBe(true);
 
     const results = (race as unknown as {
       results: { phase: string; reason?: string; generation?: number; marker?: string }[];

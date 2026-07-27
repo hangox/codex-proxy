@@ -151,29 +151,45 @@ switch (command) {
       accountCandidates: payload.accountCandidates ?? ["entry-canary-51bd"],
     };
 
-    // barrier：两个竞争者都完成读取之后才开始写，确保它们看到同一个 generation。
-    const first = store.resolve(common);
-    const second = store.resolve(common);
-    if (first.generation !== second.generation) {
-      emit({ ok: false, reason: "readers disagreed on generation" });
-      process.exit(1);
-    }
-    emit({ ok: true, phase: "at-barrier", generation: first.generation });
+    // 真实并发形态说明：
+    //
+    // 单实例锁保证同一 store 只被一个进程持有，所以真正的并发 recompact
+    // 只会发生在同一实例内的两个**异步请求**之间。而 saveWithCas 本身是
+    // 同步函数——JS 单线程决定了两次 save 不可能在函数内部交错。
+    //
+    // 因此真实竞态点在 await 边界：两个请求各自读到 generation N，然后都
+    // 去 await 上游 compact；上游返回后再各自提交。这里用一个可控 barrier
+    // 精确复刻该形态：两个 Promise 并发启动，都读完 N 之后才一起放行。
+    let releaseBarrier;
+    const barrier = new Promise((r) => { releaseBarrier = r; });
+    let readersAtBarrier = 0;
 
-    const attempt = (reader) => {
+    const request = async (label) => {
+      // 阶段一：读取当前 generation（两个请求真实并发地走到这里）。
+      const reader = store.resolve(common);
+      readersAtBarrier += 1;
+      if (readersAtBarrier === 2) releaseBarrier();
+      // 阶段二：等待"上游 compact"完成——两个请求在此重叠。
+      await barrier;
+      // 阶段三：提交。CAS 必须让其中恰好一个成功。
       try {
         const saved = saveState(store, {
           expectedGeneration: reader.generation,
           predecessorStateId: reader.stateId,
         });
-        return { phase: "committed", generation: saved.generation, marker: saved.marker };
+        return { label, phase: "committed", generation: saved.generation, marker: saved.marker };
       } catch (error) {
-        return { phase: "rejected", reason: error?.reason ?? error?.message ?? "unknown" };
+        return { label, phase: "rejected", reason: error?.reason ?? error?.message ?? "unknown" };
       }
     };
 
-    const results = [attempt(first), attempt(second)];
-    emit({ ok: true, phase: "race-complete", results });
+    const settled = await Promise.all([request("a"), request("b")]);
+    emit({
+      ok: true,
+      phase: "race-complete",
+      readersOverlapped: readersAtBarrier === 2,
+      results: settled,
+    });
     handle.close();
     process.exit(0);
     break;

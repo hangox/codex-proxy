@@ -439,6 +439,12 @@ export function loadOpaqueCompactKeyring(
       return liveFloor > current;
     }),
   };
+  // 裁剪结果必须写回磁盘：只在内存里过滤的话，已过退役窗口的旧 key material
+  // 会永久留在文件里，每次重启再读回来——"轮换后旧密钥最终销毁"这条承诺
+  // 在持久层面从未兑现。写回沿用原子 + durable 路径。
+  if (pruned.keys.length !== stored.keys.length) {
+    writeKeyringAtomically(keyringFile, pruned);
+  }
   return buildKeyring(pruned);
 }
 

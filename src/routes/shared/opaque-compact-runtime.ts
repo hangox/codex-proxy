@@ -47,6 +47,7 @@ import {
   OpaqueCompactStateStore,
   setOpaqueCompactRuntimeFaultHandler,
   validatePersistedPayloadForRecovery,
+  validateSuccessorMarkerForRecovery,
   setOpaqueCompactStateStore,
   setOpaqueCompactStateUnavailable,
   type OpaqueCompactStateFailure,
@@ -314,16 +315,17 @@ export function startOpaqueCompactRuntime(
       commitOpaqueCompactSentinel(sentinelFile, sentinel.storeId, config.now ?? Date.now);
     }
 
-    setOpaqueCompactStateStore(
-      new OpaqueCompactStateStore({
+    const runtimeStore = new OpaqueCompactStateStore({
         capacity: config.capacity,
         maxBytes: config.maxBytes,
         ttlMs,
         keyring,
         repository,
         ...(config.now ? { now: config.now } : {}),
-      }),
-    );
+    });
+    repository.setSuccessorMarkerValidator((marker, expected) =>
+      validateSuccessorMarkerForRecovery(runtimeStore, repositoryForValidation, marker, expected));
+    setOpaqueCompactStateStore(runtimeStore);
 
     // 只记录结构量：不含 keyId（durable 且跨进程稳定，可用于长期关联）、
     // 不含 stateId / session / account / marker / 任何密文。

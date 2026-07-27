@@ -1,16 +1,17 @@
 /**
  * Release pipeline validation.
  *
- * Verifies the full build chain works end-to-end without actually
- * running electron-builder (which downloads 100MB+ of Electron).
- * Tests the sequence: core build → desktop build → esbuild → prepare-pack.
+ * Verifies the full build chain works end-to-end, including electron-builder
+ * packaging and a real packaged-App cold start in an isolated user-data root.
+ * Tests the sequence: core build → desktop build → esbuild → prepare-pack → App.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, mkdtempSync, rmSync, readFileSync, statSync } from "fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, readFileSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
-import { execFileSync } from "child_process";
+import { execFileSync, spawn } from "child_process";
+import { createServer } from "net";
 import asar from "@electron/asar";
 import { acquireElectronTestLock } from "./test-lock.js";
 
@@ -19,6 +20,7 @@ const ROOT_DIR = resolve(PKG_DIR, "..", "..");
 const DIST_ELECTRON = resolve(PKG_DIR, "dist-electron");
 const PACKED_APP = resolve(PKG_DIR, "release", "mac-arm64", "Codex Proxy.app");
 const APP_ASAR = resolve(PACKED_APP, "Contents", "Resources", "app.asar");
+const APP_EXECUTABLE = resolve(PACKED_APP, "Contents", "MacOS", "Codex Proxy");
 const RUNTIME_PACKAGES = [
   "ws",
   "https-proxy-agent",
@@ -30,6 +32,59 @@ const RUNTIME_PACKAGES = [
   "ip-address",
   "smart-buffer",
 ] as const;
+
+async function reservePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolveListen());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("无法分配冷启动测试端口");
+  await new Promise<void>((resolveClose, reject) => {
+    server.close((error) => error ? reject(error) : resolveClose());
+  });
+  return address.port;
+}
+
+async function waitForPackagedAppStart(
+  child: ReturnType<typeof spawn>,
+  logPath: string,
+  port: number,
+): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const log = existsSync(logPath) ? readFileSync(logPath, "utf-8") : "";
+    if (/Startup failed|ERR_MODULE_NOT_FOUND|Cannot find package/.test(log)) {
+      throw new Error(`打包 App 启动失败：\n${log}`);
+    }
+    if (child.exitCode !== null) {
+      throw new Error(`打包 App 提前退出（${child.exitCode}）：\n${log}`);
+    }
+    if (log.includes(`[Electron] Server started on port ${port}`)) {
+      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      const body = await response.json() as { status?: string };
+      if (response.ok && body.status === "ok") return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`等待打包 App health 超时：\n${log}`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+}
+
+async function stopPackagedApp(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  await Promise.race([
+    new Promise<void>((resolveExit) => child.once("exit", () => resolveExit())),
+    new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 7_000)),
+  ]);
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+  }
+}
 
 describe("release pipeline", () => {
   let releaseLock: (() => void) | null = null;
@@ -112,51 +167,43 @@ describe("release pipeline", () => {
       "/node_modules/socks-proxy-agent/node_modules/agent-base/package.json",
     );
 
-    const isolatedRoot = mkdtempSync(resolve(tmpdir(), "codex-proxy-packaged-health-"));
-    const extracted = resolve(isolatedRoot, "app");
-    const dataDir = resolve(isolatedRoot, "data");
-    try {
-      asar.extractAll(APP_ASAR, extracted);
-      const resources = resolve(PACKED_APP, "Contents", "Resources");
-      const script = `
-        const { resolve } = await import("node:path");
-        const { pathToFileURL } = await import("node:url");
-        const root = ${JSON.stringify(extracted)};
-        const resources = ${JSON.stringify(resources)};
-        const mod = await import(pathToFileURL(resolve(root, "dist-electron/server.mjs")).href);
-        mod.setPaths({
-          rootDir: root,
-          configDir: resolve(resources, "app.asar.unpacked/config"),
-          dataDir: ${JSON.stringify(dataDir)},
-          binDir: resolve(resources, "bin"),
-          publicDir: resolve(resources, "app.asar.unpacked/public"),
-        });
-        const handle = await mod.startServer({ host: "127.0.0.1", port: 0 });
-        try {
-          const response = await fetch("http://127.0.0.1:" + handle.port + "/health");
-          const body = await response.json();
-          if (!response.ok || body.status !== "ok") throw new Error(JSON.stringify(body));
-          console.log("PACKAGED_HEALTH_OK:" + handle.port);
-        } finally {
-          await handle.close();
-        }
-      `;
-      const stdout = execFileSync(
-        "node",
-        ["--input-type=module", "-e", script],
-        {
-          cwd: isolatedRoot,
-          timeout: 30_000,
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "" },
+    const isolatedRoot = mkdtempSync(resolve(tmpdir(), "codex-proxy-packaged-app-smoke-"));
+    const userData = resolve(isolatedRoot, "user-data");
+    const dataDir = resolve(userData, "data");
+    const logPath = resolve(isolatedRoot, "app.log");
+    mkdirSync(dataDir, { recursive: true });
+    const port = await reservePort();
+    writeFileSync(
+      resolve(dataDir, "local.yaml"),
+      `server:\n  host: 127.0.0.1\n  port: ${port}\n  proxy_api_key: null\nupdate:\n  auto_update: false\n`,
+      { encoding: "utf-8", mode: 0o600 },
+    );
+    const logFd = openSync(logPath, "a");
+    const child = spawn(
+      APP_EXECUTABLE,
+      [`--user-data-dir=${userData}`, "--disable-gpu"],
+      {
+        cwd: isolatedRoot,
+        detached: false,
+        stdio: ["ignore", logFd, logFd],
+        env: {
+          ...process.env,
+          CLAUDECODE: "",
+          HTTP_PROXY: "",
+          HTTPS_PROXY: "",
+          ALL_PROXY: "",
+          NO_PROXY: "127.0.0.1,localhost",
         },
-      );
-      expect(stdout).toContain("PACKAGED_HEALTH_OK:");
+      },
+    );
+    try {
+      await waitForPackagedAppStart(child, logPath, port);
     } finally {
+      await stopPackagedApp(child);
+      closeSync(logFd);
       rmSync(isolatedRoot, { recursive: true, force: true });
     }
-  }, 150_000);
+  }, 180_000);
 
   it("version is consistent between root and electron package", () => {
     const rootPkg = JSON.parse(

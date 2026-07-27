@@ -32,6 +32,21 @@ import {
   isPromptTooLongLike,
   normalizePromptTooLongMessage,
 } from "../proxy/prompt-too-long-error.js";
+import {
+  buildClaudeCodeCompactRequest,
+  buildClaudeCodeRenderRequest,
+  executeCompactRender,
+  extractClaudeCodeCompactPrompt,
+  respondWithCompactRender,
+} from "./shared/codex-compact-service.js";
+import {
+  respondWithOpaqueCompactMarker,
+  restoreOpaqueCompactRequest,
+} from "./shared/opaque-compact-bridge.js";
+import {
+  extractOpaqueCompactStateMarker,
+  hasOpaqueCompactStateReference,
+} from "./shared/opaque-compact-state.js";
 
 function makeError(
   type: AnthropicErrorType,
@@ -283,6 +298,26 @@ export function createMessagesRoutes(
 
     const routeMatch = upstreamRouter?.resolveMatch(req.model);
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const hasOpaqueReference = hasOpaqueCompactStateReference(req);
+    const opaqueStateReference = extractOpaqueCompactStateMarker(req);
+    const clientConversationId = extractAnthropicClientConversationId(
+      req,
+      c.req.header("x-claude-code-session-id"),
+    );
+    if (hasOpaqueReference && (allowUnauthenticated || clientConversationId === null)) {
+      c.status(409);
+      return c.json(makeError(
+        "invalid_request_error",
+        "Opaque compact state requires the original Claude Code session and Codex account route. Run /compact again.",
+      ));
+    }
+    if (hasOpaqueReference && opaqueStateReference === null) {
+      c.status(409);
+      return c.json(makeError(
+        "invalid_request_error",
+        "Opaque compact state marker is malformed. Run /compact again.",
+      ));
+    }
 
     // Auth check
     if (!allowUnauthenticated && !accountPool.hasAnyActiveAccount()) {
@@ -295,10 +330,24 @@ export function createMessagesRoutes(
     const authError = checkProxyApiKey(c, accountPool);
     if (authError) return authError;
 
-    const clientConversationId = extractAnthropicClientConversationId(
-      req,
-      c.req.header("x-claude-code-session-id"),
-    );
+    const modelConfig = getConfig().model;
+    const compactBridgeEnabled = modelConfig.claude_code_compact_bridge;
+    const opaqueCompactEnabled = modelConfig.claude_code_opaque_compact_experimental;
+    const opaqueMarkerCandidate = clientConversationId !== null
+      ? opaqueStateReference
+      : null;
+    if (opaqueMarkerCandidate && !opaqueCompactEnabled) {
+      c.status(409);
+      return c.json(makeError(
+        "invalid_request_error",
+        "Opaque compact state support is disabled or was lost after restart. Run /compact again.",
+      ));
+    }
+    const compactPrompt = (compactBridgeEnabled || opaqueCompactEnabled) &&
+      req.stream === true &&
+      clientConversationId !== null
+      ? extractClaudeCodeCompactPrompt(req)
+      : null;
 
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const displayModel = buildDisplayModelName(parseModelName(req.model));
@@ -312,10 +361,29 @@ export function createMessagesRoutes(
       path: c.req.path,
       model: req.model,
       stream: !!req.stream,
-      request: summarizeRequestForLog("messages", req, {
-        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
-        headers: Object.fromEntries(c.req.raw.headers.entries()),
-      }),
+      request: compactPrompt
+        ? {
+            body_type: "anthropic.messages",
+            model: req.model,
+            stream: req.stream,
+            messages: req.messages.length,
+            compact_bridge: true,
+            compact_mode: opaqueCompactEnabled ? "opaque_state" : "render",
+            ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
+          }
+        : opaqueMarkerCandidate
+          ? {
+              body_type: "anthropic.messages",
+              model: req.model,
+              stream: req.stream,
+              messages: req.messages.length,
+              opaque_state_resume: true,
+              ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
+            }
+          : summarizeRequestForLog("messages", req, {
+              ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
+              headers: Object.fromEntries(c.req.raw.headers.entries()),
+            }),
     });
 
     if (isAgentTeamSilentInitialization(req)) {
@@ -347,12 +415,107 @@ export function createMessagesRoutes(
     if (!allowUnauthenticated && process.env.CODEX_PROXY_DISABLE_WS !== "1") {
       codexRequest.useWebSocket = true;
     }
+    if (clientConversationId !== null && !codexRequest.prompt_cache_key) {
+      codexRequest.prompt_cache_key = clientConversationId;
+    }
+
+    const opaqueRestore = opaqueCompactEnabled && clientConversationId !== null && !allowUnauthenticated
+      ? restoreOpaqueCompactRequest({
+          req,
+          translated: codexRequest,
+          clientConversationId,
+          requestId,
+        })
+      : { restored: false };
+    if (opaqueRestore.error) {
+      c.status(409);
+      return c.json(makeError(
+        "invalid_request_error",
+        `Opaque compact state is unavailable (${opaqueRestore.error.reason}). Run /compact again.`,
+      ));
+    }
+
     const proxyReq = {
       codexRequest,
       model: displayModel,
       isStreaming: req.stream,
       clientConversationId: clientConversationId ?? undefined,
+      ...(opaqueRestore.requiredEntryId ? { requiredAccountEntryId: opaqueRestore.requiredEntryId } : {}),
     };
+
+    if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && opaqueCompactEnabled) {
+      try {
+        return await respondWithOpaqueCompactMarker({
+          c,
+          accountPool,
+          cookieJar,
+          proxyPool,
+          req,
+          translated: codexRequest,
+          compactPrompt,
+          clientConversationId,
+          model: displayModel,
+          requestId,
+          ...(opaqueRestore.marker ? { previousMarker: opaqueRestore.marker } : {}),
+          ...(opaqueRestore.output ? { previousOutput: opaqueRestore.output } : {}),
+          ...(opaqueRestore.requiredEntryId ? { requiredEntryId: opaqueRestore.requiredEntryId } : {}),
+        });
+      } catch (error) {
+        if (c.req.raw.signal.aborted) throw error;
+        console.warn(
+          `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=fallback` +
+            ` error=${error instanceof Error ? error.name : "UnknownError"}`,
+        );
+        if (opaqueRestore.restored) {
+          c.status(409);
+          return c.json(makeError(
+            "invalid_request_error",
+            "Opaque compact state could not be compacted on its original account. Try again or start a new session.",
+          ));
+        }
+      }
+    }
+
+    if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && compactBridgeEnabled) {
+      const abortController = new AbortController();
+      c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+      const compactRequest = buildClaudeCodeCompactRequest(req, codexRequest);
+      const renderTemplate = buildClaudeCodeRenderRequest(
+        codexRequest,
+        [],
+        compactPrompt,
+        codexRequest.useWebSocket === true,
+      );
+      try {
+        const lease = await executeCompactRender({
+          accountPool,
+          cookieJar,
+          proxyPool,
+          compactRequest,
+          renderTemplate,
+          compactPrompt,
+          signal: abortController.signal,
+          requestId,
+        });
+        return respondWithCompactRender({
+          c,
+          accountPool,
+          lease,
+          fmt,
+          model: displayModel,
+          requestId,
+          abortController,
+        });
+      } catch (error) {
+        if (abortController.signal.aborted) throw error;
+        console.warn(
+          `[ClaudeCompactBridge] rid=${requestId.slice(0, 8)} phase=fallback` +
+            ` error=${error instanceof Error ? error.name : "UnknownError"}`,
+        );
+        // Fail safely: the original parsed request is untouched, so the normal
+        // Anthropic -> Codex path below can process it exactly as before.
+      }
+    }
 
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directModel = routeMatch.resolvedModel ?? req.model;

@@ -45,8 +45,12 @@ import { captureImplicitResumeRequestState } from "./proxy-implicit-resume-reque
 import {
   applyProxyRequestForwardingDefaults,
   ensureProxyRequestInputArray,
+  isolateHardBoundOpaqueState,
 } from "./proxy-request-preparation.js";
-import { logRequestDiagnostics } from "./proxy-request-diagnostics.js";
+import {
+  logOpaqueStateDiagnostics,
+  logRequestDiagnostics,
+} from "./proxy-request-diagnostics.js";
 import {
   applyProxyRetryRecoveryDecision,
   buildProxyRetryRecoveryDecision,
@@ -64,19 +68,32 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
   ensureProxyRequestInputArray(req);
   const originalRequestState = captureImplicitResumeRequestState(req);
+  const hardBoundOpaqueState = isolateHardBoundOpaqueState(req);
   const sessionContext = buildProxySessionContext({ request: req, affinityMap });
 
-  // Turn state: sticky routing token from upstream, echoed back on subsequent requests
+  // Opaque state already contains the authoritative compacted chain. Never attach
+  // stale response/turn state or implicit-resume state from the pre-compact history.
   applyProxyRequestForwardingDefaults({
     request: req,
     promptCacheKey: sessionContext.promptCacheKey,
-    explicitTurnState: sessionContext.explicitTurnState,
+    explicitTurnState: hardBoundOpaqueState ? null : sessionContext.explicitTurnState,
   });
 
   // Single acquire call — preferredEntryId is a hint, not a hard requirement
-  const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, sessionContext.preferredEntryId ?? undefined);
+  const preferredEntryId = req.requiredAccountEntryId ?? sessionContext.preferredEntryId ?? undefined;
+  const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, preferredEntryId);
   if (!acquired) {
     return respondWithNoAccount({ c, req, fmt });
+  }
+  if (req.requiredAccountEntryId !== undefined && acquired.entryId !== req.requiredAccountEntryId) {
+    releaseAccount(accountPool, acquired.entryId);
+    return respondWithProxyError({
+      c,
+      req,
+      fmt,
+      status: 409,
+      message: "The compact state account is unavailable.",
+    });
   }
 
   let { entryId } = acquired;
@@ -92,29 +109,45 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
     snapshot: originalRequestState,
     affinityMap,
     tag: fmt.tag,
-    implicitPrevRespId: sessionContext.implicitPrevRespId,
-    continuationInputStart: sessionContext.continuationInputStart,
-    resumeEvaluationInput: sessionContext.resumeEvaluationInput,
+    implicitPrevRespId: hardBoundOpaqueState ? null : sessionContext.implicitPrevRespId,
+    continuationInputStart: hardBoundOpaqueState ? 0 : sessionContext.continuationInputStart,
+    resumeEvaluationInput: hardBoundOpaqueState
+      ? {
+          ...sessionContext.resumeEvaluationInput,
+          implicitPrevRespId: null,
+          continuationInputStart: 0,
+          preferredEntryId: null,
+          requiredFunctionCallOutputIds: [],
+          storedFunctionCallIds: [],
+          inlineFunctionCallIds: [],
+        }
+      : sessionContext.resumeEvaluationInput,
     acquiredEntryId: entryId,
   });
   implicitResume.logSkippedWarnings();
   implicitResume.activate();
 
-  const diagnostics = logRequestDiagnostics({
-    tag: fmt.tag,
-    entryId,
-    requestId,
-    request: req,
-    chainConversationId: sessionContext.chainConversationId,
-    promptCacheKey: sessionContext.promptCacheKey,
-    variantHash: sessionContext.variantHash,
-    explicitPrevRespId: sessionContext.explicitPrevRespId,
-    implicitPrevRespId: sessionContext.implicitPrevRespId,
-    prevRespId: sessionContext.prevRespId,
-    resumeActive: implicitResume.evaluation.active,
-    resumeReason: implicitResume.evaluation.reason,
-    preferredEntryId: sessionContext.preferredEntryId,
-  });
+  const diagnostics = req.requiredAccountEntryId === undefined
+    ? logRequestDiagnostics({
+        tag: fmt.tag,
+        entryId,
+        requestId,
+        request: req,
+        chainConversationId: sessionContext.chainConversationId,
+        promptCacheKey: sessionContext.promptCacheKey,
+        variantHash: sessionContext.variantHash,
+        explicitPrevRespId: sessionContext.explicitPrevRespId,
+        implicitPrevRespId: sessionContext.implicitPrevRespId,
+        prevRespId: sessionContext.prevRespId,
+        resumeActive: implicitResume.evaluation.active,
+        resumeReason: implicitResume.evaluation.reason,
+        preferredEntryId: sessionContext.preferredEntryId,
+      })
+    : logOpaqueStateDiagnostics({
+        tag: fmt.tag,
+        entryId,
+        requestId,
+      });
 
   // Guard: when implicit resume fails due to missing tool calls, block runaway
   // full-history replays that would burn massive token budgets silently.
@@ -266,6 +299,17 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       const decision = handleCodexApiError(
         err, accountPool, entryId, req.codexRequest.model, fmt.tag, modelRetried, cookieJar,
       );
+      if (req.requiredAccountEntryId !== undefined && decision.action === "retry") {
+        releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+        return respondWithProxyError({
+          c,
+          req,
+          fmt,
+          status: decision.status,
+          message: "The compact state account failed and cross-account retry is disabled.",
+          ...(decision.useFormat429 ? { useFormat429: true } : {}),
+        });
+      }
 
       const errorRetryTransition = applyProxyErrorRetryTransition({
         accountPool,

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { TlsTransport, TlsTransportResponse } from "@src/tls/transport.js";
-import type { CodexResponsesRequest } from "@src/proxy/codex-types.js";
+import type { CodexCompactRequest, CodexResponsesRequest } from "@src/proxy/codex-types.js";
 
 // Mock fingerprint — return minimal headers
 vi.mock("@src/fingerprint/manager.js", () => ({
@@ -53,7 +53,7 @@ function makeTransport(): TlsTransport & {
           headers: new Headers({ "content-type": "text/event-stream" }),
           body: new ReadableStream({
             start(c) {
-              c.enqueue(encoder.encode("data: {}\n\n"));
+              c.enqueue(encoder.encode('{"output":[]}'));
               c.close();
             },
           }),
@@ -203,6 +203,66 @@ describe("codex-api headers", () => {
         "x-codex-window-id": "thread-123:1",
         "x-codex-parent-thread-id": "parent-123",
       });
+    });
+  });
+
+  describe("Compact path", () => {
+    it("forwards identity, context headers, metadata, and strips internal fields", async () => {
+      const api = await createApi();
+      const request: CodexCompactRequest = {
+        model: "gpt-5.4",
+        instructions: "compact",
+        input: [{ role: "user", content: "history" }],
+        prompt_cache_key: "compact-thread",
+        service_tier: "fast",
+        client_metadata: { "x-custom": "compact" },
+        turnState: "compact-turn-state",
+        turnMetadata: "{\"source\":\"compact\"}",
+        betaFeatures: "compact-beta",
+        version: "26.7.25",
+        includeTimingMetrics: "true",
+        codexWindowId: "compact-window",
+        parentThreadId: "compact-parent",
+      };
+
+      await api.createCompactResponse(request);
+
+      expect(transport.lastHeaders).toMatchObject({
+        "x-client-request-id": "compact-thread",
+        session_id: "compact-thread",
+        "x-codex-window-id": "compact-window",
+        "x-codex-turn-state": "compact-turn-state",
+        "x-codex-turn-metadata": "{\"source\":\"compact\"}",
+        "x-codex-beta-features": "compact-beta",
+        "x-responsesapi-include-timing-metrics": "true",
+        Version: "26.7.25",
+        "x-codex-parent-thread-id": "compact-parent",
+        "x-codex-installation-id": "11111111-2222-3333-4444-555555555555",
+      });
+      const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
+      expect(body.service_tier).toBe("priority");
+      expect(body.prompt_cache_key).toBe("compact-thread");
+      expect(body.client_metadata).toBeUndefined();
+      for (const internal of [
+        "turnState", "turnMetadata", "betaFeatures", "version",
+        "includeTimingMetrics", "codexWindowId", "parentThreadId", "client_metadata",
+      ]) {
+        expect(body[internal]).toBeUndefined();
+      }
+    });
+
+    it("derives the default compact window identity from prompt_cache_key", async () => {
+      const api = await createApi();
+      await api.createCompactResponse({
+        model: "gpt-5.4",
+        instructions: "compact",
+        input: [],
+        prompt_cache_key: "compact-default-window",
+      });
+
+      expect(transport.lastHeaders!["x-codex-window-id"]).toBe("compact-default-window:0");
+      const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
+      expect(body.client_metadata).toBeUndefined();
     });
   });
 

@@ -1133,6 +1133,67 @@ describe("proxy-handler integration", () => {
     expect(seenPrevIds[1]).toBeUndefined();
   });
 
+  it("keeps hard-bound opaque state isolated from previous-response and implicit-resume chains", async () => {
+    const req: ProxyRequest = {
+      ...createDefaultRequest(),
+      requiredAccountEntryId: "e1",
+      clientConversationId: "thread-opaque-bound",
+      codexRequest: {
+        ...createDefaultRequest().codexRequest,
+        prompt_cache_key: "thread-opaque-bound",
+        previous_response_id: "resp_explicit_stale",
+        turnState: "turn-explicit-stale",
+        useWebSocket: true,
+        input: [
+          { type: "reasoning", encrypted_content: "opaque-restored", summary: [] },
+          { role: "user", content: "continue" },
+        ],
+      },
+    };
+    const affinityMap = getSessionAffinityMap();
+    const variantHash = computeVariantHash(
+      req.codexRequest.instructions,
+      req.codexRequest.tools,
+      buildVariantIdentity(req.codexRequest, resolvePromptCacheIdentity(req.codexRequest, req.clientConversationId)),
+    );
+    affinityMap.record(
+      "resp_implicit_stale",
+      "e1",
+      "thread-opaque-bound",
+      "turn-implicit-stale",
+      "You are helpful",
+      undefined,
+      undefined,
+      variantHash,
+    );
+
+    const seenRequests: CodexResponsesRequest[] = [];
+    mockCreateResponse = (request) => {
+      seenRequests.push({ ...request, input: [...request.input] });
+      return Promise.resolve(new Response("data: {}\n\n"));
+    };
+
+    const accountPool = createMockAccountPool();
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt, req });
+    const res = await app.request("/test", { method: "POST" });
+
+    expect(res.status).toBe(200);
+    expect(seenRequests).toHaveLength(1);
+    expect(seenRequests[0]?.previous_response_id).toBeUndefined();
+    expect(seenRequests[0]?.turnState).toBeUndefined();
+    expect(seenRequests[0]?.useWebSocket).toBe(false);
+    expect(seenRequests[0]?.input).toEqual([
+      { type: "reasoning", encrypted_content: "opaque-restored", summary: [] },
+      { role: "user", content: "continue" },
+    ]);
+    expect(accountPool.acquire).toHaveBeenCalledWith({
+      model: "codex",
+      excludeIds: undefined,
+      preferredEntryId: "e1",
+    });
+  });
+
   it("replays full original input after implicit previous-response WebSocket failure", async () => {
     const req: ProxyRequest = {
       ...createDefaultRequest(),

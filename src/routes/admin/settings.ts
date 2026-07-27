@@ -137,6 +137,8 @@ export function createSettingsRoutes(): Hono {
       force_http11: config.tls.force_http11,
       inject_desktop_context: config.model.inject_desktop_context,
       suppress_desktop_directives: config.model.suppress_desktop_directives,
+      claude_code_compact_bridge: config.model.claude_code_compact_bridge,
+      claude_code_opaque_compact_experimental: config.model.claude_code_opaque_compact_experimental,
       allow_client_system_prompt_strategy: config.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: config.model.system_prompt_strategy,
       default_model: config.model.default,
@@ -178,6 +180,8 @@ export function createSettingsRoutes(): Hono {
       force_http11?: boolean;
       inject_desktop_context?: boolean;
       suppress_desktop_directives?: boolean;
+      claude_code_compact_bridge?: boolean;
+      claude_code_opaque_compact_experimental?: boolean;
       allow_client_system_prompt_strategy?: boolean;
       system_prompt_strategy?: string;
       default_model?: string;
@@ -324,6 +328,14 @@ export function createSettingsRoutes(): Hono {
         if (!data.model) data.model = {};
         (data.model as Record<string, unknown>).suppress_desktop_directives = body.suppress_desktop_directives;
       }
+      if (body.claude_code_compact_bridge !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).claude_code_compact_bridge = body.claude_code_compact_bridge;
+      }
+      if (body.claude_code_opaque_compact_experimental !== undefined) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).claude_code_opaque_compact_experimental = body.claude_code_opaque_compact_experimental;
+      }
       if (body.allow_client_system_prompt_strategy !== undefined) {
         if (!data.model) data.model = {};
         (data.model as Record<string, unknown>).allow_client_system_prompt_strategy = body.allow_client_system_prompt_strategy;
@@ -421,6 +433,8 @@ export function createSettingsRoutes(): Hono {
       force_http11: updated.tls.force_http11,
       inject_desktop_context: updated.model.inject_desktop_context,
       suppress_desktop_directives: updated.model.suppress_desktop_directives,
+      claude_code_compact_bridge: updated.model.claude_code_compact_bridge,
+      claude_code_opaque_compact_experimental: updated.model.claude_code_opaque_compact_experimental,
       allow_client_system_prompt_strategy: updated.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: updated.model.system_prompt_strategy,
       default_model: updated.model.default,

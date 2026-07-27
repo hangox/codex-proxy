@@ -53,4 +53,24 @@ describe("withRetry", () => {
       .rejects.toThrow("random");
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it("aborts while waiting in retry backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const reason = new Error("stop retry backoff");
+      const fn = vi.fn().mockRejectedValue(new CodexApiError(500, "Internal"));
+      const promise = withRetry(fn, {
+        maxRetries: 2,
+        baseDelayMs: 10_000,
+        signal: controller.signal,
+      });
+      await vi.waitFor(() => expect(fn).toHaveBeenCalledTimes(1));
+      controller.abort(reason);
+      await expect(promise).rejects.toBe(reason);
+      expect(fn).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

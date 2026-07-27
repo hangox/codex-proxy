@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "source": "local-capture-structure-only",
+  "variants": {
+    "PH_": {
+      "version": "2.1.219",
+      "promptLength": 935,
+      "prefixMatches": true,
+      "suffixMatches": true,
+      "sectionIntroOffset": 450,
+      "sectionOffsets": [
+        503,
+        540,
+        573,
+        607,
+        634,
+        660,
+        688,
+        712,
+        735
+      ],
+      "sectionsOrdered": true,
+      "sectionKinds": [
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1"
+      ],
+      "blockShape": {
+        "kind": "text_blocks",
+        "count": 2,
+        "textBlockCount": 2,
+        "nonEmptyTextBlockCount": 2,
+        "promptBlockIndex": 1
+      }
+    },
+    "HH_": {
+      "version": "2.1.219",
+      "promptLength": 718,
+      "prefixMatches": true,
+      "suffixMatches": true,
+      "sectionIntroOffset": 196,
+      "sectionOffsets": [
+        249,
+        286,
+        319,
+        353,
+        380,
+        406,
+        434,
+        458,
+        481
+      ],
+      "sectionsOrdered": true,
+      "sectionKinds": [
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1"
+      ],
+      "blockShape": {
+        "kind": "text_blocks",
+        "count": 1,
+        "textBlockCount": 1,
+        "nonEmptyTextBlockCount": 1,
+        "promptBlockIndex": 0
+      }
+    },
+    "LH_": {
+      "version": "2.1.219",
+      "promptLength": 685,
+      "prefixMatches": true,
+      "suffixMatches": true,
+      "sectionIntroOffset": 189,
+      "sectionOffsets": [
+        242,
+        279,
+        312,
+        346,
+        373,
+        399,
+        427,
+        451,
+        476
+      ],
+      "sectionsOrdered": true,
+      "sectionKinds": [
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_1",
+        "option_2",
+        "option_2"
+      ],
+      "blockShape": {
+        "kind": "text_blocks",
+        "count": 1,
+        "textBlockCount": 1,
+        "nonEmptyTextBlockCount": 1,
+        "promptBlockIndex": 0
+      }
+    }
+  }
+}

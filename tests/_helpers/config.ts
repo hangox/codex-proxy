@@ -43,6 +43,8 @@ export function createMockConfig(overrides?: MockConfigOverrides): AppConfig {
       default_service_tier: null,
       inject_desktop_context: false,
       suppress_desktop_directives: true,
+      claude_code_compact_bridge: false,
+      claude_code_opaque_compact_experimental: false,
     },
     auth: {
       jwt_token: null,

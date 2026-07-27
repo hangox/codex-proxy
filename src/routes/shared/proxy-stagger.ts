@@ -19,11 +19,24 @@ const defaultDeps: StaggerDeps = {
 export async function staggerIfNeeded(
   prevSlotMs: number | null,
   deps: Partial<StaggerDeps> = {},
+  signal?: AbortSignal,
 ): Promise<void> {
   const intervalMs = (deps.intervalMs ?? defaultDeps.intervalMs)();
   if (!intervalMs || prevSlotMs == null) return;
   const elapsed = (deps.nowMs ?? defaultDeps.nowMs)() - prevSlotMs;
   const target = (deps.jitterInt ?? defaultDeps.jitterInt)(intervalMs, 0.3);
   const wait = target - elapsed;
-  if (wait > 0) await (deps.sleep ?? defaultDeps.sleep)(wait);
+  if (wait <= 0) return;
+  if (!signal) {
+    await (deps.sleep ?? defaultDeps.sleep)(wait);
+    return;
+  }
+  if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, wait);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    }, { once: true });
+  });
 }

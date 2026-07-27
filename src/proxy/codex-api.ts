@@ -493,9 +493,35 @@ export class CodexApi {
     headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
     headers["x-openai-internal-codex-residency"] = "us";
     headers["x-client-request-id"] = crypto.randomUUID();
-    headers["x-codex-installation-id"] = getInstallationId();
+    const installationId = getInstallationId();
+    headers["x-codex-installation-id"] = installationId;
+    const identity = this.buildConversationIdentity(request as CodexResponsesRequest);
+    if (identity.conversationId) {
+      headers["x-client-request-id"] = identity.conversationId;
+      headers["session_id"] = identity.conversationId;
+    }
+    if (identity.windowId) headers["x-codex-window-id"] = identity.windowId;
+    this.applyCodexContextHeaders(headers, request as CodexResponsesRequest);
+    const openAiSubagent = normalizeOpenAISubagent(request.client_metadata?.[OPENAI_SUBAGENT_HEADER]);
+    if (openAiSubagent) headers[OPENAI_SUBAGENT_HEADER] = openAiSubagent;
 
-    const body = JSON.stringify(request);
+    const {
+      turnState: _ts,
+      turnMetadata: _tm,
+      betaFeatures: _bf,
+      version: _ver,
+      includeTimingMetrics: _timing,
+      codexWindowId: _window,
+      parentThreadId: _parent,
+      client_metadata: _metadata,
+      service_tier,
+      ...bodyFields
+    } = request;
+    const upstreamServiceTier = normalizeServiceTierForUpstream(service_tier);
+    const body = JSON.stringify({
+      ...bodyFields,
+      ...(upstreamServiceTier ? { service_tier: upstreamServiceTier } : {}),
+    });
 
     let transportRes;
     try {

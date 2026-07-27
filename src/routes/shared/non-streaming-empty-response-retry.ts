@@ -75,6 +75,14 @@ export async function retryNonStreamingEmptyResponse(
   releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen), released);
   restoreImplicitResumeRequest?.();
 
+  if (req.requiredAccountEntryId !== undefined) {
+    return {
+      action: "respond",
+      status: 502,
+      message: "The compact state account returned an empty response and cross-account retry is disabled",
+    };
+  }
+
   const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, tag);
   if (!acquired) {
     return {

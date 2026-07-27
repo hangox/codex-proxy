@@ -5,7 +5,7 @@ import type { CodexResponsesRequest } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
-import type { UsageInfo } from "../../translation/codex-event-extractor.js";
+import type { ExtractedEvent, UsageInfo } from "../../translation/codex-event-extractor.js";
 import type { StreamCloseContextBase } from "../../logs/stream-close-event.js";
 
 export interface StreamTranslatorContext extends StreamCloseContextBase {
@@ -21,6 +21,8 @@ export interface ProxyRequest {
   isStreaming: boolean;
   /** Stable client-side conversation/session identifier when the upstream client provides one. */
   clientConversationId?: string;
+  /** Hard account binding for in-memory opaque compact state restoration. */
+  requiredAccountEntryId?: string;
   /** Original schema before tuple->object conversion (for response reconversion). */
   tupleSchema?: Record<string, unknown> | null;
   /** Whether this is a new conversation (no previous_response_id) — used for cache reporting. */
@@ -41,7 +43,7 @@ export interface ResponseMetadata {
 
 export interface FormatStreamTranslatorOptions {
   api: UpstreamAdapter;
-  response: Response;
+  response: Response | AsyncIterable<ExtractedEvent>;
   model: string;
   onUsage: (u: UsageInfo) => void;
   onResponseId: (id: string) => void;

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   anthropicHistoryToLosslessCodexInput,
   buildClaudeCodeCompactRequest,
+  buildClaudeCodeOpaqueCompactRequest,
   buildClaudeCodeRenderRequest,
   extractClaudeCodeCompactPrompt,
 } from "@src/routes/shared/codex-compact-service.js";
@@ -359,6 +360,68 @@ describe("Claude Code compact bridge requests", () => {
       { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aW1hZ2U=" }] },
     ]);
     expect(JSON.stringify(compact.input)).not.toContain(PREFIX);
+  });
+
+  it("separates a trailing completed tool chain for deterministic opaque restoration", () => {
+    const prompt = compactPrompt();
+    const req: AnthropicMessagesRequest = {
+      ...request(prompt),
+      messages: [
+        { role: "user", content: "history" },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "tool-a", name: "Read", input: { file_path: "/tmp/a" } },
+            { type: "tool_use", id: "tool-b", name: "WebFetch", input: { url: "http://localhost/b" } },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "tool-a", content: "result-a" },
+            { type: "tool_result", tool_use_id: "tool-b", content: "result-b" },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    };
+
+    const opaque = buildClaudeCodeOpaqueCompactRequest(req, translated());
+    expect(opaque.compactRequest.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "history" }] },
+    ]);
+    expect(opaque.preservedTail).toEqual([
+      { type: "function_call", call_id: "tool-a", name: "Read", arguments: JSON.stringify({ file_path: "/tmp/a" }) },
+      { type: "function_call", call_id: "tool-b", name: "WebFetch", arguments: JSON.stringify({ url: "http://localhost/b" }) },
+      {
+        type: "function_call_output",
+        call_id: "tool-a",
+        output: JSON.stringify({ anthropic_tool_result: { type: "tool_result", tool_use_id: "tool-a", content: "result-a" } }),
+      },
+      {
+        type: "function_call_output",
+        call_id: "tool-b",
+        output: JSON.stringify({ anthropic_tool_result: { type: "tool_result", tool_use_id: "tool-b", content: "result-b" } }),
+      },
+    ]);
+  });
+
+  it("keeps unmatched trailing tool results in the compact request", () => {
+    const prompt = compactPrompt();
+    const req: AnthropicMessagesRequest = {
+      ...request(prompt),
+      messages: [{
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "missing-call", content: "unmatched" },
+          { type: "text", text: prompt },
+        ],
+      }],
+    };
+
+    const opaque = buildClaudeCodeOpaqueCompactRequest(req, translated());
+    expect(opaque.preservedTail).toEqual([]);
+    expect(JSON.stringify(opaque.compactRequest.input)).toContain("unmatched");
   });
 
   it("preserves thinking, redacted thinking, documents, and unknown blocks as JSON", () => {

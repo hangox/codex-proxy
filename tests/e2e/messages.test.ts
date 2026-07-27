@@ -282,7 +282,7 @@ describe("E2E: POST /v1/messages", () => {
     expect(textDeltas).toContain("<summary>y</summary>");
   });
 
-  it("opaque compact bridge: recognizes a prompt followed by a preserved tool result", async () => {
+  it("opaque compact bridge: preserves a trailing tool chain outside upstream compact output", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
     const urls: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
@@ -293,10 +293,10 @@ describe("E2E: POST /v1/messages", () => {
         ? makeErrorTransportResponse(200, JSON.stringify({
             output: [{ type: "reasoning", encrypted_content: "opaque-mixed-block", summary: [] }],
           }))
-        : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+        : makeTransportResponse(buildTextStreamChunks("resume-mixed-block", "restored"));
     });
 
-    const res = await messagesRequest(defaultBody({
+    const compactRes = await messagesRequest(defaultBody({
       stream: true,
       messages: [
         { role: "user", content: "history" },
@@ -314,13 +314,32 @@ describe("E2E: POST /v1/messages", () => {
       ],
     }), { "x-claude-code-session-id": "session-mixed-block-compact" });
 
-    expect(res.status).toBe(200);
-    expect(urls).toEqual([expect.stringContaining("/codex/responses/compact")]);
-    expect(extractMarkerFromResponse(await res.text())).toContain("codex-opaque-state:v1");
+    expect(compactRes.status).toBe(200);
+    const marker = extractMarkerFromResponse(await compactRes.text());
+    expect(marker).toContain("codex-opaque-state:v1");
     const compactInput = bodies[0]?.input as unknown[];
-    expect(JSON.stringify(compactInput)).toContain("preserved tool result");
-    expect(JSON.stringify(compactInput)).toContain("function_call_output");
+    expect(JSON.stringify(compactInput)).not.toContain("preserved tool result");
+    expect(JSON.stringify(compactInput)).not.toContain("function_call_output");
     expect(JSON.stringify(compactInput)).not.toContain("CRITICAL: Respond with TEXT ONLY");
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: marker },
+        { role: "user", content: "continue" },
+      ],
+    }), { "x-claude-code-session-id": "session-mixed-block-compact" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("restored");
+    expect(urls).toHaveLength(2);
+    const replayInput = bodies[1]?.input as unknown[];
+    const replayText = JSON.stringify(replayInput);
+    expect(replayInput[0]).toMatchObject({ encrypted_content: "opaque-mixed-block" });
+    expect(replayText).toContain("function_call_output");
+    expect(replayText).toContain("preserved tool result");
+    expect(replayText.match(/preserved tool result/g)).toHaveLength(1);
+    expect(replayText).not.toContain("codex-opaque-state:v1");
   });
 
   it.each([
@@ -634,7 +653,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(urls[0]).not.toContain("/compact");
       });
 
-      it("opaque compact bridge: repeated compact restores prior opaque output and stays on the original account", async () => {
+      it("opaque compact bridge: repeated compact carries preserved tool tails on the original account", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
         const bodies: Array<Record<string, unknown>> = [];
@@ -650,12 +669,25 @@ describe("E2E: POST /v1/messages", () => {
                 : [{ type: "reasoning", encrypted_content: "opaque-generation-two", summary: [] }],
             }));
           }
-          return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+          return makeTransportResponse(buildTextStreamChunks("repeat-resume", "repeat restored"));
         });
 
         const first = await messagesRequest(defaultBody({
           stream: true,
-          messages: [{ role: "user", content: "history one" }, { role: "user", content: compactPrompt }],
+          messages: [
+            { role: "user", content: "history one" },
+            {
+              role: "assistant",
+              content: [{ type: "tool_use", id: "tool-repeat", name: "Read", input: { file_path: "/tmp/repeat" } }],
+            },
+            {
+              role: "user",
+              content: [
+                { type: "tool_result", tool_use_id: "tool-repeat", content: "repeat-tool-canary" },
+                { type: "text", text: compactPrompt },
+              ],
+            },
+          ],
         }), { "x-claude-code-session-id": "session-repeat-compact" });
         const markerOne = extractMarkerFromResponse(await first.text());
 
@@ -669,12 +701,28 @@ describe("E2E: POST /v1/messages", () => {
         }), { "x-claude-code-session-id": "session-repeat-compact" });
         const markerTwo = extractMarkerFromResponse(await second.text());
 
+        const replay = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: markerTwo },
+            { role: "user", content: "continue" },
+          ],
+        }), { "x-claude-code-session-id": "session-repeat-compact" });
+
+        expect(replay.status).toBe(200);
+        expect(await replay.text()).toContain("repeat restored");
         expect(markerTwo).toContain("codex-opaque-state:v1:");
         expect(markerTwo).not.toBe(markerOne);
         expect(compactCalls).toBe(2);
-        expect(urls.every((url) => url.endsWith("/codex/responses/compact"))).toBe(true);
+        expect(urls.slice(0, 2).every((url) => url.endsWith("/codex/responses/compact"))).toBe(true);
+        expect(urls[2]).not.toContain("/compact");
+        expect(JSON.stringify(bodies[0])).not.toContain("repeat-tool-canary");
         expect(JSON.stringify(bodies[1])).toContain("opaque-generation-one");
+        expect(JSON.stringify(bodies[1])).not.toContain("repeat-tool-canary");
         expect(JSON.stringify(bodies[1])).not.toContain("codex-opaque-state:v1");
+        expect(JSON.stringify(bodies[2])).toContain("opaque-generation-two");
+        expect(JSON.stringify(bodies[2]).match(/repeat-tool-canary/g)).toHaveLength(1);
+        expect(JSON.stringify(bodies[2])).not.toContain("codex-opaque-state:v1");
       });
 
       it("opaque compact bridge: first compact failure safely falls back to the original messages path", async () => {

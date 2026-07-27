@@ -40,6 +40,7 @@ export class OpaqueCompactStateError extends Error {
 
 export interface OpaqueCompactState {
   output: unknown[];
+  preservedTail: CodexInputItem[];
   sessionId: string;
   model: string;
   accountEntryId: string;
@@ -68,8 +69,8 @@ function base64Url(value: Buffer): string {
   return value.toString("base64url");
 }
 
-function outputHash(output: unknown[]): string {
-  return base64Url(createHash("sha256").update(JSON.stringify(output)).digest());
+function statePayloadHash(output: unknown[], preservedTail: CodexInputItem[]): string {
+  return base64Url(createHash("sha256").update(JSON.stringify({ output, preservedTail })).digest());
 }
 
 function compactSummaryMarkerToken(value: string): string | null {
@@ -228,6 +229,7 @@ export function restoreOpaqueCompactInput(
   input: CodexInputItem[],
   marker: string,
   output: unknown[],
+  preservedTail: CodexInputItem[] = [],
 ): CodexInputItem[] {
   let boundaryIndex = -1;
   for (let index = input.length - 1; index >= 0; index -= 1) {
@@ -246,7 +248,7 @@ export function restoreOpaqueCompactInput(
       break;
     }
   }
-  if (boundaryIndex < 0) return [...output as CodexInputItem[]];
+  if (boundaryIndex < 0) return [...output as CodexInputItem[], ...preservedTail];
 
   const retained: CodexInputItem[] = [];
   for (let index = boundaryIndex; index < input.length; index += 1) {
@@ -279,7 +281,7 @@ export function restoreOpaqueCompactInput(
     }
     if (content.length > 0) retained.push({ ...item, content } as CodexInputItem);
   }
-  return [...output as CodexInputItem[], ...retained];
+  return [...output as CodexInputItem[], ...preservedTail, ...retained];
 }
 
 export class OpaqueCompactStateStore {
@@ -302,17 +304,20 @@ export class OpaqueCompactStateStore {
 
   save(options: {
     output: unknown[];
+    preservedTail?: CodexInputItem[];
     sessionId: string;
     model: string;
     accountEntryId: string;
     variantHash?: string;
   }): { marker: string; state: OpaqueCompactState } {
     const stateId = base64Url(randomBytes(24));
-    const compHash = outputHash(options.output);
+    const preservedTail = options.preservedTail ?? [];
+    const compHash = statePayloadHash(options.output, preservedTail);
     const signature = this.sign(stateId, compHash);
     const createdAt = this.now();
     const state: OpaqueCompactState = {
       ...options,
+      preservedTail,
       variantHash: options.variantHash ?? "",
       compHash,
       createdAt,
@@ -366,7 +371,10 @@ export class OpaqueCompactStateStore {
     if (options.variantHash !== undefined && state.variantHash !== options.variantHash) {
       throw new OpaqueCompactStateError("variant_mismatch");
     }
-    if (state.compHash !== parsed.compHash || outputHash(state.output) !== state.compHash) {
+    if (
+      state.compHash !== parsed.compHash ||
+      statePayloadHash(state.output, state.preservedTail) !== state.compHash
+    ) {
       throw new OpaqueCompactStateError("comp_hash_mismatch");
     }
 

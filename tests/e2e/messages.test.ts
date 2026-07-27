@@ -282,6 +282,47 @@ describe("E2E: POST /v1/messages", () => {
     expect(textDeltas).toContain("<summary>y</summary>");
   });
 
+  it("opaque compact bridge: recognizes a prompt followed by a preserved tool result", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    const urls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      return url.endsWith("/codex/responses/compact")
+        ? makeErrorTransportResponse(200, JSON.stringify({
+            output: [{ type: "reasoning", encrypted_content: "opaque-mixed-block", summary: [] }],
+          }))
+        : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+    });
+
+    const res = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "user", content: "history" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "tool-mixed", name: "Read", input: { file_path: "/tmp/canary" } }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: compactPrompt },
+            { type: "tool_result", tool_use_id: "tool-mixed", content: "preserved tool result" },
+          ],
+        },
+      ],
+    }), { "x-claude-code-session-id": "session-mixed-block-compact" });
+
+    expect(res.status).toBe(200);
+    expect(urls).toEqual([expect.stringContaining("/codex/responses/compact")]);
+    expect(extractMarkerFromResponse(await res.text())).toContain("codex-opaque-state:v1");
+    const compactInput = bodies[0]?.input as unknown[];
+    expect(JSON.stringify(compactInput)).toContain("preserved tool result");
+    expect(JSON.stringify(compactInput)).toContain("function_call_output");
+    expect(JSON.stringify(compactInput)).not.toContain("CRITICAL: Respond with TEXT ONLY");
+  });
+
   it.each([
         ["tampered", (marker: string) => marker.replace(
           /:([A-Za-z0-9_-])([A-Za-z0-9_-]{42})<\/summary>$/,

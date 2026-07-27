@@ -29,6 +29,7 @@ export type OpaqueCompactStateFailure =
   | "account_mismatch"
   | "variant_mismatch"
   | "comp_hash_mismatch"
+  | "preserved_tail_conflict"
   | "state_too_large";
 
 export class OpaqueCompactStateError extends Error {
@@ -71,6 +72,61 @@ function base64Url(value: Buffer): string {
 
 function statePayloadHash(output: unknown[], preservedTail: CodexInputItem[]): string {
   return base64Url(createHash("sha256").update(JSON.stringify({ output, preservedTail })).digest());
+}
+
+function preservedToolItemKey(item: CodexInputItem): string | null {
+  if (!("type" in item)) return null;
+  if (item.type === "function_call") return `call:${item.call_id}`;
+  if (item.type === "function_call_output") return `output:${item.call_id}`;
+  return null;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function canonicalStructuredString(value: string): string {
+  try {
+    return canonicalJson(JSON.parse(value));
+  } catch {
+    return value;
+  }
+}
+
+function canonicalPreservedToolItem(item: CodexInputItem): string {
+  if (!("type" in item)) return canonicalJson(item);
+  if (item.type === "function_call") {
+    return canonicalJson({ ...item, arguments: canonicalStructuredString(item.arguments) });
+  }
+  if (item.type === "function_call_output") {
+    return canonicalJson({ ...item, output: canonicalStructuredString(item.output) });
+  }
+  return canonicalJson(item);
+}
+
+export function mergeOpaquePreservedTails(
+  previous: CodexInputItem[],
+  current: CodexInputItem[],
+): CodexInputItem[] {
+  const merged: CodexInputItem[] = [];
+  const canonicalByKey = new Map<string, string>();
+  for (const item of [...previous, ...current]) {
+    const key = preservedToolItemKey(item);
+    if (key === null) throw new OpaqueCompactStateError("preserved_tail_conflict");
+    const canonical = canonicalPreservedToolItem(item);
+    const existing = canonicalByKey.get(key);
+    if (existing === canonical) continue;
+    if (existing !== undefined) throw new OpaqueCompactStateError("preserved_tail_conflict");
+    canonicalByKey.set(key, canonical);
+    merged.push(item);
+  }
+  return merged;
 }
 
 function compactSummaryMarkerToken(value: string): string | null {

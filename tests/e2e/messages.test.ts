@@ -653,7 +653,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(urls[0]).not.toContain("/compact");
       });
 
-      it("opaque compact bridge: repeated compact carries preserved tool tails on the original account", async () => {
+      it("opaque compact bridge: repeated compact deduplicates replayed tails and appends new chains", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
         const bodies: Array<Record<string, unknown>> = [];
@@ -672,21 +672,17 @@ describe("E2E: POST /v1/messages", () => {
           return makeTransportResponse(buildTextStreamChunks("repeat-resume", "repeat restored"));
         });
 
+        const oldCall = { type: "tool_use", id: "tool-old", name: "Read", input: { file_path: "/tmp/old" } };
+        const oldResult = { type: "tool_result", tool_use_id: "tool-old", content: "old-tool-canary" };
+        const newCall = { type: "tool_use", id: "tool-new", name: "WebFetch", input: { url: "https://example.test" } };
+        const newResult = { type: "tool_result", tool_use_id: "tool-new", content: "new-tool-canary" };
+
         const first = await messagesRequest(defaultBody({
           stream: true,
           messages: [
             { role: "user", content: "history one" },
-            {
-              role: "assistant",
-              content: [{ type: "tool_use", id: "tool-repeat", name: "Read", input: { file_path: "/tmp/repeat" } }],
-            },
-            {
-              role: "user",
-              content: [
-                { type: "tool_result", tool_use_id: "tool-repeat", content: "repeat-tool-canary" },
-                { type: "text", text: compactPrompt },
-              ],
-            },
+            { role: "assistant", content: [oldCall] },
+            { role: "user", content: [oldResult, { type: "text", text: compactPrompt }] },
           ],
         }), { "x-claude-code-session-id": "session-repeat-compact" });
         const markerOne = extractMarkerFromResponse(await first.text());
@@ -695,8 +691,8 @@ describe("E2E: POST /v1/messages", () => {
           stream: true,
           messages: [
             { role: "assistant", content: markerOne },
-            { role: "user", content: "history two" },
-            { role: "user", content: compactPrompt },
+            { role: "assistant", content: [oldCall, newCall] },
+            { role: "user", content: [oldResult, newResult, { type: "text", text: compactPrompt }] },
           ],
         }), { "x-claude-code-session-id": "session-repeat-compact" });
         const markerTwo = extractMarkerFromResponse(await second.text());
@@ -716,13 +712,57 @@ describe("E2E: POST /v1/messages", () => {
         expect(compactCalls).toBe(2);
         expect(urls.slice(0, 2).every((url) => url.endsWith("/codex/responses/compact"))).toBe(true);
         expect(urls[2]).not.toContain("/compact");
-        expect(JSON.stringify(bodies[0])).not.toContain("repeat-tool-canary");
+        expect(JSON.stringify(bodies[0])).not.toContain("old-tool-canary");
         expect(JSON.stringify(bodies[1])).toContain("opaque-generation-one");
-        expect(JSON.stringify(bodies[1])).not.toContain("repeat-tool-canary");
+        expect(JSON.stringify(bodies[1])).not.toContain("old-tool-canary");
+        expect(JSON.stringify(bodies[1])).not.toContain("new-tool-canary");
         expect(JSON.stringify(bodies[1])).not.toContain("codex-opaque-state:v1");
-        expect(JSON.stringify(bodies[2])).toContain("opaque-generation-two");
-        expect(JSON.stringify(bodies[2]).match(/repeat-tool-canary/g)).toHaveLength(1);
-        expect(JSON.stringify(bodies[2])).not.toContain("codex-opaque-state:v1");
+        const replayText = JSON.stringify(bodies[2]);
+        expect(replayText).toContain("opaque-generation-two");
+        expect(replayText.match(/old-tool-canary/g)).toHaveLength(1);
+        expect(replayText.match(/new-tool-canary/g)).toHaveLength(1);
+        expect(replayText.indexOf("old-tool-canary")).toBeLessThan(replayText.indexOf("new-tool-canary"));
+        expect(replayText).not.toContain("codex-opaque-state:v1");
+      });
+
+      it("opaque compact bridge: rejects conflicting replayed preserved tails", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        const urls: string[] = [];
+        setTransportPost(async (url) => {
+          urls.push(url);
+          return makeErrorTransportResponse(200, JSON.stringify({
+            output: [{ type: "reasoning", encrypted_content: "opaque-conflict", summary: [] }],
+          }));
+        });
+
+        const first = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: [{ type: "tool_use", id: "tool-conflict", name: "Read", input: { file_path: "/tmp/a" } }] },
+            { role: "user", content: [
+              { type: "tool_result", tool_use_id: "tool-conflict", content: "original" },
+              { type: "text", text: compactPrompt },
+            ] },
+          ],
+        }), { "x-claude-code-session-id": "session-repeat-conflict" });
+        const marker = extractMarkerFromResponse(await first.text());
+
+        const conflicting = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: marker },
+            { role: "assistant", content: [{ type: "tool_use", id: "tool-conflict", name: "Read", input: { file_path: "/tmp/a" } }] },
+            { role: "user", content: [
+              { type: "tool_result", tool_use_id: "tool-conflict", content: "changed" },
+              { type: "text", text: compactPrompt },
+            ] },
+          ],
+        }), { "x-claude-code-session-id": "session-repeat-conflict" });
+
+        expect(conflicting.status).toBe(409);
+        expect(await conflicting.text()).toContain("could not be compacted on its original account");
+        expect(urls).toHaveLength(1);
+        expect(urls[0]).toContain("/codex/responses/compact");
       });
 
       it("opaque compact bridge: first compact failure safely falls back to the original messages path", async () => {

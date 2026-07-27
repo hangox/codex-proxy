@@ -5,6 +5,7 @@ import {
   OpaqueCompactStateStore,
   extractOpaqueCompactStateMarker,
   hasOpaqueCompactStateReference,
+  mergeOpaquePreservedTails,
   restoreOpaqueCompactInput,
 } from "@src/routes/shared/opaque-compact-state.js";
 
@@ -65,6 +66,30 @@ describe("opaque compact state store", () => {
 
     state.preservedTail[1] = { type: "function_call_output", call_id: "tool-1", output: "tampered" };
     expectReason(() => store.resolve({ marker, sessionId: "session-a", model: "gpt-5.4" }), "comp_hash_mismatch");
+  });
+
+  it("deduplicates canonical preserved tails and rejects conflicting call ids", () => {
+    const previous = [
+      { type: "function_call", call_id: "tool-old", name: "Read", arguments: "{\"b\":2,\"a\":1}" },
+      { type: "function_call_output", call_id: "tool-old", output: "{\"result\":\"old\"}" },
+    ] as const;
+    const current = [
+      { type: "function_call", call_id: "tool-old", name: "Read", arguments: "{\"a\":1,\"b\":2}" },
+      { type: "function_call_output", call_id: "tool-old", output: "{\"result\":\"old\"}" },
+      { type: "function_call", call_id: "tool-new", name: "WebFetch", arguments: "{}" },
+      { type: "function_call_output", call_id: "tool-new", output: "new" },
+    ] as const;
+
+    expect(mergeOpaquePreservedTails([...previous], [...current])).toEqual([
+      ...previous,
+      current[2],
+      current[3],
+    ]);
+    expectReason(() => mergeOpaquePreservedTails([...previous], [{
+      type: "function_call_output",
+      call_id: "tool-old",
+      output: "conflicting",
+    }]), "preserved_tail_conflict");
   });
 
   it("rejects tampered, missing, expired, session, model, account, and comp-hash mismatches", () => {

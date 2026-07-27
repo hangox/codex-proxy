@@ -8,6 +8,7 @@ import { buildClaudeCodeOpaqueCompactRequest, executeCompactOnly } from "./codex
 import {
   OpaqueCompactStateError,
   extractOpaqueCompactStateMarker,
+  mergeOpaquePreservedTails,
   opaqueCompactStateStore,
   restoreOpaqueCompactInput,
 } from "./opaque-compact-state.js";
@@ -95,10 +96,10 @@ export async function respondWithOpaqueCompactMarker(options: {
   const started = Date.now();
   const opaqueRequest = buildClaudeCodeOpaqueCompactRequest(req, translated);
   const { compactRequest } = opaqueRequest;
-  const preservedTail = [
-    ...(previousPreservedTail ?? []),
-    ...opaqueRequest.preservedTail,
-  ];
+  const preservedTail = mergeOpaquePreservedTails(
+    previousPreservedTail ?? [],
+    opaqueRequest.preservedTail,
+  );
   if (previousMarker && previousOutput) {
     compactRequest.input = restoreOpaqueCompactInput(compactRequest.input, previousMarker, previousOutput);
   }

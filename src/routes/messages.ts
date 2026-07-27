@@ -45,8 +45,8 @@ import {
 } from "./shared/opaque-compact-bridge.js";
 import {
   extractOpaqueCompactStateMarker,
+  getOpaqueCompactStateReadiness,
   hasOpaqueCompactStateReference,
-  isOpaqueCompactStateStoreReady,
 } from "./shared/opaque-compact-state.js";
 
 function makeError(
@@ -341,8 +341,19 @@ export function createMessagesRoutes(
       c.status(409);
       return c.json(makeError(
         "invalid_request_error",
-        "Opaque compact state support is disabled or was lost after restart. Run /compact again.",
+        "Opaque compact state support is disabled. Run /compact again.",
       ));
+    }
+    // 已开启但 store 未就绪：把结构化 reason 一并给出，便于区分锁/密钥/schema/损坏。
+    if (opaqueMarkerCandidate && opaqueCompactEnabled) {
+      const readiness = getOpaqueCompactStateReadiness();
+      if (!readiness.ready) {
+        c.status(409);
+        return c.json(makeError(
+          "invalid_request_error",
+          `Opaque compact state is unavailable (${readiness.reason}). Run /compact again.`,
+        ));
+      }
     }
     const compactPrompt = (compactBridgeEnabled || opaqueCompactEnabled) &&
       req.stream === true &&
@@ -426,6 +437,8 @@ export function createMessagesRoutes(
           translated: codexRequest,
           clientConversationId,
           requestId,
+          // 数据密钥按账号派生，解封需要本实例已知的账号集合。
+          accountCandidates: accountPool.getAllEntries().map((entry) => entry.id),
         })
       : { restored: false };
     if (opaqueRestore.error) {
@@ -447,11 +460,14 @@ export function createMessagesRoutes(
     if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && opaqueCompactEnabled) {
       // store 不可用时必须在打上游之前 fail-closed：否则会白花一次 compact 调用，
       // 拿到 output 后却无处保存，最终仍要报错。
-      if (!isOpaqueCompactStateStoreReady()) {
+      // reason 透传 runtime 的真实原因（锁/密钥/schema/损坏），不折叠成一个笼统值——
+      // 运维要靠它区分"第二实例抢锁"和"密钥丢了"。
+      const readiness = getOpaqueCompactStateReadiness();
+      if (!readiness.ready) {
         c.status(409);
         return c.json(makeError(
           "invalid_request_error",
-          "Opaque compact state store is unavailable (store_unavailable). Run /compact again after the proxy recovers.",
+          `Opaque compact state store is unavailable (${readiness.reason}). Run /compact again after the proxy recovers.`,
         ));
       }
       try {
@@ -471,6 +487,7 @@ export function createMessagesRoutes(
           ...(opaqueRestore.preservedTail ? { previousPreservedTail: opaqueRestore.preservedTail } : {}),
           ...(opaqueRestore.requiredEntryId ? { requiredEntryId: opaqueRestore.requiredEntryId } : {}),
           ...(opaqueRestore.generation !== undefined ? { expectedGeneration: opaqueRestore.generation } : {}),
+          ...(opaqueRestore.stateId ? { previousStateId: opaqueRestore.stateId } : {}),
         });
       } catch (error) {
         if (c.req.raw.signal.aborted) throw error;

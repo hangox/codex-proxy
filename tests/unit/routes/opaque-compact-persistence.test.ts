@@ -1,46 +1,63 @@
 /**
- * Opaque compact state 加密持久化的单元测试。
+ * Opaque compact state 加密持久化的**同进程**不变量测试。
  *
- * 覆盖四类不变量：
- * 1. 磁盘上不得出现任何明文（session / account / opaque output / encrypted_content / tail）；
- * 2. 密钥环稳定、可轮换、缺失时 fail-closed；
- * 3. generation CAS 让并发 recompact 的落败方失败，而不是静默作废对方的 marker；
- * 4. 单实例锁、schema、损坏隔离、默认关闭不碰磁盘。
+ * 分工：跨进程才能成立的语义（真实 kill -9、内核锁争用、并发 CAS、跨进程轮换、
+ * 磁盘隐私扫描）在 opaque-compact-fault-injection.test.ts 里用真实子进程验证。
+ * 本文件只测那些在同一进程内就能确定性验证的逻辑：密钥派生与域分离、AEAD/AAD
+ * 语义、schema 版本、sentinel 判定、TTL/LRU、以及默认关闭时的零 IO。
+ *
+ * 刻意不在这里做的事：不用"把全局 store 置 null"冒充进程崩溃，也不用顺序调用
+ * 冒充并发——那类断言看似通过，实际什么故障语义都没证明。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { rmSync } from "node:fs";
 import {
-  loadOpaqueCompactKeyring,
-  OpaqueCompactKeyringError,
   computeIndexBinding,
+  computeLookupDigest,
   computeMarkerSignature,
-  sealRecord,
+  deriveAccountKey,
+  encodeTuple,
+  loadOpaqueCompactKeyring,
   openRecord,
+  OpaqueCompactKeyringError,
+  rotateOpaqueCompactKeyring,
+  sealRecord,
 } from "@src/routes/shared/opaque-compact-keyring.js";
 import {
   OpaqueCompactRepository,
   OpaqueCompactRepositoryError,
   OPAQUE_REPOSITORY_SCHEMA_VERSION,
 } from "@src/routes/shared/opaque-compact-repository.js";
-import {
-  acquireOpaqueCompactStoreLock,
-  OpaqueCompactStoreLockError,
-} from "@src/routes/shared/opaque-compact-store-lock.js";
+import { loadOpaqueCompactSentinel } from "@src/routes/shared/opaque-compact-sentinel.js";
+import { acquireOpaqueCompactStoreLock } from "@src/routes/shared/opaque-compact-store-lock.js";
 import {
   OpaqueCompactStateError,
   OpaqueCompactStateStore,
+  getOpaqueCompactStateReadiness,
   getOpaqueCompactStateStore,
   isOpaqueCompactStateStoreReady,
   setOpaqueCompactStateStore,
 } from "@src/routes/shared/opaque-compact-state.js";
-import { startOpaqueCompactRuntime } from "@src/routes/shared/opaque-compact-runtime.js";
+import {
+  forgetOpaqueCompactRuntimeForTesting,
+  reconfigureOpaqueCompactRuntime,
+  startOpaqueCompactRuntime,
+} from "@src/routes/shared/opaque-compact-runtime.js";
+import { opaqueCompactVariantHash } from "@src/routes/shared/opaque-compact-bridge.js";
 
-/** 全部 canary 字符串。任何一个出现在磁盘上都判定为泄漏。 */
 const CANARIES = {
   session: "session-canary-8f2a",
   account: "entry-canary-51bd",
@@ -60,15 +77,17 @@ const PRESERVED_TAIL = [
   { type: "function_call_output", call_id: "tool-1", output: CANARIES.tail },
 ];
 
+const TTL_MS = 30 * 60_000;
+
 let dir: string;
-const runtimeHandles: { close(): void }[] = [];
+const openHandles: { close(): void }[] = [];
 
 beforeEach(() => {
   dir = mkdtempSync(resolve(tmpdir(), "opaque-persist-"));
 });
 
 afterEach(() => {
-  for (const handle of runtimeHandles.splice(0)) {
+  for (const handle of openHandles.splice(0)) {
     try {
       handle.close();
     } catch {
@@ -76,6 +95,7 @@ afterEach(() => {
     }
   }
   setOpaqueCompactStateStore(null);
+  forgetOpaqueCompactRuntimeForTesting();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -84,27 +104,31 @@ function keyringFile(): string {
 }
 
 function freshKeyring(allowCreate = true) {
-  return loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate });
+  return loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate, stateTtlMs: TTL_MS });
 }
 
-function makeStore(options: { capacity?: number; maxBytes?: number; ttlMs?: number; now?: () => number } = {}) {
+function makeStore(options: { capacity?: number; maxBytes?: number; now?: () => number } = {}) {
   const keyring = freshKeyring();
+  const sentinel = loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), { allowCreate: true })!;
   const repository = new OpaqueCompactRepository({
     databasePath: resolve(dir, "state.db"),
     keyring,
+    storeId: sentinel.storeId,
+    sentinelCreated: sentinel.created,
     capacity: options.capacity ?? 128,
     maxBytes: options.maxBytes ?? 64 * 1024 * 1024,
     ...(options.now ? { now: options.now } : {}),
   });
+  openHandles.push(repository);
   const store = new OpaqueCompactStateStore({
     keyring,
     repository,
     capacity: options.capacity ?? 128,
     maxBytes: options.maxBytes ?? 64 * 1024 * 1024,
-    ttlMs: options.ttlMs ?? 30 * 60_000,
+    ttlMs: TTL_MS,
     ...(options.now ? { now: options.now } : {}),
   });
-  return { keyring, repository, store };
+  return { keyring, repository, store, sentinel };
 }
 
 function saveCanaryState(store: OpaqueCompactStateStore, expectedGeneration = 0) {
@@ -119,6 +143,17 @@ function saveCanaryState(store: OpaqueCompactStateStore, expectedGeneration = 0)
   });
 }
 
+function resolveCanary(store: OpaqueCompactStateStore, marker: string, overrides = {}) {
+  return store.resolve({
+    marker,
+    sessionId: CANARIES.session,
+    model: "gpt-5.4",
+    variantHash: CANARIES.variant,
+    accountCandidates: [CANARIES.account],
+    ...overrides,
+  });
+}
+
 function expectReason(fn: () => unknown, reason: string): void {
   try {
     fn();
@@ -129,348 +164,302 @@ function expectReason(fn: () => unknown, reason: string): void {
   }
 }
 
-/** 把目录下所有文件（含 WAL / SHM）拼成一个 buffer 做 canary 扫描。 */
-function readAllBytes(target: string): Buffer {
-  const chunks: Buffer[] = [];
-  for (const name of readdirSync(target)) {
-    const path = resolve(target, name);
-    if (statSync(path).isDirectory()) {
-      chunks.push(readAllBytes(path));
-      continue;
-    }
-    chunks.push(readFileSync(path));
-  }
-  return Buffer.concat(chunks);
+function runtimeConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    enabled: true,
+    ttlMinutes: 30,
+    capacity: 128,
+    maxBytes: 1024 * 1024,
+    directory: dir,
+    ...overrides,
+  };
 }
 
-describe("opaque compact keyring", () => {
-  it("creates a 0600 keyring and derives three domain-separated subkeys", () => {
+describe("keyring — 密钥域分离与轮换策略", () => {
+  it("以 0600 创建，并把三个密钥域分开", () => {
     const keyring = freshKeyring();
     const key = keyring.active();
 
-    expect(keyring.keys).toHaveLength(1);
     expect(statSync(keyringFile()).mode & 0o777).toBe(0o600);
-    // 三个子密钥必须互不相同，否则 marker 签名可以被用来伪造索引或解密记录。
-    expect(key.markerHmacKey.equals(key.indexKey)).toBe(false);
-    expect(key.markerHmacKey.equals(key.aeadKey)).toBe(false);
-    expect(key.indexKey.equals(key.aeadKey)).toBe(false);
-    // 磁盘上不保存派生结果，只保存 master material。
+    // marker 签名、记录加密根、稳定索引域两两不同：任一域泄漏不得推出另一域。
+    expect(key.markerHmacKey.equals(key.recordRootKey)).toBe(false);
+    expect(key.markerHmacKey.equals(keyring.indexKey)).toBe(false);
+    expect(key.recordRootKey.equals(keyring.indexKey)).toBe(false);
+    expect(keyring.indexKey.equals(keyring.lookupKey)).toBe(false);
+
     const raw = readFileSync(keyringFile(), "utf-8");
     expect(raw).not.toContain(key.markerHmacKey.toString("base64"));
-    expect(raw).not.toContain(key.aeadKey.toString("base64"));
+    expect(raw).not.toContain(key.recordRootKey.toString("base64"));
   });
 
-  it("is stable across reloads so markers survive a restart", () => {
-    const first = freshKeyring().active();
-    const second = loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: false }).active();
+  it("跨重载稳定，marker 才能在重启后继续验签", () => {
+    const first = freshKeyring();
+    const second = loadOpaqueCompactKeyring({
+      keyringFile: keyringFile(),
+      allowCreate: false,
+      stateTtlMs: TTL_MS,
+    });
 
-    expect(second.id).toBe(first.id);
-    expect(computeMarkerSignature(second, "m").equals(computeMarkerSignature(first, "m"))).toBe(true);
-    expect(computeIndexBinding(second, "b")).toBe(computeIndexBinding(first, "b"));
+    expect(second.activeKeyId).toBe(first.activeKeyId);
+    expect(
+      computeMarkerSignature(second.active(), "m").equals(computeMarkerSignature(first.active(), "m")),
+    ).toBe(true);
+    expect(computeIndexBinding(second, ["b"])).toBe(computeIndexBinding(first, ["b"]));
   });
 
-  it("refuses to mint a new key when persisted state already exists", () => {
-    expect(() => loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: false }))
-      .toThrowError(OpaqueCompactKeyringError);
+  it("轮换保持 indexRoot 不变，只换 marker/AEAD 域", () => {
+    const before = freshKeyring();
+    const indexBindingBefore = computeIndexBinding(before, ["state", "s", "m", "v"]);
+    const lookupBefore = computeLookupDigest(before, "state-id");
+
+    const rotated = rotateOpaqueCompactKeyring(keyringFile());
+    const after = loadOpaqueCompactKeyring({
+      keyringFile: keyringFile(),
+      allowCreate: false,
+      stateTtlMs: TTL_MS,
+    });
+
+    expect(after.activeKeyId).toBe(rotated.activeKeyId);
+    expect(after.activeKeyId).not.toBe(rotated.previousKeyId);
+    // 索引与 lookup 域必须稳定，否则轮换后 CAS 看不到旧代，会分裂出双 active。
+    expect(computeIndexBinding(after, ["state", "s", "m", "v"])).toBe(indexBindingBefore);
+    expect(computeLookupDigest(after, "state-id")).toBe(lookupBefore);
+    // 旧 key 仍在环内，保留窗口内签发的 marker 仍可验签。
+    expect(after.get(rotated.previousKeyId)).toBeDefined();
+    expect(after.get(rotated.previousKeyId)!.retiredAt).not.toBeNull();
+  });
+
+  it("按 retiredAt 而非 createdAt 退役 previous key", () => {
+    freshKeyring();
+    const rotated = rotateOpaqueCompactKeyring(keyringFile());
+    const stored = JSON.parse(readFileSync(keyringFile(), "utf-8")) as {
+      keys: { id: string; createdAt: number; retiredAt: number | null }[];
+    };
+    // 把旧 key 的 createdAt 推到很久以前，但 retiredAt 就在刚刚。
+    const old = stored.keys.find((entry) => entry.id === rotated.previousKeyId)!;
+    old.createdAt = 1;
+    old.retiredAt = Date.now();
+    writeFileSync(keyringFile(), JSON.stringify(stored), { mode: 0o600 });
+
+    const keyring = loadOpaqueCompactKeyring({
+      keyringFile: keyringFile(),
+      allowCreate: false,
+      stateTtlMs: TTL_MS,
+    });
+    // 一把用了很久才轮换的 key，按 createdAt 会被立刻丢弃，
+    // 但它几分钟前签发的 marker 仍在 TTL 内——必须保留。
+    expect(keyring.get(rotated.previousKeyId)).toBeDefined();
+  });
+
+  it("retention 不足以覆盖 state TTL 时拒绝开启", () => {
+    freshKeyring();
     try {
-      loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: false });
+      loadOpaqueCompactKeyring({
+        keyringFile: keyringFile(),
+        allowCreate: false,
+        stateTtlMs: TTL_MS,
+        previousKeyRetentionMs: 1_000,
+      });
+      throw new Error("expected key_policy_invalid");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OpaqueCompactKeyringError);
+      expect((error as OpaqueCompactKeyringError).reason).toBe("key_policy_invalid");
+    }
+  });
+
+  it("已有落盘状态时拒绝凭空造密钥", () => {
+    try {
+      loadOpaqueCompactKeyring({
+        keyringFile: keyringFile(),
+        allowCreate: false,
+        stateTtlMs: TTL_MS,
+      });
+      throw new Error("expected key_unavailable");
     } catch (error) {
       expect((error as OpaqueCompactKeyringError).reason).toBe("key_unavailable");
     }
     expect(existsSync(keyringFile())).toBe(false);
   });
 
-  it("rejects malformed keyrings instead of silently regenerating", () => {
-    for (const bad of [
-      "not json",
-      JSON.stringify({ version: 99, activeKeyId: "a", keys: [{ id: "a", material: "AA==" }] }),
-      JSON.stringify({ version: 1, activeKeyId: "missing", keys: [{ id: "a", material: "AA==" }] }),
-      JSON.stringify({ version: 1, activeKeyId: "a", keys: [{ id: "a", material: "c2hvcnQ=" }] }),
-    ]) {
-      writeFileSync(keyringFile(), bad);
+  it("拒绝畸形、重复 id、非 canonical base64 与过宽权限", () => {
+    const good = Buffer.alloc(32, 7).toString("base64");
+    const cases: [string, string][] = [
+      ["not json", "key_invalid"],
+      [JSON.stringify({ version: 99, activeKeyId: "a", indexRoot: good, keys: [{ id: "a", material: good }] }), "key_invalid"],
+      [JSON.stringify({ version: 1, activeKeyId: "missing", indexRoot: good, keys: [{ id: "a", material: good }] }), "key_invalid"],
+      [JSON.stringify({ version: 1, activeKeyId: "a", indexRoot: good, keys: [{ id: "a", material: "c2hvcnQ=" }] }), "key_invalid"],
+      // 重复 id：Map 后项会静默覆盖前项，等于丢失一把仍被引用的密钥。
+      [JSON.stringify({ version: 1, activeKeyId: "a", indexRoot: good, keys: [{ id: "a", material: good }, { id: "a", material: good }] }), "key_invalid"],
+      [JSON.stringify({ version: 1, activeKeyId: "a", keys: [{ id: "a", material: good }] }), "key_invalid"],
+    ];
+    for (const [content, reason] of cases) {
+      writeFileSync(keyringFile(), content, { mode: 0o600 });
       try {
-        loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: true });
-        throw new Error("expected key_invalid");
+        loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: true, stateTtlMs: TTL_MS });
+        throw new Error(`expected ${reason} for ${content.slice(0, 40)}`);
       } catch (error) {
         expect(error).toBeInstanceOf(OpaqueCompactKeyringError);
-        expect((error as OpaqueCompactKeyringError).reason).toBe("key_invalid");
+        expect((error as OpaqueCompactKeyringError).reason).toBe(reason);
       }
+    }
+
+    // writeFileSync 的 mode 只在创建新文件时生效，这里必须显式 chmod。
+    rmSync(keyringFile(), { force: true });
+    writeFileSync(
+      keyringFile(),
+      JSON.stringify({ version: 1, activeKeyId: "a", indexRoot: good, keys: [{ id: "a", material: good }] }),
+    );
+    chmodSync(keyringFile(), 0o644);
+    try {
+      loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: true, stateTtlMs: TTL_MS });
+      throw new Error("expected key_invalid for permissive mode");
+    } catch (error) {
+      expect((error as OpaqueCompactKeyringError).reason).toBe("key_invalid");
     }
   });
 
-  it("keeps previous keys valid for verification after rotation", () => {
-    const original = freshKeyring().active();
-    const rotatedId = "k-rotated";
-    const stored = JSON.parse(readFileSync(keyringFile(), "utf-8")) as {
-      keys: { id: string; material: string; createdAt: number }[];
-      activeKeyId: string;
-      version: number;
-    };
-    stored.keys.push({
-      id: rotatedId,
-      material: Buffer.alloc(32, 9).toString("base64"),
-      createdAt: Date.now(),
-    });
-    stored.activeKeyId = rotatedId;
-    writeFileSync(keyringFile(), JSON.stringify(stored));
+  it("按账号派生不同数据密钥，且 AAD/密文任一改动都解不开", () => {
+    const keyring = freshKeyring();
+    const key = keyring.active();
+    const alice = deriveAccountKey(keyring, key, "entry-alice");
+    const bob = deriveAccountKey(keyring, key, "entry-bob");
+    // 账号隔离靠不同数据密钥，而不仅仅是 AAD 里带个字段。
+    expect(alice.equals(bob)).toBe(false);
 
-    const rotated = loadOpaqueCompactKeyring({ keyringFile: keyringFile(), allowCreate: false });
-    expect(rotated.activeKeyId).toBe(rotatedId);
-    // active 在前，previous 仍在环内 → 旧 marker 仍可验签。
-    expect(rotated.keys[0]!.id).toBe(rotatedId);
-    expect(rotated.get(original.id)).toBeDefined();
-  });
-
-  it("fails AEAD verification when AAD or ciphertext is altered", () => {
-    const key = freshKeyring().active();
-    const aad = Buffer.from("aad-v1");
-    const sealed = sealRecord(key, aad, Buffer.from("secret"));
-
-    expect(openRecord(key, aad, sealed).toString()).toBe("secret");
-    expect(() => openRecord(key, Buffer.from("aad-v2"), sealed)).toThrow();
+    const aad = encodeTuple(["aad", "v1"]);
+    const sealed = sealRecord(alice, aad, Buffer.from("secret"));
+    expect(openRecord(alice, aad, sealed).toString()).toBe("secret");
+    expect(() => openRecord(bob, aad, sealed)).toThrow();
+    expect(() => openRecord(alice, encodeTuple(["aad", "v2"]), sealed)).toThrow();
     const flipped = Buffer.from(sealed.ciphertext);
     flipped[0] = flipped[0]! ^ 0xff;
-    expect(() => openRecord(key, aad, { ...sealed, ciphertext: flipped })).toThrow();
+    expect(() => openRecord(alice, aad, { ...sealed, ciphertext: flipped })).toThrow();
+  });
+
+  it("tuple 编码对含 NUL 的字段不产生别名", () => {
+    const keyring = freshKeyring();
+    // 直接用分隔符拼接时，这两组输入会折叠成同一串。
+    expect(computeIndexBinding(keyring, ["a b", "c"]))
+      .not.toBe(computeIndexBinding(keyring, ["a", "b c"]));
+    expect(computeIndexBinding(keyring, ["ab", "c"]))
+      .not.toBe(computeIndexBinding(keyring, ["a", "bc"]));
   });
 });
 
-describe("opaque compact repository", () => {
-  it("stores nothing readable on disk — every canary must be absent", () => {
-    const { store, repository } = makeStore();
-    saveCanaryState(store);
-    repository.close();
-
-    const bytes = readAllBytes(dir);
-    for (const [label, canary] of Object.entries(CANARIES)) {
-      expect(bytes.includes(Buffer.from(canary)), `${label} leaked to disk`).toBe(false);
-    }
-    // 连列名之外的结构性明文也不该出现。
-    expect(bytes.includes(Buffer.from("function_call_output"))).toBe(false);
-    expect(bytes.includes(Buffer.from("encrypted_content"))).toBe(false);
-  });
-
-  it("survives a process restart: marker resolves against a fresh store", () => {
+describe("repository — 存储语义", () => {
+  it("跨 repository 实例解析 marker（同进程重开库）", () => {
     const first = makeStore();
     const { marker } = saveCanaryState(first.store);
     first.repository.close();
 
-    // 模拟重启：全新 keyring 加载 + 全新 repository。
     const second = makeStore();
-    const restored = second.store.resolve({
-      marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    });
-
+    const restored = resolveCanary(second.store, marker);
     expect(restored.output).toEqual(OUTPUT);
     expect(restored.preservedTail).toEqual(PRESERVED_TAIL);
-    expect(restored.accountEntryId).toBe(CANARIES.account);
     expect(restored.generation).toBe(1);
-    second.repository.close();
   });
 
-  it("binds state to session, model, variant, and account", () => {
-    const { store, repository } = makeStore();
+  it("绑定 session / model / variant / 账号", () => {
+    const { store } = makeStore();
     const { marker } = saveCanaryState(store);
 
-    expectReason(() => store.resolve({ marker, sessionId: "other", model: "gpt-5.4" }), "session_mismatch");
-    expectReason(() => store.resolve({ marker, sessionId: CANARIES.session, model: "gpt-5.5" }), "model_mismatch");
-    expectReason(() => store.resolve({
-      marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: "different-variant",
-    }), "variant_mismatch");
-    expectReason(() => store.resolve({
-      marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      accountEntryId: "other-entry",
-    }), "account_mismatch");
-    repository.close();
+    expectReason(() => resolveCanary(store, marker, { sessionId: "other" }), "session_mismatch");
+    expectReason(() => resolveCanary(store, marker, { model: "gpt-5.5" }), "model_mismatch");
+    expectReason(() => resolveCanary(store, marker, { variantHash: "other" }), "variant_mismatch");
+    // 账号不对时连数据密钥都派生不出来，谈不上"解密后再比较字段"。
+    expectReason(
+      () => resolveCanary(store, marker, { accountCandidates: ["entry-other"] }),
+      "account_mismatch",
+    );
   });
 
-  it("advances generations and invalidates the superseded marker in one transaction", () => {
-    const { store, repository } = makeStore();
-    const first = saveCanaryState(store, 0);
-    expect(first.generation).toBe(1);
-
-    const resolved = store.resolve({
-      marker: first.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    });
-    const second = saveCanaryState(store, resolved.generation);
-    expect(second.generation).toBe(2);
-
-    // 旧 marker 在同一事务里被废止 → 立刻 missing，不留悬挂状态。
-    expectReason(() => store.resolve({
-      marker: first.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    }), "missing");
-    expect(store.resolve({
-      marker: second.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    }).output).toEqual(OUTPUT);
-    repository.close();
-  });
-
-  it("fails the losing side of a concurrent recompact instead of silently voiding its marker", () => {
-    const { store, repository } = makeStore();
-    const base = saveCanaryState(store, 0);
-    const resolved = store.resolve({
-      marker: base.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    });
-
-    // 两个并发 recompact 都基于同一个 generation 出发。先完成的赢。
-    const winner = saveCanaryState(store, resolved.generation);
-    expectReason(() => saveCanaryState(store, resolved.generation), "stale_generation");
-
-    // 赢家的 marker 必须仍然有效——这正是之前"后完成者删掉先完成者"的回归点。
-    expect(store.resolve({
-      marker: winner.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    }).generation).toBe(2);
-    repository.close();
-  });
-
-  it("keeps independent variants isolated under the same session and model", () => {
-    const { store, repository } = makeStore();
-    const main = store.save({
-      output: [{ value: "main" }],
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      accountEntryId: CANARIES.account,
-      variantHash: "variant-main",
-      expectedGeneration: 0,
-    });
-    const sub = store.save({
-      output: [{ value: "sub" }],
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      accountEntryId: CANARIES.account,
-      variantHash: "variant-sub",
-      expectedGeneration: 0,
-    });
-
-    // 子代理的 compact 不得作废主线程的 marker。
-    expect(store.resolve({
-      marker: main.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: "variant-main",
-    }).output).toEqual([{ value: "main" }]);
-    expect(store.resolve({
-      marker: sub.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: "variant-sub",
-    }).output).toEqual([{ value: "sub" }]);
-    repository.close();
-  });
-
-  it("rejects markers signed by a foreign keyring", () => {
-    const { store, repository } = makeStore();
-    const { marker } = saveCanaryState(store);
-    repository.close();
-
-    const otherDir = mkdtempSync(resolve(tmpdir(), "opaque-other-"));
-    try {
-      const otherKeyring = loadOpaqueCompactKeyring({
-        keyringFile: resolve(otherDir, "keyring.json"),
-        allowCreate: true,
-      });
-      const otherRepo = new OpaqueCompactRepository({
-        databasePath: resolve(dir, "state.db"),
-        keyring: otherKeyring,
-        capacity: 128,
-        maxBytes: 64 * 1024 * 1024,
-      });
-      const otherStore = new OpaqueCompactStateStore({ keyring: otherKeyring, repository: otherRepo });
-      // 签名用的是别的密钥环 → 在读记录之前就被拒绝。
-      expectReason(() => otherStore.resolve({
-        marker,
-        sessionId: CANARIES.session,
-        model: "gpt-5.4",
-      }), "tampered");
-      otherRepo.close();
-    } finally {
-      rmSync(otherDir, { recursive: true, force: true });
-    }
-  });
-
-  it("reports state_corrupt when ciphertext is tampered with on disk", () => {
+  it("AAD 覆盖 TTL 字段：篡改 expires_at 无法延长寿命", () => {
     const { store, repository } = makeStore();
     const { marker } = saveCanaryState(store);
     repository.close();
 
     const db = new DatabaseSync(resolve(dir, "state.db"));
-    const row = db.prepare("SELECT state_id, ciphertext FROM opaque_states LIMIT 1").get() as
-      | { state_id: string; ciphertext: Uint8Array }
-      | undefined;
-    expect(row).toBeDefined();
-    const corrupted = Buffer.from(row!.ciphertext);
-    corrupted[0] = corrupted[0]! ^ 0xff;
-    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE state_id = ?").run(corrupted, row!.state_id);
+    db.prepare("UPDATE opaque_states SET expires_at = ?").run(Date.now() + 10 * 365 * 24 * 3600_000);
     db.close();
 
     const reopened = makeStore();
-    expectReason(() => reopened.store.resolve({
-      marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    }), "state_corrupt");
-    reopened.repository.close();
+    // expires_at 参与 AAD，改了就过不了认证。
+    expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
   });
 
-  it("refuses to open a database written by an unsupported schema version", () => {
-    const keyring = freshKeyring();
-    const databasePath = resolve(dir, "state.db");
-    const seeded = new OpaqueCompactRepository({ databasePath, keyring, capacity: 8, maxBytes: 1024 * 1024 });
-    seeded.close();
+  it("密文单 bit 翻转报 state_corrupt（integrity_check 检不出的场景）", () => {
+    const { store, repository } = makeStore();
+    const { marker } = saveCanaryState(store);
+    repository.close();
 
-    const db = new DatabaseSync(databasePath);
-    db.prepare("UPDATE opaque_meta SET value = ? WHERE key = 'schema_version'")
-      .run(String(OPAQUE_REPOSITORY_SCHEMA_VERSION + 1));
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array }
+      | undefined;
+    const corrupted = Buffer.from(row!.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, row!.lookup_digest);
+    // 证明这正是 integrity_check 的盲区：库本身仍然"健康"。
+    const integrity = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
+    expect(integrity.integrity_check).toBe("ok");
     db.close();
 
+    const reopened = makeStore();
+    expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
+  });
+
+  it("拒绝不认识的 schema 版本，且不改动原库", () => {
+    const seeded = makeStore();
+    saveCanaryState(seeded.store);
+    seeded.repository.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("UPDATE opaque_meta SET value = ? WHERE key = 'schema_version'")
+      .run(String(OPAQUE_REPOSITORY_SCHEMA_VERSION + 1));
+    const before = db.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
+    db.close();
+
+    const keyring = freshKeyring();
+    const sentinel = loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), { allowCreate: false })!;
     try {
-      new OpaqueCompactRepository({ databasePath, keyring, capacity: 8, maxBytes: 1024 * 1024 });
+      new OpaqueCompactRepository({
+        databasePath: resolve(dir, "state.db"),
+        keyring,
+        storeId: sentinel.storeId,
+        sentinelCreated: false,
+        capacity: 8,
+        maxBytes: 1024 * 1024,
+      });
       throw new Error("expected schema_unsupported");
     } catch (error) {
       expect(error).toBeInstanceOf(OpaqueCompactRepositoryError);
       expect((error as OpaqueCompactRepositoryError).reason).toBe("schema_unsupported");
     }
+
+    // 旧版本二进制遇到新 schema 必须原库不变，不能"顺手迁移"。
+    const after = new DatabaseSync(resolve(dir, "state.db"));
+    const rows = after.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
+    expect(rows.n).toBe(before.n);
+    after.close();
   });
 
-  it("drops expired states on startup recovery", () => {
-    let now = 1_000_000;
-    const { store, repository } = makeStore({ ttlMs: 1000, now: () => now });
-    saveCanaryState(store);
-    expect(repository.stats().count).toBe(1);
-
-    now += 5000;
-    const recovered = repository.recover();
-    expect(recovered.expired).toBe(1);
-    expect(recovered.retained).toBe(0);
+  it("单条超过字节预算时在 COMMIT 前拒绝，不留下行", () => {
+    const { store, repository } = makeStore({ maxBytes: 4096 });
+    expectReason(() => store.save({
+      output: [{ value: "x".repeat(20_000) }],
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: 0,
+    }), "state_too_large");
+    // 既没落行，也就不会有指向被立即淘汰记录的 marker。
     expect(repository.stats().count).toBe(0);
-    repository.close();
   });
 
-  it("evicts least-recently-used records once the byte budget is exceeded", () => {
-    const { store, repository } = makeStore({ capacity: 10, maxBytes: 2_000 });
+  it("超预算时按 LRU 淘汰，但恢复过程不触碰 last_used_at", () => {
+    const { store, repository } = makeStore({ capacity: 10, maxBytes: 2_400 });
     const first = store.save({
       output: [{ value: "a".repeat(700) }],
       sessionId: CANARIES.session,
@@ -495,189 +484,274 @@ describe("opaque compact repository", () => {
       variantHash: "v3",
       expectedGeneration: 0,
     });
+    expect(repository.stats().bytes).toBeLessThanOrEqual(2_400);
+    expectReason(
+      () => resolveCanary(store, first.marker, { variantHash: "v1" }),
+      "missing",
+    );
 
-    expect(repository.stats().bytes).toBeLessThanOrEqual(2_000);
-    expectReason(() => store.resolve({
-      marker: first.marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: "v1",
-    }), "missing");
+    // recover() 必须只读：若它顺手 touch 每一行，重启就会抹平 LRU 顺序。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const beforeRows = db.prepare("SELECT lookup_digest, last_used_at FROM opaque_states").all();
+    db.close();
+    repository.recover();
+    const after = new DatabaseSync(resolve(dir, "state.db"));
+    const afterRows = after.prepare("SELECT lookup_digest, last_used_at FROM opaque_states").all();
+    after.close();
+    expect(afterRows).toEqual(beforeRows);
+  });
+
+  it("recover() 不删除损坏记录，把隔离决策留给调用方", () => {
+    const { store, repository } = makeStore();
+    saveCanaryState(store);
     repository.close();
-  });
-});
 
-describe("opaque compact store lock", () => {
-  it("grants the lock to one holder and refuses the second instance", () => {
-    const lockPath = resolve(dir, "store.lock");
-    const first = acquireOpaqueCompactStoreLock(lockPath);
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array }
+      | undefined;
+    const corrupted = Buffer.from(row!.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, row!.lookup_digest);
+    db.close();
 
-    try {
-      acquireOpaqueCompactStoreLock(lockPath);
-      throw new Error("expected store_locked");
-    } catch (error) {
-      expect(error).toBeInstanceOf(OpaqueCompactStoreLockError);
-      expect((error as OpaqueCompactStoreLockError).reason).toBe("store_locked");
-    }
-
-    first.release();
-    const second = acquireOpaqueCompactStoreLock(lockPath);
-    expect(second.pid).toBe(process.pid);
-    second.release();
+    const reopened = makeStore();
+    reopened.repository.recover();
+    // 证据必须还在：先删掉再让调用方"决定是否 quarantine"是自相矛盾的。
+    const check = new DatabaseSync(resolve(dir, "state.db"));
+    const count = check.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number };
+    check.close();
+    expect(count.n).toBe(1);
   });
 
-  it("reclaims a lock whose holder process is gone (kill -9 recovery)", () => {
-    const lockPath = resolve(dir, "store.lock");
-    // pid 中不存在的高位值模拟被 kill -9 的前一个实例。
-    writeFileSync(lockPath, JSON.stringify({ pid: 0x7ffffff0, nonce: "dead", acquiredAt: 1 }));
-
-    const handle = acquireOpaqueCompactStoreLock(lockPath);
-    expect(handle.pid).toBe(process.pid);
-    handle.release();
-  });
-
-  it("does not delete a lock re-acquired by someone else", () => {
-    const lockPath = resolve(dir, "store.lock");
-    const handle = acquireOpaqueCompactStoreLock(lockPath);
-    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, nonce: "other", acquiredAt: 2 }));
-
-    handle.release();
-    expect(existsSync(lockPath)).toBe(true);
-  });
-});
-
-describe("opaque compact runtime lifecycle", () => {
-  it("touches nothing on disk while the feature is disabled", () => {
-    const handle = startOpaqueCompactRuntime({
-      enabled: false,
-      ttlMinutes: 30,
+  it("过期记录在恢复时清理", () => {
+    let now = 1_000_000;
+    const keyring = freshKeyring();
+    const sentinel = loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), { allowCreate: true })!;
+    const repository = new OpaqueCompactRepository({
+      databasePath: resolve(dir, "state.db"),
+      keyring,
+      storeId: sentinel.storeId,
+      sentinelCreated: sentinel.created,
       capacity: 128,
       maxBytes: 1024 * 1024,
-      directory: dir,
+      now: () => now,
     });
-    runtimeHandles.push(handle);
+    openHandles.push(repository);
+    const store = new OpaqueCompactStateStore({
+      keyring,
+      repository,
+      ttlMs: 1000,
+      now: () => now,
+    });
+    saveCanaryState(store);
+    expect(repository.stats().count).toBe(1);
+
+    now += 5000;
+    const recovered = repository.recover();
+    expect(recovered.expired).toBe(1);
+    expect(repository.stats().count).toBe(0);
+  });
+
+  it("WAL 与 synchronous=FULL 必须读回验证而不仅是设置", () => {
+    const { repository } = makeStore();
+    void repository;
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const journal = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    const sync = db.prepare("PRAGMA synchronous").get() as { synchronous: number };
+    db.close();
+    expect(journal.journal_mode.toLowerCase()).toBe("wal");
+    expect(sync.synchronous).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("交付语义 — predecessor 不在 COMMIT 时立即销毁", () => {
+  it("新 generation 落库后，旧 marker 在客户端确认前仍可用", () => {
+    const { store } = makeStore();
+    const first = saveCanaryState(store, 0);
+    const firstResolved = resolveCanary(store, first.marker);
+
+    const second = store.save({
+      output: OUTPUT,
+      preservedTail: [...PRESERVED_TAIL],
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: firstResolved.generation,
+      predecessorStateId: firstResolved.stateId,
+    });
+    expect(second.generation).toBe(2);
+
+    // 关键：COMMIT 之后、marker 送达之前若崩溃，客户端手里只有旧 marker。
+    // 此刻旧 marker 必须仍然有效，否则会话直接断掉。
+    const stillUsable = resolveCanary(store, first.marker);
+    expect(stillUsable.output).toEqual(OUTPUT);
+  });
+
+  it("拿旧 marker 重试时幂等回放同一个 successor marker，不重复打上游", () => {
+    const { store } = makeStore();
+    const first = saveCanaryState(store, 0);
+    const firstResolved = resolveCanary(store, first.marker);
+    const second = store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: firstResolved.generation,
+      predecessorStateId: firstResolved.stateId,
+    });
+
+    const replayed = store.findSuccessorMarker(first.marker, CANARIES.account);
+    expect(replayed).toBe(second.marker);
+    // 账号不对时拿不到映射。
+    expect(store.findSuccessorMarker(first.marker, "entry-other")).toBeNull();
+  });
+
+  it("客户端用上 successor 之后才回收 predecessor", () => {
+    const { store } = makeStore();
+    const first = saveCanaryState(store, 0);
+    const firstResolved = resolveCanary(store, first.marker);
+    const second = store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: firstResolved.generation,
+      predecessorStateId: firstResolved.stateId,
+    });
+
+    // 使用 successor == 客户端确实收到了它。
+    resolveCanary(store, second.marker);
+    // 此时 predecessor 才被回收。
+    expectReason(() => resolveCanary(store, first.marker), "missing");
+  });
+});
+
+describe("runtime — 生命周期与 readiness", () => {
+  it("功能关闭时不碰磁盘，且 readiness 给出结构化原因", () => {
+    const handle = startOpaqueCompactRuntime(runtimeConfig({ enabled: false }));
+    openHandles.push(handle);
 
     expect(handle.ready).toBe(false);
     expect(readdirSync(dir)).toEqual([]);
     expect(isOpaqueCompactStateStoreReady()).toBe(false);
-    // 关闭状态下取 store 必须抛结构化错误，而不是返回一个能用的内存 store。
     expect(() => getOpaqueCompactStateStore()).toThrowError(OpaqueCompactStateError);
   });
 
-  it("becomes ready when enabled and persists markers across a restart", () => {
-    const first = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
+  it("开启后就绪，marker 跨 runtime 重启可用", () => {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
     expect(first.ready).toBe(true);
     const { marker } = saveCanaryState(getOpaqueCompactStateStore());
     first.close();
 
-    const second = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
-    runtimeHandles.push(second);
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
     expect(second.ready).toBe(true);
-    expect(getOpaqueCompactStateStore().resolve({
-      marker,
-      sessionId: CANARIES.session,
-      model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    }).output).toEqual(OUTPUT);
+    expect(resolveCanary(getOpaqueCompactStateStore(), marker).output).toEqual(OUTPUT);
   });
 
-  it("refuses to start a second instance and reports store_locked", () => {
-    const first = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
-    runtimeHandles.push(first);
+  it("第二实例被拒绝并给出 store_locked", () => {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(first);
     expect(first.ready).toBe(true);
 
-    const second = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
+    const second = startOpaqueCompactRuntime(runtimeConfig());
     expect(second.ready).toBe(false);
     expect(second.reason).toBe("store_locked");
-    expect(isOpaqueCompactStateStoreReady()).toBe(false);
+    // readiness 必须透出真实原因，不能折叠成笼统的 store_unavailable。
+    expect(getOpaqueCompactStateReadiness()).toEqual({ ready: false, reason: "store_locked" });
   });
 
-  it("fails closed with key_unavailable when the keyring is lost but the database remains", () => {
-    const first = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
+  it("热切换 false→true→false：先原子初始化，关闭后回到 zero-touch", () => {
+    const off = startOpaqueCompactRuntime(runtimeConfig({ enabled: false }));
+    expect(off.ready).toBe(false);
+    expect(readdirSync(dir)).toEqual([]);
+
+    const on = reconfigureOpaqueCompactRuntime(runtimeConfig());
+    expect(on.ready).toBe(true);
+    expect(isOpaqueCompactStateStoreReady()).toBe(true);
+    const { marker } = saveCanaryState(getOpaqueCompactStateStore());
+
+    const backOff = reconfigureOpaqueCompactRuntime(runtimeConfig({ enabled: false }));
+    openHandles.push(backOff);
+    // 关掉之后不得继续持有 store，否则既违反 disabled 语义也白挡第二实例。
+    expect(backOff.ready).toBe(false);
+    expect(isOpaqueCompactStateStoreReady()).toBe(false);
+
+    // 再开回来，之前的 state 仍在（关闭不等于销毁数据）。
+    const onAgain = reconfigureOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(onAgain);
+    expect(onAgain.ready).toBe(true);
+    expect(resolveCanary(getOpaqueCompactStateStore(), marker).output).toEqual(OUTPUT);
+  });
+
+  it("sentinel 在但 DB 被清零时 fail-closed", () => {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
     saveCanaryState(getOpaqueCompactStateStore());
     first.close();
 
-    rmSync(resolve(dir, "keyring.json"));
-    const second = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
-    runtimeHandles.push(second);
+    writeFileSync(resolve(dir, "state.db"), Buffer.alloc(0));
+    rmSync(resolve(dir, "state.db-wal"), { force: true });
+    rmSync(resolve(dir, "state.db-shm"), { force: true });
 
-    // 绝不能重新生成密钥：那会把既有密文变成永久不可读的垃圾。
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
+    // 清零库与全新空库在 SQLite 层面不可区分，只有 DB 外的 sentinel 能兜住。
     expect(second.ready).toBe(false);
-    expect(second.reason).toBe("key_unavailable");
-    expect(existsSync(resolve(dir, "keyring.json"))).toBe(false);
-    expect(existsSync(resolve(dir, "state.db"))).toBe(true);
+    expect(second.reason).toBe("store_reset_detected");
+  });
+});
+
+describe("variantHash — 绑定必须跨 compact 边界稳定", () => {
+  it("compact 前后历史不同，variantHash 必须不变（否则 restore 永远 variant_mismatch）", () => {
+    const tools = [{ type: "function", name: "Read" }];
+    const beforeCompact = {
+      model: "gpt-5.4",
+      instructions: "system prompt",
+      tools,
+      input: [{ role: "user", content: [{ type: "input_text", text: "原始的第一条用户消息" }] }],
+      prompt_cache_key: "conv-1",
+    } as unknown as Parameters<typeof opaqueCompactVariantHash>[0];
+    // compact 之后历史被 marker 取代，"第一条用户消息"必然变了。
+    const afterCompact = {
+      ...beforeCompact,
+      input: [{ role: "user", content: [{ type: "input_text", text: "<analysis>Opaque…</analysis>" }] }],
+    } as unknown as Parameters<typeof opaqueCompactVariantHash>[0];
+
+    // 这正是 opaque compact 的本质：历史会变。绑定绝不能建立在会变的东西上，
+    // 否则 save 与 restore 永远算不出同一个 hash。
+    expect(opaqueCompactVariantHash(afterCompact)).toBe(opaqueCompactVariantHash(beforeCompact));
   });
 
-  it("survives an abrupt kill: state committed before the crash is still resolvable", () => {
-    const first = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
-    const { marker } = saveCanaryState(getOpaqueCompactStateStore());
-    // 模拟 kill -9：不调用 close()（DB 连接和 WAL 都没有被优雅收尾），并把锁文件
-    // 改成一个已经消失的 pid —— 崩溃进程留下的锁正是这个样子。
-    runtimeHandles.push(first);
-    setOpaqueCompactStateStore(null);
-    writeFileSync(
-      resolve(dir, "store.lock"),
-      JSON.stringify({ pid: 0x7ffffff0, nonce: "crashed", acquiredAt: 1 }),
-    );
-
-    const restarted = startOpaqueCompactRuntime({
-      enabled: true,
-      ttlMinutes: 30,
-      capacity: 128,
-      maxBytes: 1024 * 1024,
-      directory: dir,
-    });
-    runtimeHandles.push(restarted);
-
-    // 正确性不依赖 graceful shutdown：WAL + synchronous=FULL 已经保证了这一点。
-    expect(restarted.ready).toBe(true);
-    expect(getOpaqueCompactStateStore().resolve({
-      marker,
-      sessionId: CANARIES.session,
+  it("不同 Codex 窗口 / 不同 system prompt 仍然互相隔离", () => {
+    const base = {
       model: "gpt-5.4",
-      variantHash: CANARIES.variant,
-    }).output).toEqual(OUTPUT);
+      instructions: "main thread",
+      tools: [{ type: "function", name: "Read" }],
+      input: [],
+    } as unknown as Parameters<typeof opaqueCompactVariantHash>[0];
+
+    const otherWindow = { ...base, codexWindowId: "window-2" } as typeof base;
+    const subagent = { ...base, instructions: "subagent prompt" } as typeof base;
+
+    // 需要隔离的并行维度必须仍然产生不同 hash。
+    expect(opaqueCompactVariantHash(otherWindow)).not.toBe(opaqueCompactVariantHash(base));
+    expect(opaqueCompactVariantHash(subagent)).not.toBe(opaqueCompactVariantHash(base));
+  });
+});
+
+describe("store lock — 同进程语义", () => {
+  it("同一进程内重复获取会被拒绝，释放后可再取", () => {
+    const lockPath = resolve(dir, "store.lock");
+    const first = acquireOpaqueCompactStoreLock(lockPath);
+    expect(() => acquireOpaqueCompactStoreLock(lockPath))
+      .toThrowError(/another instance holds/i);
+    first.release();
+    const second = acquireOpaqueCompactStoreLock(lockPath);
+    second.release();
   });
 });

@@ -14,15 +14,31 @@ import {
   restoreOpaqueCompactInput,
 } from "./opaque-compact-state.js";
 import { computeVariantHash } from "./variant-hash.js";
+import { auditAccountTag } from "./opaque-compact-audit.js";
 
 /**
  * 计算 opaque state 的 variant 绑定。
  *
- * 必须与实际发往上游的请求形状一致，否则同一会话里主线程和子代理会共享同一
- * 条 state。之前生产链路没有传这个值（恒为 ""），variant 隔离只存在于单测中。
+ * 目标：区分同一 session 下并行的真实 variant（主线程 vs 子代理 vs 不同
+ * Codex 窗口），避免它们在 store 里碰撞、互相覆盖或引发 CAS 冲突。
+ *
+ * 与代理链路 `buildVariantIdentity` 的差别 —— 这里**刻意**不包含 derived
+ * conversation anchor：
+ *
+ *   anchor = hash(model, instructions, 第一条用户消息)
+ *
+ * 而 opaque compact 的全部意义就是把历史换成一个 marker，第一条用户消息
+ * 因此必然改变。把 anchor 纳入绑定，等于让 save 与 restore 永远算出不同的
+ * hash，restore 一律 variant_mismatch —— 即"绑定跨越了它本该跨越的边界"。
+ * 已用探针验证：同一会话 compact 前后 anchor 必然不同。
+ *
+ * 保留的是 `codexWindowId`：它由客户端窗口决定，跨 compact 稳定，正是需要
+ * 隔离的并行维度。instructions/tools 仍参与，子代理因此与主线程分离。
  */
 export function opaqueCompactVariantHash(translated: CodexResponsesRequest): string {
-  return computeVariantHash(translated.instructions, translated.tools);
+  const windowId = translated.codexWindowId?.trim();
+  const variantIdentity = windowId ? `window:${windowId}` : null;
+  return computeVariantHash(translated.instructions, translated.tools, variantIdentity);
 }
 
 function formatAnthropicSse(event: string, data: unknown): string {
@@ -89,6 +105,8 @@ export async function respondWithOpaqueCompactMarker(options: {
   requiredEntryId?: string;
   /** 重复 compact 时 resolve 得到的 generation，用于 CAS；首次为 0。 */
   expectedGeneration?: number;
+  /** predecessor 的 stateId，用于建立 successor 映射支撑幂等重试。 */
+  previousStateId?: string;
 }): Promise<Response> {
   const {
     c,
@@ -105,10 +123,26 @@ export async function respondWithOpaqueCompactMarker(options: {
     previousPreservedTail,
     requiredEntryId,
     expectedGeneration,
+    previousStateId,
   } = options;
   const abortController = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
   const started = Date.now();
+
+  // 崩溃恢复的幂等路径：上一次 compact 可能已经 COMMIT 成功，只是 marker 没送到
+  // 客户端。此时客户端会拿着 predecessor marker 重试——直接回放已经生成的
+  // successor marker，不要再打一次上游。
+  if (previousMarker && requiredEntryId) {
+    const replayed = getOpaqueCompactStateStore().findSuccessorMarker(previousMarker, requiredEntryId);
+    if (replayed !== null) {
+      console.log(
+        `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=successor_replay` +
+          ` acct=${auditAccountTag(requiredEntryId)}`,
+      );
+      return makeMarkerResponse(replayed, model);
+    }
+  }
+
   const opaqueRequest = buildClaudeCodeOpaqueCompactRequest(req, translated);
   const { compactRequest } = opaqueRequest;
   const preservedTail = mergeOpaquePreservedTails(
@@ -143,9 +177,11 @@ export async function respondWithOpaqueCompactMarker(options: {
     accountEntryId: compact.entryId,
     variantHash: opaqueCompactVariantHash(translated),
     expectedGeneration: expectedGeneration ?? 0,
+    predecessorStateId: previousStateId ?? null,
   });
+  // 审计日志用不可逆短标签，不落明文 entryId。
   console.log(
-    `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=state_saved entry=${compact.entryId}` +
+    `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=state_saved acct=${auditAccountTag(compact.entryId)}` +
       ` output_items=${compact.output.length} preserved_items=${preservedTail.length}` +
       ` generation=${stored.generation} compact_ms=${compact.compactLatencyMs}` +
       ` total_ms=${Date.now() - started} marker_chars=${stored.marker.length}`,
@@ -158,10 +194,13 @@ export function restoreOpaqueCompactRequest(options: {
   translated: CodexResponsesRequest;
   clientConversationId: string;
   requestId: string;
+  /** 本实例已知的账号 entryId 集合；数据密钥按账号派生，解封必需。 */
+  accountCandidates: readonly string[];
 }): {
   restored: boolean;
   requiredEntryId?: string;
   marker?: string;
+  stateId?: string;
   output?: unknown[];
   preservedTail?: CodexInputItem[];
   generation?: number;
@@ -175,6 +214,7 @@ export function restoreOpaqueCompactRequest(options: {
       sessionId: options.clientConversationId,
       model: options.translated.model,
       variantHash: opaqueCompactVariantHash(options.translated),
+      accountCandidates: options.accountCandidates,
     });
     options.translated.input = restoreOpaqueCompactInput(
       options.translated.input,
@@ -184,13 +224,14 @@ export function restoreOpaqueCompactRequest(options: {
     );
     console.log(
       `[ClaudeOpaqueCompact] rid=${options.requestId.slice(0, 8)} phase=state_restored` +
-        ` entry=${state.accountEntryId} output_items=${state.output.length}` +
+        ` acct=${auditAccountTag(state.accountEntryId)} output_items=${state.output.length}` +
         ` preserved_items=${state.preservedTail.length} generation=${state.generation}`,
     );
     return {
       restored: true,
       requiredEntryId: state.accountEntryId,
       marker,
+      stateId: state.stateId,
       output: state.output,
       preservedTail: state.preservedTail,
       generation: state.generation,

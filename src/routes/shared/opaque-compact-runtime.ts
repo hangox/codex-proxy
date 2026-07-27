@@ -296,7 +296,22 @@ export function startOpaqueCompactRuntime(
     repository.setPayloadValidator((plaintext, meta) =>
       validatePersistedPayloadForRecovery(keyring, repositoryForValidation, plaintext, meta));
 
-    // 5) 全库 AEAD 验证。发现任何不可读记录即整体 quarantine。
+    // store 必须在 recover **之前**构造：successor 校验要用它做 marker
+    // 语法与签名验证。若等到 recover 之后再安装 validator，冷启动就只过
+    // AEAD——一条 AEAD-valid 但根本不是 marker 的映射会让 store 照常 ready，
+    // 直到客户端重试时才把这段垃圾当 marker 交出去。
+    const runtimeStore = new OpaqueCompactStateStore({
+      capacity: config.capacity,
+      maxBytes: config.maxBytes,
+      ttlMs,
+      keyring,
+      repository,
+      ...(config.now ? { now: config.now } : {}),
+    });
+    repository.setSuccessorMarkerValidator((marker, expected) =>
+      validateSuccessorMarkerForRecovery(runtimeStore, repositoryForValidation, marker, expected));
+
+    // 5) 全库 AEAD + 语义验证。发现任何不可读记录即整体 quarantine。
     const recovered = repository.recover();
     if (recovered.unreadable > 0) {
       repository.close();
@@ -315,16 +330,6 @@ export function startOpaqueCompactRuntime(
       commitOpaqueCompactSentinel(sentinelFile, sentinel.storeId, config.now ?? Date.now);
     }
 
-    const runtimeStore = new OpaqueCompactStateStore({
-        capacity: config.capacity,
-        maxBytes: config.maxBytes,
-        ttlMs,
-        keyring,
-        repository,
-        ...(config.now ? { now: config.now } : {}),
-    });
-    repository.setSuccessorMarkerValidator((marker, expected) =>
-      validateSuccessorMarkerForRecovery(runtimeStore, repositoryForValidation, marker, expected));
     setOpaqueCompactStateStore(runtimeStore);
 
     // 只记录结构量：不含 keyId（durable 且跨进程稳定，可用于长期关联）、

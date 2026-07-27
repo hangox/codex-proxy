@@ -362,8 +362,11 @@ describe("E2E: POST /v1/messages", () => {
     }), { "x-claude-code-session-id": "session-mixed-negative" });
 
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("ordinary response");
+    const responseText = await res.text();
+    expect(responseText).toContain("ordinary response");
+    expect(responseText).not.toContain("codex-opaque-state:v1");
     expect(urls).toEqual([expect.not.stringContaining("/compact")]);
+    expect(opaqueCompactStateStore.size()).toBe(0);
   });
 
   it.each([

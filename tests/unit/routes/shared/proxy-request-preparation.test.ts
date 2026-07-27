@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyProxyRequestForwardingDefaults,
   ensureProxyRequestInputArray,
+  isolateHardBoundOpaqueState,
 } from "@src/routes/shared/proxy-request-preparation.js";
 import type { ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 
@@ -36,6 +37,22 @@ describe("proxy request preparation", () => {
     ensureProxyRequestInputArray(request);
 
     expect(request.codexRequest.input).toEqual([]);
+  });
+
+  it("isolates hard-bound opaque state from previous response and turn state", () => {
+    const request = makeProxyRequest();
+    request.requiredAccountEntryId = "entry-opaque";
+    request.codexRequest.previous_response_id = "resp-stale";
+    request.codexRequest.turnState = "turn-stale";
+    request.codexRequest.useWebSocket = true;
+
+    expect(isolateHardBoundOpaqueState(request)).toBe(true);
+    expect(request.codexRequest.previous_response_id).toBeUndefined();
+    expect(request.codexRequest.turnState).toBeUndefined();
+    expect(request.codexRequest.useWebSocket).toBe(false);
+
+    const ordinary = makeProxyRequest();
+    expect(isolateHardBoundOpaqueState(ordinary)).toBe(false);
   });
 
   it("applies prompt cache key and explicit turn state for upstream forwarding", () => {

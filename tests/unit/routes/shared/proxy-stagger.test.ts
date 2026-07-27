@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { staggerIfNeeded, type StaggerDeps } from "@src/routes/shared/proxy-stagger.js";
 
 interface TestDeps {
@@ -79,5 +79,22 @@ describe("staggerIfNeeded", () => {
     await staggerIfNeeded(0, deps);
 
     expect(sleepCalls).toEqual([80]);
+  });
+
+  it("aborts while waiting for the stagger interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const reason = new Error("stop stagger");
+      const promise = staggerIfNeeded(1_000, {
+        intervalMs: () => 10_000,
+        nowMs: () => 1_000,
+        jitterInt: (value) => value,
+      }, controller.signal);
+      controller.abort(reason);
+      await expect(promise).rejects.toBe(reason);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

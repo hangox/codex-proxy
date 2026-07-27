@@ -7,7 +7,7 @@
 import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
 import { CodexApiError } from "../../proxy/codex-types.js";
 import type { FormatAdapter, ResponseMetadata, UsageHint } from "./proxy-handler-types.js";
-import { EmptyResponseError, type UsageInfo } from "../../translation/codex-event-extractor.js";
+import { EmptyResponseError, type ExtractedEvent, type UsageInfo } from "../../translation/codex-event-extractor.js";
 import { debugDump, debugDumpEnabled } from "../../utils/debug-dump.js";
 import { recordStreamCloseEvent } from "../../logs/stream-close-event.js";
 import {
@@ -37,7 +37,7 @@ export interface StreamDiagnostics {
 export interface StreamResponseOptions {
   writer: StreamWriter;
   api: UpstreamAdapter;
-  response: Response;
+  response: Response | AsyncIterable<ExtractedEvent>;
   model: string;
   adapter: FormatAdapter;
   onUsage: (u: UsageInfo) => void;

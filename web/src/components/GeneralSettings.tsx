@@ -13,6 +13,8 @@ export function GeneralSettings() {
   const [draftForceHttp11, setDraftForceHttp11] = useState<boolean | null>(null);
   const [draftInjectContext, setDraftInjectContext] = useState<boolean | null>(null);
   const [draftSuppressDirectives, setDraftSuppressDirectives] = useState<boolean | null>(null);
+  const [draftCompactBridge, setDraftCompactBridge] = useState<boolean | null>(null);
+  const [draftOpaqueCompact, setDraftOpaqueCompact] = useState<boolean | null>(null);
   const [draftAllowSystemPromptStrategy, setDraftAllowSystemPromptStrategy] = useState<boolean | null>(null);
   const [draftSystemPromptStrategy, setDraftSystemPromptStrategy] = useState<SystemPromptStrategy | null>(null);
   const [draftDefaultModel, setDraftDefaultModel] = useState<string | null>(null);
@@ -33,6 +35,8 @@ export function GeneralSettings() {
   const currentForceHttp11 = gs.data?.force_http11 ?? false;
   const currentInjectContext = gs.data?.inject_desktop_context ?? false;
   const currentSuppressDirectives = gs.data?.suppress_desktop_directives ?? false;
+  const currentCompactBridge = gs.data?.claude_code_compact_bridge ?? false;
+  const currentOpaqueCompact = gs.data?.claude_code_opaque_compact_experimental ?? false;
   const currentAllowSystemPromptStrategy = gs.data?.allow_client_system_prompt_strategy ?? false;
   const currentSystemPromptStrategy = gs.data?.system_prompt_strategy ?? "instructions";
   const currentDefaultModel = gs.data?.default_model ?? "";
@@ -52,6 +56,8 @@ export function GeneralSettings() {
   const displayForceHttp11 = draftForceHttp11 ?? currentForceHttp11;
   const displayInjectContext = draftInjectContext ?? currentInjectContext;
   const displaySuppressDirectives = draftSuppressDirectives ?? currentSuppressDirectives;
+  const displayCompactBridge = draftCompactBridge ?? currentCompactBridge;
+  const displayOpaqueCompact = draftOpaqueCompact ?? currentOpaqueCompact;
   const displayAllowSystemPromptStrategy = draftAllowSystemPromptStrategy ?? currentAllowSystemPromptStrategy;
   const canEditSystemPromptStrategy = displayAllowSystemPromptStrategy;
   const displaySystemPromptStrategy = draftSystemPromptStrategy ?? currentSystemPromptStrategy;
@@ -73,6 +79,8 @@ export function GeneralSettings() {
     draftForceHttp11 !== null ||
     draftInjectContext !== null ||
     draftSuppressDirectives !== null ||
+    draftCompactBridge !== null ||
+    draftOpaqueCompact !== null ||
     draftAllowSystemPromptStrategy !== null ||
     draftSystemPromptStrategy !== null ||
     draftDefaultModel !== null ||
@@ -110,6 +118,14 @@ export function GeneralSettings() {
 
     if (draftSuppressDirectives !== null) {
       patch.suppress_desktop_directives = draftSuppressDirectives;
+    }
+
+    if (draftCompactBridge !== null) {
+      patch.claude_code_compact_bridge = draftCompactBridge;
+    }
+
+    if (draftOpaqueCompact !== null) {
+      patch.claude_code_opaque_compact_experimental = draftOpaqueCompact;
     }
 
     if (draftAllowSystemPromptStrategy !== null) {
@@ -185,6 +201,8 @@ export function GeneralSettings() {
     setDraftForceHttp11(null);
     setDraftInjectContext(null);
     setDraftSuppressDirectives(null);
+    setDraftCompactBridge(null);
+    setDraftOpaqueCompact(null);
     setDraftAllowSystemPromptStrategy(null);
     setDraftSystemPromptStrategy(null);
     setDraftDefaultModel(null);
@@ -198,7 +216,7 @@ export function GeneralSettings() {
     setDraftAutoUpdate(null);
     setDraftAutoDownload(null);
     setDraftShowUpdateDialog(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, gs]);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftCompactBridge, draftOpaqueCompact, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -410,7 +428,41 @@ export function GeneralSettings() {
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsSuppressDirectivesHint")}</p>
           </div>
 
-          {/* Client System Prompt Strategy */}
+          {/* Claude Code Compact Bridge */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="claude-code-compact-bridge"
+                checked={displayCompactBridge}
+                onChange={(e) => setDraftCompactBridge((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="claude-code-compact-bridge" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("generalSettingsCompactBridge")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsCompactBridgeHint")}</p>
+          </div>
+
+          {/* Experimental Opaque Compact State */}
+              <div class="space-y-1">
+                <div class="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="claude-code-opaque-compact-experimental"
+                    checked={displayOpaqueCompact}
+                    onChange={(e) => setDraftOpaqueCompact((e.target as HTMLInputElement).checked)}
+                    class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+                  />
+                  <label for="claude-code-opaque-compact-experimental" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                    {t("generalSettingsOpaqueCompact")}
+                  </label>
+                </div>
+                <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsOpaqueCompactHint")}</p>
+              </div>
+
+              {/* Client System Prompt Strategy */}
           <div class="space-y-1">
             <div class="flex items-center gap-2">
               <input

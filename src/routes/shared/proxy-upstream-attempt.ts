@@ -68,15 +68,19 @@ export async function sendProxyUpstreamAttempt(
   };
 
   const startMs = nowMs();
-  dumpProxyRequest({
-    requestId,
-    tag,
-    entryId,
-    conversationId,
-    implicitResumeActive,
-    resumeReason,
-    payload: request.codexRequest,
-  });
+  // Opaque compact restoration injects sensitive encrypted state into input.
+  // Never send that payload to the opt-in debug dump channel.
+  if (request.requiredAccountEntryId === undefined) {
+    dumpProxyRequest({
+      requestId,
+      tag,
+      entryId,
+      conversationId,
+      implicitResumeActive,
+      resumeReason,
+      payload: request.codexRequest,
+    });
+  }
   const rawResponse = await withRetry(
     () => api.createResponse(request.codexRequest, abortSignal, applyRateLimits, buildPoolCtx()),
     { tag, ...retryOptions },

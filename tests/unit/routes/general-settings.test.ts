@@ -13,6 +13,8 @@ const mockConfig = {
     aliases: {} as Record<string, string>,
     inject_desktop_context: false,
     suppress_desktop_directives: true,
+    claude_code_compact_bridge: false,
+    claude_code_opaque_compact_experimental: false,
     allow_client_system_prompt_strategy: false,
     system_prompt_strategy: "instructions",
   },
@@ -134,6 +136,8 @@ describe("GET /admin/general-settings", () => {
       port: 8080,
       proxy_url: null,
       force_http11: false,
+      claude_code_compact_bridge: false,
+      claude_code_opaque_compact_experimental: false,
       allow_client_system_prompt_strategy: false,
       system_prompt_strategy: "instructions",
       default_model: "gpt-5.4",
@@ -160,6 +164,49 @@ describe("POST /admin/general-settings", () => {
     mockConfig.usage_stats.credits_per_usd = 25;
     mockConfig.model.allow_client_system_prompt_strategy = false;
     mockConfig.model.system_prompt_strategy = "instructions";
+  });
+
+  it("persists compact bridge without requiring restart", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claude_code_compact_bridge: true }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.restart_required).toBe(false);
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    expect(reloadAllConfigs).toHaveBeenCalledOnce();
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { claude_code_compact_bridge: true },
+    });
+  });
+
+  it("persists the experimental opaque compact switch without requiring restart", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claude_code_opaque_compact_experimental: true }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.restart_required).toBe(false);
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { claude_code_opaque_compact_experimental: true },
+    });
   });
 
   it("persists logs_llm_only without requiring restart", async () => {

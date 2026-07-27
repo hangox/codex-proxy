@@ -329,6 +329,35 @@ describe("upstream direct routing without Codex auth", () => {
     pool.destroy();
   });
 
+  it("rejects opaque compact markers before direct upstream forwarding", async () => {
+    const pool = new AccountPool();
+    const app = createMessagesRoutes(pool, undefined, undefined, {
+      resolveMatch: vi.fn(() => ({ kind: "adapter", adapter: { tag: "custom-upstream" } })),
+    } as never);
+    const marker =
+      "<analysis>Opaque compact state retained locally.</analysis>\n" +
+      "<summary>codex-opaque-state:v1:" + "A".repeat(32) + ":" + "B".repeat(43) + ":" + "C".repeat(43) + "</summary>";
+
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-claude-code-session-id": "session-direct-marker",
+      },
+      body: JSON.stringify({
+        model: "claude-opus-4-6",
+        max_tokens: 16,
+        messages: [{ role: "user", content: marker }],
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain("Codex account route");
+    expect(mockHandleDirectRequest).not.toHaveBeenCalled();
+    pool.destroy();
+  });
+
   it("keeps Anthropic direct routing free of Codex websocket and hosted search rewrites", async () => {
     const pool = new AccountPool();
     const app = createMessagesRoutes(pool, undefined, undefined, {

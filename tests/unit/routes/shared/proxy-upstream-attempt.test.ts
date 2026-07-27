@@ -116,7 +116,36 @@ describe("sendProxyUpstreamAttempt", () => {
     });
   });
 
-  it("applies HTTP response rate-limit headers to the active entry", async () => {
+  it("does not debug-dump a restored opaque compact request", async () => {
+        const request = makeProxyRequest();
+        request.requiredAccountEntryId = "entry-opaque";
+        request.codexRequest.input = [{
+          type: "reasoning",
+          encrypted_content: "opaque-secret-must-not-be-dumped",
+        }];
+        const response = new Response("ok", { status: 200 });
+
+        await sendProxyUpstreamAttempt({
+          accountPool: makeAccountPool(),
+          api: makeApi(response),
+          request,
+          entryId: "entry-opaque",
+          abortSignal: new AbortController().signal,
+          buildPoolCtx: () => undefined,
+          requestId: "request-opaque",
+          tag: "Messages",
+          conversationId: "conv-opaque",
+          implicitResumeActive: false,
+          resumeReason: null,
+          nowMs: () => 1_000,
+          retryOptions: { maxRetries: 0, baseDelayMs: 1 },
+        });
+
+        expect(dumpProxyRequest).not.toHaveBeenCalled();
+        expect(recordProxyEgressLog).toHaveBeenCalledOnce();
+      });
+
+      it("applies HTTP response rate-limit headers to the active entry", async () => {
     const pool = makeAccountPool();
     const response = new Response("ok", {
       status: 200,

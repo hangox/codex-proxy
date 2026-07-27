@@ -47,7 +47,9 @@ export interface OpenAIChatRequest {
 
 function contentPartsToOpenAI(parts: CodexContentPart[]): OpenAIContentPart[] {
   return parts.map((p) => {
-    if (p.type === "input_text") return { type: "text" as const, text: p.text };
+    if (p.type === "input_text" || p.type === "output_text") {
+      return { type: "text" as const, text: p.text };
+    }
     return { type: "image_url" as const, image_url: { url: p.image_url } };
   });
 }

@@ -12,6 +12,14 @@ export function ensureProxyRequestInputArray(request: ProxyRequest): void {
   }
 }
 
+export function isolateHardBoundOpaqueState(request: ProxyRequest): boolean {
+  if (request.requiredAccountEntryId === undefined) return false;
+  request.codexRequest.previous_response_id = undefined;
+  request.codexRequest.turnState = undefined;
+  request.codexRequest.useWebSocket = false;
+  return true;
+}
+
 export function applyProxyRequestForwardingDefaults(
   options: ApplyProxyRequestForwardingDefaultsOptions,
 ): void {

@@ -35,7 +35,7 @@ export interface AnthropicMessageRequest {
 }
 
 function codexPartToAnthropic(part: CodexContentPart): AnthropicContentBlock {
-  if (part.type === "input_text") {
+  if (part.type === "input_text" || part.type === "output_text") {
     return { type: "text", text: part.text };
   }
   // input_image — pass as URL source

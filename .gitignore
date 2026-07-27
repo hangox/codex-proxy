@@ -21,6 +21,9 @@ native/codex-tls.linux-*.node
 scripts/manual-test/
 scripts/cron-update.sh
 
+# Local captures may contain proprietary upstream prompt text.
+tests/_fixtures/local/
+
 # Design / internal files
 stitch-designs/
 stitch-screens/

@@ -67,6 +67,7 @@ export function handleCodexApiError(
   tag: string,
   modelRetried: boolean,
   cookieJar?: CookieJar,
+  safeLog = false,
 ): ErrorAction {
   const email = pool.getEntry(entryId)?.email ?? "?";
 
@@ -92,7 +93,10 @@ export function handleCodexApiError(
     return { action: "respond", status, message: err.message };
   }
 
-  console.error(`[${tag}] Account ${entryId} | Codex API error:`, err.message);
+  console.error(
+    `[${tag}] Account ${entryId} | Codex API error status=${err.status}` +
+      (safeLog ? "" : ` message=${err.message}`),
+  );
 
   // 2. Rate-limited — write into cachedQuota.rate_limit (single source of
   // truth). applyRateLimit429 internally never shrinks an existing reset_at,

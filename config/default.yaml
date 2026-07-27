@@ -16,6 +16,8 @@ model:
   custom_models: []
   inject_desktop_context: false
   suppress_desktop_directives: false
+  claude_code_compact_bridge: false
+  claude_code_opaque_compact_experimental: false
   # How user-supplied system prompt is delivered to the Codex backend:
   #   instructions     - default; user system goes into the top-level `instructions` field
   #   developer_inline - user system is moved to input[0] as a developer-role message

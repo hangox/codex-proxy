@@ -75,6 +75,16 @@ export interface CodexCompactRequest {
       strict?: boolean;
     };
   };
+  service_tier?: string | null;
+  prompt_cache_key?: string;
+  client_metadata?: Record<string, string>;
+  turnState?: string;
+  turnMetadata?: string;
+  betaFeatures?: string;
+  version?: string;
+  includeTimingMetrics?: string;
+  codexWindowId?: string;
+  parentThreadId?: string;
 }
 
 /** Response body from POST /codex/responses/compact. */
@@ -85,11 +95,12 @@ export interface CodexCompactResponse {
 /** Structured content part for multimodal Codex input. */
 export type CodexContentPart =
   | { type: "input_text"; text: string }
+  | { type: "output_text"; text: string }
   | { type: "input_image"; image_url: string };
 
 export type CodexInputItem =
   | { role: "user"; content: string | CodexContentPart[] }
-  | { role: "assistant"; content: string }
+  | { role: "assistant"; content: string | CodexContentPart[] }
   // system/developer roles accept structured content so the user system prompt
   // can be delivered as an inline input item (system_prompt_strategy).
   | { role: "system" | "developer"; content: string | CodexContentPart[] }

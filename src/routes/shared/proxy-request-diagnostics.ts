@@ -27,6 +27,13 @@ export interface LogRequestDiagnosticsOptions extends BuildRequestDiagnosticsOpt
   warn?: (message: string) => void;
 }
 
+export interface LogOpaqueStateDiagnosticsOptions {
+  tag: string;
+  entryId: string;
+  requestId: string;
+  log?: (message: string) => void;
+}
+
 function itemRole(item: unknown): unknown {
   if (typeof item !== "object" || item === null) {
     return undefined;
@@ -92,5 +99,18 @@ export function logRequestDiagnostics(options: LogRequestDiagnosticsOptions): Re
   log(diagnostics.summary);
   if (diagnostics.largePayloadWarning) warn(diagnostics.largePayloadWarning);
 
+  return diagnostics;
+}
+
+export function logOpaqueStateDiagnostics(
+  options: LogOpaqueStateDiagnosticsOptions,
+): RequestDiagnostics {
+  const diagnostics = {
+    summary:
+      `[${options.tag}] Opaque state restored | ` +
+      `rid=${options.requestId.slice(0, 8)} entry=${options.entryId}`,
+    payloadBytes: 0,
+  };
+  (options.log ?? console.log)(diagnostics.summary);
   return diagnostics;
 }

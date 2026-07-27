@@ -46,7 +46,7 @@ export interface GeminiGenerateContentRequest {
 }
 
 function codexPartToGemini(part: CodexContentPart): GeminiPart {
-  if (part.type === "input_text") return { text: part.text };
+  if (part.type === "input_text" || part.type === "output_text") return { text: part.text };
   // input_image — treat as external URL reference via text (Gemini Files API not used here)
   return { text: `[Image: ${part.image_url}]` };
 }

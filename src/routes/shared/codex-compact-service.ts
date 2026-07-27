@@ -67,24 +67,28 @@ function extractTrailingCompactText(
   }
   if (content.length === 0) return null;
 
-  const texts: string[] = [];
-  for (const block of content) {
-    if (block.type !== "text" || typeof block.text !== "string") return null;
-    texts.push(block.text);
-  }
+  let lastTextCandidate: CompactTextCandidate | null = null;
+  let strictCandidateCount = 0;
+  for (const [index, block] of content.entries()) {
+    if (block.type !== "text" || typeof block.text !== "string" || block.text.trim() === "") continue;
+    const candidate = {
+      prompt: block.text,
+      shape: "blocks" as const,
+      blockCount: content.length,
+      promptBlockIndex: index,
+    };
+    lastTextCandidate = candidate;
 
-  for (let index = texts.length - 1; index >= 0; index -= 1) {
-    const text = texts[index];
-    if (text !== undefined && text.trim() !== "") {
-      return {
-        prompt: text,
-        shape: "blocks",
-        blockCount: texts.length,
-        promptBlockIndex: index,
-      };
+    const normalized = normalizeCompactPrompt(candidate.prompt).trim();
+    if (isCompleteCompactPrompt(normalized, compactPromptStructure(normalized))) {
+      strictCandidateCount += 1;
     }
   }
-  return null;
+
+  // 同一条用户消息包含多个完整 compact prompt 时存在歧义，必须拒绝。
+  // 唯一 prompt 可与前后的非文本块共存，但必须仍是最后一个非空文本块，
+  // 避免把后续普通文本误判为 compact 请求。
+  return strictCandidateCount > 1 ? null : lastTextCandidate;
 }
 
 interface CompactPromptStructure {
@@ -126,6 +130,18 @@ function compactPromptStructure(prompt: string): CompactPromptStructure {
   };
 }
 
+function isCompleteCompactPrompt(
+  normalized: string,
+  structure: CompactPromptStructure,
+): boolean {
+  return normalized.startsWith(COMPACT_PROMPT_PREFIX) &&
+    normalized.endsWith(COMPACT_PROMPT_SUFFIX) &&
+    normalized.length >= COMPACT_PROMPT_MIN_LENGTH &&
+    structure.introPresent &&
+    structure.presentMask === ALL_SECTIONS_PRESENT &&
+    structure.orderingMask === 0;
+}
+
 function bitmask(value: number): string {
   return value.toString(2).padStart(COMPACT_PROMPT_SECTIONS.length, "0");
 }
@@ -155,14 +171,7 @@ export function extractClaudeCodeCompactPrompt(req: AnthropicMessagesRequest): s
   const hasPrefix = normalized.startsWith(COMPACT_PROMPT_PREFIX);
   const hasSuffix = normalized.endsWith(COMPACT_PROMPT_SUFFIX);
   const structure = compactPromptStructure(normalized);
-  if (
-    hasPrefix &&
-    hasSuffix &&
-    normalized.length >= COMPACT_PROMPT_MIN_LENGTH &&
-    structure.introPresent &&
-    structure.presentMask === ALL_SECTIONS_PRESENT &&
-    structure.orderingMask === 0
-  ) {
+  if (isCompleteCompactPrompt(normalized, structure)) {
     return candidate.prompt;
   }
   if (hasPrefix || hasSuffix || structure.score >= 3) {

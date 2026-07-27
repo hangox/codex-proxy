@@ -760,6 +760,16 @@ export class OpaqueCompactStateStore {
 
   // ── marker 签名 ─────────────────────────────────────────────
 
+  /** 校验器专用：解析 marker（内部实现的受控出口）。 */
+  parseMarkerForValidation(marker: string): ParsedMarker {
+    return this.parse(marker);
+  }
+
+  /** 校验器专用：验签。 */
+  verifyMarkerForValidation(parsed: ParsedMarker): boolean {
+    return this.verify(parsed.stateId, parsed.compHash, parsed.signature);
+  }
+
   private parse(marker: string): ParsedMarker {
     const normalized = marker.replace(/\r\n?/g, "\n").trim();
     const token = compactSummaryMarkerToken(normalized) ?? normalized;
@@ -963,6 +973,26 @@ export function validatePersistedPayloadForRecovery(
   if (statePayloadHash(payload.output, payload.preservedTail) !== payload.compHash) return false;
   void keyring;
   return true;
+}
+
+/**
+ * successor 映射的语义校验：内容必须是一个合法 marker，且其 stateId 折算出的
+ * lookup 必须等于该行已认证的 successor_lookup（防止映射指向别的记录）。
+ */
+export function validateSuccessorMarkerForRecovery(
+  store: OpaqueCompactStateStore,
+  repository: OpaqueCompactRepository,
+  marker: string,
+  expectedSuccessorLookup: string,
+): boolean {
+  let parsed: ParsedMarker;
+  try {
+    parsed = store.parseMarkerForValidation(marker);
+  } catch {
+    return false;
+  }
+  if (!store.verifyMarkerForValidation(parsed)) return false;
+  return repository.lookupFor(parsed.stateId) === expectedSuccessorLookup;
 }
 
 /** 测试专用：安装一个纯内存 store。 */

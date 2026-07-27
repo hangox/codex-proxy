@@ -51,6 +51,7 @@ import {
   getOpaqueCompactStateStore,
   isOpaqueCompactStateStoreReady,
   setOpaqueCompactStateStore,
+  validateSuccessorMarkerForRecovery,
 } from "@src/routes/shared/opaque-compact-state.js";
 import {
   forgetOpaqueCompactRuntimeForTesting,
@@ -134,6 +135,9 @@ function makeStore(options: { capacity?: number; maxBytes?: number; now?: () => 
     ttlMs: TTL_MS,
     ...(options.now ? { now: options.now } : {}),
   });
+  // 与生产一致地接线 successor marker 语义校验。
+  repository.setSuccessorMarkerValidator((marker, expected) =>
+    validateSuccessorMarkerForRecovery(store, repository, marker, expected));
   return { keyring, repository, store, sentinel };
 }
 
@@ -1057,6 +1061,61 @@ describe("格式版本 — 与 store 重置区分", () => {
     openHandles.push(handle);
     expect(handle.ready).toBe(false);
     expect(handle.reason).toBe("schema_unsupported");
+  });
+});
+
+describe("密钥裁剪必须持久化", () => {
+  it("过退役窗口的 previous key 要真的从磁盘删除，而不只是内存过滤", () => {
+    freshKeyring();
+    const rotated = rotateOpaqueCompactKeyring(keyringFile());
+
+    // 把旧 key 的退役时间推到很久以前，使其超出保留窗口。
+    const stored = JSON.parse(readFileSync(keyringFile(), "utf-8")) as {
+      keys: { id: string; createdAt: number; retiredAt: number | null }[];
+    };
+    const old = stored.keys.find((k) => k.id === rotated.previousKeyId)!;
+    old.createdAt = 1;
+    old.retiredAt = 2;
+    writeFileSync(keyringFile(), JSON.stringify(stored), { mode: 0o600 });
+
+    const keyring = loadOpaqueCompactKeyring({
+      keyringFile: keyringFile(),
+      allowCreate: false,
+      stateTtlMs: TTL_MS,
+    });
+    expect(keyring.get(rotated.previousKeyId)).toBeUndefined();
+
+    // 关键：磁盘上也必须真的没有了。只在内存里过滤的话，旧密钥材料会一直
+    // 留在文件里，"轮换后最终销毁"这条承诺在持久层面从未兑现。
+    const onDisk = JSON.parse(readFileSync(keyringFile(), "utf-8")) as {
+      keys: { id: string }[];
+    };
+    expect(onDisk.keys.map((k) => k.id)).not.toContain(rotated.previousKeyId);
+  });
+});
+
+describe("successor 映射语义", () => {
+  it("AEAD 合法但内容不是 marker 时拒绝返回", () => {
+    const { store, repository } = makeStore();
+    const first = saveCanaryState(store);
+    const resolved = resolveCanary(store, first.marker);
+
+    // 直接用仓库 API 写入一条 AEAD 完全合法、但内容不是 marker 的映射。
+    // 缺少语义校验时，这段字符串会被原样当作 marker 交给客户端。
+    repository.saveWithCas({
+      stateId: "forged-state-id",
+      binding: repository.bindingFor(CANARIES.session, "gpt-5.4", CANARIES.variant),
+      accountEntryId: CANARIES.account,
+      expectedGeneration: resolved.generation,
+      plaintext: Buffer.from("{}", "utf-8"),
+      createdAt: Date.now(),
+      expiresAt: Date.now() + TTL_MS,
+      predecessorStateId: resolved.stateId,
+      successorMarker: "AEAD-valid-but-not-a-marker",
+    });
+
+    expect(() => store.findSuccessorMarker(first.marker, CANARIES.account))
+      .toThrowError(OpaqueCompactStateError);
   });
 });
 

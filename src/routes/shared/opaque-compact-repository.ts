@@ -202,6 +202,7 @@ export class OpaqueCompactRepository {
   private readonly maxBytes: number;
   private readonly now: () => number;
   private validatePayload: ((plaintext: Buffer, meta: OpaqueCompactRecordMeta) => boolean) | null;
+  private validateSuccessorMarker: ((marker: string, expectedSuccessorLookup: string) => boolean) | null = null;
 
   private readonly stmtInsert: StatementSync;
   private readonly stmtSelectMaxGeneration: StatementSync;
@@ -662,7 +663,25 @@ export class OpaqueCompactRepository {
       this.stmtDeleteSuccessor.run(predecessorLookup);
       return null;
     }
+    // AEAD 只证明这段密文是我们写的，不证明它确实是一个 marker，也不证明它
+    // 指向本行记录的 successor。缺了这一步，任何 AEAD-valid 的字符串都会被
+    // 当作 marker 原样交给客户端。这里校验语法，并要求 marker 内的 stateId
+    // 折算出的 lookup 与已认证的 successor_lookup 一致。
+    if (this.validateSuccessorMarker !== null &&
+        !this.validateSuccessorMarker(marker, row.successor_lookup)) {
+      throw new OpaqueCompactRepositoryError(
+        "state_corrupt",
+        "successor mapping does not contain a valid marker for its target",
+      );
+    }
     return marker;
+  }
+
+  /** 注入 successor marker 语义校验器（避免与 state 层循环依赖）。 */
+  setSuccessorMarkerValidator(
+    validator: (marker: string, expectedSuccessorLookup: string) => boolean,
+  ): void {
+    this.validateSuccessorMarker = validator;
   }
 
   /**

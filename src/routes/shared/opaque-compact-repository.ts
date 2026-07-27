@@ -854,8 +854,9 @@ export class OpaqueCompactRepository {
         unreadable += 1;
         continue;
       }
+      let successorMarker: string;
       try {
-        openRecord(
+        successorMarker = openRecord(
           deriveAccountKeyFromBinding(key, row.account_binding),
           buildSuccessorAad({
             storeId: this.storeId,
@@ -873,8 +874,16 @@ export class OpaqueCompactRepository {
             tag: Buffer.from(row.tag),
             ciphertext: Buffer.from(row.ciphertext),
           },
-        );
+        ).toString("utf-8");
       } catch {
+        unreadable += 1;
+        continue;
+      }
+      // AEAD 只证明这段密文是我们写的。冷启动同样要验证它**确实是**一个
+      // marker，且指向本行已认证的 successor_lookup；否则一条 AEAD-valid
+      // 的垃圾字符串会让 store 照常 ready，直到客户端重试才被当 marker 交出。
+      if (this.validateSuccessorMarker !== null &&
+          !this.validateSuccessorMarker(successorMarker, row.successor_lookup)) {
         unreadable += 1;
         continue;
       }

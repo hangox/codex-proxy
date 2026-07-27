@@ -21,6 +21,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1116,6 +1117,53 @@ describe("successor 映射语义", () => {
 
     expect(() => store.findSuccessorMarker(first.marker, CANARIES.account))
       .toThrowError(OpaqueCompactStateError);
+  });
+});
+
+describe("successor 冷启动语义校验", () => {
+  it("state 完全合法、仅 successor 不是 marker 时，冷启动必须 quarantine", () => {
+    // 关键：state 行本身结构完全合法，唯一的问题在 successor 映射。
+    // 这样才能区分 quarantine 来自 payload 校验还是 successor 校验——
+    // 若 validator 在 recover 之后安装，冷启动只过 AEAD，这条会照常 ready。
+    const first = startOpaqueCompactRuntime(runtimeConfig());
+    const store = getOpaqueCompactStateStore();
+    const saved = saveCanaryState(store);
+    const resolved = resolveCanary(store, saved.marker);
+    first.close();
+
+    const { repository } = makeStore();
+    const now = Date.now();
+    const payload = JSON.stringify({
+      version: 2,
+      output: OUTPUT,
+      preservedTail: PRESERVED_TAIL,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      compHash: createHash("sha256")
+        .update(JSON.stringify({ output: OUTPUT, preservedTail: PRESERVED_TAIL }))
+        .digest("base64url"),
+      createdAt: now,
+      expiresAt: now + TTL_MS,
+    });
+    repository.saveWithCas({
+      stateId: "legit-looking-state",
+      binding: repository.bindingFor(CANARIES.session, "gpt-5.4", CANARIES.variant),
+      accountEntryId: CANARIES.account,
+      expectedGeneration: resolved.generation,
+      plaintext: Buffer.from(payload, "utf-8"),
+      createdAt: now,
+      expiresAt: now + TTL_MS,
+      predecessorStateId: resolved.stateId,
+      successorMarker: "AEAD-valid-but-not-a-marker",
+    });
+    repository.close();
+
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
+    expect(second.ready).toBe(false);
+    expect(second.reason).toBe("state_corrupt");
   });
 });
 

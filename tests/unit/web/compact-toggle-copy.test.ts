@@ -5,19 +5,18 @@ import { describe, expect, it } from "vitest";
 import { translations } from "../../../shared/i18n/translations.js";
 
 /**
- * Dashboard 上两个 compact 开关的说明文案曾经写着 "keep opaque state in memory /
- * 重启后状态失效"，那是 SQLite 持久化落地之前的行为。文案说反了会让运维在
- * 需要跨重启恢复时误开经典桥接，所以这里把文案钉到真实行为上：
+ * Dashboard 的 compact 开关此前有两个：经典桥接（legacy compact + render）
+ * 与 Opaque（单次 compact + 加密持久状态 + marker，跨重启可恢复）。经典桥接
+ * 已随 Task #4 移除（`messages.ts` 不再有任何分支读它），Opaque 是现在唯一
+ * 的 compact 路径，因此不再需要"两者都开时谁优先"这类说明——那个场景已经
+ * 不存在。文案回归测试相应收窄到只验证 Opaque hint 本身仍然准确：
  *
- * - 经典桥接 = legacy compact + render
- * - Opaque   = 单次 compact + 加密持久状态 + marker，跨重启可恢复（推荐）
- * - 两者都开时 Opaque 优先，且不建议同时开启
- *
- * 优先级那条不是比字符串，而是直接读 `src/routes/messages.ts` 的分支顺序，
- * 代码改了优先级这里就会红。
+ * - Opaque hint 曾经写着 "keep opaque state in memory / 重启后状态失效"，
+ *   那是 SQLite 持久化落地之前的行为，照着读会让运维误以为需要额外操作
+ *   才能跨重启恢复。这里继续钉死"不再声称 in-memory / lost-on-restart"和
+ *   "确实描述了加密持久化 + 重启可恢复"这两条不变式。
  */
 
-const ROOT = resolve(__dirname, "..", "..", "..");
 const LOCALES = ["en", "zh"] as const;
 
 const STALE_CLAIMS = [
@@ -31,16 +30,10 @@ function opaqueHint(locale: (typeof LOCALES)[number]): string {
   return translations[locale].generalSettingsOpaqueCompactHint;
 }
 
-function classicHint(locale: (typeof LOCALES)[number]): string {
-  return translations[locale].generalSettingsCompactBridgeHint;
-}
-
 describe("compact toggle copy", () => {
-  it.each(LOCALES)("[%s] both toggles still have a label and a hint", (locale) => {
+  it.each(LOCALES)("[%s] the opaque toggle still has a label and a hint", (locale) => {
     const t = translations[locale];
     for (const key of [
-      "generalSettingsCompactBridge",
-      "generalSettingsCompactBridgeHint",
       "generalSettingsOpaqueCompact",
       "generalSettingsOpaqueCompactHint",
     ] as const) {
@@ -63,38 +56,14 @@ describe("compact toggle copy", () => {
     expect(mentionsPersistence, `${locale} opaque hint must mention encrypted persistence`).toBe(true);
     expect(mentionsRestart, `${locale} opaque hint must mention restart recovery`).toBe(true);
   });
-
-  it.each(LOCALES)("[%s] opaque hint states it wins and advises against enabling both", (locale) => {
-    const hint = opaqueHint(locale);
-    expect(/wins|priority|优先/i.test(hint), `${locale} must state opaque takes priority`).toBe(true);
-    expect(
-      /not recommended|不建议/i.test(hint),
-      `${locale} must advise against enabling both switches`,
-    ).toBe(true);
-  });
-
-  it.each(LOCALES)("[%s] classic hint is marked legacy and describes compact + render", (locale) => {
-    const hint = classicHint(locale);
-    expect(/legacy|旧版/i.test(hint), `${locale} must mark the classic bridge as legacy`).toBe(true);
-    expect(/compact \+ render/i.test(hint), `${locale} must describe compact + render`).toBe(true);
-  });
 });
 
-describe("compact toggle copy matches runtime precedence", () => {
-  it("opaque branch is evaluated before the classic bridge branch", () => {
-    const source = readFileSync(resolve(ROOT, "src", "routes", "messages.ts"), "utf-8");
-    const opaqueBranch = source.indexOf("&& opaqueCompactEnabled) {");
-    const classicBranch = source.indexOf("&& compactBridgeEnabled) {");
-    expect(opaqueBranch, "opaque compact branch not found").toBeGreaterThan(-1);
-    expect(classicBranch, "classic compact bridge branch not found").toBeGreaterThan(-1);
-    expect(
-      opaqueBranch,
-      "opaque must be handled first; the dashboard copy promises it takes priority",
-    ).toBeLessThan(classicBranch);
-  });
-
-  it("an unready opaque store fails closed instead of silently using the classic bridge", () => {
-    const source = readFileSync(resolve(ROOT, "src", "routes", "messages.ts"), "utf-8");
+describe("compact toggle copy matches runtime behavior", () => {
+  it("an unready opaque store fails closed instead of silently continuing", () => {
+    const source = readFileSync(
+      resolve(__dirname, "..", "..", "..", "src", "routes", "messages.ts"),
+      "utf-8",
+    );
     // 8.5 把所有 opaque 409 的文案收口进 describeOpaqueCompactUnavailable()，
     // 不再是四处各写一遍字面量——这里改成断言"未就绪 store 走这个统一收口
     // 函数并返回 409"，而不是绑死某一句具体措辞（措辞已经因为 8.5 改了）。

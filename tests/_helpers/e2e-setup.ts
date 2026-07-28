@@ -56,13 +56,7 @@ export function getLastTransportBody(): string | null {
 /** Reset transport capture state. Call in beforeEach. */
 export function resetTransportState(): void {
   _lastTransportBody = null;
-  mockConfig.model.claude_code_compact_bridge = false;
   mockConfig.model.claude_code_opaque_compact_experimental = false;
-}
-
-/** Toggle the hot compact-bridge setting for route-level E2E tests. */
-export function setClaudeCodeCompactBridge(enabled: boolean): void {
-  mockConfig.model.claude_code_compact_bridge = enabled;
 }
 
 /** Toggle the experimental opaque compact state bridge for route-level E2E tests. */

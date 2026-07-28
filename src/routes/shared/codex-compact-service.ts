@@ -1,32 +1,19 @@
 import { createHash } from "node:crypto";
-import type { Context } from "hono";
-import { stream } from "hono/streaming";
 import type { AccountPool } from "../../auth/account-pool.js";
 import { CodexApiError, normalizeServiceTierForUpstream } from "../../proxy/codex-api.js";
-import type { CodexApi } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type {
   CodexCompactRequest,
-  CodexCompactResponse,
   CodexInputItem,
   CodexResponsesRequest,
 } from "../../proxy/codex-types.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
-import {
-  iterateCodexEvents,
-  preflightContentfulStream,
-  type ExtractedEvent,
-  type UsageInfo,
-} from "../../translation/codex-event-extractor.js";
-import { codexApiErrorFromEvent } from "../../translation/codex-api-error-from-event.js";
 import { withRetry } from "../../utils/retry.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError } from "./proxy-error-handler.js";
-import type { FormatAdapter } from "./proxy-handler-types.js";
 import { buildCodexApi } from "./proxy-handler-utils.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
-import { streamResponse } from "./response-processor.js";
 import { auditAccountTag } from "./opaque-compact-audit.js";
 import { canonicalJson } from "./canonical-json.js";
 
@@ -156,7 +143,7 @@ function logPartialCompactFingerprint(
 ): void {
   const missingMask = ALL_SECTIONS_PRESENT ^ structure.presentMask;
   console.warn(
-    `[ClaudeCompactBridge] phase=fingerprint_partial sections=${structure.score}/${COMPACT_PROMPT_SECTIONS.length}` +
+    `[ClaudeCodeCompact] phase=fingerprint_partial sections=${structure.score}/${COMPACT_PROMPT_SECTIONS.length}` +
       ` chars=${normalizedLength} shape=${candidate.shape} blocks=${candidate.blockCount}` +
       ` prompt_block=${candidate.promptBlockIndex} intro=${Number(structure.introPresent)}` +
       ` missing=${bitmask(missingMask)} duplicate=${bitmask(structure.duplicateMask)}` +
@@ -407,58 +394,6 @@ export function opaqueCompactSemanticDigest(request: CodexCompactRequest): strin
   return createHash("sha256").update(canonicalJson(projection)).digest("base64url");
 }
 
-export function buildClaudeCodeRenderRequest(
-  translated: CodexResponsesRequest,
-  compactOutput: unknown[],
-  compactPrompt: string,
-  useWebSocket: boolean,
-): CodexResponsesRequest {
-  return {
-    model: translated.model,
-    instructions: translated.instructions ?? "",
-    input: [
-      ...compactOutput as CodexInputItem[],
-      { role: "user", content: [{ type: "input_text", text: compactPrompt }] },
-    ],
-    stream: true,
-    store: false,
-    ...(translated.reasoning ? { reasoning: translated.reasoning } : {}),
-    ...(translated.service_tier ? { service_tier: translated.service_tier } : {}),
-    ...(translated.prompt_cache_key ? { prompt_cache_key: translated.prompt_cache_key } : {}),
-    ...(translated.client_metadata ? { client_metadata: translated.client_metadata } : {}),
-    ...(translated.turnState ? { turnState: translated.turnState } : {}),
-    ...(translated.turnMetadata ? { turnMetadata: translated.turnMetadata } : {}),
-    ...(translated.betaFeatures ? { betaFeatures: translated.betaFeatures } : {}),
-    ...(translated.version ? { version: translated.version } : {}),
-    ...(translated.includeTimingMetrics ? { includeTimingMetrics: translated.includeTimingMetrics } : {}),
-    ...(translated.codexWindowId ? { codexWindowId: translated.codexWindowId } : {}),
-    ...(translated.parentThreadId ? { parentThreadId: translated.parentThreadId } : {}),
-    ...(useWebSocket ? { useWebSocket: true } : {}),
-  };
-}
-
-function renderRequestWantsThinking(request: CodexResponsesRequest): boolean {
-  return request.reasoning?.summary !== undefined;
-}
-
-function rejectPreContentError(stream: AsyncIterable<ExtractedEvent>): AsyncIterable<ExtractedEvent> {
-  return {
-    async *[Symbol.asyncIterator]() {
-      for await (const event of stream) {
-        if (event.error) throw codexApiErrorFromEvent(event.error);
-        yield event;
-      }
-    },
-  };
-}
-
-export interface CompactRenderLease {
-  response: AsyncIterable<ExtractedEvent>;
-  api: CodexApi;
-  entryId: string;
-  released: Set<string>;
-}
-
 export interface CompactOnlyResult {
   output: unknown[];
   entryId: string;
@@ -476,19 +411,25 @@ export class CompactServiceError extends Error {
   }
 }
 
-export interface ExecuteCompactRenderOptions {
+/**
+ * 一次 compact 调用需要的账号租约上下文——`executeCompactOnly`（opaque 专用）
+ * 与 classic `executeCompactRender` 共用的最小字段集合。拆成独立接口而不是
+ * 让 `executeCompactOnly` 继续靠 `Omit<ExecuteCompactRenderOptions, ...>`
+ * 派生：classic 移除后 `ExecuteCompactRenderOptions`/`executeCompactRender`
+ * 会一起消失，届时 opaque 唯一的执行函数不能还结构性依赖一个已删除概念的
+ * 残留类型。
+ */
+export interface CompactAccountLeaseOptions {
   accountPool: AccountPool;
   cookieJar?: CookieJar;
   proxyPool?: ProxyPool;
   compactRequest: CodexCompactRequest;
-  renderTemplate: CodexResponsesRequest;
-  compactPrompt: string;
   signal: AbortSignal;
   requestId?: string;
   requiredEntryId?: string;
 }
 
-export async function executeCompactOnly(options: Omit<ExecuteCompactRenderOptions, "renderTemplate" | "compactPrompt">): Promise<CompactOnlyResult> {
+export async function executeCompactOnly(options: CompactAccountLeaseOptions): Promise<CompactOnlyResult> {
   const { accountPool, cookieJar, proxyPool, compactRequest, signal, requestId, requiredEntryId } = options;
   const tag = "ClaudeOpaqueCompact";
   const triedEntryIds: string[] = [];
@@ -549,123 +490,4 @@ export async function executeCompactOnly(options: Omit<ExecuteCompactRenderOptio
       console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry acct=${auditAccountTag(entryId)}`);
     }
   }
-}
-
-/** Execute compact and render while holding one account lease for both upstream calls. */
-export async function executeCompactRender(options: ExecuteCompactRenderOptions): Promise<CompactRenderLease> {
-  const { accountPool, cookieJar, proxyPool, compactRequest, renderTemplate, compactPrompt, signal, requestId } = options;
-  const tag = "ClaudeCompactBridge";
-  const triedEntryIds: string[] = [];
-  const released = new Set<string>();
-  let modelRetried = false;
-  let acquired = acquireAccount(accountPool, compactRequest.model, undefined, tag);
-  if (!acquired) throw new CompactServiceError("No available accounts. All accounts are expired or rate-limited.", 503);
-
-  let entryId = acquired.entryId;
-  let api = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
-  triedEntryIds.push(entryId);
-
-  for (;;) {
-    try {
-      await staggerIfNeeded(acquired.prevSlotMs, {}, signal);
-      const compactStarted = Date.now();
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_start acct=${auditAccountTag(entryId)} items=${compactRequest.input.length}`);
-      const compactResult = await withRetry(
-        () => api.createCompactResponse(compactRequest, signal),
-        { tag, signal },
-      );
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_end acct=${auditAccountTag(entryId)} items=${compactResult.output.length} latency_ms=${Date.now() - compactStarted}`);
-
-      const renderStarted = Date.now();
-      const requestWithOutput = buildClaudeCodeRenderRequest(
-        renderTemplate,
-        compactResult.output,
-        compactPrompt,
-        renderTemplate.useWebSocket === true,
-      );
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=render_start acct=${auditAccountTag(entryId)} items=${requestWithOutput.input.length}`);
-      const response = await withRetry(
-        () => api.createResponse(requestWithOutput, signal),
-        { tag, signal },
-      );
-      const preflight = await preflightContentfulStream(
-        rejectPreContentError(iterateCodexEvents(api, response)),
-        { includeReasoning: renderRequestWantsThinking(requestWithOutput) },
-      );
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=render_preflight acct=${auditAccountTag(entryId)} latency_ms=${Date.now() - renderStarted}`);
-      return { response: preflight.stream, api, entryId, released };
-    } catch (error) {
-      if (signal.aborted) {
-        releaseAccount(accountPool, entryId, undefined, released);
-        throw error;
-      }
-      if (!(error instanceof CodexApiError)) {
-        releaseAccount(accountPool, entryId, undefined, released);
-        throw error;
-      }
-      const decision = handleCodexApiError(error, accountPool, entryId, compactRequest.model, tag, modelRetried, cookieJar, true);
-      if (decision.action === "respond") {
-        releaseAccount(accountPool, entryId, undefined, released);
-        throw new CompactServiceError(decision.message, decision.status);
-      }
-      // A bridge retry always restarts the compact+render group on another
-      // account. Release the current slot before acquiring the replacement,
-      // regardless of the ordinary handler's releaseBeforeRetry hint.
-      releaseAccount(accountPool, entryId, undefined, released);
-      if (decision.markModelRetried) modelRetried = true;
-      acquired = acquireAccount(accountPool, compactRequest.model, triedEntryIds, tag);
-      if (!acquired) {
-        releaseAccount(accountPool, entryId, undefined, released);
-        throw new CompactServiceError(decision.message, decision.status, decision.useFormat429 === true);
-      }
-      entryId = acquired.entryId;
-      triedEntryIds.push(entryId);
-      api = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry acct=${auditAccountTag(entryId)}`);
-    }
-  }
-}
-
-export async function respondWithCompactRender(options: {
-  c: Context;
-  accountPool: AccountPool;
-  lease: CompactRenderLease;
-  fmt: FormatAdapter;
-  model: string;
-  requestId: string;
-  abortController: AbortController;
-}): Promise<Response> {
-  const { c, accountPool, lease, fmt, model, requestId, abortController } = options;
-  c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
-  c.header("Connection", "keep-alive");
-  let usage: UsageInfo | undefined;
-  return stream(c, async (writer) => {
-    writer.onAbort(() => {
-      abortController.abort();
-      console.warn(`[ClaudeCompactBridge] rid=${requestId.slice(0, 8)} phase=client_abort acct=${auditAccountTag(lease.entryId)}`);
-    });
-    try {
-      await streamResponse({
-        writer,
-        api: lease.api,
-        response: lease.response,
-        model,
-        adapter: fmt,
-        onUsage: (value) => { usage = value; },
-        diagnostics: {
-          requestId: requestId.slice(0, 8),
-          tag: fmt.tag,
-          provider: "codex",
-          path: "/codex/responses",
-          accountEntryId: lease.entryId,
-          abortSignal: abortController.signal,
-        },
-        rethrowEmptyResponseBeforeWrite: true,
-      });
-    } finally {
-      abortController.abort();
-      releaseAccount(accountPool, lease.entryId, usage, lease.released);
-    }
-  });
 }

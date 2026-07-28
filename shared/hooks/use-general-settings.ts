@@ -9,7 +9,6 @@ export interface GeneralSettingsData {
   force_http11: boolean;
   inject_desktop_context: boolean;
   suppress_desktop_directives: boolean;
-  claude_code_compact_bridge: boolean;
   claude_code_opaque_compact_experimental: boolean;
   allow_client_system_prompt_strategy: boolean;
   system_prompt_strategy: SystemPromptStrategy;
@@ -81,7 +80,6 @@ export function useGeneralSettings(apiKey: string | null) {
         force_http11: result.force_http11,
         inject_desktop_context: result.inject_desktop_context,
         suppress_desktop_directives: result.suppress_desktop_directives,
-        claude_code_compact_bridge: result.claude_code_compact_bridge,
         claude_code_opaque_compact_experimental: result.claude_code_opaque_compact_experimental,
         allow_client_system_prompt_strategy: result.allow_client_system_prompt_strategy,
         system_prompt_strategy: result.system_prompt_strategy,

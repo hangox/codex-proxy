@@ -5,6 +5,7 @@ import {
   OpaqueCompactStateStore,
   extractOpaqueCompactStateMarker,
   hasOpaqueCompactStateReference,
+  isOpaqueCompactMarkerBindingMismatch,
   isSelfHealableOpaqueCompactStateFailure,
   isUnparseableOpaqueCompactMarker,
   mergeOpaquePreservedTails,
@@ -399,10 +400,11 @@ describe("opaque compact state store", () => {
   });
 });
 
-describe("opaque compact failure reason classification (8.1/8.3 collapse point)", () => {
-  // messages.ts 的 8.1/8.3 编排完全依赖这两个导出函数，不再散落
+describe("opaque compact failure reason classification (8.1/8.3 collapse point, 三族裁决)", () => {
+  // messages.ts 的 8.1/8.3 编排完全依赖这三个导出函数，不再散落
   // reason === "..." 比较——这里直接锁死它们的分类结果，防止未来新增 reason
-  // 时漏分类（8.1 红线：store 级致命故障必须恒为 false）。
+  // 时漏分类（8.1 红线：store 级致命故障必须恒为 false；三族裁决红线：
+  // account_mismatch 不进族 B，继续 fail-closed）。
   const ALL_REASONS: OpaqueCompactStateFailure[] = [
     "invalid_marker",
     "tampered",
@@ -441,11 +443,23 @@ describe("opaque compact failure reason classification (8.1/8.3 collapse point)"
     }
   });
 
-  it("良性自愈族与压根不是 marker 族互斥：任何 reason 不会同时命中两者", () => {
+  it("isOpaqueCompactMarkerBindingMismatch: 只有 session/model/variant_mismatch 为真（account_mismatch 是账号隔离边界，不算）", () => {
+    const expectedTrue = new Set(["session_mismatch", "model_mismatch", "variant_mismatch"]);
     for (const reason of ALL_REASONS) {
-      const selfHealable = isSelfHealableOpaqueCompactStateFailure(reason);
-      const unparseable = isUnparseableOpaqueCompactMarker(reason);
-      expect(selfHealable && unparseable).toBe(false);
+      expect(isOpaqueCompactMarkerBindingMismatch(reason)).toBe(expectedTrue.has(reason));
+    }
+    // 团队三族裁决的红线：account_mismatch 显式不在族 B 里。
+    expect(isOpaqueCompactMarkerBindingMismatch("account_mismatch")).toBe(false);
+  });
+
+  it("三族两两互斥：任何 reason 不会同时命中一个以上", () => {
+    for (const reason of ALL_REASONS) {
+      const hits = [
+        isSelfHealableOpaqueCompactStateFailure(reason),
+        isUnparseableOpaqueCompactMarker(reason),
+        isOpaqueCompactMarkerBindingMismatch(reason),
+      ].filter(Boolean).length;
+      expect(hits).toBeLessThanOrEqual(1);
     }
   });
 });

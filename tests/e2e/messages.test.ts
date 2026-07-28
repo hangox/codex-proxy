@@ -666,8 +666,10 @@ describe("E2E: POST /v1/messages", () => {
     expect(truncated).toContain("codex-opaque-state:v1:");
 
     const urls: string[] = [];
-    setTransportPost(async (url) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("truncated_passthrough", "truncated passthrough"));
     });
 
@@ -679,6 +681,12 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("truncated passthrough");
     expect(urls).toHaveLength(1);
+    // 已知的尽力而为局限（如实记录，不是要修复的 bug）：占位替换要求先能
+    // 用 markerToken() 定位到目标 token，而截断的段本身就不再匹配任何
+    // token 正则，所以这里替换会是 no-op、原始文本仍会透传。能被替换的是
+    // "token 完整、只是绑定/开关层面被忽略"的那些 marker（见另外两条用例：
+    // 关开关、绑定不匹配）。
+    expect(JSON.stringify(bodies[0])).toContain("codex-opaque-state:v1");
     expect(urls[0]).not.toContain("/compact");
   });
 
@@ -754,7 +762,43 @@ describe("E2E: POST /v1/messages", () => {
     expect(await replay.text()).toContain("expired");
   });
 
-  it("opaque compact bridge: rejects a marker replayed with another model", async () => {
+  it("opaque compact bridge: ignores a marker replayed under another session and replaces it with an explicit placeholder (family-B binding-mismatch ruling)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-owner-a" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    const urls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      return makeTransportResponse(buildTextStreamChunks("resp_session_mismatch_passthrough", "session mismatch passthrough"));
+    });
+
+    // 同一枚验签有效的 marker，被带到了另一个 session（客户端跨会话复用
+    // 历史，或 session id 轮换）——`resolve()` 从未把 session-owner-a 的
+    // output 泄露给 session-owner-b，安全边界已经守住，忽略即可。
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
+    }), { "x-claude-code-session-id": "session-owner-b" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("session mismatch passthrough");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+    expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
+    expect(JSON.stringify(bodies[0])).toContain("could not be restored");
+  });
+
+  it("opaque compact bridge: ignores a marker replayed with another model and replaces it with an explicit placeholder (team's family-B binding-mismatch ruling)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
           ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
@@ -766,14 +810,31 @@ describe("E2E: POST /v1/messages", () => {
         }), { "x-claude-code-session-id": "session-model-owner" });
         const marker = extractMarkerFromResponse(await compactRes.text());
 
+        const urls: string[] = [];
+        const bodies: Array<Record<string, unknown>> = [];
+        setTransportPost(async (url, _headers, body) => {
+          urls.push(url);
+          bodies.push(JSON.parse(body) as Record<string, unknown>);
+          return makeTransportResponse(buildTextStreamChunks("resp_model_mismatch_passthrough", "model mismatch passthrough"));
+        });
+
         const replay = await messagesRequest(defaultBody({
           model: "gpt-5.3-codex",
           stream: true,
           messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
         }), { "x-claude-code-session-id": "session-model-owner" });
-        expect(replay.status).toBe(409);
-        expect(await replay.text()).toContain("model_mismatch");
-        expect(getMockTransport().post).toHaveBeenCalledTimes(1);
+
+        // 三族裁决：marker 验签通过（确实是我们签发的），只是绑定的 model
+        // 跟当前请求对不上——resolve() 从未把数据泄露给错的上下文，安全
+        // 边界已经守住，再 409 对安全性没有增量，只会把会话推向死路。
+        // 忽略 marker、按普通请求继续，且必须用占位替换掉原始签名文本
+        // （不能原样透传，那是把"静默上下文丢失"从回滚期间搬进日常路径）。
+        expect(replay.status).toBe(200);
+        expect(await replay.text()).toContain("model mismatch passthrough");
+        expect(urls).toHaveLength(1);
+        expect(urls[0]).not.toContain("/compact");
+        expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
+        expect(JSON.stringify(bodies[0])).toContain("could not be restored");
       });
 
       it("opaque compact bridge: ignores a marker and continues normally after the experimental switch is disabled", async () => {
@@ -809,10 +870,11 @@ describe("E2E: POST /v1/messages", () => {
         expect(await replay.text()).toContain("disabled passthrough");
         expect(urls).toHaveLength(1);
         expect(urls[0]).not.toContain("/compact");
-        // 开关关闭后不再尝试状态恢复：marker 原样作为普通文本转发给上游。
-        // 这是关开关的已知代价（交接文档 1.2 环 8：静默上下文丢失），
-        // 本用例只验证"会话没有被 409 焊死"，不是要验证上下文被保留。
-        expect(JSON.stringify(bodies[0])).toContain("codex-opaque-state:v1");
+        // 开关关闭后不再尝试状态恢复，但也不能把原始签名文本原样转发给
+        // 上游——那正是回滚事故里"静默上下文丢失"那一环（交接文档 1.2 环
+        // 8）。必须用明示占位替换掉它，让降级本身可观测。
+        expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
+        expect(JSON.stringify(bodies[0])).toContain("could not be restored");
       });
 
       it("opaque compact bridge: ordinary marker-like text is not treated as state", async () => {

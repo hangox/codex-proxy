@@ -32,13 +32,7 @@ import {
   isPromptTooLongLike,
   normalizePromptTooLongMessage,
 } from "../proxy/prompt-too-long-error.js";
-import {
-  buildClaudeCodeCompactRequest,
-  buildClaudeCodeRenderRequest,
-  executeCompactRender,
-  extractClaudeCodeCompactPrompt,
-  respondWithCompactRender,
-} from "./shared/codex-compact-service.js";
+import { extractClaudeCodeCompactPrompt } from "./shared/codex-compact-service.js";
 import {
   respondWithOpaqueCompactMarker,
   restoreOpaqueCompactRequest,
@@ -384,7 +378,6 @@ export function createMessagesRoutes(
     if (authError) return authError;
 
     const modelConfig = getConfig().model;
-    const compactBridgeEnabled = modelConfig.claude_code_compact_bridge;
     const opaqueCompactEnabled = modelConfig.claude_code_opaque_compact_experimental;
     const opaqueMarkerCandidate = clientConversationId !== null
       ? opaqueStateReference
@@ -418,7 +411,7 @@ export function createMessagesRoutes(
         ));
       }
     }
-    const compactPrompt = (compactBridgeEnabled || opaqueCompactEnabled) &&
+    const compactPrompt = opaqueCompactEnabled &&
       req.stream === true &&
       clientConversationId !== null
       ? extractClaudeCodeCompactPrompt(req)
@@ -673,47 +666,6 @@ export function createMessagesRoutes(
               "Run /clear and start a new session.",
           ));
         }
-      }
-    }
-
-    if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && compactBridgeEnabled) {
-      const abortController = new AbortController();
-      c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
-      const compactRequest = buildClaudeCodeCompactRequest(req, codexRequest);
-      const renderTemplate = buildClaudeCodeRenderRequest(
-        codexRequest,
-        [],
-        compactPrompt,
-        codexRequest.useWebSocket === true,
-      );
-      try {
-        const lease = await executeCompactRender({
-          accountPool,
-          cookieJar,
-          proxyPool,
-          compactRequest,
-          renderTemplate,
-          compactPrompt,
-          signal: abortController.signal,
-          requestId,
-        });
-        return respondWithCompactRender({
-          c,
-          accountPool,
-          lease,
-          fmt,
-          model: displayModel,
-          requestId,
-          abortController,
-        });
-      } catch (error) {
-        if (abortController.signal.aborted) throw error;
-        console.warn(
-          `[ClaudeCompactBridge] rid=${requestId.slice(0, 8)} phase=fallback` +
-            ` error=${error instanceof Error ? error.name : "UnknownError"}`,
-        );
-        // Fail safely: the original parsed request is untouched, so the normal
-        // Anthropic -> Codex path below can process it exactly as before.
       }
     }
 

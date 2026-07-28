@@ -28,7 +28,27 @@ export function loadConfig(configDir?: string): AppConfig {
   applyEnvOverrides(raw, local);
   _localOverrides = local;
   _config = ConfigSchema.parse(raw);
+  warnIfClaudeCodeCompactBridgeEnabled(_config);
   return _config;
+}
+
+/**
+ * `model.claude_code_compact_bridge`（classic compact bridge）已随 Task #4
+ * 移除：`messages.ts` 不再有任何读取点，这个字段现在是纯粹的死配置——不管
+ * 设成什么值都不产生任何行为，只是暂时保留在 schema 里做一版兼容弃用，
+ * 避免已有配置文件里显式写了这个键的部署直接解析失败。这里在每次真正解析
+ * 出新配置（冷启动 `loadConfig` 与热重载 `reloadConfig`，Admin API 改配置
+ * 最终也会走到 `reloadConfig`）之后检查一次，读到 `true` 就提示一句——运维
+ * 不应该在毫无提示的情况下以为这个开关还在生效。
+ */
+function warnIfClaudeCodeCompactBridgeEnabled(config: AppConfig): void {
+  if (config.model.claude_code_compact_bridge) {
+    console.warn(
+      "[Config] model.claude_code_compact_bridge is deprecated and no longer has any effect " +
+        "(classic compact bridge was removed; opaque compact is the only remaining compact path). " +
+        "This key will be removed in a future release.",
+    );
+  }
 }
 
 export function loadFingerprint(configDir?: string): FingerprintConfig {
@@ -92,6 +112,7 @@ export function reloadConfig(configDir?: string): AppConfig {
   _localOverrides = local;
   const fresh = ConfigSchema.parse(raw);
   _config = fresh;
+  warnIfClaudeCodeCompactBridgeEnabled(_config);
   return _config;
 }
 

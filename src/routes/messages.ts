@@ -61,6 +61,34 @@ function makeError(
   return { type: "error", error: { type, message } };
 }
 
+/**
+ * 8.5：opaque compact 409 的用户可读文案，按 reason 分类给出可执行的下一步——
+ * 禁止继续用"Run /compact again"这种笼统收尾。事故环 6 的教训是：如果建议的
+ * 动作会重放同一个必然复现的失败，提示语就是一个自指陷阱。这里的原则是
+ * "只建议一个真的会有不同结果的动作"：
+ *
+ * - `expired`：8.1 已经让 /compact 真正自愈，这里建议 /compact 是诚实的——
+ *   下一次 /compact 会拿到全新 state，不会重放同一个 409。
+ * - `not_found`（含内存模式的 `missing`）：没有"过期状态"可以刷新，/compact
+ *   在语义上更接近凭空新建；给用户更明确的"这段历史已经不可恢复"信号，
+ *   引导 `/clear` 而不是暗示还有东西能救回来。
+ * - 其余（store 级致命故障 + tampered/account_mismatch/comp_hash_mismatch/
+ *   preserved_tail_conflict/state_too_large/stale_generation）：不承诺重试
+ *   会成功（store 可能仍未恢复，或本来就是需要人工介入的异常），只给一个
+ *   保底、必然可行的退出路径。
+ */
+function describeOpaqueCompactUnavailable(reason: string): string {
+  if (reason === "expired") {
+    return "Opaque compact state has expired and will be automatically refreshed on your next /compact. " +
+      "Run /compact to continue this session.";
+  }
+  if (reason === "not_found" || reason === "missing") {
+    return "The compact state for this session could not be found and cannot be recovered. " +
+      "Run /clear and start a new session.";
+  }
+  return `Opaque compact state is unavailable (${reason}). If this persists, run /clear and start a new session.`;
+}
+
 function checkProxyApiKey(c: Context, accountPool: AccountPool): Response | null {
   const config = getConfig();
   if (!config.server.proxy_api_key) return null;
@@ -315,10 +343,13 @@ export function createMessagesRoutes(
       c.req.header("x-claude-code-session-id"),
     );
     if (hasOpaqueReference && (allowUnauthenticated || clientConversationId === null)) {
+      // 8.5：这条不能建议"再跑一次 /compact"——缺 session id / 走的是无鉴权
+      // 路由是结构性问题，重放同一个请求会重现一模一样的缺口，不会自愈。
       c.status(409);
       return c.json(makeError(
         "invalid_request_error",
-        "Opaque compact state requires the original Claude Code session and Codex account route. Run /compact again.",
+        "Opaque compact state requires the original Claude Code session and Codex account route, and this " +
+          "request is missing that context. It cannot be automatically recovered — start a new conversation.",
       ));
     }
     // 8.3：解析不出严格 marker（malformed）不再 409。`hasOpaqueReference`
@@ -359,10 +390,13 @@ export function createMessagesRoutes(
     if (opaqueMarkerCandidate && opaqueCompactEnabled) {
       const readiness = getOpaqueCompactStateReadiness();
       if (!readiness.ready) {
+        // 8.5：这条不特定于 compact 请求（任何带 marker 的请求都可能撞上），
+        // 且此刻 store 处于 NOT_READY——建议"再跑 /compact"等于建议重放同一个
+        // 会撞同一个 NOT_READY 的动作。给一个不依赖 store 恢复的退出路径。
         c.status(409);
         return c.json(makeError(
           "invalid_request_error",
-          `Opaque compact state is unavailable (${readiness.reason}). Run /compact again.`,
+          `Opaque compact state is unavailable (${readiness.reason}). If this persists, run /clear and start a new session.`,
         ));
       }
     }
@@ -506,10 +540,7 @@ export function createMessagesRoutes(
         opaqueRestore = { restored: false };
       } else {
         c.status(409);
-        return c.json(makeError(
-          "invalid_request_error",
-          `Opaque compact state is unavailable (${reason}). Run /compact again.`,
-        ));
+        return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(reason)));
       }
     }
     if (ignoredMarker) {
@@ -532,10 +563,7 @@ export function createMessagesRoutes(
       const readiness = getOpaqueCompactStateReadiness();
       if (!readiness.ready) {
         c.status(409);
-        return c.json(makeError(
-          "invalid_request_error",
-          `Opaque compact state store is unavailable (${readiness.reason}). Run /compact again after the proxy recovers.`,
-        ));
+        return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(readiness.reason ?? "store_unavailable")));
       }
       try {
         return await respondWithOpaqueCompactMarker({
@@ -567,20 +595,20 @@ export function createMessagesRoutes(
             `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=store_fault reason=${faultReason}`,
           );
           c.status(409);
-          return c.json(makeError(
-            "invalid_request_error",
-            `Opaque compact state store is unavailable (${faultReason}). Run /compact again after the proxy recovers.`,
-          ));
+          return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(faultReason)));
         }
         console.warn(
           `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=fallback` +
             ` error=${error instanceof Error ? error.name : "UnknownError"}`,
         );
         if (opaqueRestore.restored) {
+          // 8.5：不建议"再试一次同一个 compact"——刚才这次已经在原账号上失败了，
+          // 没有理由认为立即重放会不同。给一个必然可行的退出路径。
           c.status(409);
           return c.json(makeError(
             "invalid_request_error",
-            "Opaque compact state could not be compacted on its original account. Try again or start a new session.",
+            "Opaque compact state could not be compacted on its original account. " +
+              "Run /clear and start a new session.",
           ));
         }
       }

@@ -95,6 +95,10 @@ describe("compact toggle copy matches runtime precedence", () => {
 
   it("an unready opaque store fails closed instead of silently using the classic bridge", () => {
     const source = readFileSync(resolve(ROOT, "src", "routes", "messages.ts"), "utf-8");
-    expect(source).toContain("Opaque compact state store is unavailable");
+    // 8.5 把所有 opaque 409 的文案收口进 describeOpaqueCompactUnavailable()，
+    // 不再是四处各写一遍字面量——这里改成断言"未就绪 store 走这个统一收口
+    // 函数并返回 409"，而不是绑死某一句具体措辞（措辞已经因为 8.5 改了）。
+    expect(source).toContain("describeOpaqueCompactUnavailable");
+    expect(source).toMatch(/readiness\.ready\)\s*\{[\s\S]{0,400}?c\.status\(409\)/);
   });
 });

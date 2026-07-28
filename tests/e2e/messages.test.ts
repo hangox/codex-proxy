@@ -599,6 +599,78 @@ describe("E2E: POST /v1/messages", () => {
     expect(getMockTransport().post).not.toHaveBeenCalled();
   });
 
+  it("opaque compact bridge: self-heals an expired marker into a brand-new root compact when the request is /compact (8.1, matrix #1/#7)", async () => {
+    let now = 1_000_000;
+    // T+31min: TTL 是 30 分钟，跨过它验证"过期不再是死胡同"——这是本次事故
+    // 的最小复现用例（交接文档矩阵 #7，此前零覆盖）。
+    opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore({ ttlMs: 30 * 60_000, now: () => now });
+    setClaudeCodeOpaqueCompactExperimental(true);
+    const compactBodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      if (url.endsWith("/codex/responses/compact")) {
+        compactBodies.push(JSON.parse(body) as Record<string, unknown>);
+        return makeErrorTransportResponse(200, JSON.stringify({
+          output: [{ type: "reasoning", encrypted_content: "opaque-post-ttl-root", summary: [] }],
+        }));
+      }
+      return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+    });
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-ttl-self-heal" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+    expect(compactBodies).toHaveLength(1);
+
+    now += 31 * 60_000;
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "user", content: wrapOpaqueMarker(marker) },
+        { role: "user", content: compactPrompt },
+      ],
+    }), { "x-claude-code-session-id": "session-ttl-self-heal" });
+
+    // 8.1：过期 marker + compact 请求必须自愈为全新 root compact，不得 409。
+    expect(replay.status).toBe(200);
+    expect(compactBodies).toHaveLength(2);
+    const replayMarker = extractMarkerFromResponse(await replay.text());
+    expect(replayMarker).toContain("codex-opaque-state:v1");
+    // 全新 root：拿到的是一枚不同的 marker，不是对旧（已过期）状态的复用。
+    expect(replayMarker).not.toBe(marker);
+  });
+
+  it("opaque compact bridge: an expired marker on an ordinary (non-compact) request still 409s with an actionable reason (matrix #2)", async () => {
+    let now = 1_000_000;
+    opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore({ ttlMs: 30 * 60_000, now: () => now });
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-ttl-ordinary-409" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    now += 31 * 60_000;
+
+    // 8.1 的自愈只对"本次确实是 compact 请求"放行；普通对话轮次带着过期
+    // marker 时仍然 409——但 reason 现在是明确的 expired（8.5 拆分），不再
+    // 与 not_found 混在一个 missing 里，文案可执行（提示去 /compact，而
+    // /compact 请求本身现在真的能自愈了）。
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
+    }), { "x-claude-code-session-id": "session-ttl-ordinary-409" });
+
+    expect(replay.status).toBe(409);
+    expect(await replay.text()).toContain("expired");
+  });
+
   it("opaque compact bridge: rejects a marker replayed with another model", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => url.endsWith("/codex/responses/compact")

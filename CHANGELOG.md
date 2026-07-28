@@ -11,6 +11,7 @@
 ### Fixed
 
 - Opaque compact 持久化路径的 `repository.load()` 不再把"行从未存在"与"行曾存在、TTL 到期后被删除"压平成同一个 `missing`：`load()` 现在返回 `{kind:"not_found"}` / `{kind:"expired"}` / `{kind:"found",...}` 三态，`OpaqueCompactStateFailure` 新增 `not_found` reason。这是修复"opaque compact 会话 30 分钟后必然变砖"事故的前置步骤——不先拆开这两种语义，后续按 reason 分类放行就只有一个笼统的 `missing` 可判，等于又把所有失败揉回一刀切。内存模式的 `missing` 保留不变（仅测试路径使用）。新增 4 个用例覆盖过期即删后二次 resolve 变 not_found、行被直接清理、以及两条既有 LRU 淘汰用例改用新 reason（`src/routes/shared/opaque-compact-repository.ts`、`src/routes/shared/opaque-compact-state.ts`、`tests/unit/routes/opaque-compact-persistence.test.ts`）
+- 修复 opaque compact 死会话：过期/不存在的 marker 在再次 `/compact` 时现在会自愈为全新 root compact，而不是 409。事故根因是"新建 compact"分支排在所有 fail-closed 判定之后，导致提示语建议的动作（`Run /compact again`）会自指失败——重新 `/compact` 的请求自己也带着同一枚死 marker，原样撞上同一个 409，运维唯一的出路只剩回滚镜像。新增导出 `isSelfHealableOpaqueCompactStateFailure` 作为"良性可自愈"与"store 级致命故障"两族 reason 分类的唯一收口点，`messages.ts` 不再散落 `reason === "..."` 比较。★ 红线：单实例锁、keyring 缺失、schema 不匹配、quarantine、AEAD 校验失败等 store 级故障不受影响，继续 fail-closed；自愈只对"reason 属于状态不存在/已过期 **且** 本次确实是 `/compact` 请求"放行，普通对话轮次带着过期 marker 仍然 409（文案现在可执行，因为随后的 `/compact` 真的能自愈了）。新增分类函数穷举测试 + 端到端 T+31min 自愈用例（本次事故的最小复现路径，此前零覆盖）+ 普通请求仍 409 的边界用例（`src/routes/shared/opaque-compact-state.ts`、`src/routes/messages.ts`、`tests/unit/routes/opaque-compact-state.test.ts`、`tests/e2e/messages.test.ts`）
 
 ### Added
 

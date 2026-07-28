@@ -5,9 +5,11 @@ import {
   OpaqueCompactStateStore,
   extractOpaqueCompactStateMarker,
   hasOpaqueCompactStateReference,
+  isSelfHealableOpaqueCompactStateFailure,
   mergeOpaquePreservedTails,
   removeOpaquePreservedTailReplay,
   restoreOpaqueCompactInput,
+  type OpaqueCompactStateFailure,
 } from "@src/routes/shared/opaque-compact-state.js";
 
 const OUTPUT = [
@@ -393,5 +395,42 @@ describe("opaque compact state store", () => {
       }],
     } as AnthropicMessagesRequest;
     expect(extractOpaqueCompactStateMarker(ordinary)).toBeNull();
+  });
+});
+
+describe("opaque compact failure reason classification (8.1 collapse point)", () => {
+  // messages.ts 的 8.1 自愈编排完全依赖这个导出函数，不再散落
+  // reason === "..." 比较——这里直接锁死它的分类结果，防止未来新增 reason
+  // 时漏分类（8.1 红线：store 级致命故障必须恒为 false）。
+  const ALL_REASONS: OpaqueCompactStateFailure[] = [
+    "invalid_marker",
+    "tampered",
+    "missing",
+    "not_found",
+    "expired",
+    "session_mismatch",
+    "model_mismatch",
+    "account_mismatch",
+    "variant_mismatch",
+    "comp_hash_mismatch",
+    "preserved_tail_conflict",
+    "state_too_large",
+    "store_unavailable",
+    "store_locked",
+    "schema_unsupported",
+    "key_unavailable",
+    "key_mismatch",
+    "state_corrupt",
+    "stale_generation",
+    "store_reset_detected",
+    "migration_failed",
+    "key_policy_invalid",
+  ];
+
+  it("isSelfHealableOpaqueCompactStateFailure: 只有 not_found/expired/missing 为真", () => {
+    const expectedTrue = new Set(["not_found", "expired", "missing"]);
+    for (const reason of ALL_REASONS) {
+      expect(isSelfHealableOpaqueCompactStateFailure(reason)).toBe(expectedTrue.has(reason));
+    }
   });
 });

@@ -1029,6 +1029,41 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
 }
 
 /**
+ * 判定一个失败是否属于"状态单纯不存在了，但 store 本身完全健康"。
+ *
+ * 这是与 {@link isFatalStoreFailure} 刻意对称、互斥的另一族分类——两者共同
+ * 构成"状态不可用"的分区，收口点就是这两个函数，调用方（路由层）不应该再
+ * 散落 `reason === "..."` 的字符串比较：
+ *
+ * - **致命 / 必须拦**（{@link isFatalStoreFailure}）：单实例锁、keyring 缺失、
+ *   schema 不匹配、记录 AEAD 校验失败等——这些意味着 store 本身不可信，必须
+ *   fail-closed，并把 runtime 原子转成 NOT_READY。
+ * - **良性 / 可自愈**（这里）：`not_found`（行从未存在）与 `expired`（行曾
+ *   存在、TTL 到期后被自然删除）。两者都只说明"这一枚 marker 指向的状态没
+ *   了"，不代表数据被破坏或账号越权——调用方拿到的 marker 本身就是"过期钥
+ *   匙"，理应可以直接换一把新的（即放行到全新 root compact），而不是把用户
+ *   焊死在死会话里。这一族**需要**调用方额外确认"本次确实是 compact 请求"
+ *   才能放行：对着一枚过期 marker 的普通聊天请求，仍然要 409 提示用户去
+ *   /compact（现在这条提示是真的可执行的，见 8.1 的自愈）。
+ *
+ * 其余 reason（`session_mismatch`/`model_mismatch`/`account_mismatch`/
+ * `variant_mismatch`/`comp_hash_mismatch`/`tampered`/`invalid_marker`/
+ * `preserved_tail_conflict`/`state_too_large`/`stale_generation`）既不致命
+ * 也不该静默自愈：它们是"这个 marker 与当前请求对不上"的单请求语义错误，
+ * 放行会掩盖真正的账号/会话错配或并发冲突，因此仍然各自返回 409。
+ */
+export function isSelfHealableOpaqueCompactStateFailure(reason: OpaqueCompactStateFailure): boolean {
+  switch (reason) {
+    case "not_found":
+    case "expired":
+    case "missing":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
  * 统一的动态故障入口。
  *
  * 运行期发现 store 级故障时调用：原子移除 runtimeStore、记录精确 reason，

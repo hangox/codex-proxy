@@ -55,7 +55,7 @@ A green build is not a green release. v2.0.80 built clean, passed CI, and then e
 - [ ] The digest that was verified is the digest that gets deployed (compare `RepoDigests`; tags can be re-pushed, digests cannot)
 - [ ] No build artifact from a failed version is reused as the deploy candidate
 - [ ] A failed deploy is rolled back immediately to the last known-healthy digest, keeping the failed image / key / state for forensics
-- [ ] Both compact switches still default to `false` in the shipped product
+- [ ] The one real compact switch (`claude_code_opaque_compact_experimental`) still defaults to `false` in the shipped product; `claude_code_compact_bridge` is a deprecated dead config key (classic bridge removed, keyed off nothing, warns once if set to `true`) — not a second switch to verify
 
 The first three are enforced by the Dockerfile build-time assertions, the `ci-docker.yml` smoke steps, and `tests/unit/ci/docker-node-runtime.test.ts`. When adding a dependency on a builtin that only exists on newer Node, update `BUILTIN_MIN_NODE` in that test.
 

@@ -20,6 +20,18 @@ export function auditAccountTag(accountEntryId: string): string {
 }
 
 /**
+ * 把 Claude Code session id（clientConversationId）折叠成不可逆短标签。
+ *
+ * 复用同一份进程级盐，但用 `session:` 前缀做域分离——同一个字符串偶然既是
+ * 某个 accountEntryId 又是某个 session id 时，两者的标签仍然不同，不会互相
+ * 冒充或被关联到一起。8.6 的结构化日志白名单只允许这个标签，不允许原始
+ * session id。
+ */
+export function auditSessionTag(clientConversationId: string): string {
+  return createHmac("sha256", AUDIT_SALT).update(`session:${clientConversationId}`).digest("hex").slice(0, 8);
+}
+
+/**
  * 统一的日志账号呈现。
  *
  * opaque compact 的 hard-bound 请求会流经通用 proxy 链路（usage/ws/重试/错误

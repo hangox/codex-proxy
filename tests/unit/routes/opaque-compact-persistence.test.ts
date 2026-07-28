@@ -416,6 +416,39 @@ describe("repository — 存储语义", () => {
     );
   });
 
+  it("8.5 reason 拆分：状态过期但行曾经存在，报 expired；再次 resolve（行已被删）报 not_found", () => {
+    let now = 1_000_000;
+    const { store } = makeStore({ now: () => now });
+    const { marker } = saveCanaryState(store);
+
+    now += 31 * 60_000; // 跨过 makeStore 默认的 30 分钟 TTL
+
+    // 行确实存在过（刚刚 save 成功），只是 TTL 到了——8.5 拆分之前，持久化
+    // 模式下这个分支永远抛 missing（load() 过期即删、返回 null，state.ts
+    // 把 null 一律读成 missing），调用方因此无法区分"从未存在"与"曾经有
+    // 过、已过期"。现在必须是 expired。
+    expectReason(() => resolveCanary(store, marker), "expired");
+    // load() 在上一次 resolve 里已经把过期行删掉了：同一个 marker 第二次
+    // resolve 必须是 not_found（行确实不在了），不能继续报 expired
+    // ——那会造成"反复读到同一条过期记录"的假象。
+    expectReason(() => resolveCanary(store, marker), "not_found");
+  });
+
+  it("8.5 reason 拆分：行被直接删除（如隔离/取证清理）报 not_found，不与 expired 混淆", () => {
+    const { store, repository } = makeStore();
+    const { marker } = saveCanaryState(store);
+    repository.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("DELETE FROM opaque_states").run();
+    db.close();
+
+    // 同一密钥环重开：marker 签名仍然有效，只是它指向的行已经不在了——
+    // 这是"从未过期，纯粹查无此行"的场景，必须是 not_found 而不是 expired。
+    const reopened = makeStore();
+    expectReason(() => resolveCanary(reopened.store, marker), "not_found");
+  });
+
   it("AAD 覆盖 TTL 字段：篡改 expires_at 无法延长寿命", () => {
     const { store, repository } = makeStore();
     const { marker } = saveCanaryState(store);
@@ -540,9 +573,11 @@ describe("repository — 存储语义", () => {
       accountCandidates: [CANARIES.account],
     });
     expect(repository.stats().bytes).toBeLessThanOrEqual(2_400);
+    // 持久化模式下"行被 LRU 淘汰后查无此行"是 not_found（8.5 拆分），
+    // 不再是内存模式专用的 missing。
     expectReason(
       () => resolveCanary(store, first.marker, { variantHash: "v1" }),
-      "missing",
+      "not_found",
     );
 
     // recover() 必须只读：若它顺手 touch 每一行，重启就会抹平 LRU 顺序。
@@ -916,7 +951,9 @@ describe("内容寻址 edge — Task #44 回归", () => {
       accountCandidates: [CANARIES.account],
     });
 
-    expectReason(() => store.resolve({ marker: first.marker, sessionId: "lru-a", model: "gpt-5.4", variantHash: "v", accountCandidates: [CANARIES.account] }), "missing");
+    // 持久化模式下"行被 LRU 淘汰后查无此行"是 not_found（8.5 拆分），
+    // 不再是内存模式专用的 missing。
+    expectReason(() => store.resolve({ marker: first.marker, sessionId: "lru-a", model: "gpt-5.4", variantHash: "v", accountCandidates: [CANARIES.account] }), "not_found");
     expect(store.findSuccessorMarker({ predecessorMarker: null, sessionId: "lru-a", model: "gpt-5.4", compactInputDigest: "lru-a", variantHash: "v", accountCandidates: [CANARIES.account] })).toBeNull();
     const db = new DatabaseSync(resolve(dir, "state.db"));
     expect((db.prepare("SELECT COUNT(*) AS n FROM opaque_successors WHERE successor_lookup NOT IN (SELECT lookup_digest FROM opaque_states) OR predecessor_lookup <> '' AND predecessor_lookup NOT IN (SELECT lookup_digest FROM opaque_states)").get() as { n: number }).n).toBe(0);

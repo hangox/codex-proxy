@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Opaque compact 持久化路径的 `repository.load()` 不再把"行从未存在"与"行曾存在、TTL 到期后被删除"压平成同一个 `missing`：`load()` 现在返回 `{kind:"not_found"}` / `{kind:"expired"}` / `{kind:"found",...}` 三态，`OpaqueCompactStateFailure` 新增 `not_found` reason。这是修复"opaque compact 会话 30 分钟后必然变砖"事故的前置步骤——不先拆开这两种语义，后续按 reason 分类放行就只有一个笼统的 `missing` 可判，等于又把所有失败揉回一刀切。内存模式的 `missing` 保留不变（仅测试路径使用）。新增 4 个用例覆盖过期即删后二次 resolve 变 not_found、行被直接清理、以及两条既有 LRU 淘汰用例改用新 reason（`src/routes/shared/opaque-compact-repository.ts`、`src/routes/shared/opaque-compact-state.ts`、`tests/unit/routes/opaque-compact-persistence.test.ts`）
+
 ### Added
 
 - Claude Code 实验性 stateful opaque compact bridge 完成 SQLite 加密持久化与内容寻址回放加固：opaque output（含 reasoning / encrypted content）以账号派生 AEAD 密钥落盘，marker 跨进程重启可恢复；单实例锁、外置 keyring 轮换、sentinel、防重置、v2/v3→v4 原子迁移与持久 quarantine 均 fail-closed。内容寻址 edge 精确绑定 session / model / predecessor / digest / account / authorization variant，同 edge 并发只提交一个 winner，跨账号与跨 window 不会串用 output；显式删除、TTL recover 与 LRU/capacity 淘汰在同一事务清理 state 及 incoming/outgoing edge。compact digest 复用真实上游 `service_tier` 归一化（`fast` 等价 `priority`），日志与磁盘隐私扫描不暴露 raw marker、entryId、token、cookie 或 opaque payload。最终隔离 E2E 26/26 通过且 privacy 0 命中。功能仍仅由 `model.claude_code_opaque_compact_experimental` 显式启用，产品默认、旧配置缺字段与 Dashboard 默认保持 `false`；传统 `claude_code_compact_bridge` 也继续默认关闭（`src/routes/shared/opaque-compact-runtime.ts`、`src/routes/shared/opaque-compact-repository.ts`、`src/routes/shared/opaque-compact-keyring.ts`、`src/routes/shared/opaque-compact-quarantine.ts`、`src/routes/shared/opaque-compact-bridge.ts`、`src/routes/shared/codex-compact-service.ts`、`src/proxy/codex-api.ts`）。

@@ -22,6 +22,9 @@
  */
 
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   setTransportPost,
   resetTransportState,
@@ -41,7 +44,14 @@ import { Hono } from "hono";
 import { requestId } from "@src/middleware/request-id.js";
 import { errorHandler } from "@src/middleware/error-handler.js";
 import { createMessagesRoutes } from "@src/routes/messages.js";
-import { setOpaqueCompactStateStore } from "@src/routes/shared/opaque-compact-state.js";
+import {
+  setOpaqueCompactStateStore,
+  getOpaqueCompactStateReadiness,
+  isSelfHealableOpaqueCompactStateFailure,
+  isUnparseableOpaqueCompactMarker,
+  isOpaqueCompactMarkerBindingMismatch,
+} from "@src/routes/shared/opaque-compact-state.js";
+import { startOpaqueCompactRuntime } from "@src/routes/shared/opaque-compact-runtime.js";
 import { AccountPool } from "@src/auth/account-pool.js";
 import { CookieJar } from "@src/proxy/cookie-jar.js";
 import { ProxyPool } from "@src/proxy/proxy-pool.js";
@@ -238,5 +248,132 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
     stranger.cookieJar.destroy();
     stranger.proxyPool.destroy();
     stranger.accountPool.destroy();
+  });
+
+  it("route-layer guard: a fatal store failure (store_locked) 409s even when the request looks exactly like a legitimate self-heal continuation (readiness check must run before self-heal, and this must stay true across future refactors of messages.ts)", async () => {
+    // qa 覆盖率盘点发现的盲区：C3（store readiness fail-closed）+ D 组（store
+    // 级致命故障）里，没有一条路由层用例把"store 未 ready"和"这是一个
+    // compact 请求"拼在一起断言仍然 409。当前顺序是对的——readiness 检查
+    // （messages.ts 里 `!readiness.ready` 那个分支）确实写在自愈逻辑
+    // （`isSelfHealableOpaqueCompactStateFailure` 那段编排）之前，但这个
+    // 正确性此前只由源码的书写顺序保证，没有任何测试锁死它。未来谁重构
+    // messages.ts（这一整轮我们自己就动了它七八次）把顺序挪反，不会有任何
+    // 测试变红——后果是 store 故障时，一个"看起来合法"的请求会被自愈逻辑
+    // 误判成"良性可自愈"而放行，安全边界在没人注意的情况下被打开。
+    //
+    // 用真实的 D 组致命故障（store_locked）构造，不是直接调用内部 setter
+    // 抄近路：第二个 startOpaqueCompactRuntime 实例去抢同一把文件锁失败，
+    // 是这个 reason 在生产里真实产生的唯一路径（跟
+    // opaque-compact-persistence.test.ts 里"第二实例被拒绝并给出
+    // store_locked"那条用例同一套真实机制），失败路径内部调用的
+    // setOpaqueCompactStateUnavailable 把全局 readiness 单例覆盖成
+    // not-ready——从这一刻起路由层看到的就是一个真实致命故障的 store。
+    //
+    // ★ 红/绿验证补充发现（写下来，比只留一条断言更有价值）：这条边界
+    // 实际上是三层独立防御，不是单点：① messages.ts 里这条显式 readiness
+    // 早退检查；② `getOpaqueCompactStateStore()` 自身在 `runtimeStore ===
+    // null` 时的兜底 throw（即便 ① 被整段删掉，任何后续访问 store 的代码
+    // 路径依然会在这里炸出同一个 reason）；③ `isSelfHealableOpaqueCompactStateFailure`
+    // 的分类结果本身——但 store 级致命 reason（store_locked 等）设计上根本
+    // 不会走到这个分类函数：它们在 compactPrompt 被计算之前、在任何
+    // per-marker resolve() 发生之前就已经被 ① 拦截，分类函数只处理"store
+    // 健康但某个具体 marker resolve 失败"这一类不同性质的失败。手工验证过
+    // 单独破坏 ①（把早退检查短路掉）不会让这条请求泄漏成 200——② 接住了；
+    // 单独破坏 ③（让 store_locked 被错误分类为可自愈）也不会——因为 ①
+    // 根本不看分类函数，直接按 readiness 早退。这条测试锁的是"最终对外
+    // 可观察行为"这个契约，不依赖某一层具体防御机制的实现细节；真正会让
+    // 这条防线失守的重构，需要同时破坏 ① 和 ②（比如把 early check 删掉、
+    // 同时把 `getOpaqueCompactStateStore()` 的 null 检查也删掉），这是一次
+    // 明显更大、更容易被 review 抓到的改动，但"需要更大改动才能破坏"不等于
+    // "不需要测试"——这条护栏依然值得留着，且额外验证了 ②③ 两层各自独立
+    // 生效，不是纸面推测。
+    setClaudeCodeOpaqueCompactExperimental(true);
+
+    const dir = mkdtempSync(resolve(tmpdir(), "opaque-e2e-lockguard-"));
+    const keyDir = mkdtempSync(resolve(tmpdir(), "opaque-e2e-lockguard-keys-"));
+    const lockGuardConfig = {
+      enabled: true,
+      ttlMinutes: 30,
+      capacity: 128,
+      maxBytes: 64 * 1024 * 1024,
+      directory: dir,
+      keyringFile: resolve(keyDir, "keyring.json"),
+      allowKeyringBootstrap: true,
+    };
+
+    const first = startOpaqueCompactRuntime(lockGuardConfig);
+    expect(first.ready).toBe(true);
+
+    const ctx = buildApp("acct-lifecycle-lockguard", "lifecycle-lockguard@test.com");
+    const compactBodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      if (url.endsWith("/codex/responses/compact")) {
+        compactBodies.push(JSON.parse(body) as Record<string, unknown>);
+        return makeErrorTransportResponse(200, JSON.stringify({
+          output: [{ type: "reasoning", encrypted_content: "opaque-lockguard-root", summary: [] }],
+        }));
+      }
+      return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+    });
+
+    // 先拿一个真实、合法签发过的 marker——不是手工拼出来的假 marker。这样
+    // 下面"请求看起来完全符合自愈条件"这句话不是靠猜的，是真的。
+    const compactRes = await request(ctx, defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-lockguard" });
+    expect(compactRes.status).toBe(200);
+    const marker = extractMarkerFromResponse(await compactRes.text());
+    expect(marker).toContain("codex-opaque-state:v1");
+    expect(compactBodies).toHaveLength(1);
+
+    // 第二个"实例"抢同一把锁失败——真实生产路径，不是测试后门。
+    const second = startOpaqueCompactRuntime(lockGuardConfig);
+    expect(second.ready).toBe(false);
+    expect(second.reason).toBe("store_locked");
+    expect(getOpaqueCompactStateReadiness()).toEqual({ ready: false, reason: "store_locked" });
+    // 决定性断言：store_locked 落在"致命族"——不是良性可自愈族，也不是
+    // "marker 不适用于本次请求"的族 B，是三族分类里穷举排除法之后唯一
+    // 剩下的那一族。这条不是重新发明 isFatalStoreFailure，是从它的两个
+    // 姊妹分类函数（都已导出）反向验证 store_locked 确实不属于它们，
+    // 从而确认它落在"既不自愈也不忽略"的致命族里。
+    expect(isSelfHealableOpaqueCompactStateFailure("store_locked")).toBe(false);
+    expect(isUnparseableOpaqueCompactMarker("store_locked")).toBe(false);
+    expect(isOpaqueCompactMarkerBindingMismatch("store_locked")).toBe(false);
+
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+    });
+
+    // 这条请求的形状完全符合"应该被自愈"的表面条件：带 compactPrompt
+    // （一次新的 /compact 请求）、历史里带一个真实合法签发过的 marker。
+    // 唯一的差别是 store 现在处于致命故障。如果 readiness 检查被未来某次
+    // 重构挪到了自愈逻辑之后，这条请求会被自愈放行成 200——且不会有任何
+    // 既有用例发现，因为其余用例覆盖的都是"store 健康、marker 有问题"或
+    // "store 故障、请求里根本没有 marker"，唯独没有"store 故障 + marker
+    // 和请求形状都完全正常"这一个组合。
+    const replay = await request(ctx, defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: marker },
+        { role: "user", content: compactPrompt },
+      ],
+    }), { "x-claude-code-session-id": "session-lockguard" });
+
+    expect(replay.status).toBe(409);
+    expect(await replay.text()).toContain("store_locked");
+    // fail-closed：从未打过一次上游请求去"顺便"完成自愈或新 compact，
+    // 且没有产生第二条 compact 请求——自愈分支根本没有被进入。
+    expect(urls).toHaveLength(0);
+    expect(compactBodies).toHaveLength(1);
+
+    ctx.cookieJar.destroy();
+    ctx.proxyPool.destroy();
+    ctx.accountPool.destroy();
+    first.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(keyDir, { recursive: true, force: true });
   });
 });

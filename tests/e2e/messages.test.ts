@@ -662,6 +662,283 @@ describe("E2E: POST /v1/messages", () => {
     expect(urls[0]).not.toContain("/compact");
   });
 
+  // qa 覆盖率盘点发现的缺口：B5/B6/B8/B9/B10 此前零覆盖。这些不是同一种
+  // 结果——按机制分两类，逐条验证过实际行为，不是照抄同一个断言模板：
+  //
+  //   - B5（代码块包裹）/ B8（token 内部插入换行）：包裹/插入的字符破坏了
+  //     严格正则本身（```围栏字符不在 `<analysis>` 锚定前缀里；换行符不在
+  //     `[A-Za-z0-9_-]{32}` 字符类里），markerCandidate() 拿不到合法候选，
+  //     和已测的 B4（说明文字前缀）走同一条"invalid_marker → 忽略 + 占位
+  //     透传，不 409"的路径——但状态本身丢了，不是真的恢复。
+  //   - B6（marker 独占第二个 text block）/ B9（CRLF）/ B10（首尾多余空白）：
+  //     不破坏严格正则——markerTextFromContent() 逐个 content block 单独
+  //     判断（B6 命中的是"这一个 block 自己是不是干净的 marker"，不受同一
+  //     block 里其它文字干扰）；CRLF 在匹配前统一 normalize 成 LF（B9）；
+  //     首尾空白在匹配前统一 trim（B10）。这三种走的是"真正解析成功、正常
+  //     恢复"的路径，和 B4/B5/B8 那类"解析失败、状态丢失"完全不同——如果
+  //     写成同一种"200 + passthrough"断言，会把"应该恢复却没恢复"的真
+  //     回归悄悄放过。
+  it("opaque compact bridge: a marker wrapped in a code fence is plain text, not 409 (matrix B5)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-code-fence-marker" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    const urls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      return makeTransportResponse(buildTextStreamChunks("code_fence_passthrough", "code fence passthrough"));
+    });
+
+    // ```` 围栏包裹整个 marker——strict 正则要求字符串以 `<analysis>`
+    // 开头，围栏字符打破了这个锚定，拿不到合法候选（松检测仍会命中）。
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: "```\n" + marker + "\n```" },
+        { role: "user", content: "continue" },
+      ],
+    }), { "x-claude-code-session-id": "session-code-fence-marker" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("code fence passthrough");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: a marker occupying its own second text block restores normally, not just avoids 409 (matrix B6)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
+      }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-second-block-marker" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("resp_second_block", "second block restored"));
+    });
+
+    // marker 独占第二个 text block，前面还有一个不相关的文本 block——
+    // markerTextFromContent() 逐个 block 单独判断，这个 block 自己的文本
+    // 是干净完整的 marker，不受前一个 block 里的其它文字干扰，应当正常
+    // 解析并成功恢复，不是退化成 invalid_marker 占位透传。
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{
+        role: "assistant",
+        content: [
+          { type: "text", text: "some unrelated preceding text in the first block" },
+          { type: "text", text: marker },
+        ],
+      }, { role: "user", content: "What was retained?" }],
+    }), { "x-claude-code-session-id": "session-second-block-marker" });
+
+    // 决定性断言：真的恢复了，不只是没有 409。urls 在 replay 前已经清空，
+    // 这里只有一次上游调用且不是 /compact，说明走的是正常续接 resolve()
+    // 成功的路径，不是自愈打了一次新 compact。
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("second block restored");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: a marker with a newline inserted inside a token segment is plain text, not 409 (matrix B8)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-newline-in-token" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    // 在 stateId 段中间插入一个换行——`[A-Za-z0-9_-]{32}` 字符类不含
+    // 换行符，定长量词因此不再匹配，跟截断（B7）同一类破坏，但破坏方式
+    // 不同（插入而不是删除），必须单独覆盖。
+    const structureMatch =
+      /^(<analysis>Opaque compact state retained locally\.<\/analysis>\n<summary>codex-opaque-state:v1:)([A-Za-z0-9_-]{32}):([A-Za-z0-9_-]{43}):([A-Za-z0-9_-]{43})(<\/summary>)$/.exec(marker);
+    expect(structureMatch).not.toBeNull();
+    const [, prefix, stateId, compHash, signature, suffix] = structureMatch!;
+    const brokenStateId = stateId!.slice(0, 16) + "\n" + stateId!.slice(16);
+    const damaged = `${prefix}${brokenStateId}:${compHash}:${signature}${suffix}`;
+    expect(damaged).not.toBe(marker);
+
+    const urls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      return makeTransportResponse(buildTextStreamChunks("newline_passthrough", "newline passthrough"));
+    });
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "assistant", content: damaged }, { role: "user", content: "continue" }],
+    }), { "x-claude-code-session-id": "session-newline-in-token" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("newline passthrough");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: a marker with CRLF line endings restores normally, not just avoids 409 (matrix B9)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
+      }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-crlf-marker" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("resp_crlf", "crlf restored"));
+    });
+
+    // 只有一处 \n（<analysis>...</analysis> 与 <summary> 之间）——传输层
+    // （比如某些 harness/teammate 通道）可能把它重新序列化成 \r\n。匹配前
+    // 统一 normalize 成 \n，应当正常解析并成功恢复。
+    const crlfMarker = marker.replace("\n", "\r\n");
+    expect(crlfMarker).not.toBe(marker);
+    expect(crlfMarker).toContain("\r\n");
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: crlfMarker },
+        { role: "user", content: "What was retained?" },
+      ],
+    }), { "x-claude-code-session-id": "session-crlf-marker" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("crlf restored");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: a marker with leading/trailing whitespace restores normally, not just avoids 409 (matrix B10)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
+      }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-whitespace-marker" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("resp_whitespace", "whitespace restored"));
+    });
+
+    // 首尾各加一段空白/空行——匹配前统一 trim，应当正常解析并成功恢复。
+    const paddedMarker = `  \n${marker}\n  `;
+    expect(paddedMarker).not.toBe(marker);
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: paddedMarker },
+        { role: "user", content: "What was retained?" },
+      ],
+    }), { "x-claude-code-session-id": "session-whitespace-marker" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("whitespace restored");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: two markers across different messages resolve the last one, not the first (matrix B11)", async () => {
+    // 团队要求特别注明：这条测的是"跨 message 的双 marker"，不是同一个
+    // message 内容里重复出现同一个 marker（那种同 message 内重复已经在
+    // 别处覆盖）——这里要构造两个不同 compact 产生的两个不同 marker，
+    // 分别落在两条不同的 message 里，断言恢复的是后一条 message 里的那个。
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "first output" }] }],
+      }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const firstCompactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-dual-marker" });
+    const firstMarker = extractMarkerFromResponse(await firstCompactRes.text());
+
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "second output" }] }],
+      }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const secondCompactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: firstMarker },
+        { role: "user", content: compactPrompt },
+      ],
+    }), { "x-claude-code-session-id": "session-dual-marker" });
+    const secondMarker = extractMarkerFromResponse(await secondCompactRes.text());
+    expect(secondMarker).not.toBe(firstMarker);
+
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("resp_dual_marker", "resolved the later marker"));
+    });
+
+    // 两个 marker 分别落在两条不同的 message 里——extractOpaqueCompactStateMarker
+    // 从后往前扫描 req.messages，应当取到 secondMarker（后一条），不是
+    // firstMarker（前一条，且此时已经因为 second compact 的幂等回收而不再
+    // 是"待交付"状态，用它去 resolve 会撞上完全不同的语义）。
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: firstMarker },
+        { role: "user", content: "intermediate turn" },
+        { role: "assistant", content: secondMarker },
+        { role: "user", content: "What was retained?" },
+      ],
+    }), { "x-claude-code-session-id": "session-dual-marker" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("resolved the later marker");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
   it("opaque compact bridge: self-heals an expired marker into a brand-new root compact when the request is /compact (8.1, matrix #1/#7)", async () => {
     let now = 1_000_000;
     // T+31min: TTL 是 30 分钟，跨过它验证"过期不再是死胡同"——这是本次事故
@@ -716,6 +993,55 @@ describe("E2E: POST /v1/messages", () => {
     expect(secondCompactBody).not.toContain(staleStateId!);
     expect(secondCompactBody).not.toContain(staleCompHash!);
     expect(secondCompactBody).not.toContain(staleSignature!);
+  });
+
+  it("opaque compact bridge: an ordinary request one second before the TTL deadline still restores normally (matrix A2, T+(TTL-1s))", async () => {
+    // qa 覆盖率盘点发现的缺口：现有时间维度用例只覆盖了"过期之后"
+    // （T+31min 自愈、T+31min 仍 409）和"顺延链路本身对不对"（单测里的
+    // sliding TTL 用例），唯独没有"还差一秒到期时，一次普通（非 /compact）
+    // 请求必须仍然正常可用"这条——不早退、不误判、走的是普通 resolve()
+    // 成功路径，不是 8.1 的自愈路径。成本很低，复用相邻用例同款的注入
+    // 时钟写法。
+    let now = 1_000_000;
+    const ttlMs = 30 * 60_000;
+    opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore({ ttlMs, now: () => now });
+    setClaudeCodeOpaqueCompactExperimental(true);
+    const urls: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      if (url.endsWith("/codex/responses/compact")) {
+        return makeErrorTransportResponse(200, JSON.stringify({
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
+        }));
+      }
+      return makeTransportResponse(buildTextStreamChunks("resp_ttl_boundary", "still valid at the boundary"));
+    });
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-ttl-boundary" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+    expect(urls).toHaveLength(1);
+
+    // 差一秒到期——不是"过期后"，是"还没过期的最后一刻"。
+    now += ttlMs - 1_000;
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "user", content: wrapOpaqueMarker(marker) },
+        { role: "user", content: "What was retained?" },
+      ],
+    }), { "x-claude-code-session-id": "session-ttl-boundary" });
+
+    // 决定性断言：200，且走的是"resolve 成功、正常续接"这条路径——不是
+    // 自愈（自愈会打一次新的 /compact 拿到一个不同的 marker），上游只有
+    // 这一次续接调用，不包含 /compact。
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("still valid at the boundary");
+    expect(urls).toHaveLength(2);
+    expect(urls[1]).not.toContain("/compact");
   });
 
   it("opaque compact bridge: an expired marker on an ordinary (non-compact) request still 409s with an actionable reason (matrix #2)", async () => {

@@ -343,13 +343,10 @@ export function createMessagesRoutes(
     const opaqueMarkerCandidate = clientConversationId !== null
       ? opaqueStateReference
       : null;
-    if (opaqueMarkerCandidate && !opaqueCompactEnabled) {
-      c.status(409);
-      return c.json(makeError(
-        "invalid_request_error",
-        "Opaque compact state support is disabled. Run /compact again.",
-      ));
-    }
+    // 8.2：关开关是运维唯一的非回滚止血阀。marker 存在但功能已关闭时，忽略
+    // marker、把请求当普通文本继续（下面 opaqueCompactEnabled=false 会让
+    // restoreOpaqueCompactRequest 整体短路，不会再碰 store），不要 409——
+    // 事故复盘显示这里曾经 409，止血阀因此形同虚设（关了开关会话照样报错）。
     // 已开启但 store 未就绪：把结构化 reason 一并给出，便于区分锁/密钥/schema/损坏。
     if (opaqueMarkerCandidate && opaqueCompactEnabled) {
       const readiness = getOpaqueCompactStateReadiness();

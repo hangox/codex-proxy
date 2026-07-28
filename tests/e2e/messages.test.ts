@@ -693,7 +693,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(getMockTransport().post).toHaveBeenCalledTimes(1);
       });
 
-      it("opaque compact bridge: rejects a marker after the experimental switch is disabled", async () => {
+      it("opaque compact bridge: ignores a marker and continues normally after the experimental switch is disabled", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
           ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
@@ -706,15 +706,30 @@ describe("E2E: POST /v1/messages", () => {
         const marker = extractMarkerFromResponse(await compactRes.text());
         setClaudeCodeOpaqueCompactExperimental(false);
 
+        const urls: string[] = [];
+        const bodies: Array<Record<string, unknown>> = [];
+        setTransportPost(async (url, _headers, body) => {
+          urls.push(url);
+          bodies.push(JSON.parse(body) as Record<string, unknown>);
+          return makeTransportResponse(buildTextStreamChunks("resp_disabled_passthrough", "disabled passthrough"));
+        });
+
         const replay = await messagesRequest(defaultBody({
           stream: true,
           messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
         }), { "x-claude-code-session-id": "session-disabled-state" });
-        expect(replay.status).toBe(409);
-        // 状态已经持久化，"restart 后丢失"不再是关闭开关的后果，
-        // 因此这里的措辞收敛为纯粹的"功能已关闭"。
-        expect(await replay.text()).toContain("support is disabled");
-        expect(getMockTransport().post).toHaveBeenCalledTimes(1);
+
+        // 8.2：关开关是运维唯一的非回滚止血阀。带旧 marker 的会话在开关关闭后
+        // 必须能继续正常对话（200），不能像之前那样把 409 的措辞从"不可用"
+        // 换成"已关闭"——那不是止血，只是换了个说法的同一个死会话。
+        expect(replay.status).toBe(200);
+        expect(await replay.text()).toContain("disabled passthrough");
+        expect(urls).toHaveLength(1);
+        expect(urls[0]).not.toContain("/compact");
+        // 开关关闭后不再尝试状态恢复：marker 原样作为普通文本转发给上游。
+        // 这是关开关的已知代价（交接文档 1.2 环 8：静默上下文丢失），
+        // 本用例只验证"会话没有被 409 焊死"，不是要验证上下文被保留。
+        expect(JSON.stringify(bodies[0])).toContain("codex-opaque-state:v1");
       });
 
       it("opaque compact bridge: ordinary marker-like text is not treated as state", async () => {

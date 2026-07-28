@@ -43,6 +43,22 @@ Codex-proxy ships three artifacts: backend (Docker), Electron desktop, web front
 - [ ] No `any`, `as any`, `: any`, or `<any>` in new code (use `unknown`, generics, or specific types)
 - [ ] No `@ts-ignore` / `@ts-expect-error` without an inline explanation comment
 
+## Production Docker release gate
+
+A green build is not a green release. v2.0.80 built clean, passed CI, and then exited 1 on every start because `node:sqlite` does not exist on Node 20 — `restart: unless-stopped` turned that into a production crash loop. Before any image is deployed:
+
+- [ ] Image `node -v` meets the Dockerfile's declared minimum, and `node:sqlite` can `new DatabaseSync(":memory:")` inside the image
+- [ ] `/app/native/codex-tls.linux-*.node` can be `require`d inside the image (a failed addon load is also fatal at startup)
+- [ ] Container actually reaches `healthy`, `/health` returns 200, `RestartCount == 0`
+- [ ] One ordinary request (`/v1/chat/completions`) returns 200 with the expected content
+- [ ] Opaque compact end-to-end: root compact → resume with the same marker → **container restart → resume with the same marker again** (without the restart step, persistence is unverified)
+- [ ] The digest that was verified is the digest that gets deployed (compare `RepoDigests`; tags can be re-pushed, digests cannot)
+- [ ] No build artifact from a failed version is reused as the deploy candidate
+- [ ] A failed deploy is rolled back immediately to the last known-healthy digest, keeping the failed image / key / state for forensics
+- [ ] Both compact switches still default to `false` in the shipped product
+
+The first three are enforced by the Dockerfile build-time assertions, the `ci-docker.yml` smoke steps, and `tests/unit/ci/docker-node-runtime.test.ts`. When adding a dependency on a builtin that only exists on newer Node, update `BUILTIN_MIN_NODE` in that test.
+
 ## Real-upstream changes
 
 - [ ] If the change touches the upstream protocol (translation/, proxy/, auth/), `npm run test:real` was attempted at least once

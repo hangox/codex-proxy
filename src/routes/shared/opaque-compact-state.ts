@@ -1154,6 +1154,8 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
  *     我们签发的），只是绑定的会话/模型跟当前请求对不上。`resolve()` 从未
  *     把数据返回给错的上下文，安全边界已经守住；再额外 409 对安全性没有
  *     任何增量，只是把会话推向死路。
+ *   - `variant_mismatch`——同样验签通过，只是 variant 指纹跟当前请求算
+ *     不一致。★ 这条是止血，不是最终修复，见下方专门说明。
  *   ★ 放行到"当普通请求继续"之后，必须用 {@link replaceIgnoredOpaqueCompactMarker}
  *   把这枚被忽略的 marker 换成明示占位，不能让签名文本原样透传给上游——
  *   否则就是把回滚事故里"静默上下文丢失"那一环从"仅回滚期间"搬进日常路径。
@@ -1163,23 +1165,37 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
  * 访问边界，不是"上下文对不上"，因此仍然落在"既不致命也不该静默放行"的
  * 剩余集合里，继续 fail-closed。
  *
- * ★ `variant_mismatch` **刻意也不在族 B 里**（团队复核裁决，见下方
- * {@link isOpaqueCompactMarkerBindingMismatch} 的专门说明）——族 B 现有两条
- * 成员的"忽略 marker、丢弃 state"这个 remedy 建立在"这个 state 确实与本次
- * 请求无关"之上；但 variant_mismatch 命中时 state 本身完好、内容仍可解密
- * 恢复，只是 variant 指纹算不一致，很可能是翻译层 instructions/tools
- * 序列化不稳定的自身 bug，而不是"这枚钥匙真的配错了门"。在查清真实触发
- * 原因、确认正确 remedy（修翻译层 vs 引入新的 remedy 类别）之前，贸然把它
- * 归进"丢弃并静默继续"的族 B，等于把一份本可完整恢复的历史当垃圾扔掉，
- * 且用户全程看不到任何报错——比继续 409 更危险。
+ * ★ `variant_mismatch` 归族 B 是止血措施，不是最终方案 ★
  *
- * 其余 reason（`account_mismatch`/`variant_mismatch`/`comp_hash_mismatch`/
- * `tampered`/`preserved_tail_conflict`/`state_too_large`/`stale_generation`）
- * 三族都不占：`tampered` 是结构合法但签名验证失败的真实伪造/完整性信号；
+ * 这条分类此前被短暂撤回过（commit `fdf28c6`），随后又恢复（本 commit）——
+ * 撤回是团队沟通歧义导致的误判，恢复是基于 qa 的实证数据重新裁定。qa 用
+ * 透明反向代理探针实测真实 Claude Code 流量指纹：compact 之前连续多轮
+ * 请求的 `instructions`/`tools` 逐字节完全相同，但 **compact 成功后的下一
+ * 次请求，`instructions` 必然变化**（长度与哈希均变，`tools` 不变）——也
+ * 就是说任何用户 compact 成功后的第一句话都会必然撞上 `variant_mismatch`，
+ * 它是 100% 命中的主路径问题，不是边角场景。继续 409 等同于原始事故重现
+ * （每次 compact 后的第一句话都死锁）；qa 同一次运行也实测过对照：族 B 在
+ * 真实场景下确实避免了死锁，客户端完全无感。
+ *
+ * reviewer 的批评依然成立：族 B 现有 remedy（丢弃 marker、按普通请求继续）
+ * 建立在"state 与本次请求无关"之上，但 variant_mismatch 命中时 state 本身
+ * 完好、内容仍可解密恢复，只是 variant 指纹算不一致，很可能是翻译层
+ * instructions/tools 序列化没能保证 `variant-hash.ts` 自己写明的确定性
+ * 前提——丢弃它是在浪费一份本可完整恢复的历史。但这个批评指向"需要更好的
+ * remedy"，不是"应该 409"：409 死锁是三个选项里最差的（会话直接不可用），
+ * 族 B 丢弃是当前止血（次优，会话可用但那次 compact 的历史白丢），修复
+ * variant 计算本身（候选：variant hash 去掉 `instructions`，只保留全程
+ * 稳定的 `tools`）才是最优解——但这个改动有 tradeoff 需要产品拍板
+ * （`instructions` 在非 compact 的普通轮次下其实是有效的隔离维度，去掉它
+ * 等于牺牲一个真实有效的隔离层）。在拍板之前，`opaqueCompactVariantHash`
+ * 的实现维持原样，不要改。
+ *
+ * 其余 reason（`account_mismatch`/`comp_hash_mismatch`/`tampered`/
+ * `preserved_tail_conflict`/`state_too_large`/`stale_generation`）三族都不
+ * 占：`tampered` 是结构合法但签名验证失败的真实伪造/完整性信号；
  * `comp_hash_mismatch`/`account_mismatch` 是数据完整性或账号隔离边界；
- * `preserved_tail_conflict`/`stale_generation` 是并发/协议冲突；
- * `variant_mismatch` 见上方专门说明。放行会掩盖真正的伪造尝试、数据损坏、
- * 并发冲突或未查明的自身 bug，因此仍然各自返回 409。
+ * `preserved_tail_conflict`/`stale_generation` 是并发/协议冲突。放行会掩盖
+ * 真正的伪造尝试、数据损坏或并发冲突，因此仍然各自返回 409。
  */
 export function isSelfHealableOpaqueCompactStateFailure(reason: OpaqueCompactStateFailure): boolean {
   switch (reason) {
@@ -1205,43 +1221,22 @@ export function isUnparseableOpaqueCompactMarker(reason: OpaqueCompactStateFailu
 
 /**
  * 判定一个失败是否属于"marker 验签通过（确实是我们签发的），但绑定的
- * 会话/模型与本次请求对不上"——族 B 的第二条来路，完整分区说明见
- * {@link isSelfHealableOpaqueCompactStateFailure}。
+ * 会话/模型/variant 与本次请求对不上"——族 B 的第二条来路，完整分区说明
+ * 见 {@link isSelfHealableOpaqueCompactStateFailure}。
  *
  * 与 `account_mismatch` 刻意区分：后者是跨账号访问边界（见上方分区说明），
  * 不在这个函数的判定范围内，继续 fail-closed。
  *
- * ★★ `variant_mismatch` 刻意排除在外，团队复核裁决，不是遗漏 ★★
- *
- * qa 的红基线实证：真实 Claude Code 客户端在状态过期之前先连续撞了 7 次
- * `variant_mismatch`（服务端结构化日志有记录），且大概率发生在**普通对话
- * 轮次的自动重试**上，不是 `/compact` 请求——单纯把它塞进这个函数（族 B 不
- * 要求 compactPrompt 前提）技术上可行，三态分区的收口结构也确实经受住了
- * 这次检验（只需要在这里加一个 case），但语义上是错的：
- *
- * 1. 族 B 现有两个成员（session/model_mismatch）的前提是"state 没错，只是
- *    这次请求的身份对不上，丢弃 marker、当普通请求继续"是安全且合理的
- *    降级。但 variant_mismatch 命中时 state 本身完好、账号权限也没问题，
- *    只是 variant 指纹算出来不一致——真实原因很可能是翻译层没能保证
- *    `variant-hash.ts` 自己写明的前提（"Translation layers must produce a
- *    deterministic order"）没被满足，即我们自己的 bug 让同一次真实对话在
- *    compact 前后算出了不同指纹。把它归进"丢弃并静默继续"，等于把一份
- *    本该完整恢复的历史当垃圾扔掉，且用户全程看不到任何报错——这比继续
- *    409 更危险，是静默降质本身，不是它的边缘案例。
- * 2. 就算归类，也治不了实际症状：族 A 自愈要求 `compactPrompt !== null`，
- *    而红基线里那 7 次大概率发生在普通轮次上；就算把 variant_mismatch
- *    挪进族 A，普通轮次照样落进 409 分支——光改分类改不动症状本身。
- *
- * 正确修法大概率是 (a) 修翻译层让 instructions/tools 在 compact 前后字节
- * 稳定，或 (b) 引入一类新的 remedy（"variant 不一致但仍尝试 restore，不当
- * 作 no-marker 处理"）——而不是"重分类到已有桶"。在 qa 定位出真实触发原因
- * （tools 顺序变了还是 instructions 变了）之前，`variant_mismatch` 继续走
- * 默认 409（见上方三族分区说明的"其余 reason"清单），不要在这里加 case。
+ * `variant_mismatch` 归在这里是止血措施而非最终修复，理由与 tradeoff 见
+ * {@link isSelfHealableOpaqueCompactStateFailure} 的专门说明——修 variant
+ * 计算本身需要产品对 `instructions` 隔离维度的取舍拍板，拍板前这里维持
+ * 现状不再变动。
  */
 export function isOpaqueCompactMarkerBindingMismatch(reason: OpaqueCompactStateFailure): boolean {
   switch (reason) {
     case "session_mismatch":
     case "model_mismatch":
+    case "variant_mismatch":
       return true;
     default:
       return false;

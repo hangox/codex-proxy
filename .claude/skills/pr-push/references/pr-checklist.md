@@ -27,7 +27,7 @@ Walk this list before opening the PR. Anything left unchecked needs a written re
 Codex-proxy ships three artifacts: backend (Docker), Electron desktop, web frontend. The pre-push hook will catch most of these, but verify mentally first:
 
 - [ ] If `src/` changed → backend logic still passes `npm test`
-- [ ] If `web/` changed → `npm run build` produces a clean Vite bundle
+- [ ] If `web/` changed → `npm run build` produces a clean Vite bundle, and `npm run test:web` passes (separate vitest project, `web/**/*.test.tsx` — not covered by root `npm test`, must be run explicitly)
 - [ ] If `Dockerfile` / `docker-compose*` changed → image still builds
 - [ ] If `packages/electron/**` or `electron-builder.yml` changed → Electron config validates
 - [ ] If `native/**` changed → native addon still builds

@@ -6,16 +6,25 @@
  *
  * 1. 整条 state 序列化成一个密文块（按账号派生的数据密钥 + 全字段 AAD）；
  * 2. 索引用**稳定域** HMAC binding，stateId 也只以 keyed lookup 摘要落库；
- * 3. generation CAS 在单事务内完成"写新代 → 记录 successor 映射 → 修剪"；
+ * 3. 授权 + CAS + 写新代 + 记录 edge 映射 + 修剪，全部在单个事务内完成；
  * 4. DB 外部 identity sentinel，使"库被清零/删除"无法伪装成首次初始化。
  *
  * 交付语义（关键）：COMMIT 之后、marker 送达客户端之前进程可能被 SIGKILL。
- * 那一刻客户端手里只有 predecessor marker，若此时就删掉 predecessor，会话就
- * 永久断了。因此 predecessor **不在同事务内删除**，而是：
- *   - 同事务写入 predecessor → successor 的加密映射；
- *   - 客户端拿着 predecessor 重试 compact 时，直接幂等返回同一个 successor marker，
- *     不再打上游；
- *   - 只有当客户端真正使用 successor marker（证明它收到了）时，才回收 predecessor。
+ * 那一刻客户端手里还是旧输入，若不留幂等凭据，重试就会重打上游并产生第二条
+ * 分叉。因此每次 COMMIT 都同事务写入一条**内容寻址的 edge**：
+ *
+ *   edge = (session/model, predecessor-或-root, compact 请求语义 digest, account binding, authorization binding)
+ *
+ *   - 客户端拿同样的输入重试时，edge 命中，直接幂等返回同一个 marker，不打上游；
+ *   - 同一 predecessor 上 digest 不同的分叉各自成边，互不覆盖、各自都能成功；
+ *   - 并发时先拿到写锁的一方成为 winner，loser 在同一事务内读到 winner 的 edge
+ *     并原样回放它的 marker，零写入——因此"相同 edge 只会有一次 COMMIT"；
+ *   - root（首次 compact）同样建边，它的 post-commit 崩溃窗口与后续完全一样。
+ *
+ * predecessor state **永远不在这里显式删除**。内容寻址之后一个 predecessor 可
+ * 合法长出多条分叉，按 predecessor 回收会打掉兄弟分叉。改为：客户端真正用上
+ * 某个 state 时（证明它收到了 marker），回收指向该 state 的所有 incoming edge；
+ * 失去 edge 保护的旧 state 随后按正常 LRU/TTL 自然淘汰。
  */
 
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -35,7 +44,15 @@ import {
 } from "./opaque-compact-keyring.js";
 
 /** 记录 schema 版本。任何不兼容的列变更都必须 +1。 */
-export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 3;
+export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 4;
+
+/**
+ * 能就地迁移到当前版本的最低历史 schema。
+ *
+ * v1 不在其列：它早于 successor 映射与账号域密钥派生，没有可无损重建的路径，
+ * 遇到时必须 schema_unsupported 停机，而不是猜列布局。
+ */
+export const OPAQUE_REPOSITORY_MIN_MIGRATABLE_SCHEMA_VERSION = 2;
 
 export type OpaqueCompactRepositoryFailure =
   | "store_unavailable"
@@ -46,6 +63,14 @@ export type OpaqueCompactRepositoryFailure =
   | "binding_mismatch"
   /** sentinel 表明 store 曾初始化，但库不见了/被清零。 */
   | "store_reset_detected"
+  /**
+   * 旧 schema → 当前 schema 的迁移失败。
+   *
+   * 刻意与 state_corrupt 分开：迁移失败时旧库**完整无损**（事务已回滚），
+   * 正确动作是排查后重试升级；把它折叠成 state_corrupt 会诱导运维去做隔离
+   * 或重建，白白丢掉一整份仍然可用的 state。
+   */
+  | "migration_failed"
   | "state_too_large";
 
 export class OpaqueCompactRepositoryError extends Error {
@@ -92,6 +117,7 @@ export interface OpaqueCompactRepositoryOptions {
 }
 
 interface SuccessorRow {
+  edge_lookup: string;
   predecessor_lookup: string;
   successor_lookup: string;
   key_id: string;
@@ -128,8 +154,13 @@ interface RecordRow {
  * 只认证 stateId/generation 是不够的：createdAt/expiresAt 决定过期，byteSize
  * 决定预算，account 决定归属——任何一项能被磁盘篡改而不被发现，都等于给攻击者
  * 一个延长 TTL 或操纵配额的口子。用长度前缀 tuple 编码，杜绝字段分隔歧义。
+ *
+ * `schemaVersion` **必须由调用方显式传入**，不能内联当前常量：升级时同一行
+ * 要先按旧版本 AAD 解封、再按新版本 AAD 重封，内联常量会让解封侧永远拿不到
+ * 正确的 AAD。正常读写路径一律传 OPAQUE_REPOSITORY_SCHEMA_VERSION。
  */
 function buildAad(fields: {
+  schemaVersion: number;
   storeId: string;
   keyId: string;
   lookupDigest: string;
@@ -142,7 +173,7 @@ function buildAad(fields: {
   predecessorLookup: string | null;
 }): Buffer {
   return encodeTuple([
-    `schema:${OPAQUE_REPOSITORY_SCHEMA_VERSION}`,
+    `schema:${fields.schemaVersion}`,
     fields.storeId,
     fields.keyId,
     fields.lookupDigest,
@@ -156,10 +187,23 @@ function buildAad(fields: {
   ]);
 }
 
-/** successor 映射的 AAD。字段集合与 state 行同样必须完整覆盖生命周期。 */
+/**
+ * successor 映射（edge）的 AAD。字段集合与 state 行同样必须完整覆盖生命周期。
+ *
+ * `edgeLookup` 必须进 AAD：它是本行的主键，也是"这条映射属于哪一次内容寻址
+ * compact"的唯一凭据。不认证它，攻击者就能把 A 分叉的密文整行搬到 B 分叉的
+ * 主键下——AEAD 照样通过，客户端却会拿到另一条分叉的 marker。
+ *
+ * `predecessorLookup` 是 string 而非 nullable：root edge 用空串占位，
+ * 保证 root 与非 root 走完全相同的认证路径，不给 null 分支留旁路。
+ *
+ * 与 buildAad 同理，`schemaVersion` 显式传入而不内联常量。
+ */
 function buildSuccessorAad(fields: {
+  schemaVersion: number;
   storeId: string;
   keyId: string;
+  edgeLookup: string;
   predecessorLookup: string;
   successorLookup: string;
   accountBinding: string;
@@ -169,9 +213,10 @@ function buildSuccessorAad(fields: {
   byteSize: number;
 }): Buffer {
   return encodeTuple([
-    `successor:${OPAQUE_REPOSITORY_SCHEMA_VERSION}`,
+    `successor:${fields.schemaVersion}`,
     fields.storeId,
     fields.keyId,
+    fields.edgeLookup,
     fields.predecessorLookup,
     fields.successorLookup,
     fields.accountBinding,
@@ -216,6 +261,8 @@ export class OpaqueCompactRepository {
   private readonly stmtInsertSuccessor: StatementSync;
   private readonly stmtSelectSuccessor: StatementSync;
   private readonly stmtDeleteSuccessor: StatementSync;
+  private readonly stmtDeleteSuccessorByTarget: StatementSync;
+  private readonly stmtDeleteSuccessorByPredecessor: StatementSync;
   private readonly stmtDeleteSuccessorExpired: StatementSync;
   private readonly stmtSuccessorTotals: StatementSync;
   private readonly stmtAllSuccessors: StatementSync;
@@ -298,14 +345,22 @@ export class OpaqueCompactRepository {
     this.stmtAllRows = this.db.prepare("SELECT * FROM opaque_states");
     this.stmtInsertSuccessor = this.db.prepare(
       `INSERT OR REPLACE INTO opaque_successors
-         (predecessor_lookup, successor_lookup, key_id, account_binding, binding,
+         (edge_lookup, predecessor_lookup, successor_lookup, key_id, account_binding, binding,
           created_at, expires_at, byte_size, nonce, tag, ciphertext)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.stmtSelectSuccessor = this.db.prepare(
-      "SELECT * FROM opaque_successors WHERE predecessor_lookup = ?",
+      "SELECT * FROM opaque_successors WHERE edge_lookup = ?",
     );
     this.stmtDeleteSuccessor = this.db.prepare(
+      "DELETE FROM opaque_successors WHERE edge_lookup = ?",
+    );
+    // 按 successor 目标删除 incoming edges：一个 state 被确认送达后，所有指向
+    // 它的 edge 都失去意义（客户端已经不可能再拿旧输入重放到这里）。
+    this.stmtDeleteSuccessorByTarget = this.db.prepare(
+      "DELETE FROM opaque_successors WHERE successor_lookup = ?",
+    );
+    this.stmtDeleteSuccessorByPredecessor = this.db.prepare(
       "DELETE FROM opaque_successors WHERE predecessor_lookup = ?",
     );
     this.stmtDeleteSuccessorExpired = this.db.prepare(
@@ -360,8 +415,13 @@ export class OpaqueCompactRepository {
     const existingVersion = readMeta("schema_version");
     if (existingVersion !== undefined) {
       const version = Number(existingVersion);
-      if (!Number.isInteger(version) || version !== OPAQUE_REPOSITORY_SCHEMA_VERSION) {
+      if (
+        !Number.isInteger(version) ||
+        version > OPAQUE_REPOSITORY_SCHEMA_VERSION ||
+        version < OPAQUE_REPOSITORY_MIN_MIGRATABLE_SCHEMA_VERSION
+      ) {
         // 旧版本二进制遇到新 schema 只会读到无法解析的记录；必须停机而不是猜列布局。
+        // 太旧（v1）同理：没有可无损重建的路径，猜列布局只会造出假数据。
         throw new OpaqueCompactRepositoryError(
           "schema_unsupported",
           `unsupported opaque state schema version ${existingVersion}`,
@@ -370,11 +430,15 @@ export class OpaqueCompactRepository {
       const existingStoreId = readMeta("store_id");
       // sentinel 说 store 曾初始化，库里却没有身份 / 身份不符 → 库被换过或清零。
       // 这正是 integrity_check 检不出来的路径（清零库与全新空库不可区分）。
+      // 身份校验必须在迁移**之前**：绝不能对一份不属于本 store 的库动手改写。
       if (existingStoreId === undefined || existingStoreId !== this.storeId) {
         throw new OpaqueCompactRepositoryError(
           "store_reset_detected",
           "database identity does not match the store sentinel",
         );
+      }
+      if (version !== OPAQUE_REPOSITORY_SCHEMA_VERSION) {
+        this.migrateSchema(version);
       }
       return;
     }
@@ -391,41 +455,7 @@ export class OpaqueCompactRepository {
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.exec(
-        `CREATE TABLE IF NOT EXISTS opaque_states (
-           lookup_digest      TEXT PRIMARY KEY,
-           key_id             TEXT NOT NULL,
-           binding            TEXT NOT NULL,
-           generation         INTEGER NOT NULL,
-           created_at         INTEGER NOT NULL,
-           expires_at         INTEGER NOT NULL,
-           last_used_at       INTEGER NOT NULL,
-           last_used_mac      TEXT NOT NULL,
-           byte_size          INTEGER NOT NULL,
-           account_binding    TEXT NOT NULL,
-           predecessor_lookup TEXT,
-           nonce              BLOB NOT NULL,
-           tag                BLOB NOT NULL,
-           ciphertext         BLOB NOT NULL
-         )`,
-      );
-      this.db.exec(
-        `CREATE TABLE IF NOT EXISTS opaque_successors (
-           predecessor_lookup TEXT PRIMARY KEY,
-           successor_lookup   TEXT NOT NULL,
-           key_id             TEXT NOT NULL,
-           account_binding    TEXT NOT NULL,
-           binding            TEXT NOT NULL,
-           created_at         INTEGER NOT NULL,
-           expires_at         INTEGER NOT NULL,
-           byte_size          INTEGER NOT NULL,
-           nonce              BLOB NOT NULL,
-           tag                BLOB NOT NULL,
-           ciphertext         BLOB NOT NULL
-         )`,
-      );
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_opaque_binding ON opaque_states (binding)");
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_opaque_expires ON opaque_states (expires_at)");
+      this.createCurrentSchemaObjects();
       this.db
         .prepare("INSERT INTO opaque_meta (key, value) VALUES ('schema_version', ?)")
         .run(String(OPAQUE_REPOSITORY_SCHEMA_VERSION));
@@ -443,6 +473,235 @@ export class OpaqueCompactRepository {
     }
   }
 
+  /**
+   * 当前版本的表与索引定义。首次初始化与迁移重建共用同一份 DDL——
+   * 两处各写一遍迟早会漂移，而"迁移后的库与新建库形状不同"是最难查的一类 bug。
+   */
+  private createCurrentSchemaObjects(): void {
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS opaque_states (
+         lookup_digest      TEXT PRIMARY KEY,
+         key_id             TEXT NOT NULL,
+         binding            TEXT NOT NULL,
+         generation         INTEGER NOT NULL,
+         created_at         INTEGER NOT NULL,
+         expires_at         INTEGER NOT NULL,
+         last_used_at       INTEGER NOT NULL,
+         last_used_mac      TEXT NOT NULL,
+         byte_size          INTEGER NOT NULL,
+         account_binding    TEXT NOT NULL,
+         predecessor_lookup TEXT,
+         nonce              BLOB NOT NULL,
+         tag                BLOB NOT NULL,
+         ciphertext         BLOB NOT NULL
+       )`,
+    );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS opaque_successors (
+         edge_lookup        TEXT PRIMARY KEY,
+         predecessor_lookup TEXT NOT NULL,
+         successor_lookup   TEXT NOT NULL,
+         key_id             TEXT NOT NULL,
+         account_binding    TEXT NOT NULL,
+         binding            TEXT NOT NULL,
+         created_at         INTEGER NOT NULL,
+         expires_at         INTEGER NOT NULL,
+         byte_size          INTEGER NOT NULL,
+         nonce              BLOB NOT NULL,
+         tag                BLOB NOT NULL,
+         ciphertext         BLOB NOT NULL
+       )`,
+    );
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_opaque_binding ON opaque_states (binding)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_opaque_expires ON opaque_states (expires_at)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_opaque_successor_target ON opaque_successors (successor_lookup)",
+    );
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_opaque_successor_predecessor ON opaque_successors (predecessor_lookup)",
+    );
+  }
+
+  /**
+   * 旧 schema（v2/v3）→ 当前 schema 的**原子**迁移。
+   *
+   * 设计意图：升级必须保住旧 marker 仍能 resolve 的那部分 state，但绝不能把
+   * 旧的 predecessor→successor 单键映射伪造成新的内容寻址 edge。
+   *
+   * - **state 行**：列形状不变，只是 AAD 里的 `schema:N` 变了。因此逐行按旧版本
+   *   AAD 解封、按新版本 AAD 重封，plaintext 与全部元数据逐字保持；顺带把 v2
+   *   缺失的 last_used_mac 用真实 MAC 回填（`DEFAULT ''` 放行等于给 LRU 留一个
+   *   未认证的洞）。
+   * - **successor 行**：旧表主键是 predecessor_lookup，根本不存在
+   *   compactInputDigest / edge_lookup。想把它"升级"成 v4 edge，只能编一个
+   *   通配或哨兵 digest —— 那会让任意一次不同输入的重试都命中这条边，拿到
+   *   一个语义上根本不属于它的 marker。因此整表丢弃、按新形状重建：最坏结果
+   *   只是升级后第一次 compact 少一层幂等保护，而不是发错 marker。
+   *
+   * 整个过程在**单个 BEGIN IMMEDIATE** 内完成，最后一步才改
+   * `opaque_meta.schema_version`。任何异常都 ROLLBACK，因此崩溃后 SQLite/WAL
+   * 恢复出来的只可能是「完整旧格式」或「完整新格式」，下一次启动要么继续迁移、
+   * 要么正常打开，不存在半迁移状态。
+   */
+  private migrateSchema(fromVersion: number): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      // 拿到写锁之后复核版本：另一个进程可能刚刚迁移完（单实例锁之外还有
+      // 手工运维路径），此时必须认已完成的结果而不是重做一遍。
+      const current = Number(
+        (
+          this.db.prepare("SELECT value FROM opaque_meta WHERE key = 'schema_version'").get() as
+            | { value: string }
+            | undefined
+        )?.value,
+      );
+      if (current === OPAQUE_REPOSITORY_SCHEMA_VERSION) {
+        this.db.exec("COMMIT");
+        return;
+      }
+      if (current !== fromVersion) {
+        throw new Error(`schema version changed to ${String(current)} before migration`);
+      }
+
+      // v2 的真实历史里 last_used_mac 是后加的列，老库可能整列缺失。
+      // 这一点必须按盘上实际形状判定，不能按版本号想当然。
+      const hasLastUsedMac = (
+        this.db.prepare("PRAGMA table_info(opaque_states)").all() as { name: string }[]
+      ).some((column) => column.name === "last_used_mac");
+
+      const rows = this.db
+        .prepare(
+          `SELECT lookup_digest, key_id, binding, generation, created_at, expires_at, last_used_at,
+                  ${hasLastUsedMac ? "last_used_mac" : "'' AS last_used_mac"},
+                  byte_size, account_binding, predecessor_lookup, nonce, tag, ciphertext
+             FROM opaque_states`,
+        )
+        .all() as unknown as RecordRow[];
+
+      // 先全部解封 + 重封再落盘：任何一行认证失败都要让整批回滚，不能"迁一半"。
+      const resealed = rows.map((row) => this.resealRecordForMigration(row, fromVersion, hasLastUsedMac));
+
+      // 旧 edge 表整体丢弃并按新形状重建。DROP 会连带清掉它的旧索引。
+      this.db.exec("DROP TABLE IF EXISTS opaque_successors");
+      this.db.exec("DROP TABLE IF EXISTS opaque_states");
+      this.createCurrentSchemaObjects();
+
+      const insert = this.db.prepare(
+        `INSERT INTO opaque_states
+           (lookup_digest, key_id, binding, generation, created_at, expires_at, last_used_at,
+            last_used_mac, byte_size, account_binding, predecessor_lookup, nonce, tag, ciphertext)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const row of resealed) {
+        insert.run(
+          row.lookup_digest,
+          row.key_id,
+          row.binding,
+          row.generation,
+          row.created_at,
+          row.expires_at,
+          row.last_used_at,
+          row.last_used_mac,
+          row.byte_size,
+          row.account_binding,
+          row.predecessor_lookup,
+          row.nonce,
+          row.tag,
+          row.ciphertext,
+        );
+      }
+
+      // 版本号最后写：它是"迁移已完成"的唯一权威标记。
+      this.db
+        .prepare("UPDATE opaque_meta SET value = ? WHERE key = 'schema_version'")
+        .run(String(OPAQUE_REPOSITORY_SCHEMA_VERSION));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务已结束 */
+      }
+      // 迁移失败必须有自己的结构化原因：旧库此刻**完好无损**，
+      // 报成 state_corrupt 会把"可以重试升级"误导成"数据已损坏"。
+      throw new OpaqueCompactRepositoryError(
+        "migration_failed",
+        `migration from schema ${fromVersion} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * 迁移单行：按旧版本 AAD 解封、按当前版本 AAD 重封。
+   *
+   * 认证一项都不能省。迁移是唯一一次全库重写的机会，若在这里放行未认证的行，
+   * 等于用新密文给旧的篡改盖章——之后所有 recover 都会认为它合法。
+   */
+  private resealRecordForMigration(
+    row: RecordRow,
+    fromVersion: number,
+    hasLastUsedMac: boolean,
+  ): RecordRow {
+    const key = this.keyring.get(row.key_id);
+    if (key === undefined) {
+      throw new Error("record key id is not in the keyring");
+    }
+    const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
+    if (Number(row.byte_size) !== actualByteSize) {
+      throw new Error("record byte size does not match");
+    }
+    const expectedMac = computeMutableMetaMac(
+      this.keyring,
+      row.lookup_digest,
+      "last_used_at",
+      row.last_used_at,
+    );
+    // 列存在就必须验：v2 后期已经带上了这一列，放行不匹配的 MAC 等于
+    // 借迁移把运行期篡改洗白。列不存在（v2 早期）才是回填场景。
+    if (hasLastUsedMac && row.last_used_mac !== expectedMac) {
+      throw new Error("last_used_at is not authenticated");
+    }
+
+    const dataKey = deriveAccountKeyFromBinding(key, row.account_binding);
+    const aadFields = {
+      storeId: this.storeId,
+      keyId: row.key_id,
+      lookupDigest: row.lookup_digest,
+      generation: row.generation,
+      binding: row.binding,
+      accountBinding: row.account_binding,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      byteSize: actualByteSize,
+      predecessorLookup: row.predecessor_lookup,
+    };
+    const plaintext = openRecord(dataKey, buildAad({ schemaVersion: fromVersion, ...aadFields }), {
+      nonce: Buffer.from(row.nonce),
+      tag: Buffer.from(row.tag),
+      ciphertext: Buffer.from(row.ciphertext),
+    });
+    const sealed = sealRecord(
+      dataKey,
+      buildAad({ schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION, ...aadFields }),
+      plaintext,
+    );
+    // AES-GCM 密文长度恒等于明文长度，重封不得改变 byte_size；一旦改变，
+    // 列值就会与已进 AAD 的 byteSize 漂移，下一次读取必然认证失败。
+    const resealedSize = sealed.ciphertext.length + sealed.nonce.length + sealed.tag.length;
+    if (resealedSize !== actualByteSize) {
+      throw new Error("resealed record size drifted");
+    }
+    return {
+      ...row,
+      last_used_mac: expectedMac,
+      nonce: sealed.nonce,
+      tag: sealed.tag,
+      ciphertext: sealed.ciphertext,
+    };
+  }
+
   /** 注入冷启动语义校验器（构造后设置，避免与 state 层循环依赖）。 */
   setPayloadValidator(
     validator: (plaintext: Buffer, meta: OpaqueCompactRecordMeta) => boolean,
@@ -453,6 +712,31 @@ export class OpaqueCompactRepository {
   /** 稳定索引绑定：跨 master key 轮换不变。 */
   bindingFor(sessionId: string, model: string, variantHash: string): string {
     return computeIndexBinding(this.keyring, ["state", sessionId, model, variantHash]);
+  }
+
+  /**
+   * 内容寻址 edge 键。账号域与授权域必须直接进入索引，不能先用一个跨域 edge
+   * 命中行、再靠解密候选事后筛选；否则 root 查询遍历账号时会把 A 的 winner
+   * 当成 B 的回放结果，variant 变化也会永久撞上旧 marker。所有分量都经过稳定
+   * 索引 HMAC，不会把账号、variant 或 digest 明文落盘。
+   */
+  edgeFor(
+    sessionId: string,
+    model: string,
+    predecessorStateId: string | null,
+    compactInputDigest: string,
+    accountBinding: string,
+    binding: string,
+  ): string {
+    return computeIndexBinding(this.keyring, [
+      "edge",
+      sessionId,
+      model,
+      predecessorStateId ?? "root",
+      compactInputDigest,
+      accountBinding,
+      binding,
+    ]);
   }
 
   accountBindingFor(accountEntryId: string): string {
@@ -473,31 +757,54 @@ export class OpaqueCompactRepository {
   }
 
   /**
-   * 在单个事务里：CAS 校验 → 写入新 generation → 记录 successor 映射 → 修剪。
-   * 只有本方法正常返回（COMMIT 成功）后，调用方才可以把 marker 发给客户端。
+   * 在单个事务里：edge 回放检查 → predecessor 认证 → CAS → 写新 generation →
+   * 记录 edge 映射 → 修剪。只有本方法返回 `committed`（COMMIT 成功）之后，
+   * 调用方才可以把新 marker 发给客户端。
+   *
+   * 返回 `replayed` 表示这条 edge 已经有 winner：并发或崩溃重试的 loser 必须
+   * 原样交出 winner 的 marker，绝不能写入自己的候选 state——否则同一次逻辑
+   * compact 会在盘上留下两条分叉，客户端拿到的 marker 也就不再唯一。
    *
    * 注意 predecessor **不在这里删除**——见文件头的交付语义说明。
    */
   saveWithCas(options: {
     stateId: string;
     binding: string;
+    /** edge 的会话维度，与 bindingFor 使用同一组值。 */
+    sessionId: string;
+    model: string;
     accountEntryId: string;
+    /** 回放 winner 时用于解封 edge 的账号候选集合。 */
+    accountCandidates: readonly string[];
     expectedGeneration: number;
     plaintext: Buffer;
     createdAt: number;
     expiresAt: number;
     /** 本次 compact 所基于的 predecessor stateId（首次为 null）。 */
     predecessorStateId: string | null;
-    /** 成功后要幂等回放的 marker 全文，加密后存入 successor 映射。 */
+    /** 成功后要幂等回放的 marker 全文，加密后存入 edge 映射。 */
     successorMarker: string;
-  }): { generation: number; keyId: string; byteSize: number; lookupDigest: string } {
+    /** 本次 compact 请求的语义摘要，edge 的内容寻址分量。 */
+    compactInputDigest: string;
+  }):
+    | { kind: "committed"; generation: number; keyId: string; byteSize: number; lookupDigest: string }
+    | { kind: "replayed"; marker: string; generation: number; lookupDigest: string } {
     const key = this.keyring.active();
-    const generation = options.expectedGeneration + 1;
     const lookupDigest = this.lookupFor(options.stateId);
     const accountBinding = this.accountBindingFor(options.accountEntryId);
+    // root edge 的 predecessor 用空串占位：root 与非 root 因此走同一条认证
+    // 路径，edge 表也不需要 nullable 主键分量。
     const predecessorLookup = options.predecessorStateId === null
-      ? null
+      ? ""
       : this.lookupFor(options.predecessorStateId);
+    const edgeLookup = this.edgeFor(
+      options.sessionId,
+      options.model,
+      options.predecessorStateId,
+      options.compactInputDigest,
+      accountBinding,
+      options.binding,
+    );
 
     const dataKey = deriveAccountKey(this.keyring, key, options.accountEntryId);
     // byteSize 参与 AAD，必须在封装前定稿。
@@ -506,35 +813,74 @@ export class OpaqueCompactRepository {
 
     // 单条超预算必须在 COMMIT 之前拒绝：绝不能既落了行又返回失败，
     // 也不能返回一个指向被立刻淘汰的行的 marker。
-    // predecessor 与 successor 映射都受保护、不可被本次修剪淘汰，
-    // 因此预算判定必须把它们一起算进来。
-    const successorBytes = predecessorLookup === null
-      ? 0
-      : sealedSizeFor(Buffer.byteLength(options.successorMarker, "utf-8"));
+    // root 现在同样写 edge 映射，因此 successorBytes 始终计入预算——
+    // 按 root 不计会让 root 的实际占用超出 maxBytes 一个 marker 的量。
+    const successorBytes = sealedSizeFor(Buffer.byteLength(options.successorMarker, "utf-8"));
     if (byteSize + successorBytes > this.maxBytes) {
       throw new OpaqueCompactRepositoryError("state_too_large");
     }
 
-    const aad = buildAad({
-      storeId: this.storeId,
-      keyId: key.id,
-      lookupDigest,
-      generation,
-      binding: options.binding,
-      accountBinding,
-      createdAt: options.createdAt,
-      expiresAt: options.expiresAt,
-      byteSize,
-      predecessorLookup,
-    });
-    const sealed = sealRecord(dataKey, aad, options.plaintext);
-
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const current = this.currentGeneration(options.binding);
-      if (current !== options.expectedGeneration) {
-        throw new OpaqueCompactRepositoryError("stale_generation");
+      // 1. 回放检查必须在 BEGIN IMMEDIATE 之内：写锁已经拿到，此后不可能有
+      //    另一个 writer 插进来，"查不到 winner" 与 "我来当 winner" 之间
+      //    因此没有窗口。
+      const winner = this.openEdgeMapping(
+        edgeLookup,
+        options.accountEntryId,
+        accountBinding,
+        options.binding,
+      );
+      if (winner !== null) {
+        const targetRow = this.requireSuccessorTarget(winner.row, accountBinding, options.binding);
+        this.db.exec("COMMIT");
+        return {
+          kind: "replayed",
+          marker: winner.marker,
+          generation: targetRow.generation,
+          lookupDigest: winner.row.successor_lookup,
+        };
       }
+
+      // 2. 授权与 CAS 全部在同一事务内完成。
+      let generation: number;
+      if (options.predecessorStateId === null) {
+        // root：没有前驱可比对，唯一可接受的期望代数就是 0。放行非 0 等于
+        // 允许调用方凭空指定代数，CAS 就形同虚设。
+        if (options.expectedGeneration !== 0) {
+          throw new OpaqueCompactRepositoryError("stale_generation");
+        }
+        generation = 1;
+      } else {
+        const predecessor = this.authenticatePredecessorWithinTransaction(
+          predecessorLookup,
+          accountBinding,
+          options.binding,
+          options.expectedGeneration,
+        );
+        generation = predecessor.generation + 1;
+      }
+
+      // generation 由事务内的 predecessor 决定，因此 state 的 AAD 与封装
+      // 都必须在这之后才能定稿。
+      const sealed = sealRecord(
+        dataKey,
+        buildAad({
+          schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
+          storeId: this.storeId,
+          keyId: key.id,
+          lookupDigest,
+          generation,
+          binding: options.binding,
+          accountBinding,
+          createdAt: options.createdAt,
+          expiresAt: options.expiresAt,
+          byteSize,
+          predecessorLookup: options.predecessorStateId === null ? null : predecessorLookup,
+        }),
+        options.plaintext,
+      );
+
       this.stmtInsert.run(
         lookupDigest,
         key.id,
@@ -546,48 +892,54 @@ export class OpaqueCompactRepository {
         computeMutableMetaMac(this.keyring, lookupDigest, "last_used_at", options.createdAt),
         byteSize,
         accountBinding,
-        predecessorLookup,
+        options.predecessorStateId === null ? null : predecessorLookup,
         sealed.nonce,
         sealed.tag,
         sealed.ciphertext,
       );
 
-      // predecessor → successor marker 的加密映射，与 state 行同事务落盘。
-      // 崩溃后客户端拿旧 marker 重试时据此幂等返回同一个 successor marker。
-      if (predecessorLookup !== null) {
-        const markerBytes = Buffer.from(options.successorMarker, "utf-8");
-        const sealedMarker = sealRecord(
-          dataKey,
-          buildSuccessorAad({
-            storeId: this.storeId,
-            keyId: key.id,
-            predecessorLookup,
-            successorLookup: lookupDigest,
-            accountBinding,
-            binding: options.binding,
-            createdAt: options.createdAt,
-            expiresAt: options.expiresAt,
-            byteSize: successorBytes,
-          }),
-          markerBytes,
-        );
-        this.stmtInsertSuccessor.run(
+      // 3. edge → successor marker 的加密映射，与 state 行同事务落盘。
+      //    root 也要写：否则 root compact 的"COMMIT 成功但响应没送达"没有任何
+      //    幂等凭据，客户端重试只能重打上游并产生第二条分叉。
+      const sealedMarker = sealRecord(
+        dataKey,
+        buildSuccessorAad({
+          schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
+          storeId: this.storeId,
+          keyId: key.id,
+          edgeLookup,
           predecessorLookup,
-          lookupDigest,
-          key.id,
+          successorLookup: lookupDigest,
           accountBinding,
-          options.binding,
-          options.createdAt,
-          options.expiresAt,
-          successorBytes,
-          sealedMarker.nonce,
-          sealedMarker.tag,
-          sealedMarker.ciphertext,
-        );
-      }
+          binding: options.binding,
+          createdAt: options.createdAt,
+          expiresAt: options.expiresAt,
+          byteSize: successorBytes,
+        }),
+        Buffer.from(options.successorMarker, "utf-8"),
+      );
+      this.stmtInsertSuccessor.run(
+        edgeLookup,
+        predecessorLookup,
+        lookupDigest,
+        key.id,
+        accountBinding,
+        options.binding,
+        options.createdAt,
+        options.expiresAt,
+        successorBytes,
+        sealedMarker.nonce,
+        sealedMarker.tag,
+        sealedMarker.ciphertext,
+      );
 
-      this.pruneWithinTransaction(options.createdAt, lookupDigest, predecessorLookup);
+      this.pruneWithinTransaction(
+        options.createdAt,
+        lookupDigest,
+        options.predecessorStateId === null ? null : predecessorLookup,
+      );
       this.db.exec("COMMIT");
+      return { kind: "committed", generation, keyId: key.id, byteSize, lookupDigest };
     } catch (error) {
       try {
         this.db.exec("ROLLBACK");
@@ -600,81 +952,217 @@ export class OpaqueCompactRepository {
         error instanceof Error ? error.message : String(error),
       );
     }
-    return { generation, keyId: key.id, byteSize, lookupDigest };
   }
 
   /**
-   * 幂等回放：若该 predecessor 已经有 successor，直接返回它的 marker。
-   * 这是"COMMIT 成功但响应没送达"之后客户端重试的恢复路径。
+   * 事务内认证 predecessor 并做 CAS。
+   *
+   * 这里刻意**不**用 `currentGeneration(binding)` 做 CAS：那只看 binding 下的
+   * 最大代数，同一 binding 上的两条合法分叉会互相判定为 stale。内容寻址之后
+   * 正确的授权对象是"客户端手里这一条 predecessor"本身——它必须存在、属于
+   * 当前账号与 binding、代数恰好等于期望值，且自身通过完整 AEAD 认证。
    */
-  findSuccessorMarker(predecessorStateId: string, accountEntryId: string): string | null {
-    const predecessorLookup = this.lookupFor(predecessorStateId);
-    const row = this.stmtSelectSuccessor.get(predecessorLookup) as unknown as
-      | SuccessorRow
-      | undefined;
-    // 没有映射是正常情况（首次 compact），返回 null 让调用方去打上游。
-    if (row === undefined) return null;
-
-    // 以下任何一项失败都是**异常**，不能再返回 null 装作"没有映射"——
-    // 那会让进程去重打一次上游，随后撞上 stale_generation，把真正的损坏
-    // 原因掩盖掉。
+  private authenticatePredecessorWithinTransaction(
+    predecessorLookup: string,
+    accountBinding: string,
+    binding: string,
+    expectedGeneration: number,
+  ): { generation: number } {
+    const row = this.stmtSelectByLookup.get(predecessorLookup) as RecordRow | undefined;
+    // 缺失 predecessor 必须 fail-closed：无凭据地放行等于允许任何人凭一个
+    // 编造的 predecessorStateId 往这个 binding 上挂新 state。
+    if (row === undefined) {
+      throw new OpaqueCompactRepositoryError("stale_generation", "predecessor state is gone");
+    }
     const key = this.keyring.get(row.key_id);
     if (key === undefined) {
-      throw new OpaqueCompactRepositoryError("key_mismatch", "successor key id is not in the keyring");
+      throw new OpaqueCompactRepositoryError("key_mismatch", "predecessor key id is not in the keyring");
     }
-    const accountBinding = this.accountBindingFor(accountEntryId);
-    if (accountBinding !== row.account_binding) {
-      throw new OpaqueCompactRepositoryError("binding_mismatch", "successor belongs to another account");
+    if (row.account_binding !== accountBinding) {
+      throw new OpaqueCompactRepositoryError("binding_mismatch", "predecessor belongs to another account");
+    }
+    if (row.binding !== binding) {
+      throw new OpaqueCompactRepositoryError("binding_mismatch", "predecessor belongs to another variant");
+    }
+    if (row.generation !== expectedGeneration) {
+      throw new OpaqueCompactRepositoryError("stale_generation");
     }
     const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
     if (Number(row.byte_size) !== actualByteSize) {
-      throw new OpaqueCompactRepositoryError("state_corrupt", "successor byte size does not match");
+      throw new OpaqueCompactRepositoryError("state_corrupt", "predecessor byte size does not match");
     }
-
-    const dataKey = deriveAccountKey(this.keyring, key, accountEntryId);
-    let marker: string;
+    if (
+      row.last_used_mac !==
+      computeMutableMetaMac(this.keyring, row.lookup_digest, "last_used_at", row.last_used_at)
+    ) {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "predecessor last_used_at is not authenticated");
+    }
     try {
-      marker = openRecord(
-        dataKey,
-        buildSuccessorAad({
+      openRecord(
+        deriveAccountKeyFromBinding(key, row.account_binding),
+        buildAad({
+          schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
           storeId: this.storeId,
           keyId: row.key_id,
-          predecessorLookup: row.predecessor_lookup,
-          successorLookup: row.successor_lookup,
-          accountBinding: row.account_binding,
+          lookupDigest: row.lookup_digest,
+          generation: row.generation,
           binding: row.binding,
+          accountBinding: row.account_binding,
           createdAt: row.created_at,
           expiresAt: row.expires_at,
           byteSize: actualByteSize,
+          predecessorLookup: row.predecessor_lookup,
         }),
         {
           nonce: Buffer.from(row.nonce),
           tag: Buffer.from(row.tag),
           ciphertext: Buffer.from(row.ciphertext),
         },
-      ).toString("utf-8");
+      );
     } catch {
-      throw new OpaqueCompactRepositoryError("state_corrupt", "successor failed AEAD verification");
+      throw new OpaqueCompactRepositoryError("state_corrupt", "predecessor failed AEAD verification");
+    }
+    // 认证之后 expires_at 才可信。过期的 predecessor 不能再派生新代。
+    if (row.expires_at <= this.now()) {
+      throw new OpaqueCompactRepositoryError("stale_generation", "predecessor has expired");
+    }
+    return { generation: row.generation };
+  }
+
+  /**
+   * 解封并全量认证一条 edge。返回 null 表示"没有可回放的映射"（行不存在，
+   * 或已认证为过期并就地删除）——这是正常的首次 compact 路径。
+   *
+   * 其余任何失败都必须抛错而不是返回 null：装作没有映射会让调用方重打一次
+   * 上游，随后撞上 stale_generation，把真正的损坏原因彻底掩盖。
+   */
+  private openEdgeMapping(
+    edgeLookup: string,
+    accountEntryId: string,
+    expectedAccountBinding: string,
+    expectedBinding: string,
+  ): { marker: string; row: SuccessorRow } | null {
+    const row = this.stmtSelectSuccessor.get(edgeLookup) as unknown as SuccessorRow | undefined;
+    if (row === undefined) return null;
+
+    if (row.account_binding !== expectedAccountBinding || row.binding !== expectedBinding) {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "edge authorization binding does not match its lookup");
+    }
+    const key = this.keyring.get(row.key_id);
+    if (key === undefined) {
+      throw new OpaqueCompactRepositoryError("key_mismatch", "edge key id is not in the keyring");
+    }
+    const actualByteSize = row.ciphertext.length + row.nonce.length + row.tag.length;
+    if (Number(row.byte_size) !== actualByteSize) {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "edge byte size does not match");
     }
 
-    // 认证之后才信任 expires_at。反序会让攻击者改短 expires 来销毁
-    // post-commit 幂等映射，重新打开崩溃窗口。
+    let marker: string;
+    try {
+      marker = openRecord(
+          deriveAccountKey(this.keyring, key, accountEntryId),
+          buildSuccessorAad({
+            schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
+            storeId: this.storeId,
+            keyId: row.key_id,
+            edgeLookup: row.edge_lookup,
+            predecessorLookup: row.predecessor_lookup,
+            successorLookup: row.successor_lookup,
+            accountBinding: row.account_binding,
+            binding: row.binding,
+            createdAt: row.created_at,
+            expiresAt: row.expires_at,
+            byteSize: actualByteSize,
+          }),
+          {
+            nonce: Buffer.from(row.nonce),
+            tag: Buffer.from(row.tag),
+            ciphertext: Buffer.from(row.ciphertext),
+          },
+        ).toString("utf-8");
+    } catch {
+      throw new OpaqueCompactRepositoryError("state_corrupt", "edge failed AEAD verification");
+    }
+
     if (row.expires_at <= this.now()) {
-      this.stmtDeleteSuccessor.run(predecessorLookup);
+      this.stmtDeleteSuccessor.run(row.edge_lookup);
       return null;
     }
-    // AEAD 只证明这段密文是我们写的，不证明它确实是一个 marker，也不证明它
-    // 指向本行记录的 successor。缺了这一步，任何 AEAD-valid 的字符串都会被
-    // 当作 marker 原样交给客户端。这里校验语法，并要求 marker 内的 stateId
-    // 折算出的 lookup 与已认证的 successor_lookup 一致。
     if (this.validateSuccessorMarker !== null &&
         !this.validateSuccessorMarker(marker, row.successor_lookup)) {
       throw new OpaqueCompactRepositoryError(
         "state_corrupt",
-        "successor mapping does not contain a valid marker for its target",
+        "edge mapping does not contain a valid marker for its target",
       );
     }
-    return marker;
+    return { marker, row };
+  }
+
+  /** 已认证 edge 的 target state 必须存在，且属于同一账号与授权域。 */
+  private requireSuccessorTarget(
+    row: SuccessorRow,
+    expectedAccountBinding: string,
+    expectedBinding: string,
+  ): RecordRow {
+    const target = this.stmtSelectByLookup.get(row.successor_lookup) as RecordRow | undefined;
+    if (target === undefined) {
+      // edge 已认证但目标 state 不在了：这不是"没有映射"，而是 store 自相
+      // 矛盾。返回 null 会让调用方重打上游并撞上 stale_generation，把真正
+      // 的原因掩盖掉。
+      throw new OpaqueCompactRepositoryError(
+        "state_corrupt",
+        "edge mapping points at a state that no longer exists",
+      );
+    }
+    if (target.account_binding !== expectedAccountBinding || target.binding !== expectedBinding) {
+      throw new OpaqueCompactRepositoryError(
+        "state_corrupt",
+        "edge target authorization binding does not match",
+      );
+    }
+    return target;
+  }
+
+  /**
+   * 幂等回放：内容寻址查询这条 edge 是否已经产生过 successor。
+   *
+   * edge = (session/model, predecessor-或-root, compact 语义 digest, account binding,
+   * authorization binding)。这些分量齐全
+   * 才能区分"同一次 compact 的重试"与"同一 predecessor 上的另一条分叉"——
+   * 前者必须回放同一个 marker，后者必须各自成功。
+   *
+   * root（predecessorStateId=null）同样支持：首次 compact 的 post-commit 崩溃
+   * 窗口与后续 compact 完全一样需要幂等凭据。
+   */
+  findSuccessorMarker(options: {
+    sessionId: string;
+    model: string;
+    predecessorStateId: string | null;
+    compactInputDigest: string;
+    binding: string;
+    accountCandidates: readonly string[];
+  }): string | null {
+    for (const accountEntryId of options.accountCandidates) {
+      const accountBinding = this.accountBindingFor(accountEntryId);
+      const edgeLookup = this.edgeFor(
+        options.sessionId,
+        options.model,
+        options.predecessorStateId,
+        options.compactInputDigest,
+        accountBinding,
+        options.binding,
+      );
+      const winner = this.openEdgeMapping(
+        edgeLookup,
+        accountEntryId,
+        accountBinding,
+        options.binding,
+      );
+      if (winner === null) continue;
+      this.requireSuccessorTarget(winner.row, accountBinding, options.binding);
+      return winner.marker;
+    }
+    return null;
   }
 
   /** 注入 successor marker 语义校验器（避免与 state 层循环依赖）。 */
@@ -728,6 +1216,7 @@ export class OpaqueCompactRepository {
       const accountBinding = this.accountBindingFor(account);
       if (accountBinding !== row.account_binding) continue;
       const aad = buildAad({
+        schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
         storeId: this.storeId,
         keyId: row.key_id,
         lookupDigest: row.lookup_digest,
@@ -763,7 +1252,7 @@ export class OpaqueCompactRepository {
 
       // 认证通过之后才敢相信 expires_at，此时删除过期记录是安全的。
       if (row.expires_at <= this.now()) {
-        this.stmtDeleteByLookup.run(lookupDigest);
+        this.deleteStateInOwnTransaction(lookupDigest);
         return null;
       }
 
@@ -792,15 +1281,20 @@ export class OpaqueCompactRepository {
   }
 
   /**
-   * 确认客户端已经用上 successor：此时回收它的 predecessor 与映射。
-   * 这一步是 predecessor 被删除的**唯一**入口。
+   * 确认客户端已经用上这个 state：回收所有指向它的 incoming edge。
+   *
+   * 刻意**不**在这里删除 predecessor state 本身。内容寻址之后同一个
+   * predecessor 可以合法地长出多条分叉（不同 digest 各自成边），一条分叉被
+   * 确认送达并不代表其他分叉不再需要这个共同前驱——按 predecessor 删除会把
+   * 兄弟分叉的幂等回放和 restore 一起打掉。
+   *
+   * 失去 incoming edge 之后，predecessor 不再受 prune 的保护集合覆盖，会按
+   * 正常 LRU/TTL 自然回收，容量语义因此仍然收敛。
    */
   confirmSuccessorUsed(meta: OpaqueCompactRecordMeta): void {
-    if (meta.predecessorLookup === null) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.stmtDeleteByLookup.run(meta.predecessorLookup);
-      this.stmtDeleteSuccessor.run(meta.predecessorLookup);
+      this.stmtDeleteSuccessorByTarget.run(meta.lookupDigest);
       this.db.exec("COMMIT");
     } catch (error) {
       try {
@@ -817,8 +1311,33 @@ export class OpaqueCompactRepository {
     }
   }
 
+  /** 在已有事务内原子删除 state 及所有关联 edge；不递归删除 successor state。 */
+  private deleteStateWithinTransaction(lookupDigest: string): void {
+    this.stmtDeleteSuccessorByTarget.run(lookupDigest);
+    this.stmtDeleteSuccessorByPredecessor.run(lookupDigest);
+    this.stmtDeleteByLookup.run(lookupDigest);
+  }
+
+  private deleteStateInOwnTransaction(lookupDigest: string): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.deleteStateWithinTransaction(lookupDigest);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* 事务已结束 */
+      }
+      throw new OpaqueCompactRepositoryError(
+        "store_unavailable",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
   deleteByStateId(stateId: string): void {
-    this.stmtDeleteByLookup.run(this.lookupFor(stateId));
+    this.deleteStateInOwnTransaction(this.lookupFor(stateId));
   }
 
   /**
@@ -859,8 +1378,10 @@ export class OpaqueCompactRepository {
         successorMarker = openRecord(
           deriveAccountKeyFromBinding(key, row.account_binding),
           buildSuccessorAad({
+            schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
             storeId: this.storeId,
             keyId: row.key_id,
+            edgeLookup: row.edge_lookup,
             predecessorLookup: row.predecessor_lookup,
             successorLookup: row.successor_lookup,
             accountBinding: row.account_binding,
@@ -887,7 +1408,9 @@ export class OpaqueCompactRepository {
         unreadable += 1;
         continue;
       }
-      if (row.expires_at <= now) expiredSuccessors.push(row.predecessor_lookup);
+      // 删除按主键走：edge 表现在以 edge_lookup 为主键，同一 predecessor 上
+      // 可能挂着多条分叉，按 predecessor 删会连带清掉尚未过期的兄弟边。
+      if (row.expires_at <= now) expiredSuccessors.push(row.edge_lookup);
     }
 
     const rows = this.stmtAllRows.all() as unknown as RecordRow[];
@@ -917,6 +1440,7 @@ export class OpaqueCompactRepository {
         plaintext = openRecord(
           dataKey,
           buildAad({
+            schemaVersion: OPAQUE_REPOSITORY_SCHEMA_VERSION,
             storeId: this.storeId,
             keyId: row.key_id,
             lookupDigest: row.lookup_digest,
@@ -968,12 +1492,26 @@ export class OpaqueCompactRepository {
     // 待隔离状态，此时任何写操作都可能破坏证据。
     // 注意删除的是**逐行认证过**的那些 lookup，而不是按 SQL 条件批量删——
     // 后者会连同未认证的行一起清掉。
-    if (unreadable === 0) {
-      for (const lookup of expiredLookups) {
-        this.stmtDeleteByLookup.run(lookup);
-      }
-      for (const lookup of expiredSuccessors) {
-        this.stmtDeleteSuccessor.run(lookup);
+    if (unreadable === 0 && (expiredLookups.length > 0 || expiredSuccessors.length > 0)) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const lookup of expiredLookups) {
+          this.deleteStateWithinTransaction(lookup);
+        }
+        for (const lookup of expiredSuccessors) {
+          this.stmtDeleteSuccessor.run(lookup);
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+          /* 事务已结束 */
+        }
+        throw new OpaqueCompactRepositoryError(
+          "store_unavailable",
+          error instanceof Error ? error.message : String(error),
+        );
       }
     }
     return { retained, expired: expiredLookups.length, unreadable };
@@ -1014,20 +1552,19 @@ export class OpaqueCompactRepository {
   }
 
   /**
-   * 容量与字节统计。
+   * state 容量与总磁盘字节统计。
    *
-   * successor 映射也占磁盘，必须计入预算——否则大量重复 compact 会让
-   * successor 表无限增长却不触发任何淘汰，绕过 maxBytes。
+   * `capacity` 的单位始终是可恢复的 state 数量；edge 是 state 的交付凭据，不能
+   * 因为 root edge 也落盘就把一条 state 算成两个容量单位。否则 capacity=1 连
+   * 首次 compact 都无法提交。edge 仍必须计入 bytes，防止映射绕过 maxBytes。
    */
   stats(): { count: number; bytes: number } {
     const row = this.stmtTotals.get() as { count: number; bytes: number } | undefined;
     const successors = this.stmtSuccessorTotals.get() as
       | { count: number; bytes: number }
       | undefined;
-    // successor 行同样占用容量与字节：只计 bytes 不计 count 时，
-    // capacity=2 的库放 2 条 state + 1 条 successor 仍会被当作 count=2 放行。
     return {
-      count: Number(row?.count ?? 0) + Number(successors?.count ?? 0),
+      count: Number(row?.count ?? 0),
       bytes: Number(row?.bytes ?? 0) + Number(successors?.bytes ?? 0),
     };
   }
@@ -1062,18 +1599,14 @@ export class OpaqueCompactRepository {
 
       // 只在受保护记录之外挑最旧的一条淘汰。刚写入的行和它的 predecessor
       // 都不能动：predecessor 还要支撑崩溃重试的幂等回放。
-      // 受保护集合：刚写入的行、它的 predecessor，以及**所有**仍待交付的
-      // successor 映射两端。漏掉后者会让会话 B 的容量压力删掉会话 A 尚未
-      // confirm 的 predecessor 或 successor 目标，破坏 post-commit 恢复承诺。
+      // 只保护当前事务刚写入的行及其 predecessor。其他 victim 若有关联 edge，
+      // 统一删除 helper 会在同一事务中先清 incoming/outgoing edge 再删 state，
+      // 因而既能收敛容量，也不会留下指向不存在 state 的幂等凭据。
       const victim = this.db
         .prepare(
           `SELECT lookup_digest, last_used_at, last_used_mac FROM opaque_states
            WHERE lookup_digest <> ?
              AND (? IS NULL OR lookup_digest <> ?)
-             AND lookup_digest NOT IN (SELECT predecessor_lookup FROM opaque_successors)
-             AND lookup_digest NOT IN (
-               SELECT successor_lookup FROM opaque_successors WHERE successor_lookup IS NOT NULL
-             )
            ORDER BY last_used_at ASC, created_at ASC LIMIT 1`,
         )
         .get(protectedLookup, predecessorLookup, predecessorLookup ?? "") as
@@ -1100,7 +1633,7 @@ export class OpaqueCompactRepository {
           "eviction candidate has unauthenticated last_used_at",
         );
       }
-      this.stmtDeleteByLookup.run(victim.lookup_digest);
+      this.deleteStateWithinTransaction(victim.lookup_digest);
     }
     throw new OpaqueCompactRepositoryError("state_too_large", "prune did not converge");
   }

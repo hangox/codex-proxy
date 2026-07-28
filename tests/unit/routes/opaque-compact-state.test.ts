@@ -15,6 +15,15 @@ const OUTPUT = [
   { type: "message", role: "assistant", content: [{ type: "output_text", text: "compact state" }] },
 ];
 
+type SaveOptions = Parameters<OpaqueCompactStateStore["save"]>[0];
+
+function saveState(
+  store: OpaqueCompactStateStore,
+  options: Omit<SaveOptions, "compactInputDigest"> & { compactInputDigest?: string },
+) {
+  return store.save({ compactInputDigest: "digest-state-unit-v1", ...options });
+}
+
 function expectReason(fn: () => unknown, reason: string): void {
   try {
     fn();
@@ -28,7 +37,7 @@ function expectReason(fn: () => unknown, reason: string): void {
 describe("opaque compact state store", () => {
   it("creates a short strict marker without exposing opaque output", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 1) });
-    const { marker } = store.save({
+    const { marker } = saveState(store, {
       output: OUTPUT,
       sessionId: "session-a",
       model: "gpt-5.4",
@@ -47,7 +56,7 @@ describe("opaque compact state store", () => {
       { type: "function_call", call_id: "tool-1", name: "Read", arguments: "{}" },
       { type: "function_call_output", call_id: "tool-1", output: "tool-only-canary" },
     ] as const;
-    const { marker, state } = store.save({
+    const { marker, state } = saveState(store, {
       output: OUTPUT,
       preservedTail: [...preservedTail],
       sessionId: "session-a",
@@ -107,7 +116,7 @@ describe("opaque compact state store", () => {
 
   it("removes complete replayed tails after the marker and rejects conflict or partial replay", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 14) });
-    const { marker } = store.save({ output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
+    const { marker } = saveState(store, { output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
     const previousTail = [
       { type: "function_call", call_id: "tool-old", name: "Read", arguments: "{}" },
       { type: "function_call_output", call_id: "tool-old", output: "old" },
@@ -140,7 +149,7 @@ describe("opaque compact state store", () => {
   it("rejects tampered, missing, expired, session, model, account, and comp-hash mismatches", () => {
     let now = 1000;
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 2), ttlMs: 100, now: () => now });
-    const { marker, state } = store.save({
+    const { marker, state } = saveState(store, {
       output: OUTPUT,
       sessionId: "session-a",
       model: "gpt-5.4",
@@ -157,7 +166,7 @@ describe("opaque compact state store", () => {
     state.output = [{ type: "message", role: "assistant", content: [] }];
     expectReason(() => store.resolve({ marker, sessionId: "session-a", model: "gpt-5.4" }), "comp_hash_mismatch");
 
-    const expiring = store.save({ output: OUTPUT, sessionId: "session-a", model: "gpt-5.4", accountEntryId: "entry-a" });
+    const expiring = saveState(store, { output: OUTPUT, sessionId: "session-a", model: "gpt-5.4", accountEntryId: "entry-a" });
     now = 1200;
     expectReason(() => store.resolve({ marker: expiring.marker, sessionId: "session-a", model: "gpt-5.4" }), "expired");
 
@@ -167,10 +176,10 @@ describe("opaque compact state store", () => {
 
   it("uses bounded LRU behavior and supports independent compact variants", () => {
     const store = new OpaqueCompactStateStore({ capacity: 2, secret: Buffer.alloc(32, 3) });
-    const one = store.save({ output: [{ value: 1 }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v1" });
-    const two = store.save({ output: [{ value: 2 }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v2" });
+    const one = saveState(store, { output: [{ value: 1 }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v1" });
+    const two = saveState(store, { output: [{ value: 2 }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v2" });
     store.resolve({ marker: one.marker, sessionId: "s", model: "m", variantHash: "v1" });
-    const three = store.save({ output: [{ value: 3 }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v3" });
+    const three = saveState(store, { output: [{ value: 3 }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v3" });
 
     expect(store.size()).toBe(2);
     expectReason(() => store.resolve({ marker: two.marker, sessionId: "s", model: "m", variantHash: "v2" }), "missing");
@@ -180,8 +189,8 @@ describe("opaque compact state store", () => {
 
   it("evicts least-recently-used states when the byte budget is exceeded", () => {
     const store = new OpaqueCompactStateStore({ capacity: 10, maxBytes: 1_000, secret: Buffer.alloc(32, 7) });
-    const one = store.save({ output: [{ value: "a".repeat(600) }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v1" });
-    const two = store.save({ output: [{ value: "b".repeat(600) }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v2" });
+    const one = saveState(store, { output: [{ value: "a".repeat(600) }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v1" });
+    const two = saveState(store, { output: [{ value: "b".repeat(600) }], sessionId: "s", model: "m", accountEntryId: "a", variantHash: "v2" });
 
     expect(store.size()).toBe(1);
     expectReason(() => store.resolve({ marker: one.marker, sessionId: "s", model: "m" }), "missing");
@@ -190,14 +199,14 @@ describe("opaque compact state store", () => {
 
   it("invalidates an older marker when the same session/model/variant is compacted again", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 9) });
-    const one = store.save({
+    const one = saveState(store, {
       output: [{ value: 1 }],
       sessionId: "s",
       model: "m",
       accountEntryId: "a",
       variantHash: "v",
     });
-    const two = store.save({
+    const two = saveState(store, {
       output: [{ value: 2 }],
       sessionId: "s",
       model: "m",
@@ -211,7 +220,7 @@ describe("opaque compact state store", () => {
 
   it("rejects a single state larger than the byte budget instead of returning an invalid marker", () => {
     const store = new OpaqueCompactStateStore({ maxBytes: 300, secret: Buffer.alloc(32, 8) });
-    expectReason(() => store.save({
+    expectReason(() => saveState(store, {
       output: [{ value: "x".repeat(600) }],
       sessionId: "s",
       model: "m",
@@ -222,7 +231,7 @@ describe("opaque compact state store", () => {
 
   it("extracts only strict markers and restores opaque output in place of marker text", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 4) });
-    const { marker } = store.save({ output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
+    const { marker } = saveState(store, { output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
     const req = {
       model: "m",
       max_tokens: 100,
@@ -250,7 +259,7 @@ describe("opaque compact state store", () => {
 
   it("extracts, resolves, and removes a Claude Code compact summary wrapper", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 5) });
-    const { marker } = store.save({ output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
+    const { marker } = saveState(store, { output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
     const token = marker.match(/<summary>([^<]+)<\/summary>/)?.[1];
     expect(token).toBeDefined();
     const transcriptPath = "/tmp/claude-wrapper-test/session.jsonl";
@@ -295,7 +304,7 @@ describe("opaque compact state store", () => {
 
   it("preserves same-block continuation and removes duplicate marker references", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 10) });
-    const { marker } = store.save({ output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
+    const { marker } = saveState(store, { output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
     const token = marker.match(/<summary>([^<]+)<\/summary>/)?.[1];
     expect(token).toBeDefined();
     const wrapper =
@@ -324,7 +333,7 @@ describe("opaque compact state store", () => {
 
   it("uses the last duplicate marker as the authoritative compact boundary", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 11) });
-    const { marker } = store.save({ output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
+    const { marker } = saveState(store, { output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
 
     const restored = restoreOpaqueCompactInput([
       { role: "user", content: "OLD" },
@@ -339,7 +348,7 @@ describe("opaque compact state store", () => {
 
   it("extracts a strict raw marker prefix and preserves its same-string continuation", () => {
     const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 12) });
-    const { marker } = store.save({ output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
+    const { marker } = saveState(store, { output: OUTPUT, sessionId: "s", model: "m", accountEntryId: "a" });
     const rawWithContinuation = marker + "\n\nraw continuation";
     const req = {
       model: "m",

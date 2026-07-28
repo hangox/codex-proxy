@@ -29,6 +29,7 @@ import {
   computeIndexBinding,
   computeLookupDigest,
   computeMarkerSignature,
+  computeMutableMetaMac,
   deriveAccountKey,
   encodeTuple,
   loadOpaqueCompactKeyring,
@@ -59,7 +60,10 @@ import {
   reconfigureOpaqueCompactRuntime,
   startOpaqueCompactRuntime,
 } from "@src/routes/shared/opaque-compact-runtime.js";
+import { seedLegacyOpaqueStore } from "@helpers/opaque-compact-legacy-fixture.js";
 import { opaqueCompactVariantHash } from "@src/routes/shared/opaque-compact-bridge.js";
+import { opaqueCompactSemanticDigest } from "@src/routes/shared/codex-compact-service.js";
+import { normalizeServiceTierForUpstream } from "@src/proxy/codex-api.js";
 import { getDataDir } from "@src/paths.js";
 
 const CANARIES = {
@@ -82,6 +86,15 @@ const PRESERVED_TAIL = [
 ];
 
 const TTL_MS = 30 * 60_000;
+const DIGESTS = {
+  canary: "digest-canary-v1",
+  oversized: "digest-oversized-v1",
+  lru1: "digest-lru-v1",
+  lru2: "digest-lru-v2",
+  lru3: "digest-lru-v3",
+  successor: "digest-successor-v1",
+  forged: "digest-forged-v1",
+} as const;
 
 let dir: string;
 let keyDir: string;
@@ -150,6 +163,7 @@ function saveCanaryState(store: OpaqueCompactStateStore, expectedGeneration = 0)
     model: "gpt-5.4",
     accountEntryId: CANARIES.account,
     variantHash: CANARIES.variant,
+    compactInputDigest: DIGESTS.canary,
     expectedGeneration,
   });
 }
@@ -159,6 +173,22 @@ function resolveCanary(store: OpaqueCompactStateStore, marker: string, overrides
     marker,
     sessionId: CANARIES.session,
     model: "gpt-5.4",
+    variantHash: CANARIES.variant,
+    accountCandidates: [CANARIES.account],
+    ...overrides,
+  });
+}
+
+function findCanarySuccessor(
+  store: OpaqueCompactStateStore,
+  predecessorMarker: string | null,
+  overrides: Partial<Parameters<OpaqueCompactStateStore["findSuccessorMarker"]>[0]> = {},
+) {
+  return store.findSuccessorMarker({
+    predecessorMarker,
+    sessionId: CANARIES.session,
+    model: "gpt-5.4",
+    compactInputDigest: DIGESTS.successor,
     variantHash: CANARIES.variant,
     accountCandidates: [CANARIES.account],
     ...overrides,
@@ -466,6 +496,8 @@ describe("repository — 存储语义", () => {
       accountEntryId: CANARIES.account,
       variantHash: CANARIES.variant,
       expectedGeneration: 0,
+      compactInputDigest: DIGESTS.oversized,
+      accountCandidates: [CANARIES.account],
     }), "state_too_large");
     // 既没落行，也就不会有指向被立即淘汰记录的 marker。
     expect(repository.stats().count).toBe(0);
@@ -480,15 +512,23 @@ describe("repository — 存储语义", () => {
       accountEntryId: CANARIES.account,
       variantHash: "v1",
       expectedGeneration: 0,
+      compactInputDigest: DIGESTS.lru1,
+      accountCandidates: [CANARIES.account],
     });
-    store.save({
+    // direct save 只代表 COMMIT，不代表 marker 已送达。先 resolve 模拟客户端确实
+    // 用上 marker，释放 incoming root edge 后该 state 才能参与正常 LRU 淘汰。
+    resolveCanary(store, first.marker, { variantHash: "v1" });
+    const second = store.save({
       output: [{ value: "b".repeat(700) }],
       sessionId: CANARIES.session,
       model: "gpt-5.4",
       accountEntryId: CANARIES.account,
       variantHash: "v2",
       expectedGeneration: 0,
+      compactInputDigest: DIGESTS.lru2,
+      accountCandidates: [CANARIES.account],
     });
+    resolveCanary(store, second.marker, { variantHash: "v2" });
     store.save({
       output: [{ value: "c".repeat(700) }],
       sessionId: CANARIES.session,
@@ -496,6 +536,8 @@ describe("repository — 存储语义", () => {
       accountEntryId: CANARIES.account,
       variantHash: "v3",
       expectedGeneration: 0,
+      compactInputDigest: DIGESTS.lru3,
+      accountCandidates: [CANARIES.account],
     });
     expect(repository.stats().bytes).toBeLessThanOrEqual(2_400);
     expectReason(
@@ -538,7 +580,7 @@ describe("repository — 存储语义", () => {
     expect(count.n).toBe(1);
   });
 
-  it("过期记录在恢复时清理", () => {
+  it("过期记录在 recover 时连同 incoming/outgoing edge 原子清理", () => {
     let now = 1_000_000;
     const keyring = freshKeyring();
     const sentinel = loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), { allowCreate: true })!;
@@ -558,13 +600,30 @@ describe("repository — 存储语义", () => {
       ttlMs: 1000,
       now: () => now,
     });
-    saveCanaryState(store);
-    expect(repository.stats().count).toBe(1);
+    repository.setSuccessorMarkerValidator((marker, expected) =>
+      validateSuccessorMarkerForRecovery(store, repository, marker, expected));
+    const first = saveCanaryState(store);
+    const predecessor = resolveCanary(store, first.marker);
+    store.save({
+      output: [{ generation: 2 }],
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: predecessor.generation,
+      predecessorStateId: predecessor.stateId,
+      compactInputDigest: "recover-expired-child",
+      accountCandidates: [CANARIES.account],
+    });
+    expect(repository.stats().count).toBe(2);
 
     now += 5000;
     const recovered = repository.recover();
-    expect(recovered.expired).toBe(1);
-    expect(repository.stats().count).toBe(0);
+    expect(recovered.expired).toBe(2);
+    expect(repository.stats()).toEqual({ count: 0, bytes: 0 });
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    expect((db.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number }).n).toBe(0);
+    db.close();
   });
 
   it("WAL 与 synchronous=FULL 必须读回验证而不仅是设置", () => {
@@ -594,6 +653,8 @@ describe("交付语义 — predecessor 不在 COMMIT 时立即销毁", () => {
       variantHash: CANARIES.variant,
       expectedGeneration: firstResolved.generation,
       predecessorStateId: firstResolved.stateId,
+      compactInputDigest: DIGESTS.successor,
+      accountCandidates: [CANARIES.account],
     });
     expect(second.generation).toBe(2);
 
@@ -615,16 +676,14 @@ describe("交付语义 — predecessor 不在 COMMIT 时立即销毁", () => {
       variantHash: CANARIES.variant,
       expectedGeneration: firstResolved.generation,
       predecessorStateId: firstResolved.stateId,
+      compactInputDigest: DIGESTS.successor,
+      accountCandidates: [CANARIES.account],
     });
 
-    const replayed = store.findSuccessorMarker(first.marker, CANARIES.account);
+    const replayed = findCanarySuccessor(store, first.marker);
     expect(replayed).toBe(second.marker);
-    // 账号不对是安全边界，必须抛结构化错误而不是返回 null——
-    // 返回 null 会让调用方以为"没有映射"，重打一次上游并掩盖真实原因。
-    expectReason(
-      () => store.findSuccessorMarker(first.marker, "entry-other"),
-      "account_mismatch",
-    );
+    // 账号域进入 edge lookup 后，其他账号只能得到未命中，不能看到 winner。
+    expect(findCanarySuccessor(store, first.marker, { accountCandidates: ["entry-other"] })).toBeNull();
   });
 
   it("客户端用上 successor 之后才回收 predecessor", () => {
@@ -639,12 +698,399 @@ describe("交付语义 — predecessor 不在 COMMIT 时立即销毁", () => {
       variantHash: CANARIES.variant,
       expectedGeneration: firstResolved.generation,
       predecessorStateId: firstResolved.stateId,
+      compactInputDigest: DIGESTS.successor,
+      accountCandidates: [CANARIES.account],
     });
 
     // 使用 successor == 客户端确实收到了它。
     resolveCanary(store, second.marker);
-    // 此时 predecessor 才被回收。
-    expectReason(() => resolveCanary(store, first.marker), "missing");
+    // 此时只回收指向 successor 的 incoming edge；predecessor state 仍需支持
+    // 同一前驱上的其他 digest 分叉，之后再按正常 LRU/TTL 自然回收。
+    expect(findCanarySuccessor(store, first.marker)).toBeNull();
+    expect(resolveCanary(store, first.marker).output).toEqual(OUTPUT);
+  });
+});
+
+describe("内容寻址 edge — Task #44 回归", () => {
+  it("digest 对对象键顺序稳定、对数组顺序敏感，并忽略 transport 字段", () => {
+    const base = {
+      model: "gpt-5.4",
+      instructions: "system",
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "first" }] },
+        { role: "assistant", content: [{ type: "output_text", text: "second" }] },
+      ],
+      tools: [{ type: "function", name: "Read", parameters: { b: 2, a: 1 } }],
+      reasoning: { summary: "auto", effort: "high" },
+      text: { format: { type: "json_schema", name: "result", schema: { z: 1, a: 2 } } },
+      service_tier: "fast",
+      prompt_cache_key: "cache-a",
+      client_metadata: { installation: "one" },
+      turnState: "turn-a",
+      turnMetadata: "metadata-a",
+      betaFeatures: "beta-a",
+      version: "1.0.0",
+      includeTimingMetrics: "true",
+      codexWindowId: "window-a",
+      parentThreadId: "parent-a",
+    } as Parameters<typeof opaqueCompactSemanticDigest>[0];
+    const reordered = {
+      ...base,
+      tools: [{ parameters: { a: 1, b: 2 }, name: "Read", type: "function" }],
+      reasoning: { effort: "high", summary: "auto" },
+      text: { format: { schema: { a: 2, z: 1 }, name: "result", type: "json_schema" } },
+    } as Parameters<typeof opaqueCompactSemanticDigest>[0];
+    const transportChanged = {
+      ...base,
+      prompt_cache_key: "cache-b",
+      client_metadata: { installation: "two" },
+      turnState: "turn-b",
+      turnMetadata: "metadata-b",
+      betaFeatures: "beta-b",
+      version: "2.0.0",
+      includeTimingMetrics: "false",
+      codexWindowId: "window-b",
+      parentThreadId: "parent-b",
+    } as Parameters<typeof opaqueCompactSemanticDigest>[0];
+    const reversedInput = { ...base, input: [...base.input].reverse() } as typeof base;
+
+    expect(opaqueCompactSemanticDigest(reordered)).toBe(opaqueCompactSemanticDigest(base));
+    expect(opaqueCompactSemanticDigest(transportChanged)).toBe(opaqueCompactSemanticDigest(base));
+    expect(opaqueCompactSemanticDigest(reversedInput)).not.toBe(opaqueCompactSemanticDigest(base));
+
+    const priority = { ...base, service_tier: "priority" } as typeof base;
+    expect(normalizeServiceTierForUpstream(base.service_tier)).toBe("priority");
+    expect(opaqueCompactSemanticDigest(priority)).toBe(opaqueCompactSemanticDigest(base));
+  });
+
+  it("同 session/model/variant/digest 的不同账号各自产生 generation=1，绝不跨账号回放", () => {
+    const { store, repository } = makeStore();
+    const common = {
+      sessionId: "shared-session",
+      model: "gpt-5.4",
+      variantHash: "shared-variant",
+      expectedGeneration: 0,
+      predecessorStateId: null,
+      compactInputDigest: "shared-digest",
+    } as const;
+    const accountA = store.save({
+      ...common,
+      output: [{ owner: "a" }],
+      accountEntryId: "entry-a",
+      accountCandidates: ["entry-a", "entry-b"],
+    });
+    const accountB = store.save({
+      ...common,
+      output: [{ owner: "b" }],
+      accountEntryId: "entry-b",
+      accountCandidates: ["entry-a", "entry-b"],
+    });
+
+    expect(accountA.replayed).toBe(false);
+    expect(accountB.replayed).toBe(false);
+    expect(accountA.marker).not.toBe(accountB.marker);
+    expect(accountA.generation).toBe(1);
+    expect(accountB.generation).toBe(1);
+    expect(store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: common.sessionId,
+      model: common.model,
+      compactInputDigest: common.compactInputDigest,
+      variantHash: common.variantHash,
+      accountCandidates: ["entry-a"],
+    })).toBe(accountA.marker);
+    expect(store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: common.sessionId,
+      model: common.model,
+      compactInputDigest: common.compactInputDigest,
+      variantHash: common.variantHash,
+      accountCandidates: ["entry-b"],
+    })).toBe(accountB.marker);
+    expect(store.resolve({
+      marker: accountA.marker,
+      sessionId: common.sessionId,
+      model: common.model,
+      variantHash: common.variantHash,
+      accountCandidates: ["entry-a"],
+      confirmDelivery: false,
+    }).output).toEqual([{ owner: "a" }]);
+    expect(store.resolve({
+      marker: accountB.marker,
+      sessionId: common.sessionId,
+      model: common.model,
+      variantHash: common.variantHash,
+      accountCandidates: ["entry-b"],
+      confirmDelivery: false,
+    }).output).toEqual([{ owner: "b" }]);
+    expect(repository.stats().count).toBe(2);
+  });
+
+  it("同账号/session/model/digest 的不同 variant 各自命中自己的 edge", () => {
+    const { store } = makeStore();
+    const common = {
+      sessionId: "variant-session",
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      expectedGeneration: 0,
+      predecessorStateId: null,
+      compactInputDigest: "variant-shared-digest",
+      accountCandidates: [CANARIES.account],
+    } as const;
+    const variantA = store.save({ ...common, output: [{ window: "a" }], variantHash: "variant-a" });
+    const variantB = store.save({ ...common, output: [{ window: "b" }], variantHash: "variant-b" });
+
+    expect(variantA.replayed).toBe(false);
+    expect(variantB.replayed).toBe(false);
+    expect(variantA.marker).not.toBe(variantB.marker);
+    expect(store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: common.sessionId,
+      model: common.model,
+      compactInputDigest: common.compactInputDigest,
+      variantHash: "variant-a",
+      accountCandidates: common.accountCandidates,
+    })).toBe(variantA.marker);
+    expect(store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: common.sessionId,
+      model: common.model,
+      compactInputDigest: common.compactInputDigest,
+      variantHash: "variant-b",
+      accountCandidates: common.accountCandidates,
+    })).toBe(variantB.marker);
+    expect(store.resolve({
+      marker: variantB.marker,
+      sessionId: common.sessionId,
+      model: common.model,
+      variantHash: "variant-b",
+      accountCandidates: common.accountCandidates,
+      confirmDelivery: false,
+    }).output).toEqual([{ window: "b" }]);
+  });
+
+  it("显式删除 root state 时同步删除 incoming/outgoing edge，stats 完全收敛", () => {
+    const { store, repository } = makeStore();
+    const saved = store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      compactInputDigest: "explicit-delete-root",
+      accountCandidates: [CANARIES.account],
+    });
+    store.delete(saved.marker);
+
+    expect(repository.stats()).toEqual({ count: 0, bytes: 0 });
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    expect((db.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number }).n).toBe(0);
+    db.close();
+    expect(store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      compactInputDigest: "explicit-delete-root",
+      variantHash: CANARIES.variant,
+      accountCandidates: [CANARIES.account],
+    })).toBeNull();
+  });
+
+  it("LRU 淘汰 state 时同步删除其 incoming 与 outgoing edge", () => {
+    const { store, repository } = makeStore({ capacity: 2 });
+    const first = store.save({
+      output: [{ n: 1 }], sessionId: "lru-a", model: "gpt-5.4",
+      accountEntryId: CANARIES.account, variantHash: "v", compactInputDigest: "lru-a",
+      accountCandidates: [CANARIES.account],
+    });
+    const second = store.save({
+      output: [{ n: 2 }], sessionId: "lru-b", model: "gpt-5.4",
+      accountEntryId: CANARIES.account, variantHash: "v", compactInputDigest: "lru-b",
+      accountCandidates: [CANARIES.account],
+    });
+    // 释放第二条的 incoming edge，使其可独立保留；第一条仍带 root edge，正是攻击路径。
+    store.resolve({ marker: second.marker, sessionId: "lru-b", model: "gpt-5.4", variantHash: "v", accountCandidates: [CANARIES.account] });
+    store.save({
+      output: [{ n: 3 }], sessionId: "lru-c", model: "gpt-5.4",
+      accountEntryId: CANARIES.account, variantHash: "v", compactInputDigest: "lru-c",
+      accountCandidates: [CANARIES.account],
+    });
+
+    expectReason(() => store.resolve({ marker: first.marker, sessionId: "lru-a", model: "gpt-5.4", variantHash: "v", accountCandidates: [CANARIES.account] }), "missing");
+    expect(store.findSuccessorMarker({ predecessorMarker: null, sessionId: "lru-a", model: "gpt-5.4", compactInputDigest: "lru-a", variantHash: "v", accountCandidates: [CANARIES.account] })).toBeNull();
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    expect((db.prepare("SELECT COUNT(*) AS n FROM opaque_successors WHERE successor_lookup NOT IN (SELECT lookup_digest FROM opaque_states) OR predecessor_lookup <> '' AND predecessor_lookup NOT IN (SELECT lookup_digest FROM opaque_states)").get() as { n: number }).n).toBe(0);
+    db.close();
+    expect(repository.stats().count).toBe(2);
+  });
+
+  it("相同 root input 回放同一 marker，不同 root input 各自成边", () => {
+    const { store, repository } = makeStore();
+    const common = {
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: 0,
+      predecessorStateId: null,
+      accountCandidates: [CANARIES.account],
+    } as const;
+    const first = store.save({ ...common, output: [{ root: "winner" }], compactInputDigest: "root-input-a" });
+    const retry = store.save({ ...common, output: [{ root: "loser" }], compactInputDigest: "root-input-a" });
+    const branch = store.save({ ...common, output: [{ root: "branch" }], compactInputDigest: "root-input-b" });
+
+    expect(first.replayed).toBe(false);
+    expect(retry.replayed).toBe(true);
+    expect(retry.marker).toBe(first.marker);
+    expect(retry.state.output).toEqual([{ root: "winner" }]);
+    expect(branch.replayed).toBe(false);
+    expect(branch.marker).not.toBe(first.marker);
+    expect(first.generation).toBe(1);
+    expect(branch.generation).toBe(1);
+    expect(repository.stats().count).toBe(2);
+  });
+
+  it("同 predecessor + 相同 input 回放 winner，不同 input 形成独立分叉", () => {
+    const { store, repository } = makeStore();
+    const root = saveCanaryState(store);
+    const predecessor = resolveCanary(store, root.marker);
+    const common = {
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: predecessor.generation,
+      predecessorStateId: predecessor.stateId,
+      accountCandidates: [CANARIES.account],
+    } as const;
+    const first = store.save({ ...common, output: [{ branch: "winner" }], compactInputDigest: "child-input-a" });
+    const retry = store.save({ ...common, output: [{ branch: "loser" }], compactInputDigest: "child-input-a" });
+    const fork = store.save({ ...common, output: [{ branch: "fork" }], compactInputDigest: "child-input-b" });
+
+    expect(retry.replayed).toBe(true);
+    expect(retry.marker).toBe(first.marker);
+    expect(retry.state.output).toEqual([{ branch: "winner" }]);
+    expect(fork.replayed).toBe(false);
+    expect(fork.marker).not.toBe(first.marker);
+    expect(first.generation).toBe(2);
+    expect(fork.generation).toBe(2);
+    expect(repository.stats().count).toBe(3);
+    expect(resolveCanary(store, first.marker).output).toEqual([{ branch: "winner" }]);
+    expect(resolveCanary(store, fork.marker).output).toEqual([{ branch: "fork" }]);
+  });
+
+  it("重启后仍按 root edge 回放同一个 marker，并完整认证 target state", () => {
+    const first = makeStore();
+    const saved = first.store.save({
+      output: OUTPUT,
+      preservedTail: [...PRESERVED_TAIL],
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: 0,
+      predecessorStateId: null,
+      compactInputDigest: "restart-root-input",
+      accountCandidates: [CANARIES.account],
+    });
+    first.repository.close();
+
+    const reopened = makeStore();
+    const replayed = reopened.store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      compactInputDigest: "restart-root-input",
+      variantHash: CANARIES.variant,
+      accountCandidates: [CANARIES.account],
+    });
+    expect(replayed).toBe(saved.marker);
+    expect(resolveCanary(reopened.store, replayed!).output).toEqual(OUTPUT);
+  });
+
+  it("missing predecessor 在事务内 fail-closed，state 与 edge 都零写入", () => {
+    const { store, repository } = makeStore();
+    const before = new DatabaseSync(resolve(dir, "state.db"));
+    const beforeStates = (before.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number }).n;
+    const beforeEdges = (before.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number }).n;
+    before.close();
+
+    expectReason(() => store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: 1,
+      predecessorStateId: "missing-predecessor-state-id",
+      compactInputDigest: "missing-predecessor-input",
+      accountCandidates: [CANARIES.account],
+    }), "stale_generation");
+
+    const after = new DatabaseSync(resolve(dir, "state.db"));
+    expect((after.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number }).n)
+      .toBe(beforeStates);
+    expect((after.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as { n: number }).n)
+      .toBe(beforeEdges);
+    after.close();
+    expect(repository.stats().count).toBe(beforeStates);
+  });
+
+  it("edge target state 缺失时 fail-closed，不返回孤儿 marker", () => {
+    const { store, repository } = makeStore();
+    const saved = store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: 0,
+      predecessorStateId: null,
+      compactInputDigest: "orphan-target-input",
+      accountCandidates: [CANARIES.account],
+    });
+    // 绕过产品删除 helper，模拟旧版本遗留/手工破坏造成的历史孤儿 edge。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const stateId = saved.marker.match(/codex-opaque-state:v1:([A-Za-z0-9_-]{32}):/)![1]!;
+    db.prepare("DELETE FROM opaque_states WHERE lookup_digest = ?").run(repository.lookupFor(stateId));
+    db.close();
+
+    expectReason(() => store.findSuccessorMarker({
+      predecessorMarker: null,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      compactInputDigest: "orphan-target-input",
+      variantHash: CANARIES.variant,
+      accountCandidates: [CANARIES.account],
+    }), "state_corrupt");
+  });
+
+  it("edge 查询继续执行 session/model/account 与 target 完整认证门禁", () => {
+    const { store } = makeStore();
+    const saved = store.save({
+      output: OUTPUT,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      accountEntryId: CANARIES.account,
+      variantHash: CANARIES.variant,
+      expectedGeneration: 0,
+      predecessorStateId: null,
+      compactInputDigest: "gated-root-input",
+      accountCandidates: [CANARIES.account],
+    });
+    const query = {
+      predecessorMarker: null,
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
+      compactInputDigest: "gated-root-input",
+      variantHash: CANARIES.variant,
+      accountCandidates: [CANARIES.account],
+    } as const;
+
+    expect(store.findSuccessorMarker(query)).toBe(saved.marker);
+    expect(store.findSuccessorMarker({ ...query, sessionId: "other-session" })).toBeNull();
+    expect(store.findSuccessorMarker({ ...query, model: "gpt-5.5" })).toBeNull();
+    expect(store.findSuccessorMarker({ ...query, accountCandidates: ["entry-other"] })).toBeNull();
   });
 });
 
@@ -943,6 +1389,8 @@ describe("successor 映射 — 与 state 同等的认证标准", () => {
       variantHash: CANARIES.variant,
       expectedGeneration: resolved.generation,
       predecessorStateId: resolved.stateId,
+      compactInputDigest: DIGESTS.successor,
+      accountCandidates: [CANARIES.account],
     });
     repository.close();
     return { first: first.marker, second: second.marker };
@@ -992,7 +1440,7 @@ describe("successor 映射 — 与 state 同等的认证标准", () => {
     // 返回 null 会让调用方重打一次上游、随后撞 stale_generation，
     // 把真正的损坏原因彻底掩盖。
     expectReason(
-      () => reopened.store.findSuccessorMarker(first, CANARIES.account),
+      () => findCanarySuccessor(reopened.store, first),
       "state_corrupt",
     );
   });
@@ -1014,6 +1462,8 @@ describe("容量上限 — 不可满足时必须回滚", () => {
       variantHash: CANARIES.variant,
       expectedGeneration: resolved.generation,
       predecessorStateId: resolved.stateId,
+      compactInputDigest: DIGESTS.successor,
+      accountCandidates: [CANARIES.account],
     }), "state_too_large");
 
     repository.close();
@@ -1111,17 +1561,22 @@ describe("successor 映射语义", () => {
     repository.saveWithCas({
       stateId: "forged-state-id",
       binding: repository.bindingFor(CANARIES.session, "gpt-5.4", CANARIES.variant),
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
       accountEntryId: CANARIES.account,
+      accountCandidates: [CANARIES.account],
       expectedGeneration: resolved.generation,
       plaintext: Buffer.from("{}", "utf-8"),
       createdAt: Date.now(),
       expiresAt: Date.now() + TTL_MS,
       predecessorStateId: resolved.stateId,
       successorMarker: "AEAD-valid-but-not-a-marker",
+      compactInputDigest: DIGESTS.forged,
     });
 
-    expect(() => store.findSuccessorMarker(first.marker, CANARIES.account))
-      .toThrowError(OpaqueCompactStateError);
+    expect(() => findCanarySuccessor(store, first.marker, {
+      compactInputDigest: DIGESTS.forged,
+    })).toThrowError(OpaqueCompactStateError);
   });
 });
 
@@ -1155,13 +1610,17 @@ describe("successor 冷启动语义校验", () => {
     repository.saveWithCas({
       stateId: "legit-looking-state",
       binding: repository.bindingFor(CANARIES.session, "gpt-5.4", CANARIES.variant),
+      sessionId: CANARIES.session,
+      model: "gpt-5.4",
       accountEntryId: CANARIES.account,
+      accountCandidates: [CANARIES.account],
       expectedGeneration: resolved.generation,
       plaintext: Buffer.from(payload, "utf-8"),
       createdAt: now,
       expiresAt: now + TTL_MS,
       predecessorStateId: resolved.stateId,
       successorMarker: "AEAD-valid-but-not-a-marker",
+      compactInputDigest: DIGESTS.forged,
     });
     repository.close();
 
@@ -1313,5 +1772,338 @@ describe("store lock — 同进程语义", () => {
     first.release();
     const second = acquireOpaqueCompactStoreLock(lockPath);
     second.release();
+  });
+});
+
+// ── Task #45：旧 store 原子迁移 ────────────────────────────────
+//
+// 设计意图：升级要保住旧 marker 仍能取回的 state，同时**绝不**把旧的
+// predecessor→successor 单键映射伪造成新的内容寻址 edge。因此 state 行按旧
+// AAD 解封 / 新 AAD 重封逐字保留，edge 表整体丢弃重建；整个过程一个事务，
+// 失败即回滚成完整旧格式并给出自己的结构化原因。
+
+/** 直接读盘断言 schema 形状，不经过任何实现代码。 */
+function inspectSchema(): {
+  version: string | undefined;
+  stateColumns: string[];
+  successorColumns: string[];
+  stateCount: number;
+  successorCount: number;
+} {
+  const db = new DatabaseSync(resolve(dir, "state.db"));
+  try {
+    return {
+      version: (db.prepare("SELECT value FROM opaque_meta WHERE key = 'schema_version'").get() as
+        | { value: string }
+        | undefined)?.value,
+      stateColumns: (db.prepare("PRAGMA table_info(opaque_states)").all() as { name: string }[])
+        .map((column) => column.name),
+      successorColumns: (db.prepare("PRAGMA table_info(opaque_successors)").all() as
+        { name: string }[]).map((column) => column.name),
+      stateCount: (db.prepare("SELECT COUNT(*) AS n FROM opaque_states").get() as { n: number }).n,
+      successorCount: (db.prepare("SELECT COUNT(*) AS n FROM opaque_successors").get() as
+        { n: number }).n,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function seedLegacy(schemaVersion: 2 | 3, includeLastUsedMac?: boolean) {
+  return seedLegacyOpaqueStore({
+    dir,
+    keyringFile: keyringFile(),
+    schemaVersion,
+    ...(includeLastUsedMac === undefined ? {} : { includeLastUsedMac }),
+  });
+}
+
+describe("schema 迁移 — v2/v3 原子升级到 v4", () => {
+  it("v3→v4：旧 marker 仍可 resolve，旧 edge 全部丢弃且不产生通配边", () => {
+    const seeded = seedLegacy(3);
+    expect(inspectSchema().version).toBe("3");
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(true);
+
+    const store = getOpaqueCompactStateStore();
+    const restored = store.resolve({
+      marker: seeded.marker,
+      sessionId: seeded.sessionId,
+      model: seeded.model,
+      variantHash: seeded.variantHash,
+      accountCandidates: [seeded.accountEntryId],
+    });
+    // stateId / binding / generation / payload / compHash 都必须逐字延续。
+    expect(restored.output).toEqual(seeded.output);
+    expect(restored.preservedTail).toEqual(seeded.preservedTail);
+    expect(restored.stateId).toBe(seeded.stateId);
+    expect(restored.generation).toBe(1);
+    expect(restored.accountEntryId).toBe(seeded.accountEntryId);
+
+    const schema = inspectSchema();
+    expect(schema.version).toBe(String(OPAQUE_REPOSITORY_SCHEMA_VERSION));
+    expect(schema.stateCount).toBe(1);
+    // 旧 edge 没有 compactInputDigest 分量，无法无损升级 —— 只能整表丢弃。
+    expect(schema.successorColumns).toContain("edge_lookup");
+    expect(schema.successorCount).toBe(0);
+
+    // 决定性断言：旧 predecessor 上不存在任何"通配"边。任意 digest 都必须查不到，
+    // 否则升级后第一次重试就会拿到一个语义上不属于它的 marker。
+    for (const digest of ["digest-a", "digest-b", DIGESTS.successor]) {
+      expect(store.findSuccessorMarker({
+        predecessorMarker: seeded.marker,
+        sessionId: seeded.sessionId,
+        model: seeded.model,
+        compactInputDigest: digest,
+        variantHash: seeded.variantHash,
+        accountCandidates: [seeded.accountEntryId],
+      })).toBeNull();
+    }
+  });
+
+  it("v2→v4：补齐并回填 last_used_mac，而不是 DEFAULT '' 放行", () => {
+    const seeded = seedLegacy(2, false);
+    // 前提核实：最初的 v2 库整列缺失，不是"有列但为空"。
+    expect(inspectSchema().stateColumns).not.toContain("last_used_mac");
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(true);
+
+    const restored = getOpaqueCompactStateStore().resolve({
+      marker: seeded.marker,
+      sessionId: seeded.sessionId,
+      model: seeded.model,
+      variantHash: seeded.variantHash,
+      accountCandidates: [seeded.accountEntryId],
+    });
+    expect(restored.output).toEqual(seeded.output);
+    expect(restored.stateId).toBe(seeded.stateId);
+
+    // 回填的必须是**真实 MAC**：空串会让 LRU 排序依据永远处于未认证状态。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare(
+      "SELECT lookup_digest, last_used_at, last_used_mac FROM opaque_states LIMIT 1",
+    ).get() as { lookup_digest: string; last_used_at: number; last_used_mac: string };
+    db.close();
+    expect(row.last_used_mac).not.toBe("");
+    expect(row.last_used_mac).toBe(
+      computeMutableMetaMac(seeded.keyring, row.lookup_digest, "last_used_at", row.last_used_at),
+    );
+  });
+
+  it("重封之后冷启动全扫 unreadable=0（新 AAD 与新版本严格一致）", () => {
+    const seeded = seedLegacy(3);
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(true);
+    handle.close();
+
+    // 用一个全新 repository 重扫：迁移写下的密文必须能被当前版本 AAD 完整认证。
+    const reopened = makeStore();
+    const recovered = reopened.repository.recover();
+    expect(recovered.unreadable).toBe(0);
+    expect(recovered.retained).toBe(1);
+    void seeded;
+  });
+
+  it("迁移中途失败：整体 ROLLBACK，旧库仍是完整旧 schema，且可再次迁移", () => {
+    const seeded = seedLegacy(3);
+
+    // 注入失败：破坏密文让旧 AAD 解封失败。迁移必须整体回滚，而不是丢掉这一行
+    // 继续写新格式——那等于用一次升级悄悄吞掉用户的 state。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const original = Buffer.from(
+      (db.prepare("SELECT ciphertext FROM opaque_states LIMIT 1").get() as
+        { ciphertext: Uint8Array }).ciphertext,
+    );
+    const corrupted = Buffer.from(original);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, seeded.lookupDigest);
+    db.close();
+
+    const failed = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(failed);
+    expect(failed.ready).toBe(false);
+    // 迁移失败必须自成一类：旧库完好，正确动作是排查后重试升级，
+    // 报成 state_corrupt 会误导运维去隔离/重建。
+    expect(failed.reason).toBe("migration_failed");
+
+    // 旧库原地未动：版本号、列形状、行数全部保持 v3。
+    const schema = inspectSchema();
+    expect(schema.version).toBe("3");
+    expect(schema.successorColumns).not.toContain("edge_lookup");
+    expect(schema.stateCount).toBe(1);
+    expect(schema.successorCount).toBe(1);
+    // 迁移失败不是数据损坏，绝不能顺手隔离掉一份仍然可用的库。
+    expect(existsSync(resolve(dir, "quarantine"))).toBe(false);
+    expect(existsSync(resolve(dir, "QUARANTINED.json"))).toBe(false);
+    failed.close();
+
+    // 修好注入的损坏后，同一份库必须还能正常迁移 —— 证明上一次真的只是回滚。
+    const repaired = new DatabaseSync(resolve(dir, "state.db"));
+    repaired.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(original, seeded.lookupDigest);
+    repaired.close();
+
+    const retried = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(retried);
+    expect(retried.ready).toBe(true);
+    expect(inspectSchema().version).toBe(String(OPAQUE_REPOSITORY_SCHEMA_VERSION));
+    expect(getOpaqueCompactStateStore().resolve({
+      marker: seeded.marker,
+      sessionId: seeded.sessionId,
+      model: seeded.model,
+      variantHash: seeded.variantHash,
+      accountCandidates: [seeded.accountEntryId],
+    }).output).toEqual(seeded.output);
+  });
+
+  it("篡改过的 last_used_mac 不会被迁移洗白", () => {
+    const seeded = seedLegacy(3);
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("UPDATE opaque_states SET last_used_at = ? WHERE lookup_digest = ?")
+      .run(1, seeded.lookupDigest);
+    db.close();
+
+    // 迁移是唯一一次全库重写的机会：在这里放行未认证的行，等于用新密文
+    // 给旧的篡改盖章，之后所有 recover 都会认为它合法。
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("migration_failed");
+    expect(inspectSchema().version).toBe("3");
+  });
+
+  it("太旧（v1）的 schema 仍然 schema_unsupported，不猜列布局", () => {
+    seedLegacy(3);
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("UPDATE opaque_meta SET value = '1' WHERE key = 'schema_version'").run();
+    db.close();
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("schema_unsupported");
+    expect(inspectSchema().version).toBe("1");
+  });
+});
+
+// ── Task #45：持久 quarantine active marker ────────────────────
+
+describe("quarantine active marker — 隔离必须跨重启稳定", () => {
+  /** 制造一次真实隔离，返回第一次的 handle 结果。 */
+  function quarantineOnce(): { reason: string | null } {
+    const first = startOpaqueCompactRuntime(runtimeConfig());
+    saveCanaryState(getOpaqueCompactStateStore());
+    first.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare("SELECT lookup_digest, ciphertext FROM opaque_states LIMIT 1").get() as
+      | { lookup_digest: string; ciphertext: Uint8Array };
+    const corrupted = Buffer.from(row.ciphertext);
+    corrupted[0] = corrupted[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(corrupted, row.lookup_digest);
+    db.close();
+
+    const second = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(second);
+    return { reason: second.reason };
+  }
+
+  it("隔离后连续重启：reason 逐字稳定、快照恒为 1、正常库不重建", () => {
+    const { reason } = quarantineOnce();
+    expect(reason).toBe("state_corrupt");
+
+    const markerPath = resolve(dir, "QUARANTINED.json");
+    expect(existsSync(markerPath)).toBe(true);
+    const marker = JSON.parse(readFileSync(markerPath, "utf-8")) as {
+      version: number;
+      storeId: string;
+      reason: string;
+      quarantinedAt: string;
+      snapshot: string;
+      files: string[];
+    };
+    expect(marker.reason).toBe("recover_unreadable");
+    expect(marker.files).toContain("state.db");
+    // storeId 必须与 sentinel 一致，后续启动才能判断"这枚标记属于我这份 store"。
+    expect(marker.storeId).toBe(
+      loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), { allowCreate: false })!.storeId,
+    );
+
+    for (let restart = 0; restart < 3; restart += 1) {
+      const handle = startOpaqueCompactRuntime(runtimeConfig());
+      openHandles.push(handle);
+      // 光"打日志 + not-ready"扛不住重启：没有 active marker 时下一次启动
+      // 会照常建库，隔离等于白做。
+      expect(handle.ready, `restart ${restart}`).toBe(false);
+      expect(handle.reason, `restart ${restart}`).toBe("state_corrupt");
+      // 正常路径上不得重新出现库，也不得再产生第二份快照。
+      expect(existsSync(resolve(dir, "state.db")), `restart ${restart}`).toBe(false);
+      expect(readdirSync(resolve(dir, "quarantine"))).toHaveLength(1);
+      // 首次隔离时间不得被后续重启改写。
+      expect(JSON.parse(readFileSync(markerPath, "utf-8")).quarantinedAt)
+        .toBe(marker.quarantinedAt);
+      handle.close();
+    }
+  });
+
+  it("active marker 损坏时 fail-closed，绝不忽略后继续建库", () => {
+    quarantineOnce();
+    writeFileSync(resolve(dir, "QUARANTINED.json"), "{ not json");
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(false);
+    expect(handle.reason).toBe("state_corrupt");
+    expect(existsSync(resolve(dir, "state.db"))).toBe(false);
+  });
+
+  it("marker 在而 sentinel 缺失时 fail-closed，不得凭空铸一个新身份", () => {
+    quarantineOnce();
+    // 这是隔离机制最危险的一条后门：新建的 sentinel 会拿到随机 storeId，
+    // 它与 marker 里的 storeId 永远不可能相等，于是身份比对必然放行，
+    // "删掉 sentinel"就等于一键绕过隔离并重建空库。
+    rmSync(resolve(dir, "store.sentinel"));
+
+    for (let restart = 0; restart < 3; restart += 1) {
+      const handle = startOpaqueCompactRuntime(runtimeConfig());
+      openHandles.push(handle);
+      expect(handle.ready, `restart ${restart}`).toBe(false);
+      expect(handle.reason, `restart ${restart}`).toBe("state_corrupt");
+      // 既不能建库，也不能顺手把 sentinel 补回来——身份必须由运维显式重建。
+      expect(existsSync(resolve(dir, "state.db")), `restart ${restart}`).toBe(false);
+      expect(existsSync(resolve(dir, "store.sentinel")), `restart ${restart}`).toBe(false);
+      expect(readdirSync(resolve(dir, "quarantine"))).toHaveLength(1);
+      handle.close();
+    }
+  });
+
+  it("marker 的 storeId 不匹配时不连坐另一份重建好的 store", () => {
+    quarantineOnce();
+    // 运维显式重建 store 身份：sentinel 真实存在且换了 storeId。
+    // 这与"sentinel 不见了"是两回事——上一份 store 的隔离标记不该连坐它。
+    rmSync(resolve(dir, "store.sentinel"));
+    const rebuilt = loadOpaqueCompactSentinel(resolve(dir, "store.sentinel"), {
+      allowCreate: true,
+    })!;
+    expect(rebuilt.created).toBe(true);
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(true);
+    expect(existsSync(resolve(dir, "state.db"))).toBe(true);
+    // 旧隔离证据与标记都必须原样保留，不因新 store 上线被清掉。
+    expect(existsSync(resolve(dir, "QUARANTINED.json"))).toBe(true);
+    expect(readdirSync(resolve(dir, "quarantine"))).toHaveLength(1);
+
+    // 新 store 正常可用。
+    const saved = saveCanaryState(getOpaqueCompactStateStore());
+    expect(resolveCanary(getOpaqueCompactStateStore(), saved.marker).output).toEqual(OUTPUT);
   });
 });

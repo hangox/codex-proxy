@@ -42,7 +42,7 @@ const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER = "x-responsesapi-include-tim
 const X_CODEX_PARENT_THREAD_ID_HEADER = "x-codex-parent-thread-id";
 const X_CODEX_WINDOW_ID_HEADER = "x-codex-window-id";
 
-function normalizeServiceTierForUpstream(serviceTier: string | null | undefined): string | undefined {
+export function normalizeServiceTierForUpstream(serviceTier: string | null | undefined): string | undefined {
   if (!serviceTier) return undefined;
   return serviceTier === "fast" ? "priority" : serviceTier;
 }

@@ -4,7 +4,11 @@ import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { CodexInputItem, CodexResponsesRequest } from "../../proxy/codex-types.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
-import { buildClaudeCodeOpaqueCompactRequest, executeCompactOnly } from "./codex-compact-service.js";
+import {
+  buildClaudeCodeOpaqueCompactRequest,
+  executeCompactOnly,
+  opaqueCompactSemanticDigest,
+} from "./codex-compact-service.js";
 import {
   OpaqueCompactStateError,
   extractOpaqueCompactStateMarker,
@@ -129,22 +133,6 @@ export async function respondWithOpaqueCompactMarker(options: {
   c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
   const started = Date.now();
 
-  // 崩溃恢复的幂等路径：上一次 compact 可能已经 COMMIT 成功，只是 marker 没送到
-  // 客户端。此时客户端会拿着 predecessor marker 重试——直接回放已经生成的
-  // successor marker，不要再打一次上游。
-  if (previousMarker && requiredEntryId) {
-    // 这里**不吞**异常：损坏/密钥不符/账号不符都必须冒泡成结构化 409，
-    // 否则会退化成"重打一次上游"，随后撞上 stale_generation 并掩盖真实原因。
-    const replayed = getOpaqueCompactStateStore().findSuccessorMarker(previousMarker, requiredEntryId);
-    if (replayed !== null) {
-      console.log(
-        `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=successor_replay` +
-          ` acct=${auditAccountTag(requiredEntryId)}`,
-      );
-      return makeMarkerResponse(replayed, model);
-    }
-  }
-
   const opaqueRequest = buildClaudeCodeOpaqueCompactRequest(req, translated);
   const { compactRequest } = opaqueRequest;
   const preservedTail = mergeOpaquePreservedTails(
@@ -159,6 +147,48 @@ export async function respondWithOpaqueCompactMarker(options: {
     );
     compactRequest.input = restoreOpaqueCompactInput(compactRequest.input, previousMarker, previousOutput);
   }
+  // digest 必须算在**最终真正送上游的** compactRequest 上：preservedTail 合并与
+  // predecessor 历史还原都会改写 input，早算等于给同一份内容算出不同 edge。
+  const compactInputDigest = opaqueCompactSemanticDigest(compactRequest);
+  const variantHash = opaqueCompactVariantHash(translated);
+
+  // 账号候选集合：非 root 时 marker 已经把记录钉死在 requiredEntryId 上，
+  // 只用它即可；root 还没有任何账号线索，必须拿本实例全部账号去试，否则
+  // root edge 永远解不开、幂等回放形同虚设。
+  const accountCandidates = previousMarker && requiredEntryId
+    ? [requiredEntryId]
+    : accountPool.getAllEntries().map((entry) => entry.id);
+
+  // 崩溃恢复的幂等路径：上一次 compact 可能已经 COMMIT 成功，只是 marker 没送到
+  // 客户端。此时客户端会拿着同样的输入重试——直接回放已经生成的 marker，
+  // 不要再打一次上游。
+  // 回放查询因此必须排在 digest 计算之后：edge 是内容寻址的
+  // (session/model, predecessor-或-root, digest, account binding, authorization binding)，
+  // 没有 digest 与当前 variant binding 就无法判定
+  // "是同一次 compact 的重试"还是"同一 predecessor 上的另一条分叉"。
+  // root（无 previousMarker）同样要查：首次 compact 的 post-commit 崩溃窗口
+  // 与后续 compact 完全一样，跳过等于让首次 compact 裸奔。
+  {
+    // 这里**不吞**异常：已命中精确 edge 后的损坏或密钥不符必须冒泡成结构化
+    // 409；其他账号/variant 因为 lookup 不同只会正常未命中，绝不会接触该行。
+    const replayed = getOpaqueCompactStateStore().findSuccessorMarker({
+      predecessorMarker: previousMarker ?? null,
+      sessionId: clientConversationId,
+      model: translated.model,
+      compactInputDigest,
+      variantHash,
+      accountCandidates,
+    });
+    if (replayed !== null) {
+      console.log(
+        `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=successor_replay` +
+          ` root=${previousMarker ? "0" : "1"}` +
+          (requiredEntryId ? ` acct=${auditAccountTag(requiredEntryId)}` : ""),
+      );
+      return makeMarkerResponse(replayed, model);
+    }
+  }
+
   const compact = await executeCompactOnly({
     accountPool,
     cookieJar,
@@ -171,19 +201,27 @@ export async function respondWithOpaqueCompactMarker(options: {
   if (abortController.signal.aborted) throw new DOMException("Aborted", "AbortError");
   // save() 内部在一个事务里完成 CAS + 落盘；只有它正常返回（COMMIT 成功）
   // 之后 marker 才会发给客户端，避免客户端拿到一个数据库里不存在的 marker。
+  // save 内部在一个事务里先查 edge 再 CAS：并发的 loser 会拿到 winner 的
+  // marker（replayed=true），此时本次上游结果直接丢弃，响应 winner marker。
+  // 这正是"相同 edge 单 COMMIT + loser 回放"的落点。
   const stored = getOpaqueCompactStateStore().save({
     output: compact.output,
     preservedTail,
     sessionId: clientConversationId,
     model: translated.model,
     accountEntryId: compact.entryId,
-    variantHash: opaqueCompactVariantHash(translated),
+    variantHash,
     expectedGeneration: expectedGeneration ?? 0,
     predecessorStateId: previousStateId ?? null,
+    compactInputDigest,
+    // save 的 edge 精确绑定本次真正执行 compact 的账号；其他账号的同内容
+    // root 请求必须各自提交 generation=1，不能复用本次 output。
+    accountCandidates: Array.from(new Set([...accountCandidates, compact.entryId])),
   });
   // 审计日志用不可逆短标签，不落明文 entryId。
   console.log(
-    `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=state_saved acct=${auditAccountTag(compact.entryId)}` +
+    `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=${stored.replayed ? "state_replayed" : "state_saved"}` +
+      ` acct=${auditAccountTag(compact.entryId)}` +
       ` output_items=${compact.output.length} preserved_items=${preservedTail.length}` +
       ` generation=${stored.generation} compact_ms=${compact.compactLatencyMs}` +
       ` total_ms=${Date.now() - started} marker_chars=${stored.marker.length}`,

@@ -11,6 +11,7 @@ import {
   OpaqueCompactRepositoryError,
   type OpaqueCompactRecordMeta,
 } from "./opaque-compact-repository.js";
+import { canonicalJson } from "./canonical-json.js";
 
 const MARKER_PREFIX = "codex-opaque-state:v1";
 const MARKER_ANALYSIS = "Opaque compact state retained locally.";
@@ -58,6 +59,11 @@ export type OpaqueCompactStateFailure =
   | "stale_generation"
   /** sentinel 表明 store 曾初始化，但库被清零/删除/换掉。 */
   | "store_reset_detected"
+  /**
+   * 旧 schema → 当前 schema 的迁移失败。旧库已回滚为完整旧格式，可重试升级。
+   * 与 state_corrupt 严格区分：后者意味着数据本身坏了、需要隔离取证。
+   */
+  | "migration_failed"
   /** keyring retention 策略不足以覆盖 state TTL。 */
   | "key_policy_invalid";
 
@@ -169,16 +175,6 @@ function preservedToolItemKey(item: CodexInputItem): string | null {
   if (item.type === "function_call") return `call:${item.call_id}`;
   if (item.type === "function_call_output") return `output:${item.call_id}`;
   return null;
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "undefined";
 }
 
 function canonicalPreservedToolItem(item: CodexInputItem): string {
@@ -503,7 +499,21 @@ export class OpaqueCompactStateStore {
     expectedGeneration?: number;
     /** 本次 compact 所基于的 predecessor stateId，用于崩溃后幂等回放。 */
     predecessorStateId?: string | null;
-  }): { marker: string; state: OpaqueCompactState; generation: number } {
+    /**
+     * 本次 compact 请求的语义摘要，edge 的内容寻址分量。
+     * 必填：缺了它 edge 会退化成 (predecessor) 单键，同一 predecessor 上的
+     * 不同分叉会互相覆盖。
+     */
+    compactInputDigest: string;
+    /** 本实例已知的账号集合；回放 winner edge 时解封数据密钥必需。 */
+    accountCandidates?: readonly string[];
+  }): {
+    marker: string;
+    state: OpaqueCompactState;
+    generation: number;
+    /** true 表示本次是并发/重试的 loser，返回的是既有 winner，未写入新 state。 */
+    replayed: boolean;
+  } {
     const stateId = base64Url(randomBytes(24));
     const preservedTail = options.preservedTail ?? [];
     const compHash = statePayloadHash(options.output, preservedTail);
@@ -525,32 +535,98 @@ export class OpaqueCompactStateStore {
     const marker =
       `<analysis>${MARKER_ANALYSIS}</analysis>\n<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${this.sign(stateId, compHash)}</summary>`;
 
-    const generation = this.persistent
-      ? this.persistState(stateId, state, options.expectedGeneration ?? 0, {
-          predecessorStateId: options.predecessorStateId ?? null,
-          successorMarker: marker,
-        })
-      : this.storeInMemory(stateId, state, bytes);
+    if (!this.persistent) {
+      return { marker, state, generation: this.storeInMemory(stateId, state, bytes), replayed: false };
+    }
 
-    return { marker, state, generation };
+    const candidates = options.accountCandidates ?? [options.accountEntryId];
+    const outcome = this.persistState(stateId, state, options.expectedGeneration ?? 0, {
+      predecessorStateId: options.predecessorStateId ?? null,
+      successorMarker: marker,
+      compactInputDigest: options.compactInputDigest,
+      accountCandidates: candidates,
+    });
+    if (outcome.kind === "committed") {
+      return { marker, state, generation: outcome.generation, replayed: false };
+    }
+
+    // 并发/重试的 loser：winner 已经落盘，本次候选 state 一个字节都没写。
+    // 必须交出 winner 的**真实** state，而不是手里这份候选——两者由不同的
+    // 上游调用产生，内容不同，marker 里的 compHash 也只对 winner 成立。
+    // 直接返回候选 state 会让调用方按 A 的内容去还原 B 的 marker，restore 时
+    // 必然 comp_hash_mismatch。
+    //
+    // confirmDelivery=false 是关键：客户端此刻还没拿到 winner marker，现在就
+    // 回收 incoming edge 等于亲手拆掉自己正要用的幂等凭据——响应再丢一次就
+    // 只能重打上游。确认交付只发生在客户端真的带着 marker 回来时。
+    const winner = this.resolve({
+      marker: outcome.marker,
+      sessionId: options.sessionId,
+      model: options.model,
+      accountCandidates: candidates,
+      variantHash: state.variantHash,
+      confirmDelivery: false,
+    });
+    const { generation: winnerGeneration, stateId: _winnerStateId, ...winnerState } = winner;
+    return {
+      marker: outcome.marker,
+      state: winnerState,
+      generation: winnerGeneration,
+      replayed: true,
+    };
   }
 
   /**
    * 崩溃恢复用的幂等查询：若客户端手里的 predecessor marker 已经产生过
    * successor（COMMIT 成功但响应没送达），直接返回那个 marker，不再打上游。
    */
-  findSuccessorMarker(predecessorMarker: string, accountEntryId: string): string | null {
+  findSuccessorMarker(options: {
+    /** predecessor 的 marker；null 表示 root（首次 compact）。 */
+    predecessorMarker: string | null;
+    sessionId: string;
+    model: string;
+    compactInputDigest: string;
+    variantHash: string;
+    accountCandidates: readonly string[];
+  }): string | null {
     if (!this.persistent) return null;
-    let parsed: ParsedMarker;
-    try {
-      parsed = this.parse(predecessorMarker);
-    } catch {
-      // marker 本身不是有效格式 → 没有可回放的映射，走正常 compact 流程。
-      return null;
+    // marker 的解析与验签留在 state 层：repository 只认 stateId，不该知道
+    // marker 的语法与签名密钥。
+    let predecessorStateId: string | null = null;
+    if (options.predecessorMarker !== null) {
+      let parsed: ParsedMarker;
+      try {
+        parsed = this.parse(options.predecessorMarker);
+      } catch {
+        // marker 本身不是有效格式 → 没有可回放的映射，走正常 compact 流程。
+        return null;
+      }
+      if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) return null;
+      predecessorStateId = parsed.stateId;
     }
-    if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) return null;
     try {
-      return this.repository!.findSuccessorMarker(parsed.stateId, accountEntryId);
+      const marker = this.repository!.findSuccessorMarker({
+        sessionId: options.sessionId,
+        model: options.model,
+        predecessorStateId,
+        compactInputDigest: options.compactInputDigest,
+        binding: this.repository!.bindingFor(options.sessionId, options.model, options.variantHash),
+        accountCandidates: options.accountCandidates,
+      });
+      if (marker === null) return null;
+
+      // repository 已认证 edge 与 target 存在；返回客户端前再走 state 层完整认证：
+      // marker 验签、state AEAD、payload schema、session/model/account/compHash 必须全部
+      // 通过。confirmDelivery=false 保留这条 edge，直到客户端真正带 marker 回来。
+      this.resolve({
+        marker,
+        sessionId: options.sessionId,
+        model: options.model,
+        accountCandidates: options.accountCandidates,
+        variantHash: options.variantHash,
+        confirmDelivery: false,
+      });
+      return marker;
     } catch (error) {
       // 只有"没有映射"才返回 null。损坏/密钥不符/账号不符都必须向上抛：
       // 吞掉会让进程重打一次上游、随后撞上 stale_generation，把真正的
@@ -568,6 +644,12 @@ export class OpaqueCompactStateStore {
     /** 本实例已知的账号集合；持久化模式下解封数据密钥必需。 */
     accountCandidates?: readonly string[];
     variantHash?: string;
+    /**
+     * 是否把这次 resolve 当作"客户端已收到该 marker"的证据（默认 true）。
+     * 只有 save 的 replay 路径传 false：那时 marker 还没送出去，回收 incoming
+     * edge 会拆掉正要交付的幂等凭据。
+     */
+    confirmDelivery?: boolean;
   }): OpaqueCompactState & { generation: number; stateId: string } {
     const parsed = this.parse(options.marker);
     if (!this.verify(parsed.stateId, parsed.compHash, parsed.signature)) {
@@ -599,10 +681,12 @@ export class OpaqueCompactStateStore {
     }
 
     if (this.persistent) {
-      // 客户端确实在使用这个 successor —— 现在才可以安全回收它的 predecessor。
-      // 这是 predecessor 被删除的唯一入口，保证了"COMMIT 后崩溃"时旧 marker 仍可用。
+      // 客户端确实在使用这个 state —— 现在才可以安全回收指向它的 incoming edge。
+      // 这保证了"COMMIT 后崩溃、marker 没送达"时旧输入仍能回放出同一个 marker。
       const meta = (loaded as { meta?: OpaqueCompactRecordMeta }).meta;
-      if (meta !== undefined) this.repository!.confirmSuccessorUsed(meta);
+      if (meta !== undefined && (options.confirmDelivery ?? true)) {
+        this.repository!.confirmSuccessorUsed(meta);
+      }
     } else {
       // 内存模式维持 LRU 顺序。
       this.states.delete(parsed.stateId);
@@ -640,8 +724,15 @@ export class OpaqueCompactStateStore {
     stateId: string,
     state: OpaqueCompactState,
     expectedGeneration: number,
-    delivery: { predecessorStateId: string | null; successorMarker: string },
-  ): number {
+    delivery: {
+      predecessorStateId: string | null;
+      successorMarker: string;
+      compactInputDigest: string;
+      accountCandidates: readonly string[];
+    },
+  ):
+    | { kind: "committed"; generation: number }
+    | { kind: "replayed"; marker: string; generation: number } {
     const repository = this.repository!;
     // binding 来自稳定索引域，跨 master key 轮换不变 —— CAS 因此不会在轮换后分裂。
     const binding = repository.bindingFor(state.sessionId, state.model, state.variantHash);
@@ -661,15 +752,21 @@ export class OpaqueCompactStateStore {
       const saved = repository.saveWithCas({
         stateId,
         binding,
+        sessionId: state.sessionId,
+        model: state.model,
         accountEntryId: state.accountEntryId,
+        accountCandidates: delivery.accountCandidates,
         expectedGeneration,
         plaintext: Buffer.from(JSON.stringify(payload), "utf-8"),
         createdAt: state.createdAt,
         expiresAt: state.expiresAt,
         predecessorStateId: delivery.predecessorStateId,
         successorMarker: delivery.successorMarker,
+        compactInputDigest: delivery.compactInputDigest,
       });
-      return saved.generation;
+      return saved.kind === "committed"
+        ? { kind: "committed", generation: saved.generation }
+        : { kind: "replayed", marker: saved.marker, generation: saved.generation };
     } catch (error) {
       throw toStateError(error);
     }
@@ -840,6 +937,8 @@ function toStateError(error: unknown): OpaqueCompactStateError {
         return new OpaqueCompactStateError("account_mismatch");
       case "store_reset_detected":
         return new OpaqueCompactStateError("store_reset_detected");
+      case "migration_failed":
+        return new OpaqueCompactStateError("migration_failed");
       case "state_too_large":
         return new OpaqueCompactStateError("state_too_large");
       default:
@@ -907,6 +1006,7 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
     case "key_mismatch":
     case "state_corrupt":
     case "store_reset_detected":
+    case "migration_failed":
     case "key_policy_invalid":
       return true;
     default:

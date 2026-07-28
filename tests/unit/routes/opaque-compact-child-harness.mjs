@@ -64,6 +64,8 @@ function saveState(store, overrides = {}) {
     variantHash: payload.variantHash ?? "variant-canary-b7f3",
     expectedGeneration: payload.expectedGeneration ?? 0,
     predecessorStateId: payload.predecessorStateId ?? null,
+    compactInputDigest: payload.compactInputDigest ?? "digest-canary-v1",
+    accountCandidates: payload.accountCandidates ?? [payload.accountEntryId ?? "entry-canary-51bd"],
     ...overrides,
   });
 }
@@ -177,7 +179,12 @@ switch (command) {
           expectedGeneration: reader.generation,
           predecessorStateId: reader.stateId,
         });
-        return { label, phase: "committed", generation: saved.generation, marker: saved.marker };
+        return {
+          label,
+          phase: saved.replayed ? "replayed" : "committed",
+          generation: saved.generation,
+          marker: saved.marker,
+        };
       } catch (error) {
         return { label, phase: "rejected", reason: error?.reason ?? error?.message ?? "unknown" };
       }
@@ -192,6 +199,33 @@ switch (command) {
     });
     handle.close();
     process.exit(0);
+    break;
+  }
+
+  // 在 schema 迁移的 COMMIT 前 / 后被真实 SIGKILL。
+  //
+  // 为什么用 monkey-patch 而不是往产品代码里埋钩子：崩溃窗口只有 COMMIT 这一
+  // 瞬间，产品代码里加 fault hook 等于把测试设施带上生产。这里在子进程内替换
+  // `DatabaseSync.prototype.exec`，精确地在迁移事务的 COMMIT 前/后自杀 ——
+  // 迁移是启动期唯一会执行 COMMIT 的路径，因此不会误伤其它事务。
+  case "migrate-and-kill": {
+    const { DatabaseSync } = await import("node:sqlite");
+    const killPhase = payload.killPhase;
+    const originalExec = DatabaseSync.prototype.exec;
+    DatabaseSync.prototype.exec = function patchedExec(sql) {
+      if (sql === "COMMIT" && killPhase === "before-commit") {
+        process.kill(process.pid, "SIGKILL");
+      }
+      const result = originalExec.call(this, sql);
+      if (sql === "COMMIT" && killPhase === "after-commit") {
+        process.kill(process.pid, "SIGKILL");
+      }
+      return result;
+    };
+    // 走到这里说明没有触发注入（例如库已经是新格式），如实报告。
+    const handle = runtime.startOpaqueCompactRuntime(CONFIG);
+    emit({ ok: true, ready: handle.ready, reason: handle.reason, phase: "not-killed" });
+    handle.close();
     break;
   }
 

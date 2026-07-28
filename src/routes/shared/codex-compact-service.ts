@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { stream } from "hono/streaming";
 import type { AccountPool } from "../../auth/account-pool.js";
-import { CodexApiError } from "../../proxy/codex-api.js";
+import { CodexApiError, normalizeServiceTierForUpstream } from "../../proxy/codex-api.js";
 import type { CodexApi } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type {
@@ -27,6 +28,7 @@ import { buildCodexApi } from "./proxy-handler-utils.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
 import { streamResponse } from "./response-processor.js";
 import { auditAccountTag } from "./opaque-compact-audit.js";
+import { canonicalJson } from "./canonical-json.js";
 
 const COMPACT_PROMPT_PREFIX = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.";
 const COMPACT_PROMPT_SECTION_INTRO = "Your summary should include the following sections:";
@@ -369,6 +371,40 @@ export function buildClaudeCodeCompactRequest(
     ...(translated.codexWindowId ? { codexWindowId: translated.codexWindowId } : {}),
     ...(translated.parentThreadId ? { parentThreadId: translated.parentThreadId } : {}),
   };
+}
+
+/**
+ * compact 请求的**语义**摘要（内容寻址 edge 的 digest 分量）。
+ *
+ * 设计意图：同一条 lineage 上"这次 compact 到底压缩了什么"必须由请求内容本身
+ * 决定，而不是由客户端可自由变化的传输/路由字段决定。因此这里只取真正影响
+ * compact 输出语义的字段，按**固定顺序**投影成一个对象再 JSON.stringify：
+ *
+ *   model, input, instructions, tools, parallel_tool_calls, reasoning, text, service_tier
+ *
+ * 被**显式排除**的是 transport/routing 字段：prompt_cache_key、client_metadata、
+ * turnState、turnMetadata、version、betaFeatures、includeTimingMetrics、
+ * codexWindowId、parentThreadId。它们每次请求都可能变（缓存键、窗口 id、
+ * 客户端版本号），把它们纳入 digest 会让同一份历史产生无穷多个 edge，
+ * 内容寻址退化成随机寻址。
+ *
+ * 缺失与空值统一策略：可选字段一律归一到一个确定的空值（tools → `[]`，
+ * 其余 → `null`），因此"字段缺失"与"字段为空数组/空对象"得到同一个 digest，
+ * 不会因为上游翻译层的写法差异分裂成两条 edge。
+ */
+export function opaqueCompactSemanticDigest(request: CodexCompactRequest): string {
+  const projection = {
+    model: request.model,
+    input: request.input,
+    instructions: request.instructions ?? "",
+    // 缺失与空数组必须等价：翻译层对"无工具"两种写法都出现过。
+    tools: request.tools?.length ? request.tools : [],
+    parallel_tool_calls: request.parallel_tool_calls ?? null,
+    reasoning: request.reasoning ?? null,
+    text: request.text ?? null,
+    service_tier: normalizeServiceTierForUpstream(request.service_tier) ?? null,
+  };
+  return createHash("sha256").update(canonicalJson(projection)).digest("base64url");
 }
 
 export function buildClaudeCodeRenderRequest(

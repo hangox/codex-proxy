@@ -19,6 +19,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { seedLegacyOpaqueStore } from "@helpers/opaque-compact-legacy-fixture.js";
 
 // 注意：本文件为每个用例派生 `node --import tsx` 子进程（都要重新编译 TS）。
 // 峰值负载会与其它同样派生子进程的测试争抢 CPU。这里不改全局调度配置——
@@ -97,6 +99,34 @@ function spawnHarness(command: string, payload: unknown = {}): ChildProcessWitho
   child.once("close", () => releaseChildSlot());
   children.push(child);
   return child;
+}
+
+/**
+ * 运行到子进程退出，只报告退出方式与原始输出。
+ *
+ * 与 runHarness 的区别：这里**不要求**子进程留下 JSON —— 专门给"跑到一半被
+ * SIGKILL"的用例用，那种情况下根本不会有结果行。
+ */
+async function runHarnessRaw(
+  command: string,
+  payload: unknown = {},
+): Promise<{ signal: NodeJS.Signals | null; code: number | null; stderr: string }> {
+  await acquireChildSlot();
+  releaseChildSlot();
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawnHarness(command, payload);
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error(`harness ${command} timed out; stderr=${stderr.slice(0, 400)}`));
+    }, CHILD_TIMEOUT_MS);
+    child.stdout.on("data", () => {});
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolvePromise({ signal, code, stderr });
+    });
+  });
 }
 
 /** 运行到子进程自然退出，返回它输出的最后一行 JSON。 */
@@ -249,12 +279,14 @@ describe("opaque compact — 真正并发的 generation CAS", () => {
       results: { phase: string; reason?: string; generation?: number; marker?: string }[];
     }).results;
     const committed = results.filter((entry) => entry.phase === "committed");
-    const rejected = results.filter((entry) => entry.phase === "rejected");
+    const replayed = results.filter((entry) => entry.phase === "replayed");
 
-    // 线性化：恰好一个 winner。
+    // 线性化：相同 edge 恰好一次 COMMIT，loser 回放 winner，而不是暴露
+    // stale_generation 让调用方丢失已经成功提交的 marker。
     expect(committed).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0]!.reason).toBe("stale_generation");
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0]!.marker).toBe(committed[0]!.marker);
+    expect(replayed[0]!.generation).toBe(committed[0]!.generation);
     expect(committed[0]!.generation).toBe(seed.generation! + 1);
 
     // winner 的 marker 必须真实可用——落败方不得作废赢家刚返回的 marker。
@@ -361,6 +393,71 @@ describe("opaque compact — 清零库不得伪装成首次初始化", () => {
     // 没有偷偷造一把新密钥把既有密文变成永久垃圾。
     expect(readdirSync(keyDir)).not.toContain("keyring.json");
   }, 240_000);
+});
+
+describe("opaque compact — schema 迁移的真实 SIGKILL 窗口", () => {
+  /** 直接读盘看 schema 形状，不经过任何实现代码。 */
+  function inspectSchema(): { version: string | undefined; successorColumns: string[] } {
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    try {
+      return {
+        version: (db.prepare("SELECT value FROM opaque_meta WHERE key = 'schema_version'").get() as
+          | { value: string }
+          | undefined)?.value,
+        successorColumns: (db.prepare("PRAGMA table_info(opaque_successors)").all() as
+          { name: string }[]).map((column) => column.name),
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  function seedV3() {
+    return seedLegacyOpaqueStore({
+      dir,
+      keyringFile: resolve(keyDir, "keyring.json"),
+      schemaVersion: 3,
+    });
+  }
+
+  it("COMMIT 之前被 SIGKILL：恢复出的是完整旧格式，下次启动继续迁移", async () => {
+    const seeded = seedV3();
+    expect(inspectSchema().version).toBe("3");
+
+    const killed = await runHarnessRaw("migrate-and-kill", { killPhase: "before-commit" });
+    // 必须是真的被信号打死，而不是自己优雅退出——否则这条用例什么都没证明。
+    expect(killed.signal).toBe("SIGKILL");
+
+    // WAL 恢复只能给出"完整旧格式"或"完整新格式"，绝不能是半迁移。
+    const afterKill = inspectSchema();
+    expect(afterKill.version).toBe("3");
+    expect(afterKill.successorColumns).not.toContain("edge_lookup");
+
+    // 下一次正常启动把迁移做完，旧 marker 依然可用。
+    const restored = await runHarness("resolve", { marker: seeded.marker });
+    expect(restored.ready).toBe(true);
+    expect(restored.ok).toBe(true);
+    expect(JSON.parse(restored.outputJson!)).toEqual(seeded.output);
+    expect(inspectSchema().version).toBe("4");
+  }, 300_000);
+
+  it("COMMIT 之后被 SIGKILL：恢复出的是完整新格式，旧 marker 直接可用", async () => {
+    const seeded = seedV3();
+
+    const killed = await runHarnessRaw("migrate-and-kill", { killPhase: "after-commit" });
+    expect(killed.signal).toBe("SIGKILL");
+
+    // COMMIT 已经返回（WAL + synchronous=FULL），迁移结果必须已经持久。
+    const afterKill = inspectSchema();
+    expect(afterKill.version).toBe("4");
+    expect(afterKill.successorColumns).toContain("edge_lookup");
+
+    const restored = await runHarness("resolve", { marker: seeded.marker });
+    expect(restored.ready).toBe(true);
+    expect(restored.ok).toBe(true);
+    expect(JSON.parse(restored.outputJson!)).toEqual(seeded.output);
+    expect(JSON.parse(restored.preservedTailJson!)).toEqual(seeded.preservedTail);
+  }, 300_000);
 });
 
 describe("opaque compact — 账号域隔离经生产解封路径", () => {

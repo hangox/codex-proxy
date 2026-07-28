@@ -653,7 +653,15 @@ describe("E2E: POST /v1/messages", () => {
     expect(urls[0]).not.toContain("/compact");
   });
 
-  it("opaque compact bridge: a marker with a truncated signature segment is plain text, not 409 (matrix #5)", async () => {
+  // Reviewer Finding #4（B7 覆盖不全）：三段（stateId 32 / compHash 43 /
+  // signature 43）各截断一次，不能只测最后一段——虽然三段共用同一个定长
+  // 正则、风险一致，但既然是参数化就该穷举，不能留一个"看起来测过"的假象
+  // 给 qa 兜底。
+  it.each([
+    ["stateId", 1] as const,
+    ["compHash", 2] as const,
+    ["signature", 3] as const,
+  ])("opaque compact bridge: a marker with a truncated %s segment is plain text, not 409 (matrix #5/B7)", async (_segmentName, groupIndex) => {
     setClaudeCodeOpaqueCompactExperimental(true);
     setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
       ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
@@ -662,12 +670,21 @@ describe("E2E: POST /v1/messages", () => {
     const compactRes = await messagesRequest(defaultBody({
       stream: true,
       messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
-    }), { "x-claude-code-session-id": "session-truncated-marker" });
+    }), { "x-claude-code-session-id": `session-truncated-marker-${groupIndex}` });
     const marker = extractMarkerFromResponse(await compactRes.text());
-    // 截掉最后一段签名（43 字符段）的尾部若干字符：`{43}` 定长量词
-    // 因此不再匹配，strict parse() 拿不到合法三元组。
-    const truncated = marker.slice(0, -8);
+
+    // 精确定位三段各自的边界，只截断目标段的最后一个字符——`{32}`/`{43}`
+    // 定长量词因此不再匹配，strict parse() 拿不到合法三元组，其余段与外层
+    // 标签保持完整。
+    const structureMatch =
+      /^(<analysis>Opaque compact state retained locally\.<\/analysis>\n<summary>codex-opaque-state:v1:)([A-Za-z0-9_-]{32}):([A-Za-z0-9_-]{43}):([A-Za-z0-9_-]{43})(<\/summary>)$/.exec(marker);
+    expect(structureMatch, "marker must match the strict 32:43:43 shape before truncation").not.toBeNull();
+    const [, prefix, stateId, compHash, signature, suffix] = structureMatch!;
+    const segments = [stateId!, compHash!, signature!];
+    segments[groupIndex - 1] = segments[groupIndex - 1]!.slice(0, -1);
+    const truncated = `${prefix}${segments[0]}:${segments[1]}:${segments[2]}${suffix}`;
     expect(truncated).toContain("codex-opaque-state:v1:");
+    expect(truncated).not.toBe(marker);
 
     const urls: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
@@ -680,7 +697,7 @@ describe("E2E: POST /v1/messages", () => {
     const replay = await messagesRequest(defaultBody({
       stream: true,
       messages: [{ role: "assistant", content: truncated }, { role: "user", content: "continue" }],
-    }), { "x-claude-code-session-id": "session-truncated-marker" });
+    }), { "x-claude-code-session-id": `session-truncated-marker-${groupIndex}` });
 
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("truncated passthrough");
@@ -848,6 +865,54 @@ describe("E2E: POST /v1/messages", () => {
         // （不能原样透传，那是把"静默上下文丢失"从回滚期间搬进日常路径）。
         expect(replay.status).toBe(200);
         expect(await replay.text()).toContain("model mismatch passthrough");
+        expect(urls).toHaveLength(1);
+        expect(urls[0]).not.toContain("/compact");
+        expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
+        expect(JSON.stringify(bodies[0])).toContain("could not be restored");
+      });
+
+      it("opaque compact bridge: ignores a marker replayed with a different tool set (variant_mismatch) and replaces it with an explicit placeholder (family-B binding-mismatch ruling)", async () => {
+        // qa 红基线实证：真实 Claude Code 客户端在状态过期之前先连续撞了 7 次
+        // variant_mismatch（服务端结构化日志有记录）——这不是纸面场景，是真实
+        // 重试流量最先踩中的分支，优先级不低于 session/model 维度。
+        setClaudeCodeOpaqueCompactExperimental(true);
+        setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+          ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+          : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+        const compactRes = await messagesRequest(defaultBody({
+          stream: true,
+          tools: [{
+            name: "Read",
+            description: "Read a file from the local workspace",
+            input_schema: { type: "object", properties: { file_path: { type: "string" } } },
+          }],
+          messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+        }), { "x-claude-code-session-id": "session-variant-owner" });
+        const marker = extractMarkerFromResponse(await compactRes.text());
+
+        const urls: string[] = [];
+        const bodies: Array<Record<string, unknown>> = [];
+        setTransportPost(async (url, _headers, body) => {
+          urls.push(url);
+          bodies.push(JSON.parse(body) as Record<string, unknown>);
+          return makeTransportResponse(buildTextStreamChunks("resp_variant_mismatch_passthrough", "variant mismatch passthrough"));
+        });
+
+        // 同一 session/model，但工具集变了——variantHash 绑定 instructions+tools，
+        // 一个真实的窗口/子代理切换就会触发这条分支，而不是刻意构造的边角情形。
+        const replay = await messagesRequest(defaultBody({
+          stream: true,
+          tools: [{
+            name: "WebFetch",
+            description: "Fetch a URL",
+            input_schema: { type: "object", properties: { url: { type: "string" } } },
+          }],
+          messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
+        }), { "x-claude-code-session-id": "session-variant-owner" });
+
+        expect(replay.status).toBe(200);
+        expect(await replay.text()).toContain("variant mismatch passthrough");
         expect(urls).toHaveLength(1);
         expect(urls[0]).not.toContain("/compact");
         expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");

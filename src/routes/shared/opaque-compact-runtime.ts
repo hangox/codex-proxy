@@ -33,7 +33,11 @@ import {
   OpaqueCompactRepository,
   OpaqueCompactRepositoryError,
 } from "./opaque-compact-repository.js";
-import { quarantineOpaqueCompactStore } from "./opaque-compact-quarantine.js";
+import {
+  OpaqueCompactQuarantineError,
+  quarantineOpaqueCompactStore,
+  readActiveQuarantineMarker,
+} from "./opaque-compact-quarantine.js";
 import {
   commitOpaqueCompactSentinel,
   loadOpaqueCompactSentinel,
@@ -141,9 +145,18 @@ function classify(error: unknown): OpaqueCompactStateFailure {
         return "state_corrupt";
       case "store_reset_detected":
         return "store_reset_detected";
+      case "migration_failed":
+        // 迁移失败自成一类：旧库已回滚为完整旧格式，运维该做的是排查后重试
+        // 升级，而不是按 state_corrupt 去隔离/重建。
+        return "migration_failed";
       default:
         return "store_unavailable";
     }
+  }
+  // active quarantine marker：无论是"已隔离"还是"marker 读不懂"，对外都必须
+  // 是同一个逐字稳定的 reason —— 连续重启的运维断言依赖它一字不变。
+  if (error instanceof OpaqueCompactQuarantineError) {
+    return "state_corrupt";
   }
   return "store_unavailable";
 }
@@ -259,16 +272,44 @@ export function startOpaqueCompactRuntime(
     // 1) 先抢锁：第二实例必须在创建任何文件之前就被挡住。
     lock = acquireOpaqueCompactStoreLock(lockPath);
 
-    // 2) sentinel 的 phase 决定这是不是首次初始化。
+    // 2) active quarantine marker 必须在**创建任何文件之前**读：一旦 store 被
+    //    隔离过，正常路径上已经没有库，若不先看这枚标记就往下走，最好的结果是
+    //    store_reset_detected，最坏的结果是当成全新部署重建一个空库——隔离白做。
+    //    marker 读不懂一律 fail-closed（readActiveQuarantineMarker 抛错）。
+    const activeQuarantine = readActiveQuarantineMarker(dir);
+
+    // 3) sentinel 的 phase 决定这是不是首次初始化。
     //    只有 phase=ready 才代表"store 已存在"；phase=init 表示上次初始化
     //    中途崩溃，可以安全地继续把剩下的步骤补完（可重入）。
+    //
+    //    marker 在场时**禁止顺手新建 sentinel**：新 sentinel 会拿到一个随机
+    //    storeId，它与 marker 里的 storeId 永远不可能相等，于是下面那道身份
+    //    比对必然放行——"删掉 sentinel"就成了绕过隔离、重建空库的后门。
+    //    因此这种组合直接 fail-closed，由运维显式重建身份后再启动。
     const sentinel = loadOpaqueCompactSentinel(sentinelFile, {
-      allowCreate: true,
+      allowCreate: activeQuarantine === null,
       ...(config.now ? { now: config.now } : {}),
-    })!;
+    });
+    if (sentinel === null) {
+      throw new OpaqueCompactQuarantineError(
+        "quarantine_active",
+        "store is quarantined and its sentinel is gone; refusing to mint a new identity",
+      );
+    }
     const firstInit = !sentinel.ready;
 
-    // 3) keyring：首次初始化且显式允许时才可 bootstrap；
+    // marker 只对**它自己那份 store** 生效：storeId 不匹配说明运维已经显式重建
+    // 了 store 身份（sentinel 真实存在且换了 storeId），不该被上一份的隔离连坐。
+    // 匹配则直接 NOT_READY，既不建库也不再产生第二份快照——隔离状态因此在每次
+    // 重启后逐字稳定。
+    if (activeQuarantine !== null && activeQuarantine.storeId === sentinel.storeId) {
+      throw new OpaqueCompactQuarantineError(
+        "quarantine_active",
+        "store is quarantined; refusing to open or recreate the database",
+      );
+    }
+
+    // 4) keyring：首次初始化且显式允许时才可 bootstrap；
     //    store 已 ready 而密钥不见了，一律 fail-closed。
     const keyring = loadOpaqueCompactKeyring({
       keyringFile,
@@ -281,7 +322,7 @@ export function startOpaqueCompactRuntime(
       ...(config.now ? { now: config.now } : {}),
     });
 
-    // 4) 开库；storeId 交叉验证 DB 身份。
+    // 5) 开库；storeId 交叉验证 DB 身份。旧 schema（v2/v3）在这一步原子迁移到当前版本。
     repository = new OpaqueCompactRepository({
       databasePath,
       keyring,
@@ -312,31 +353,34 @@ export function startOpaqueCompactRuntime(
     repository.setSuccessorMarkerValidator((marker, expected) =>
       validateSuccessorMarkerForRecovery(runtimeStore, repositoryForValidation, marker, expected));
 
-    // 5) 全库 AEAD + 语义验证。发现任何不可读记录即整体 quarantine。
+    // 6) 全库 AEAD + 语义验证。发现任何不可读记录即整体 quarantine。
     const recovered = repository.recover();
     if (recovered.unreadable > 0) {
       repository.close();
       // 真实隔离：把损坏的 DB/WAL/SHM 原始字节整体移出正常路径，保留取证快照。
       // 只打日志 + not-ready 是不够的——原库仍在原地，下次启动会照常撞上它，
       // 而且没有任何持久证据可供运维分析。
+      // storeId 一并写进 active marker：后续启动据此判断"这枚隔离标记是不是
+      // 属于我这份 store"，避免连坐一份全新重建的 store。
       const quarantined = quarantineOpaqueCompactStore({
         databasePath,
         reason: "recover_unreadable",
         stamp: new Date(config.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, "-"),
+        storeId: sentinel.storeId,
       });
       // 隔离必须在释放锁之前完成：否则第二实例可能在移动过程中抢进来。
       lock.release();
       console.warn(
         `[ClaudeOpaqueCompact] phase=quarantined unreadable=${recovered.unreadable}` +
           ` retained=${recovered.retained} isolated=${quarantined.ok}` +
-          ` files=${quarantined.moved.length}`,
+          ` files=${quarantined.moved.length} marker=${quarantined.markerWritten}`,
       );
       setOpaqueCompactStateUnavailable("state_corrupt");
       current = { token, repository: null, lock: null };
       return makeHandle(token, false, "state_corrupt");
     }
 
-    // 6) 一切就绪后才把 sentinel 标记为 ready —— 在此之前崩溃都可重入。
+    // 7) 一切就绪后才把 sentinel 标记为 ready —— 在此之前崩溃都可重入。
     if (firstInit) {
       commitOpaqueCompactSentinel(sentinelFile, sentinel.storeId, config.now ?? Date.now);
     }

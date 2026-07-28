@@ -871,10 +871,15 @@ describe("E2E: POST /v1/messages", () => {
         expect(JSON.stringify(bodies[0])).toContain("could not be restored");
       });
 
-      it("opaque compact bridge: ignores a marker replayed with a different tool set (variant_mismatch) and replaces it with an explicit placeholder (family-B binding-mismatch ruling)", async () => {
+      it("opaque compact bridge: a marker replayed with a different tool set (variant_mismatch) still 409s — deliberately NOT in family B pending qa's Task #9", async () => {
+        // 团队复核裁决：variant_mismatch 命中时 state 本身完好、内容仍可恢复，
+        // 只是指纹算不一致（很可能是翻译层自身 bug，而不是"钥匙配错了门"）。
         // qa 红基线实证：真实 Claude Code 客户端在状态过期之前先连续撞了 7 次
-        // variant_mismatch（服务端结构化日志有记录）——这不是纸面场景，是真实
-        // 重试流量最先踩中的分支，优先级不低于 session/model 维度。
+        // variant_mismatch——不是纸面场景，但正因为如此才不能仓促把它塞进
+        // "丢弃 marker、静默继续"的族 B：那会把一份本可完整恢复的历史当垃圾
+        // 扔掉，且用户全程看不到任何报错，比继续 409 更危险。在 qa 定位出
+        // 真实触发原因（tools 顺序变了还是 instructions 变了）、确认正确
+        // remedy 之前，这里必须继续 409。
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
           ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
@@ -892,11 +897,9 @@ describe("E2E: POST /v1/messages", () => {
         const marker = extractMarkerFromResponse(await compactRes.text());
 
         const urls: string[] = [];
-        const bodies: Array<Record<string, unknown>> = [];
-        setTransportPost(async (url, _headers, body) => {
+        setTransportPost(async (url) => {
           urls.push(url);
-          bodies.push(JSON.parse(body) as Record<string, unknown>);
-          return makeTransportResponse(buildTextStreamChunks("resp_variant_mismatch_passthrough", "variant mismatch passthrough"));
+          return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
         });
 
         // 同一 session/model，但工具集变了——variantHash 绑定 instructions+tools，
@@ -911,12 +914,10 @@ describe("E2E: POST /v1/messages", () => {
           messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
         }), { "x-claude-code-session-id": "session-variant-owner" });
 
-        expect(replay.status).toBe(200);
-        expect(await replay.text()).toContain("variant mismatch passthrough");
-        expect(urls).toHaveLength(1);
-        expect(urls[0]).not.toContain("/compact");
-        expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
-        expect(JSON.stringify(bodies[0])).toContain("could not be restored");
+        expect(replay.status).toBe(409);
+        expect(await replay.text()).toContain("variant_mismatch");
+        // fail-closed：409 在打上游之前就返回了，不会有任何一次上游调用。
+        expect(urls).toHaveLength(0);
       });
 
       it("opaque compact bridge: ignores a marker and continues normally after the experimental switch is disabled", async () => {

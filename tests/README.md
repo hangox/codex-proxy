@@ -3,12 +3,13 @@
 ## Quick Start
 
 ```bash
-npm test                # unit + integration + e2e (default suite)
+npm test                # unit + integration + e2e (default suite, backend only)
 npm run test:unit       # unit tests only
 npm run test:e2e        # e2e tests only
 npm run test:integration # integration tests only
 npm run test:stress     # stress tests (separate config, 120s timeout)
 npm run test:real       # real upstream tests (requires running proxy)
+npm run test:web        # web/ dashboard component tests (preact + jsdom, separate project)
 ```
 
 ## Structure
@@ -59,6 +60,7 @@ tests/
 | `vitest.config.ts` (root) | unit + integration + e2e + electron | 5s | Yes |
 | `tests/vitest.config.ts` | stress | 120s | No (`npm run test:stress`) |
 | `tests/real/vitest.config.ts` | real | 60s | No (`npm run test:real`) |
+| `web/vite.config.ts` (auto-detected by vitest, no dedicated vitest config) | `web/**/*.test.tsx` — Dashboard preact components (jsdom + `@testing-library/preact`) | default | No (`npm run test:web`) — separate `node_modules`/dependency tree from the root project, can't share a single vitest run with backend tests |
 
 ## Conventions
 

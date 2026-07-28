@@ -112,7 +112,7 @@ Do **NOT** proceed to Phase 2 until the user has explicitly confirmed (a) commit
      | Diff touches | Run |
      |---|---|
      | `src/**` or `tests/**` | `npm test` and `npx tsc --noEmit` |
-     | `web/**` | `npm run build` |
+     | `web/**` | `npm run build` and `npm run test:web` |
      | `Dockerfile`, `docker-compose*` | `docker build .` (or note user must verify) |
      | `packages/electron/**`, `electron-builder.yml` | `npm run -w packages/electron build` |
      | `native/**` | `npm run -w native build` |

@@ -449,7 +449,7 @@ describe("repository — 存储语义", () => {
     expectReason(() => resolveCanary(reopened.store, marker), "not_found");
   });
 
-  it("AAD 覆盖 TTL 字段：篡改 expires_at 无法延长寿命", () => {
+  it("篡改 expires_at 无法延长寿命（8.4 起由 expires_at_mac 独立保护，不再是 AAD）", () => {
     const { store, repository } = makeStore();
     const { marker } = saveCanaryState(store);
     repository.close();
@@ -459,8 +459,48 @@ describe("repository — 存储语义", () => {
     db.close();
 
     const reopened = makeStore();
-    // expires_at 参与 AAD，改了就过不了认证。
+    // 8.4 之前 expires_at 在 AAD 里，篡改会让 AEAD 认证失败；8.4 之后
+    // expires_at 移出 AAD、改由独立的 expires_at_mac 保护（sliding TTL 需要
+    // 能顺延它而不用整条重新封装密文），但"篡改后过不了认证"这个结论必须
+    // 原样成立，只是把关的机制换了——这里验证的正是这条不变式没有因为
+    // 8.4 的重构而悄悄松掉。
     expectReason(() => resolveCanary(reopened.store, marker), "state_corrupt");
+  });
+
+  it("8.4：restore 成功会把 expires_at 顺延到 now()+ttlMs，新值同样受 expires_at_mac 保护", () => {
+    let now = 1_000_000;
+    const { store, keyring } = makeStore({ now: () => now });
+    const { marker } = saveCanaryState(store);
+
+    const dbBefore = new DatabaseSync(resolve(dir, "state.db"));
+    const before = dbBefore.prepare(
+      "SELECT lookup_digest, expires_at, expires_at_mac FROM opaque_states",
+    ).get() as { lookup_digest: string; expires_at: number; expires_at_mac: string };
+    dbBefore.close();
+    // TTL_MS 是这个文件顶部的 30 分钟常量；save() 时 expires_at = createdAt + TTL_MS。
+    expect(before.expires_at).toBe(now + TTL_MS);
+
+    // 快进到接近（但还没到）原本的到期时间，再 restore 一次。
+    now += TTL_MS - 60_000;
+    const restored = resolveCanary(store, marker);
+    expect(restored.output).toEqual(OUTPUT);
+
+    const dbAfter = new DatabaseSync(resolve(dir, "state.db"));
+    const after = dbAfter.prepare(
+      "SELECT expires_at, expires_at_mac FROM opaque_states WHERE lookup_digest = ?",
+    ).get(before.lookup_digest) as { expires_at: number; expires_at_mac: string };
+    dbAfter.close();
+
+    // 决定性断言：顺延后的新值 = 本次 restore 时刻 + TTL，而不是旧值原地不动，
+    // 也不是简单地"往后加一点"——sliding TTL 是重置窗口，不是累加窗口。
+    expect(after.expires_at).toBe(now + TTL_MS);
+    expect(after.expires_at).toBeGreaterThan(before.expires_at);
+    // 新值必须配一个与之匹配的、真实计算出来的新 MAC，而不是沿用旧 MAC 或
+    // 留空——旧 MAC 绑定的是旧值，沿用会在下次 load() 时被判定为不可信。
+    expect(after.expires_at_mac).not.toBe(before.expires_at_mac);
+    expect(after.expires_at_mac).toBe(
+      computeMutableMetaMac(keyring, before.lookup_digest, "expires_at", after.expires_at),
+    );
   });
 
   it("密文单 bit 翻转报 state_corrupt（integrity_check 检不出的场景）", () => {
@@ -1528,6 +1568,43 @@ describe("可变元数据 last_used_at — 必须认证", () => {
   });
 });
 
+describe("8.4 可变元数据 expires_at — 与 last_used_at 同等待遇，必须认证", () => {
+  it("篡改 expires_at 后冷启动判为不可读，证据不删除（对齐 last_used_mac 的既有用例）", () => {
+    const { store, repository } = makeStore();
+    saveCanaryState(store);
+    repository.close();
+
+    // 8.4 sliding TTL 之后，expires_at 也从 AAD 移到独立 MAC 保护
+    // （expires_at_mac 列）——与 last_used_at 同一条 recover() 校验链，
+    // 篡改任一个都必须让整行判为不可读，而不是被静默接受成"到期时间被
+    // 悄悄改早/改晚"。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("UPDATE opaque_states SET expires_at = expires_at + 1").run();
+    db.close();
+
+    const reopened = makeStore();
+    const recovered = reopened.repository.recover();
+    expect(recovered.unreadable).toBe(1);
+    expect(recovered.retained).toBe(0);
+    // 不可读时不清理：证据必须原样留在库里供后续隔离/取证，不能被
+    // recover() 自己的过期清理顺手删掉。
+    expect(reopened.repository.stats().count).toBe(1);
+  });
+
+  it("篡改 expires_at_mac 本身（而不是 expires_at）同样判为不可读", () => {
+    const { store, repository } = makeStore();
+    saveCanaryState(store);
+    repository.close();
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.prepare("UPDATE opaque_states SET expires_at_mac = 'deadbeef'").run();
+    db.close();
+
+    const reopened = makeStore();
+    expect(reopened.repository.recover().unreadable).toBe(1);
+  });
+});
+
 describe("初始化零副作用", () => {
   it("peekMaxExpiresAt 不得创建空库（否则两阶段初始化不可重入）", () => {
     const databasePath = resolve(dir, "state.db");
@@ -1846,7 +1923,7 @@ function inspectSchema(): {
   }
 }
 
-function seedLegacy(schemaVersion: 2 | 3, includeLastUsedMac?: boolean) {
+function seedLegacy(schemaVersion: 2 | 3 | 4, includeLastUsedMac?: boolean) {
   return seedLegacyOpaqueStore({
     dir,
     keyringFile: keyringFile(),
@@ -1898,6 +1975,71 @@ describe("schema 迁移 — v2/v3 原子升级到 v4", () => {
         accountCandidates: [seeded.accountEntryId],
       })).toBeNull();
     }
+  });
+
+  it("8.4：v4→v5 正确迁移并回填真实 expires_at_mac，迁移后旧记录仍能正常 resolve", () => {
+    const seeded = seedLegacy(4);
+    expect(inspectSchema().version).toBe("4");
+    // 前提核实：v4 库和所有历史版本一样，压根没有 expires_at_mac 这一列——
+    // 这是 8.4 全新引入的列，不存在"列在但为空"的中间态。
+    expect(inspectSchema().stateColumns).not.toContain("expires_at_mac");
+
+    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(handle);
+    expect(handle.ready).toBe(true);
+
+    const store = getOpaqueCompactStateStore();
+    const restored = store.resolve({
+      marker: seeded.marker,
+      sessionId: seeded.sessionId,
+      model: seeded.model,
+      variantHash: seeded.variantHash,
+      accountCandidates: [seeded.accountEntryId],
+    });
+    expect(restored.output).toEqual(seeded.output);
+    expect(restored.preservedTail).toEqual(seeded.preservedTail);
+    expect(restored.stateId).toBe(seeded.stateId);
+
+    const schema = inspectSchema();
+    expect(schema.version).toBe(String(OPAQUE_REPOSITORY_SCHEMA_VERSION));
+    expect(schema.stateColumns).toContain("expires_at_mac");
+    expect(schema.stateCount).toBe(1);
+
+    // 决定性断言：expires_at_mac 不是 DEFAULT '' 放行，而是用真实 MAC 回填——
+    // 直接读裸行验证它能通过 computeMutableMetaMac 的独立校验（这正是
+    // repository.load()/recover() 后续会做的同一个校验）。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const row = db.prepare(
+      "SELECT lookup_digest, expires_at, expires_at_mac FROM opaque_states WHERE lookup_digest = ?",
+    ).get(seeded.lookupDigest) as { lookup_digest: string; expires_at: number; expires_at_mac: string };
+    db.close();
+    expect(row.expires_at_mac).not.toBe("");
+    // seeded.keyring 与 runtime 内部加载的是同一份密钥环文件、期间未轮换，
+    // 材料逐字相同，可以直接拿来算期望 MAC 对照。
+    expect(row.expires_at_mac).toBe(
+      computeMutableMetaMac(seeded.keyring, row.lookup_digest, "expires_at", row.expires_at),
+    );
+
+    // 迁移后再 resolve 一次（本次触发 8.4 sliding TTL）：expires_at 必须真的
+    // 顺延了，且新值同样受 expires_at_mac 保护——证明迁移回填的不是一个
+    // "只为了通过一次校验"的死值，而是能持续参与后续顺延链路的真实 MAC。
+    const restoredAgain = store.resolve({
+      marker: seeded.marker,
+      sessionId: seeded.sessionId,
+      model: seeded.model,
+      variantHash: seeded.variantHash,
+      accountCandidates: [seeded.accountEntryId],
+    });
+    void restoredAgain;
+    const dbAfter = new DatabaseSync(resolve(dir, "state.db"));
+    const rowAfter = dbAfter.prepare(
+      "SELECT expires_at, expires_at_mac FROM opaque_states WHERE lookup_digest = ?",
+    ).get(seeded.lookupDigest) as { expires_at: number; expires_at_mac: string };
+    dbAfter.close();
+    expect(rowAfter.expires_at).toBeGreaterThan(row.expires_at);
+    expect(rowAfter.expires_at_mac).toBe(
+      computeMutableMetaMac(seeded.keyring, seeded.lookupDigest, "expires_at", rowAfter.expires_at),
+    );
   });
 
   it("v2→v4：补齐并回填 last_used_mac，而不是 DEFAULT '' 放行", () => {

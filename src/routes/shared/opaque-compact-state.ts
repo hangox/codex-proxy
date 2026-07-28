@@ -883,7 +883,11 @@ export class OpaqueCompactStateStore {
       ?? (options.accountEntryId !== undefined ? [options.accountEntryId] : []);
     let loaded: ReturnType<OpaqueCompactRepository["load"]>;
     try {
-      loaded = repository.load(stateId, candidates);
+      // 8.4 sliding TTL：this.ttlMs 是这个 store 实例配置的 TTL（默认
+      // 720 分钟）。restore 成功时 repository.load() 会把 expires_at 顺延到
+      // now()+ttlMs，而不是仅仅 touch last_used_at——"restore 成功"本身就是
+      // "顺延"，两者不是分开的两步。
+      loaded = repository.load(stateId, candidates, this.ttlMs);
     } catch (error) {
       throw toStateError(error);
     }
@@ -1292,8 +1296,19 @@ export function validatePersistedPayloadForRecovery(
   } catch {
     return false;
   }
-  // 时间字段必须与行元数据一致：任一侧漂移都说明记录不可信。
-  if (payload.createdAt !== meta.createdAt || payload.expiresAt !== meta.expiresAt) return false;
+  // createdAt 永远不变——它是唯一仍然有效的锚点，两侧漂移说明记录不可信
+  // （迁移 bug 或人为拼装）。
+  if (payload.createdAt !== meta.createdAt) return false;
+  // ★ 8.4 sliding TTL 之后，payload.expiresAt 与 meta.expiresAt **不再要求
+  // 相等**——这不是偷懒删掉的校验，是有意为之：
+  //   - meta.expiresAt（行元数据，配 expires_at_mac）是权威值，每次成功
+  //     restore 都会被顺延，反映"这一行现在真实的到期时间"；
+  //   - payload.expiresAt 是密文里那份不可变的原始快照，永远停在**创建时**
+  //     算出的到期时间（sealRecord 之后明文再也不会被改写）。
+  // 一个被访问过哪怕一次的记录，两者就会合法分道扬镳；继续要求相等会让
+  // "正常顺延过的记录"在下次冷启动 recover 时被误判成 unreadable。
+  // meta.expiresAt 本身的可信度由 repository.load()/recover() 里独立的
+  // expires_at_mac 校验保证，不需要 payload 这边再校验一次。
   // binding 必须能由 payload 自身的 session/model/variant 重算出来，
   // 否则索引与内容已经对不上（迁移 bug 或人为拼装）。
   if (repository.bindingFor(payload.sessionId, payload.model, payload.variantHash) !== meta.binding) {

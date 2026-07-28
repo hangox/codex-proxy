@@ -438,7 +438,8 @@ describe("opaque compact — schema 迁移的真实 SIGKILL 窗口", () => {
     expect(restored.ready).toBe(true);
     expect(restored.ok).toBe(true);
     expect(JSON.parse(restored.outputJson!)).toEqual(seeded.output);
-    expect(inspectSchema().version).toBe("4");
+    // 8.4：迁移目标版本随 OPAQUE_REPOSITORY_SCHEMA_VERSION 一起从 4 变成 5。
+    expect(inspectSchema().version).toBe("5");
   }, 300_000);
 
   it("COMMIT 之后被 SIGKILL：恢复出的是完整新格式，旧 marker 直接可用", async () => {
@@ -448,8 +449,9 @@ describe("opaque compact — schema 迁移的真实 SIGKILL 窗口", () => {
     expect(killed.signal).toBe("SIGKILL");
 
     // COMMIT 已经返回（WAL + synchronous=FULL），迁移结果必须已经持久。
+    // 8.4：迁移目标版本随 OPAQUE_REPOSITORY_SCHEMA_VERSION 一起从 4 变成 5。
     const afterKill = inspectSchema();
-    expect(afterKill.version).toBe("4");
+    expect(afterKill.version).toBe("5");
     expect(afterKill.successorColumns).toContain("edge_lookup");
 
     const restored = await runHarness("resolve", { marker: seeded.marker });

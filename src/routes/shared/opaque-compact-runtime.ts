@@ -427,8 +427,8 @@ export function forgetOpaqueCompactRuntimeForTesting(): void {
 
 /** 与 config-schema 保持一致的默认值。 */
 const RUNTIME_DEFAULTS = {
-  ttlMinutes: 30,
-  capacity: 128,
+  ttlMinutes: 720,
+  capacity: 1024,
   maxBytes: 64 * 1024 * 1024,
 } as const;
 

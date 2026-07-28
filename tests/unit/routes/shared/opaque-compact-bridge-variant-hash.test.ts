@@ -31,13 +31,22 @@ describe("opaqueCompactVariantHash", () => {
     expect(opaqueCompactVariantHash(before)).toBe(opaqueCompactVariantHash(after));
   });
 
-  it("instructions 从 null/undefined 变为非空字符串，hash 依然相同（覆盖两端都可能出现的缺省值）", () => {
+  it("instructions 从 null/undefined/空字符串变为非空字符串，hash 依然相同（覆盖所有可能出现的缺省值形态）", () => {
+    // computeVariantHash 内部对 instructions 做 `?? ""`，null/undefined/""
+    // 三者在那一层本就等价（reviewer 读代码确认过）；这里补上字面量空
+    // 字符串 "" 这一种此前没有显式覆盖到的形态，不留防护网上的孔——即便
+    // 现在 opaqueCompactVariantHash 已经不再把 translated.instructions
+    // 传给 computeVariantHash（固定传 null），这条断言依然是真实防护：
+    // 它验证的是"不管 instructions 传什么值，wrapper 的输出都不变"这个
+    // 对外可观察的行为，而不是内部实现细节。
     const withInstructions = translated({ instructions: "some instructions" });
     const withoutInstructions = translated({ instructions: null });
     const undefinedInstructions = translated({ instructions: undefined });
+    const emptyInstructions = translated({ instructions: "" });
     const hash = opaqueCompactVariantHash(withInstructions);
     expect(opaqueCompactVariantHash(withoutInstructions)).toBe(hash);
     expect(opaqueCompactVariantHash(undefinedInstructions)).toBe(hash);
+    expect(opaqueCompactVariantHash(emptyInstructions)).toBe(hash);
   });
 
   it("保留隔离能力：tools 不同 → hash 依然不同（没有把整层 variant 绑定废掉，只去掉了 instructions 这一半）", () => {

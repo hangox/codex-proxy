@@ -73,13 +73,35 @@ import { auditAccountTag } from "./opaque-compact-audit.js";
  * variant 比对不上，按族 B（`isOpaqueCompactMarkerBindingMismatch`）处理，
  * 忽略 marker、继续正常对话，不是 409。
  *
- * ★ 已知但不影响本次判断的待定项：qa 这次实测 main 与 subagent 的 tools
- * 指纹也完全一致（都是 39 个），没有复现更早那份证据里"主线程 27 工具 vs
- * 子代理 19 工具"的分裂，原因未核实（qa 会补测）。这不影响这次改动——去掉
- * instructions 一定能修好"compact 后第一句话必然 variant_mismatch"这个
- * 故障；保留 tools 即使在某些场景下区分不开 main/subagent，也不比现状更
- * 差（现状下 variant 本来就每次都失配，隔离从未真正生效过）。如果补测证实
- * tools 也没有区分度，那是"整层是否还有存在意义"的后续议题，不是现在。
+ * ★ 已知但不影响本次判断的待定项，且这是"pending main/subagent 隔离能否
+ * 真正生效"的整层疑点，不只是 tools 一个字段的疑点：
+ *
+ * qa 当天累计做了三轮独立实验、34 条请求、跨两个独立真实会话、三种触发
+ * 方式（普通子代理任务、要求 subagent 做真实文件读写而非纯算术、尝试
+ * `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0` 逼出裸 Task 子代理路径——该
+ * 环境变量实测没有生效，所以这条路径未能触达），session id / instructions
+ * / tools 三个维度**从未观测到 main 与 subagent 之间的任何指纹分裂**：
+ * session id 哈希全程一致（这条是三条证据链里"variant 层不能整层拿掉"的
+ * 依据，仍然成立），但 instructions 和 tools 这两个此前预期能分开
+ * main/subagent 的维度，这次也全程一致（tools 均为 39 个）。qa 原话：
+ * "variant 层能提供的隔离价值可能非常有限"。★ 限定条件（不要只挑支持
+ * 结论的部分）：qa 未能确认这次触达的 Teammate 机制是否与更早那份证据
+ * （"主线程 27 工具 vs 子代理 19 工具"）里的裸 Task 子代理是同一条代码
+ * 路径——如果是两条不同路径，裸 Task 子代理是否仍然分裂，仍然未知。
+ *
+ * ★ 这不改变这次改动的正确性判断，但下面这条推理需要修正一处归因：
+ * "保留 tools 不比现状更差"这个理由，如果说成"现状下 variant 本来就每次
+ * 都失配"，那只在**紧邻 compact 边界的那一刻**成立——不是普遍事实。更准确
+ * 的因果链是：如果 main 与 subagent 的 instructions/tools 真的像 qa 数据
+ * 显示的那样全程相同，那么在 compact 边界之外的其余所有时刻，旧公式
+ * （含 instructions）**同样会**把 main/subagent 的 hash 算成同一个值——
+ * 也就是说"variant 层从未真正区分开 main 和 subagent"很可能不是这次改动
+ * 造成的新状态，而是这次事故之前就一直存在、只是从未被专门验证过的旧
+ * 状态。结论不变（去掉 instructions 一定能修好"compact 后第一句话必然
+ * variant_mismatch"这个真实故障，这次改动是净改善，不是这次引入的新
+ * 风险），但"不比现状更差"不能归因成"反正本来就一直在失配"——那只是
+ * compact 那一刻的巧合，不是全程的因果。tools 是否还有隔离价值，是"整层
+ * 是否还有存在意义"的后续议题，不是现在。
  */
 export function opaqueCompactVariantHash(translated: CodexResponsesRequest): string {
   const windowId = translated.codexWindowId?.trim();

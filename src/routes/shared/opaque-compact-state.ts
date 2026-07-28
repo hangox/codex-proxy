@@ -497,6 +497,57 @@ export function replaceIgnoredOpaqueCompactMarker(
 }
 
 /**
+ * Reviewer Finding #2（8.1 自愈的补丁）：8.1 自愈把 `opaqueRestore` 置为
+ * `{restored:false}`、放行到全新 root compact 分支，但那条分支的
+ * `buildClaudeCodeOpaqueCompactRequest(req, translated)` 直接从**原始**
+ * `req.messages` 重新派生 compact 输入（见 `codex-compact-service.ts` 的
+ * `messagesBeforeCompactPrompt(req)`），完全不经过 `codexRequest.input`——
+ * 也就是说，即便调用方已经用 {@link replaceIgnoredOpaqueCompactMarker} 清理过
+ * `codexRequest.input`，这个"全新"的 compact 请求依然会把那段已确认无法
+ * 使用的旧 marker 原文当成真实历史，一起送进这次本该是"干净重新开始"的
+ * compact——用户永远不会知道这次自愈出来的摘要混了一段不可读的签名文本。
+ * 这是"承诺 vs 实现"不一致：我们承诺"重新压缩"，却没有先清理再压缩。
+ *
+ * 因此自愈到全新 root compact 之前，必须先在 Anthropic 层（而不是 Codex 层）
+ * 清理一遍 `req`：找到承载 marker 的那条消息，把内容整体替换成同一句占位
+ * 说明，其余消息原样保留。不需要 {@link restoreOpaqueCompactInput} 那套
+ * "拆分 marker 前后内容、合并 preservedTail"的完整逻辑——这里根本没有真实
+ * output 可以恢复，目标只是不让死掉的签名文本进 compact 输入。
+ *
+ * 找不到 marker 边界（如内部 token 本身已损坏）时原样返回 `req`——与
+ * {@link replaceIgnoredOpaqueCompactMarker} 同样的"尽力而为、找不到就不动"
+ * 设计，不做激进退化。
+ */
+export function replaceIgnoredOpaqueCompactMarkerInAnthropicRequest(
+  req: AnthropicMessagesRequest,
+  marker: string,
+): AnthropicMessagesRequest {
+  for (let index = req.messages.length - 1; index >= 0; index -= 1) {
+    const message = req.messages[index]!;
+    const content = message.content;
+    if (typeof content === "string") {
+      if (markerBoundary(content, marker) === null) continue;
+      const messages = [...req.messages];
+      messages[index] = { ...message, content: IGNORED_MARKER_PLACEHOLDER_TEXT };
+      return { ...req, messages };
+    }
+    const hasMarker = content.some((block) =>
+      block.type === "text" && typeof block.text === "string" && markerBoundary(block.text, marker) !== null);
+    if (!hasMarker) continue;
+    const messages = [...req.messages];
+    messages[index] = {
+      ...message,
+      content: content.map((block) =>
+        block.type === "text" && typeof block.text === "string" && markerBoundary(block.text, marker) !== null
+          ? { ...block, text: IGNORED_MARKER_PLACEHOLDER_TEXT }
+          : block),
+    };
+    return { ...req, messages };
+  }
+  return req;
+}
+
+/**
  * State store。
  *
  * 两种模式共用同一套 marker 语义：

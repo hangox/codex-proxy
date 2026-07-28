@@ -47,6 +47,7 @@ import {
   extractOpaqueCompactStateMarker,
   getOpaqueCompactStateReadiness,
   hasOpaqueCompactStateReference,
+  isSelfHealableOpaqueCompactStateFailure,
   reportOpaqueCompactStoreFault,
 } from "./shared/opaque-compact-state.js";
 
@@ -439,7 +440,7 @@ export function createMessagesRoutes(
       codexRequest.prompt_cache_key = clientConversationId;
     }
 
-    const opaqueRestore = opaqueCompactEnabled && clientConversationId !== null && !allowUnauthenticated
+    let opaqueRestore = opaqueCompactEnabled && clientConversationId !== null && !allowUnauthenticated
       ? restoreOpaqueCompactRequest({
           req,
           translated: codexRequest,
@@ -452,13 +453,35 @@ export function createMessagesRoutes(
     if (opaqueRestore.error) {
       // store 级故障（损坏/密钥/schema）与单请求语义错误（session 不匹配、
       // marker 过期）走同一个出口，但前者要同时把 runtime 转成 NOT_READY，
-      // 让 /health 与后续请求给出同一个 reason。
+      // 让 /health 与后续请求给出同一个 reason。isSelfHealableOpaqueCompactStateFailure
+      // 判非致命时这里是 no-op；判致命时仍然原子转 NOT_READY。
       reportOpaqueCompactStoreFault(opaqueRestore.error);
-      c.status(409);
-      return c.json(makeError(
-        "invalid_request_error",
-        `Opaque compact state is unavailable (${opaqueRestore.error.reason}). Run /compact again.`,
-      ));
+      // 8.1：reason 属于"状态不存在/已过期"这一良性、可自愈的族
+      // （isSelfHealableOpaqueCompactStateFailure，与 store 级致命故障互斥），
+      // 且本次请求确实是 compact 请求时，不 409——把它当成一次全新的 root
+      // compact 放行。★ 红线：只在这里放行，store 级故障（锁/密钥/schema/
+      // quarantine/AEAD 校验失败）永远落在 isFatalStoreFailure 那一族，
+      // isSelfHealableOpaqueCompactStateFailure 对它们恒为 false，因此仍然
+      // fail-closed 走下面的 409。
+      // 丢弃 error/marker/output 等字段，视为"从未找到过状态"：不能把这枚已经
+      // 失效的旧 marker 当 previousMarker 传给全新 root compact 分支，那会
+      // 让它去尝试幂等回放一个不存在的 predecessor edge。
+      if (
+        compactPrompt !== null &&
+        isSelfHealableOpaqueCompactStateFailure(opaqueRestore.error.reason)
+      ) {
+        console.log(
+          `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=self_heal` +
+            ` reason=${opaqueRestore.error.reason}`,
+        );
+        opaqueRestore = { restored: false };
+      } else {
+        c.status(409);
+        return c.json(makeError(
+          "invalid_request_error",
+          `Opaque compact state is unavailable (${opaqueRestore.error.reason}). Run /compact again.`,
+        ));
+      }
     }
 
     const proxyReq = {

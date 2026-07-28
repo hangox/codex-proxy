@@ -43,6 +43,7 @@ import {
   respondWithOpaqueCompactMarker,
   restoreOpaqueCompactRequest,
 } from "./shared/opaque-compact-bridge.js";
+import { recordOpaqueCompactDenial } from "./shared/opaque-compact-denial-log.js";
 import {
   extractOpaqueCompactStateMarker,
   getOpaqueCompactStateReadiness,
@@ -329,6 +330,10 @@ export function createMessagesRoutes(
       );
     }
     const req = parsed.data;
+    // 8.6：requestId 提到函数顶部——两个早期 opaque 409（缺 session 上下文 /
+    // 开关已开但 store 未就绪）此前发生在原来的 requestId 声明之前，落不了
+    // 结构化日志。这里只是把已有的"取 c.get 或生成"逻辑挪早，取值方式不变。
+    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
 
     const routeMatch = upstreamRouter?.resolveMatch(req.model);
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
@@ -345,6 +350,12 @@ export function createMessagesRoutes(
     if (hasOpaqueReference && (allowUnauthenticated || clientConversationId === null)) {
       // 8.5：这条不能建议"再跑一次 /compact"——缺 session id / 走的是无鉴权
       // 路由是结构性问题，重放同一个请求会重现一模一样的缺口，不会自愈。
+      recordOpaqueCompactDenial({
+        requestId,
+        reason: "missing_session_context",
+        clientConversationId,
+        marker: opaqueStateReference,
+      });
       c.status(409);
       return c.json(makeError(
         "invalid_request_error",
@@ -393,6 +404,12 @@ export function createMessagesRoutes(
         // 8.5：这条不特定于 compact 请求（任何带 marker 的请求都可能撞上），
         // 且此刻 store 处于 NOT_READY——建议"再跑 /compact"等于建议重放同一个
         // 会撞同一个 NOT_READY 的动作。给一个不依赖 store 恢复的退出路径。
+        recordOpaqueCompactDenial({
+          requestId,
+          reason: readiness.reason ?? "store_unavailable",
+          clientConversationId,
+          marker: opaqueMarkerCandidate,
+        });
         c.status(409);
         return c.json(makeError(
           "invalid_request_error",
@@ -410,7 +427,6 @@ export function createMessagesRoutes(
     const displayModel = buildDisplayModelName(parseModelName(req.model));
     const fmt = makeAnthropicFormat(wantThinking);
 
-    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
       requestId,
       direction: "ingress",
@@ -539,6 +555,14 @@ export function createMessagesRoutes(
         if (!selfHealable) ignoredMarker = errorMarker ?? ignoredMarker;
         opaqueRestore = { restored: false };
       } else {
+        // 8.6：restoreOpaqueCompactRequest 的 error 分支不带 requiredEntryId/
+        // generation（那两个只在成功恢复时才有意义），因此这里不填账号/代数。
+        recordOpaqueCompactDenial({
+          requestId,
+          reason,
+          clientConversationId,
+          marker: errorMarker,
+        });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(reason)));
       }
@@ -562,6 +586,14 @@ export function createMessagesRoutes(
       // 运维要靠它区分"第二实例抢锁"和"密钥丢了"。
       const readiness = getOpaqueCompactStateReadiness();
       if (!readiness.ready) {
+        recordOpaqueCompactDenial({
+          requestId,
+          reason: readiness.reason ?? "store_unavailable",
+          clientConversationId,
+          marker: opaqueRestore.marker,
+          accountEntryId: opaqueRestore.requiredEntryId,
+          generation: opaqueRestore.generation,
+        });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(readiness.reason ?? "store_unavailable")));
       }
@@ -594,6 +626,14 @@ export function createMessagesRoutes(
           console.warn(
             `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=store_fault reason=${faultReason}`,
           );
+          recordOpaqueCompactDenial({
+            requestId,
+            reason: faultReason,
+            clientConversationId,
+            marker: opaqueRestore.marker,
+            accountEntryId: opaqueRestore.requiredEntryId,
+            generation: opaqueRestore.generation,
+          });
           c.status(409);
           return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(faultReason)));
         }
@@ -604,6 +644,14 @@ export function createMessagesRoutes(
         if (opaqueRestore.restored) {
           // 8.5：不建议"再试一次同一个 compact"——刚才这次已经在原账号上失败了，
           // 没有理由认为立即重放会不同。给一个必然可行的退出路径。
+          recordOpaqueCompactDenial({
+            requestId,
+            reason: "recompact_failed_original_account",
+            clientConversationId,
+            marker: opaqueRestore.marker,
+            accountEntryId: opaqueRestore.requiredEntryId,
+            generation: opaqueRestore.generation,
+          });
           c.status(409);
           return c.json(makeError(
             "invalid_request_error",

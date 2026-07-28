@@ -735,6 +735,19 @@ describe("E2E: POST /v1/messages", () => {
     expect(replayMarker).toContain("codex-opaque-state:v1");
     // 全新 root：拿到的是一枚不同的 marker，不是对旧（已过期）状态的复用。
     expect(replayMarker).not.toBe(marker);
+
+    // Reviewer Finding #2：自愈出来的"全新 root compact"必须是真正干净的——
+    // 第二次 compact 请求体（即这次自愈实际送去压缩的内容）不能包含那枚已经
+    // 确认失效的旧 marker 原文。否则"全新 root compact"只是名义上全新，实际
+    // 是拿一份混了不可读签名字符串的历史去压缩，用户永远不会知道。
+    const secondCompactBody = JSON.stringify(compactBodies[1]);
+    expect(secondCompactBody).not.toContain("codex-opaque-state:v1");
+    const [, staleStateId, staleCompHash, staleSignature] = marker.match(
+      /codex-opaque-state:v1:([A-Za-z0-9_-]{32}):([A-Za-z0-9_-]{43}):([A-Za-z0-9_-]{43})/,
+    )!;
+    expect(secondCompactBody).not.toContain(staleStateId!);
+    expect(secondCompactBody).not.toContain(staleCompHash!);
+    expect(secondCompactBody).not.toContain(staleSignature!);
   });
 
   it("opaque compact bridge: an expired marker on an ordinary (non-compact) request still 409s with an actionable reason (matrix #2)", async () => {

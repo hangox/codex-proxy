@@ -49,6 +49,7 @@ import {
   getOpaqueCompactStateReadiness,
   hasOpaqueCompactStateReference,
   isOpaqueCompactMarkerBindingMismatch,
+  replaceIgnoredOpaqueCompactMarkerInAnthropicRequest,
   isSelfHealableOpaqueCompactStateFailure,
   isUnparseableOpaqueCompactMarker,
   replaceIgnoredOpaqueCompactMarker,
@@ -508,9 +509,14 @@ export function createMessagesRoutes(
     // 被忽略（不放行到自愈、但也不 409）的 marker，最终统一在下面对
     // codexRequest.input 做占位替换——见 replaceIgnoredOpaqueCompactMarker
     // 的文档：不能让它原样透传给上游，那是把回滚事故里"静默上下文丢失"
-    // 那一环从"仅回滚期间"搬进日常路径。自愈（selfHealable）成功的分支
-    // 走全新 root compact，不在这里处理（见下方该分支单独的说明）。
+    // 那一环从"仅回滚期间"搬进日常路径。
     let ignoredMarker: string | null = ignoredMarkerFromDisabledSwitch;
+    // Reviewer Finding #2：族 A 自愈会走全新 root compact，但
+    // buildClaudeCodeOpaqueCompactRequest 直接从 req.messages 重新派生 compact
+    // 输入，完全不经过 codexRequest.input——不清理 req 本身，"全新"的 compact
+    // 依然会把死掉的 marker 原文当真实历史一起送进去。effectiveReq 默认等于
+    // req；只有自愈命中时才会被替换成清理过的副本（见下方）。
+    let effectiveReq: AnthropicMessagesRequest = req;
     if (opaqueRestore.error) {
       // store 级故障（损坏/密钥/schema）与单请求语义错误（session 不匹配、
       // marker 过期）走同一个出口，但前者要同时把 runtime 转成 NOT_READY，
@@ -547,12 +553,18 @@ export function createMessagesRoutes(
           `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)}` +
             ` phase=${selfHealable ? "self_heal" : "ignored_not_applicable_marker"} reason=${reason}`,
         );
-        // 族 A 自愈：全新 root compact 会产出一份全新摘要，旧 marker 文本
-        // 是"这次 compact 输入"的噪音而非"直接透传给用户对话"的内容，
-        // 占位替换的收益小、复杂度高（respondWithOpaqueCompactMarker 内部
-        // 另外用 req 重新构建 compact 请求），本轮范围内不处理，只处理会
-        // 原样进入普通转发路径的族 B。
-        if (!selfHealable) ignoredMarker = errorMarker ?? ignoredMarker;
+        if (!selfHealable) {
+          // 族 B：会原样进入普通转发路径，占位替换施加在 codexRequest.input 上
+          // （见下方 replaceIgnoredOpaqueCompactMarker 调用）。
+          ignoredMarker = errorMarker ?? ignoredMarker;
+        } else if (errorMarker !== null) {
+          // 族 A 自愈（Reviewer Finding #2）：全新 root compact 的输入必须先
+          // 清理掉旧 marker，否则 buildClaudeCodeOpaqueCompactRequest 会把它
+          // 当真实历史送进这次"全新"的 compact，压缩出来的摘要不干净，且
+          // 用户永远不会知道。清理作用于 Anthropic 层的 req（不是 Codex 层
+          // 的 codexRequest.input，那个对这条分支不生效，见函数文档）。
+          effectiveReq = replaceIgnoredOpaqueCompactMarkerInAnthropicRequest(req, errorMarker);
+        }
         opaqueRestore = { restored: false };
       } else {
         // 8.6：restoreOpaqueCompactRequest 的 error 分支不带 requiredEntryId/
@@ -603,7 +615,9 @@ export function createMessagesRoutes(
           accountPool,
           cookieJar,
           proxyPool,
-          req,
+          // Reviewer Finding #2：族 A 自愈时这是清理过 marker 的副本，
+          // 其余情况下等于原始 req（见 effectiveReq 声明处的说明）。
+          req: effectiveReq,
           translated: codexRequest,
           compactPrompt,
           clientConversationId,

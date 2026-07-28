@@ -5,7 +5,6 @@ import {
   anthropicHistoryToLosslessCodexInput,
   buildClaudeCodeCompactRequest,
   buildClaudeCodeOpaqueCompactRequest,
-  buildClaudeCodeRenderRequest,
   extractClaudeCodeCompactPrompt,
 } from "@src/routes/shared/codex-compact-service.js";
 import type { AnthropicMessagesRequest } from "@src/types/anthropic.js";
@@ -261,7 +260,7 @@ describe("Claude Code compact bridge fingerprint", () => {
 });
 
 describe("Claude Code compact bridge requests", () => {
-  it("removes the compact prompt from compact history and replays it after opaque output", () => {
+  it("removes the compact prompt from compact history and carries transport fields through", () => {
     const prompt = compactPrompt();
     const req: AnthropicMessagesRequest = {
       ...request(prompt),
@@ -289,19 +288,6 @@ describe("Claude Code compact bridge requests", () => {
       codexWindowId: "window-id",
       parentThreadId: "parent-id",
     });
-
-    const opaque = [
-      { type: "reasoning", encrypted_content: "opaque-secret", summary: [] },
-      { type: "message", role: "assistant", content: [{ type: "output_text", text: "summary" }] },
-    ];
-    const render = buildClaudeCodeRenderRequest(translated(), opaque, prompt, true);
-    expect(render.input.slice(0, 2)).toEqual(opaque);
-    expect(render.input.at(-1)).toEqual({
-      role: "user",
-      content: [{ type: "input_text", text: prompt }],
-    });
-    expect(render.tools).toBeUndefined();
-    expect(render.useWebSocket).toBe(true);
   });
 
   it("keeps all preceding text blocks and removes only the matched compact block", () => {

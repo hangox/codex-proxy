@@ -37,12 +37,54 @@ import { auditAccountTag } from "./opaque-compact-audit.js";
  * 已用探针验证：同一会话 compact 前后 anchor 必然不同。
  *
  * 保留的是 `codexWindowId`：它由客户端窗口决定，跨 compact 稳定，正是需要
- * 隔离的并行维度。instructions/tools 仍参与，子代理因此与主线程分离。
+ * 隔离的并行维度。
+ *
+ * ★★ `instructions` 不再参与这个 hash（团队裁决，三条证据链） ★★
+ *
+ * 1. **Codex 原生对照**：Codex 自己的 compact 端点是纯无状态转换——不返回
+ *    token，压缩结果由本地进程直接持有；唯一跨请求的世代标识是
+ *    `format!("{thread_id}:{window_number}")`，只有 thread_id + 单调计数器，
+ *    不含任何运行时内容的哈希。这不是巧合，是设计哲学：绑定标识必须挑
+ *    "跨越 compact 边界仍然稳定"的量，不能挑"compact 会改变"的量。
+ * 2. **subagent 与 main 共享 session id，不能靠 session 层区分**：
+ *    `variant-hash.ts` 的设计文档、`d88fa23` 的 PR 问题陈述、
+ *    `session-affinity.ts` 的接口文档三处独立原始证据，加上 qa 本轮实测
+ *    （7 条请求 session id 哈希全程一致）——三条证据链都指向同一个结论，
+ *    所以 variant 层不能整层拿掉，必须留一个能分辨 main/subagent 的维度。
+ * 3. **`instructions` 是唯一的真实故障源**：qa 实测 compact 前连续 5 次
+ *    请求 instructions 逐字节相同（22344 字符），compact 成功后的下一次
+ *    请求立刻掉到 16472——而 tools 在整个过程里保持不变（39 个）。也就是说
+ *    "compact 会改变 instructions"这件事本身就注定了 instructions 不能待
+ *    在跨 compact 边界的绑定里，任何一次真实的 compact 后续对话都会踩上
+ *    这条分支，不是边角场景。
+ *
+ * 因此：只留 `tools`（+ `codexWindowId`）参与，`instructions` 从这个包装
+ * 函数的调用参数里去掉。★ 红线：`computeVariantHash` 本身（`variant-hash.ts`）
+ * 一个字不动——它是 `session-affinity.ts` 用于 WS 连接池 slot 与
+ * `prev_response_id` 链隔离的共用函数，有生产数据支撑
+ * （`previous_response_not_found` 35/天→0），这里只改这个 opaque 专用包装
+ * 函数传给它的参数，不碰函数本身。
+ *
+ * ★ 过渡期影响（发布说明必须写）：改公式后，库里已存的 state 是按旧公式
+ * （含 instructions）算出的指纹，新公式（不含 instructions）对不上，会让
+ * 存量记录集中触发一轮 `variant_mismatch`，直到它们自然过期（最长一个
+ * TTL 窗口，当前默认 720 分钟）。这不影响解密——AEAD 用的是落盘时已经
+ * 算好的 `row.binding`，不会重算，所以旧记录不会解密失败，只是这一轮内
+ * variant 比对不上，按族 B（`isOpaqueCompactMarkerBindingMismatch`）处理，
+ * 忽略 marker、继续正常对话，不是 409。
+ *
+ * ★ 已知但不影响本次判断的待定项：qa 这次实测 main 与 subagent 的 tools
+ * 指纹也完全一致（都是 39 个），没有复现更早那份证据里"主线程 27 工具 vs
+ * 子代理 19 工具"的分裂，原因未核实（qa 会补测）。这不影响这次改动——去掉
+ * instructions 一定能修好"compact 后第一句话必然 variant_mismatch"这个
+ * 故障；保留 tools 即使在某些场景下区分不开 main/subagent，也不比现状更
+ * 差（现状下 variant 本来就每次都失配，隔离从未真正生效过）。如果补测证实
+ * tools 也没有区分度，那是"整层是否还有存在意义"的后续议题，不是现在。
  */
 export function opaqueCompactVariantHash(translated: CodexResponsesRequest): string {
   const windowId = translated.codexWindowId?.trim();
   const variantIdentity = windowId ? `window:${windowId}` : null;
-  return computeVariantHash(translated.instructions, translated.tools, variantIdentity);
+  return computeVariantHash(null, translated.tools, variantIdentity);
 }
 
 function formatAnthropicSse(event: string, data: unknown): string {

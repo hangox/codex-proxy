@@ -1205,16 +1205,22 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
  *
  * reviewer 的批评依然成立：族 B 现有 remedy（丢弃 marker、按普通请求继续）
  * 建立在"state 与本次请求无关"之上，但 variant_mismatch 命中时 state 本身
- * 完好、内容仍可解密恢复，只是 variant 指纹算不一致，很可能是翻译层
- * instructions/tools 序列化没能保证 `variant-hash.ts` 自己写明的确定性
- * 前提——丢弃它是在浪费一份本可完整恢复的历史。但这个批评指向"需要更好的
- * remedy"，不是"应该 409"：409 死锁是三个选项里最差的（会话直接不可用），
- * 族 B 丢弃是当前止血（次优，会话可用但那次 compact 的历史白丢），修复
- * variant 计算本身（候选：variant hash 去掉 `instructions`，只保留全程
- * 稳定的 `tools`）才是最优解——但这个改动有 tradeoff 需要产品拍板
- * （`instructions` 在非 compact 的普通轮次下其实是有效的隔离维度，去掉它
- * 等于牺牲一个真实有效的隔离层）。在拍板之前，`opaqueCompactVariantHash`
- * 的实现维持原样，不要改。
+ * 完好、内容仍可解密恢复，只是 variant 指纹算不一致——丢弃它是在浪费一份
+ * 本可完整恢复的历史。但这个批评指向"需要更好的 remedy"，不是"应该
+ * 409"：409 死锁是三个选项里最差的（会话直接不可用），族 B 丢弃是止血
+ * （次优，会话可用但那次 compact 的历史白丢），修复 variant 计算本身才是
+ * 最优解。
+ *
+ * ★ 最优解已经拍板并落地（`opaqueCompactVariantHash`，`opaque-compact-
+ * bridge.ts`）：variant hash 去掉了 `instructions`，只保留全程稳定的
+ * `tools`（+ `codexWindowId`）。三条证据链（Codex 原生用 thread_id+计数器
+ * 而非内容哈希做世代标识；subagent 与 main 共享 session id 因而不能靠
+ * session 层区分；qa 实测 instructions 在 compact 前后必然变化、tools
+ * 全程不变）定位到 instructions 是唯一的真实故障源，具体推理见
+ * `opaqueCompactVariantHash` 的文档注释。族 B 处理 variant_mismatch 因此
+ * 从"每次 compact 后必然命中的主止血路径"降级为"翻译层真出 bug、或 tools
+ * 集合真变化时的兜底"——止血措施仍然保留（这是 fail-safe，不是这次改动的
+ * 替代品），但预期命中频率会大幅下降。
  *
  * 其余 reason（`account_mismatch`/`comp_hash_mismatch`/`tampered`/
  * `preserved_tail_conflict`/`state_too_large`/`stale_generation`）三族都不

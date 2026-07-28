@@ -6,6 +6,7 @@ import {
   extractOpaqueCompactStateMarker,
   hasOpaqueCompactStateReference,
   isSelfHealableOpaqueCompactStateFailure,
+  isUnparseableOpaqueCompactMarker,
   mergeOpaquePreservedTails,
   removeOpaquePreservedTailReplay,
   restoreOpaqueCompactInput,
@@ -398,9 +399,9 @@ describe("opaque compact state store", () => {
   });
 });
 
-describe("opaque compact failure reason classification (8.1 collapse point)", () => {
-  // messages.ts 的 8.1 自愈编排完全依赖这个导出函数，不再散落
-  // reason === "..." 比较——这里直接锁死它的分类结果，防止未来新增 reason
+describe("opaque compact failure reason classification (8.1/8.3 collapse point)", () => {
+  // messages.ts 的 8.1/8.3 编排完全依赖这两个导出函数，不再散落
+  // reason === "..." 比较——这里直接锁死它们的分类结果，防止未来新增 reason
   // 时漏分类（8.1 红线：store 级致命故障必须恒为 false）。
   const ALL_REASONS: OpaqueCompactStateFailure[] = [
     "invalid_marker",
@@ -431,6 +432,20 @@ describe("opaque compact failure reason classification (8.1 collapse point)", ()
     const expectedTrue = new Set(["not_found", "expired", "missing"]);
     for (const reason of ALL_REASONS) {
       expect(isSelfHealableOpaqueCompactStateFailure(reason)).toBe(expectedTrue.has(reason));
+    }
+  });
+
+  it("isUnparseableOpaqueCompactMarker: 只有 invalid_marker 为真（tampered 仍是完整性信号，不算）", () => {
+    for (const reason of ALL_REASONS) {
+      expect(isUnparseableOpaqueCompactMarker(reason)).toBe(reason === "invalid_marker");
+    }
+  });
+
+  it("良性自愈族与压根不是 marker 族互斥：任何 reason 不会同时命中两者", () => {
+    for (const reason of ALL_REASONS) {
+      const selfHealable = isSelfHealableOpaqueCompactStateFailure(reason);
+      const unparseable = isUnparseableOpaqueCompactMarker(reason);
+      expect(selfHealable && unparseable).toBe(false);
     }
   });
 });

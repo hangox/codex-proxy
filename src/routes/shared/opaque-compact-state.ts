@@ -916,7 +916,15 @@ export class OpaqueCompactStateStore {
         variantHash: payload.variantHash,
         compHash: payload.compHash,
         createdAt: payload.createdAt,
-        expiresAt: payload.expiresAt,
+        // ★ 8.4 blocker（reviewer 发现）：这里必须是 loaded.meta.expiresAt，
+        // 不能是 payload.expiresAt。payload.expiresAt 是加密 payload 里冻结的
+        // 创建时快照，sliding TTL 的设计前提就是"不重新封装密文，只改列 +
+        // MAC"，所以它从创建那一刻起永远不变。repository.load() 已经把顺延
+        // 后的新值算好、写回 DB、并通过 loaded.meta.expiresAt 返回——用
+        // payload.expiresAt 等于把 repository 层刚刚做对的顺延又在这里读丢，
+        // 下面第 759 行的过期判定会一直用创建时的原始绝对期限，跟 repository
+        // 是否已经顺延完全无关，是本轮要修的 bug 本身换了一层皮再次出现。
+        expiresAt: loaded.meta.expiresAt,
       },
       generation: loaded.meta.generation,
       meta: loaded.meta,

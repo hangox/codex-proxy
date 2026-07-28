@@ -76,6 +76,18 @@ export interface LegacySeedOptions {
   preservedTail?: unknown[];
   now?: number;
   ttlMs?: number;
+  /**
+   * 除了主记录之外，额外再种几条独立的旧格式 canary 记录（各自独立的
+   * stateId/session/marker，共享同一把 keyring/sentinel/schema）。
+   *
+   * 用途：`migrateSchema()` 是 `rows.map(row => resealRecordForMigration(...))`，
+   * 单条记录的迁移测试结构上无法验证"多条记录中某一条 reseal 失败时，已经
+   * 处理成功的其他行是否真的一并回滚，而不是部分落盘"——这只是论证不是验证。
+   * 传 >0 才能在迁移测试里手工损坏其中一条（篡改 AEAD tag 或 last_used_mac），
+   * 断言整体 ROLLBACK 且健康的那几条也没有提前落盘。默认 0，不影响现有单记录
+   * 调用方的行为。
+   */
+  extraRecords?: number;
 }
 
 export interface LegacySeedResult {
@@ -88,6 +100,26 @@ export interface LegacySeedResult {
   lookupDigest: string;
   /** 旧 successor 行的 predecessor_lookup（等于上面的 lookupDigest）。 */
   legacySuccessorPredecessor: string;
+  sessionId: string;
+  model: string;
+  accountEntryId: string;
+  variantHash: string;
+  output: unknown[];
+  preservedTail: unknown[];
+  createdAt: number;
+  expiresAt: number;
+  /**
+   * 本次调用种下的**全部**记录（主记录 + `extraRecords`），主记录是 `records[0]`
+   * 且与本对象顶层字段一一对应。`extraRecords` 未传或为 0 时只有一个元素。
+   */
+  records: LegacySeedRecord[];
+}
+
+/** 单条种下的 canary 记录的关键定位信息，供多记录迁移测试挑选"篡改哪一条"。 */
+export interface LegacySeedRecord {
+  stateId: string;
+  lookupDigest: string;
+  marker: string;
   sessionId: string;
   model: string;
   accountEntryId: string;
@@ -200,6 +232,7 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
     preservedTail = DEFAULT_TAIL,
     now = Date.now(),
     ttlMs = 30 * 60_000,
+    extraRecords = 0,
   } = options;
   const includeLastUsedMac = schemaVersion >= 3 ? true : options.includeLastUsedMac ?? false;
 
@@ -216,59 +249,9 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
   commitOpaqueCompactSentinel(sentinelFile, sentinel.storeId, () => now);
   const storeId = sentinel.storeId;
 
-  const stateId = base64Url(randomBytes(24));
-  const compHash = statePayloadHash(output, preservedTail);
-  const signature = base64Url(
-    computeMarkerSignature(key, `${MARKER_PREFIX}:${stateId}:${compHash}`),
-  );
-  const marker =
-    `<analysis>${MARKER_ANALYSIS}</analysis>\n` +
-    `<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${signature}</summary>`;
-
-  const createdAt = now;
-  const expiresAt = now + ttlMs;
-  const lookupDigest = computeLookupDigest(keyring, stateId);
-  const binding = computeIndexBinding(keyring, ["state", sessionId, model, variantHash]);
-  const accountBinding = computeIndexBinding(keyring, ["account", accountEntryId]);
-  const generation = 1;
-
-  const payload = Buffer.from(
-    JSON.stringify({
-      version: PERSISTED_PAYLOAD_VERSION,
-      output,
-      preservedTail,
-      sessionId,
-      model,
-      accountEntryId,
-      variantHash,
-      compHash,
-      createdAt,
-      expiresAt,
-    }),
-    "utf-8",
-  );
-  const byteSize = sealedSizeFor(payload.length);
-  const dataKey = deriveAccountKey(keyring, key, accountEntryId);
-  const sealed = sealRecord(
-    dataKey,
-    legacyStateAad({
-      schemaVersion,
-      storeId,
-      keyId: key.id,
-      lookupDigest,
-      generation,
-      binding,
-      accountBinding,
-      createdAt,
-      expiresAt,
-      byteSize,
-      predecessorLookup: null,
-    }),
-    payload,
-  );
-
   const databasePath = resolve(dir, "state.db");
   const db = new DatabaseSync(databasePath);
+  const records: LegacySeedRecord[] = [];
   try {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA synchronous = FULL");
@@ -318,112 +301,187 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
       .run(String(schemaVersion));
     db.prepare("INSERT INTO opaque_meta (key, value) VALUES ('store_id', ?)").run(storeId);
 
-    const stateColumns = [
-      "lookup_digest",
-      "key_id",
-      "binding",
-      "generation",
-      "created_at",
-      "expires_at",
-      "last_used_at",
-      ...(includeLastUsedMac ? ["last_used_mac"] : []),
-      "byte_size",
-      "account_binding",
-      "predecessor_lookup",
-      "nonce",
-      "tag",
-      "ciphertext",
-    ];
-    db.prepare(
-      `INSERT INTO opaque_states (${stateColumns.join(", ")})
-       VALUES (${stateColumns.map(() => "?").join(", ")})`,
-    ).run(
-      lookupDigest,
-      key.id,
-      binding,
-      generation,
-      createdAt,
-      expiresAt,
-      createdAt,
-      ...(includeLastUsedMac
-        ? [computeMutableMetaMac(keyring, lookupDigest, "last_used_at", createdAt)]
-        : []),
-      byteSize,
-      accountBinding,
-      null,
-      sealed.nonce,
-      sealed.tag,
-      sealed.ciphertext,
-    );
+    // 主记录 + extraRecords 条独立记录，逐条插入。每条记录独立生成 stateId
+    // （因此 lookup_digest 天然不同），session 加数字后缀避免 binding 撞车，
+    // 其余参数（model/accountEntryId/variantHash/output/preservedTail/
+    // createdAt/ttl）共享，保持这个 fixture 的既有语义不变。
+    for (let index = 0; index <= extraRecords; index += 1) {
+      const recordSessionId = index === 0 ? sessionId : `${sessionId}-extra-${index}`;
 
-    // 旧 edge：predecessor 就是上面那条 state（历史实现允许自指的链式映射，
-    // 这里只需要一条格式正确的旧行，用来断言迁移把它整表丢弃）。
-    const legacyMarkerBytes = Buffer.from(marker, "utf-8");
-    const successorBytes = sealedSizeFor(legacyMarkerBytes.length);
-    const sealedSuccessor = sealRecord(
-      dataKey,
-      legacySuccessorAad({
-        schemaVersion,
-        storeId,
-        keyId: key.id,
-        predecessorLookup: lookupDigest,
-        successorLookup: lookupDigest,
+      const stateId = base64Url(randomBytes(24));
+      const compHash = statePayloadHash(output, preservedTail);
+      const signature = base64Url(
+        computeMarkerSignature(key, `${MARKER_PREFIX}:${stateId}:${compHash}`),
+      );
+      const marker =
+        `<analysis>${MARKER_ANALYSIS}</analysis>\n` +
+        `<summary>${MARKER_PREFIX}:${stateId}:${compHash}:${signature}</summary>`;
+
+      const createdAt = now;
+      const expiresAt = now + ttlMs;
+      const lookupDigest = computeLookupDigest(keyring, stateId);
+      const binding = computeIndexBinding(keyring, ["state", recordSessionId, model, variantHash]);
+      const accountBinding = computeIndexBinding(keyring, ["account", accountEntryId]);
+      const generation = 1;
+
+      const payload = Buffer.from(
+        JSON.stringify({
+          version: PERSISTED_PAYLOAD_VERSION,
+          output,
+          preservedTail,
+          sessionId: recordSessionId,
+          model,
+          accountEntryId,
+          variantHash,
+          compHash,
+          createdAt,
+          expiresAt,
+        }),
+        "utf-8",
+      );
+      const byteSize = sealedSizeFor(payload.length);
+      const dataKey = deriveAccountKey(keyring, key, accountEntryId);
+      const sealed = sealRecord(
+        dataKey,
+        legacyStateAad({
+          schemaVersion,
+          storeId,
+          keyId: key.id,
+          lookupDigest,
+          generation,
+          binding,
+          accountBinding,
+          createdAt,
+          expiresAt,
+          byteSize,
+          predecessorLookup: null,
+        }),
+        payload,
+      );
+
+      const stateColumns = [
+        "lookup_digest",
+        "key_id",
+        "binding",
+        "generation",
+        "created_at",
+        "expires_at",
+        "last_used_at",
+        ...(includeLastUsedMac ? ["last_used_mac"] : []),
+        "byte_size",
+        "account_binding",
+        "predecessor_lookup",
+        "nonce",
+        "tag",
+        "ciphertext",
+      ];
+      db.prepare(
+        `INSERT INTO opaque_states (${stateColumns.join(", ")})
+         VALUES (${stateColumns.map(() => "?").join(", ")})`,
+      ).run(
+        lookupDigest,
+        key.id,
+        binding,
+        generation,
+        createdAt,
+        expiresAt,
+        createdAt,
+        ...(includeLastUsedMac
+          ? [computeMutableMetaMac(keyring, lookupDigest, "last_used_at", createdAt)]
+          : []),
+        byteSize,
+        accountBinding,
+        null,
+        sealed.nonce,
+        sealed.tag,
+        sealed.ciphertext,
+      );
+
+      // 旧 edge：predecessor 就是上面那条 state（历史实现允许自指的链式映射，
+      // 这里只需要一条格式正确的旧行，用来断言迁移把它整表丢弃）。
+      const legacyMarkerBytes = Buffer.from(marker, "utf-8");
+      const successorBytes = sealedSizeFor(legacyMarkerBytes.length);
+      const sealedSuccessor = sealRecord(
+        dataKey,
+        legacySuccessorAad({
+          schemaVersion,
+          storeId,
+          keyId: key.id,
+          predecessorLookup: lookupDigest,
+          successorLookup: lookupDigest,
+          accountBinding,
+          binding,
+          createdAt,
+          expiresAt,
+          byteSize: successorBytes,
+        }),
+        legacyMarkerBytes,
+      );
+      const successorColumns = [
+        "predecessor_lookup",
+        ...(schemaVersion >= 3 ? ["successor_lookup"] : []),
+        "key_id",
+        "account_binding",
+        "binding",
+        "created_at",
+        "expires_at",
+        "byte_size",
+        "nonce",
+        "tag",
+        "ciphertext",
+      ];
+      db.prepare(
+        `INSERT INTO opaque_successors (${successorColumns.join(", ")})
+         VALUES (${successorColumns.map(() => "?").join(", ")})`,
+      ).run(
+        lookupDigest,
+        ...(schemaVersion >= 3 ? [lookupDigest] : []),
+        key.id,
         accountBinding,
         binding,
         createdAt,
         expiresAt,
-        byteSize: successorBytes,
-      }),
-      legacyMarkerBytes,
-    );
-    const successorColumns = [
-      "predecessor_lookup",
-      ...(schemaVersion >= 3 ? ["successor_lookup"] : []),
-      "key_id",
-      "account_binding",
-      "binding",
-      "created_at",
-      "expires_at",
-      "byte_size",
-      "nonce",
-      "tag",
-      "ciphertext",
-    ];
-    db.prepare(
-      `INSERT INTO opaque_successors (${successorColumns.join(", ")})
-       VALUES (${successorColumns.map(() => "?").join(", ")})`,
-    ).run(
-      lookupDigest,
-      ...(schemaVersion >= 3 ? [lookupDigest] : []),
-      key.id,
-      accountBinding,
-      binding,
-      createdAt,
-      expiresAt,
-      successorBytes,
-      sealedSuccessor.nonce,
-      sealedSuccessor.tag,
-      sealedSuccessor.ciphertext,
-    );
+        successorBytes,
+        sealedSuccessor.nonce,
+        sealedSuccessor.tag,
+        sealedSuccessor.ciphertext,
+      );
+
+      records.push({
+        stateId,
+        lookupDigest,
+        marker,
+        sessionId: recordSessionId,
+        model,
+        accountEntryId,
+        variantHash,
+        output,
+        preservedTail,
+        createdAt,
+        expiresAt,
+      });
+    }
   } finally {
     db.close();
   }
 
+  const primary = records[0]!;
   return {
     keyring,
     storeId,
     databasePath,
-    marker,
-    stateId,
-    lookupDigest,
-    legacySuccessorPredecessor: lookupDigest,
-    sessionId,
-    model,
-    accountEntryId,
-    variantHash,
-    output,
-    preservedTail,
-    createdAt,
-    expiresAt,
+    marker: primary.marker,
+    stateId: primary.stateId,
+    lookupDigest: primary.lookupDigest,
+    legacySuccessorPredecessor: primary.lookupDigest,
+    sessionId: primary.sessionId,
+    model: primary.model,
+    accountEntryId: primary.accountEntryId,
+    variantHash: primary.variantHash,
+    output: primary.output,
+    preservedTail: primary.preservedTail,
+    createdAt: primary.createdAt,
+    expiresAt: primary.expiresAt,
+    records,
   };
 }

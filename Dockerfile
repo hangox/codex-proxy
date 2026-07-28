@@ -22,7 +22,22 @@ COPY native/ ./
 RUN npm ci && npm run build
 
 # ── Stage 2: Application ────────────────────────────────────────────
-FROM node:20-slim
+# Node 22.16.0 (Debian bookworm) is the minimum runtime this image may use:
+# src/routes/shared/opaque-compact-*.ts import `node:sqlite` at module load
+# time, and that builtin only exists from Node 22.5 (flagged) / 22.13 (stable).
+# On node:20-slim the process died at startup with ERR_UNKNOWN_BUILTIN_MODULE,
+# which `restart: unless-stopped` turned into a crash loop in production.
+# The Rust addon from stage 1 is built against N-API 9 (napi feature "napi9"),
+# which is ABI-stable and forward compatible with Node 22, so it needs no
+# rebuild. Note that stage 1 (`rust:1-slim`) currently floats on Debian trixie
+# (glibc 2.41) while this stage is bookworm (glibc 2.36); the addon links only
+# against old symbol versions today, and the build-time load assertion below
+# turns any future drift into a failed build instead of a dead container.
+FROM node:22.16.0-slim
+
+# Fail the build (not production) if the runtime base image ever loses the
+# `node:sqlite` builtin the opaque compact persistence layer depends on.
+RUN node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; new DatabaseSync(':memory:').close();"
 
 # The checked-in default is loopback-only for local source installs. Containers
 # need to listen on all interfaces inside the network namespace so published
@@ -52,6 +67,11 @@ COPY . .
 
 # 4) Copy native addon from builder stage (overwrite macOS .node if present)
 COPY --from=native-builder /native/codex-tls.linux-*.node /app/native/
+
+# The TLS transport is mandatory: initTransport() throws if the addon cannot be
+# loaded, so a builder/runtime glibc mismatch would kill the container at
+# startup exactly like the node:sqlite regression did. Prove it loads here.
+RUN node -e "const fs=require('fs');const f=fs.readdirSync('/app/native').find((n)=>n.startsWith('codex-tls.linux-')&&n.endsWith('.node'));if(!f)throw new Error('linux native addon missing');require('/app/native/'+f);"
 
 # 5) Build frontend (Vite → public/) + backend (tsc → dist/)
 RUN cd web && npm run build && cd .. && npx tsc

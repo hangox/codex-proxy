@@ -1984,7 +1984,12 @@ describe("schema 迁移 — v2/v3 原子升级到 v4", () => {
     // 这是 8.4 全新引入的列，不存在"列在但为空"的中间态。
     expect(inspectSchema().stateColumns).not.toContain("expires_at_mac");
 
-    const handle = startOpaqueCompactRuntime(runtimeConfig());
+    // 用严格单调递增的假时钟：下面要连续两次 resolve 验证 sliding TTL 确实
+    // 顺延了，真实 Date.now() 在快机器上可能落在同一毫秒，导致 expires_at
+    // 恰好相等而不是更大——那不是顺延没生效，只是时钟分辨率不够，会把这条
+    // 决定性断言变成偶发 flaky。假时钟让"顺延"这个结论不依赖系统时钟粒度。
+    let clock = Date.now();
+    const handle = startOpaqueCompactRuntime(runtimeConfig({ now: () => ++clock }));
     openHandles.push(handle);
     expect(handle.ready).toBe(true);
 

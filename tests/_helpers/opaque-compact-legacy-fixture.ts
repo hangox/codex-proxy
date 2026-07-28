@@ -21,6 +21,12 @@
  * successor 表则在 v4 被彻底换成内容寻址（edge_lookup + compactInputDigest），
  * 旧行没有 digest 分量，无法无损升级，只能整表丢弃——fixture 照样种进去，好让
  * 测试能断言"旧 edge 确实被丢弃且没有变成通配边"。
+ *
+ * ★ 8.4 新增 v4 支持：`migrateSchema()` 对 fromVersion 完全不做 v3/v4 区分
+ * （state 行走同一套 `resealRecordForMigration`，successor 表不论源版本
+ * 一律整表丢弃重建），所以这里复刻 v4 时 state 行直接复用 v3 的列形状
+ * （两者本就相同，唯一差异是 AAD 里的 `schema:N`），successor 行也复用
+ * v3 的 fixture 形状——反正会被丢弃，不影响"state 行迁移+回填"这个被测目标。
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -55,11 +61,11 @@ export interface LegacySeedOptions {
   /** 密钥环文件（必须在 store 目录之外）。 */
   keyringFile: string;
   /** 要复刻的历史 schema 版本。 */
-  schemaVersion: 2 | 3;
+  schemaVersion: 2 | 3 | 4;
   /**
    * v2 库是否已经带上 last_used_mac 列。
    * 默认按最初的 v2（e790f0b）——整列缺失，迁移必须回填真实 MAC。
-   * v3 强制为 true。
+   * v3/v4 强制为 true。
    */
   includeLastUsedMac?: boolean;
   sessionId?: string;
@@ -137,7 +143,7 @@ function legacyStateAad(fields: {
  * v3 比 v2 多一个 successorLookup 分量（4d2ef3d 引入），两者都**没有** edgeLookup。
  */
 function legacySuccessorAad(fields: {
-  schemaVersion: 2 | 3;
+  schemaVersion: 2 | 3 | 4;
   storeId: string;
   keyId: string;
   predecessorLookup: string;
@@ -153,7 +159,7 @@ function legacySuccessorAad(fields: {
     fields.storeId,
     fields.keyId,
     fields.predecessorLookup,
-    ...(fields.schemaVersion === 3 ? [fields.successorLookup] : []),
+    ...(fields.schemaVersion >= 3 ? [fields.successorLookup] : []),
     fields.accountBinding,
     fields.binding,
     String(fields.createdAt),
@@ -195,7 +201,7 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
     now = Date.now(),
     ttlMs = 30 * 60_000,
   } = options;
-  const includeLastUsedMac = schemaVersion === 3 ? true : options.includeLastUsedMac ?? false;
+  const includeLastUsedMac = schemaVersion >= 3 ? true : options.includeLastUsedMac ?? false;
 
   const keyring = loadOpaqueCompactKeyring({
     keyringFile,
@@ -294,7 +300,7 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
     db.exec(
       `CREATE TABLE IF NOT EXISTS opaque_successors (
          predecessor_lookup TEXT PRIMARY KEY,
-         ${schemaVersion === 3 ? "successor_lookup   TEXT NOT NULL," : ""}
+         ${schemaVersion >= 3 ? "successor_lookup   TEXT NOT NULL," : ""}
          key_id             TEXT NOT NULL,
          account_binding    TEXT NOT NULL,
          binding            TEXT NOT NULL,
@@ -372,7 +378,7 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
     );
     const successorColumns = [
       "predecessor_lookup",
-      ...(schemaVersion === 3 ? ["successor_lookup"] : []),
+      ...(schemaVersion >= 3 ? ["successor_lookup"] : []),
       "key_id",
       "account_binding",
       "binding",
@@ -388,7 +394,7 @@ export function seedLegacyOpaqueStore(options: LegacySeedOptions): LegacySeedRes
        VALUES (${successorColumns.map(() => "?").join(", ")})`,
     ).run(
       lookupDigest,
-      ...(schemaVersion === 3 ? [lookupDigest] : []),
+      ...(schemaVersion >= 3 ? [lookupDigest] : []),
       key.id,
       accountBinding,
       binding,

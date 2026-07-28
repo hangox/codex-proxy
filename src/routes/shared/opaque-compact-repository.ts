@@ -43,8 +43,14 @@ import {
   type OpaqueCompactKeyring,
 } from "./opaque-compact-keyring.js";
 
-/** 记录 schema 版本。任何不兼容的列变更都必须 +1。 */
-export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 4;
+/**
+ * 记录 schema 版本。任何不兼容的列变更都必须 +1。
+ *
+ * v5（8.4 sliding TTL）：新增 `expires_at_mac` 列；`expiresAt` 从 AAD 里
+ * 移出，改用独立 MAC 保护（与 `last_used_mac` 同等待遇）。见 `buildAad()`
+ * 的文档了解为什么、以及历史版本的 AAD 形状如何在迁移时仍然可重建。
+ */
+export const OPAQUE_REPOSITORY_SCHEMA_VERSION = 5;
 
 /**
  * 能就地迁移到当前版本的最低历史 schema。
@@ -159,6 +165,8 @@ interface RecordRow {
   generation: number;
   created_at: number;
   expires_at: number;
+  /** 8.4 sliding TTL：expires_at 的独立 MAC，与 last_used_mac 同等待遇。 */
+  expires_at_mac: string;
   last_used_at: number;
   last_used_mac: string;
   byte_size: number;
@@ -172,13 +180,25 @@ interface RecordRow {
 /**
  * AAD 覆盖所有影响安全与生命周期的字段。
  *
- * 只认证 stateId/generation 是不够的：createdAt/expiresAt 决定过期，byteSize
+ * 只认证 stateId/generation 是不够的：createdAt 决定创建时间，byteSize
  * 决定预算，account 决定归属——任何一项能被磁盘篡改而不被发现，都等于给攻击者
- * 一个延长 TTL 或操纵配额的口子。用长度前缀 tuple 编码，杜绝字段分隔歧义。
+ * 一个操纵配额或归属的口子。用长度前缀 tuple 编码，杜绝字段分隔歧义。
  *
  * `schemaVersion` **必须由调用方显式传入**，不能内联当前常量：升级时同一行
  * 要先按旧版本 AAD 解封、再按新版本 AAD 重封，内联常量会让解封侧永远拿不到
  * 正确的 AAD。正常读写路径一律传 OPAQUE_REPOSITORY_SCHEMA_VERSION。
+ *
+ * ★ 8.4 sliding TTL：`expiresAt` 从 v5 起**不再进 AAD**（`schemaVersion >= 5`
+ * 时整段跳过）。原因和 `computeMutableMetaMac` 文档里 `last_used_at` 不进 AAD
+ * 的理由完全一样——sliding TTL 让 expires_at 变成了"每次成功 restore 都要写"
+ * 的可变字段，如果继续留在 AAD 里，每次顺延都要重新封装整条密文（对 last_used_at
+ * 早就否决过的做法，没理由为 expires_at 破例）。v5 起改用独立 MAC 保护
+ * （`expires_at_mac` 列，与 `last_used_mac` 同等待遇）。
+ *
+ * `schemaVersion < 5` 时仍然把 `expiresAt` 塞进 tuple——这是为了让迁移路径
+ * 能按**历史真实 AAD 形状**解封 v2/v3/v4 遗留密文；新写入/重新封装一律传
+ * `OPAQUE_REPOSITORY_SCHEMA_VERSION`（现在是 5），自动落到新形状，调用方
+ * 不需要关心这个条件分支。
  */
 function buildAad(fields: {
   schemaVersion: number;
@@ -193,7 +213,7 @@ function buildAad(fields: {
   byteSize: number;
   predecessorLookup: string | null;
 }): Buffer {
-  return encodeTuple([
+  const parts = [
     `schema:${fields.schemaVersion}`,
     fields.storeId,
     fields.keyId,
@@ -202,10 +222,12 @@ function buildAad(fields: {
     fields.binding,
     fields.accountBinding,
     String(fields.createdAt),
-    String(fields.expiresAt),
-    String(fields.byteSize),
-    fields.predecessorLookup ?? "",
-  ]);
+  ];
+  if (fields.schemaVersion < 5) {
+    parts.push(String(fields.expiresAt));
+  }
+  parts.push(String(fields.byteSize), fields.predecessorLookup ?? "");
+  return encodeTuple(parts);
 }
 
 /**
@@ -340,9 +362,10 @@ export class OpaqueCompactRepository {
 
     this.stmtInsert = this.db.prepare(
       `INSERT INTO opaque_states
-         (lookup_digest, key_id, binding, generation, created_at, expires_at, last_used_at,
-          last_used_mac, byte_size, account_binding, predecessor_lookup, nonce, tag, ciphertext)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (lookup_digest, key_id, binding, generation, created_at, expires_at, expires_at_mac,
+          last_used_at, last_used_mac, byte_size, account_binding, predecessor_lookup,
+          nonce, tag, ciphertext)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.stmtSelectMaxGeneration = this.db.prepare(
       "SELECT MAX(generation) AS generation FROM opaque_states WHERE binding = ?",
@@ -353,8 +376,13 @@ export class OpaqueCompactRepository {
     this.stmtDeleteByLookup = this.db.prepare(
       "DELETE FROM opaque_states WHERE lookup_digest = ?",
     );
+    // 8.4 sliding TTL：restore 成功时 last_used_at 与 expires_at 在同一条
+    // UPDATE 里一起顺延，两者各自的 MAC 也一起重算——不需要额外包一层事务，
+    // 单条语句本身就是原子的。
     this.stmtTouch = this.db.prepare(
-      "UPDATE opaque_states SET last_used_at = ?, last_used_mac = ? WHERE lookup_digest = ?",
+      `UPDATE opaque_states
+         SET last_used_at = ?, last_used_mac = ?, expires_at = ?, expires_at_mac = ?
+       WHERE lookup_digest = ?`,
     );
     this.stmtDeleteExpired = this.db.prepare("DELETE FROM opaque_states WHERE expires_at <= ?");
     this.stmtTotals = this.db.prepare(
@@ -507,6 +535,7 @@ export class OpaqueCompactRepository {
          generation         INTEGER NOT NULL,
          created_at         INTEGER NOT NULL,
          expires_at         INTEGER NOT NULL,
+         expires_at_mac     TEXT NOT NULL,
          last_used_at       INTEGER NOT NULL,
          last_used_mac      TEXT NOT NULL,
          byte_size          INTEGER NOT NULL,
@@ -549,10 +578,13 @@ export class OpaqueCompactRepository {
    * 设计意图：升级必须保住旧 marker 仍能 resolve 的那部分 state，但绝不能把
    * 旧的 predecessor→successor 单键映射伪造成新的内容寻址 edge。
    *
-   * - **state 行**：列形状不变，只是 AAD 里的 `schema:N` 变了。因此逐行按旧版本
-   *   AAD 解封、按新版本 AAD 重封，plaintext 与全部元数据逐字保持；顺带把 v2
-   *   缺失的 last_used_mac 用真实 MAC 回填（`DEFAULT ''` 放行等于给 LRU 留一个
-   *   未认证的洞）。
+   * - **state 行**：列形状不变（除新增的 `expires_at_mac`），只是 AAD 里的
+   *   `schema:N` 变了，v5 起 AAD 还少了 `expiresAt` 那一段（见 `buildAad()`
+   *   文档）。因此逐行按旧版本 AAD 解封、按新版本 AAD 重封，plaintext 与全部
+   *   元数据逐字保持；顺带把 v2 缺失的 last_used_mac、以及所有旧版本都没有的
+   *   expires_at_mac（8.4 sliding TTL 新增列，任何历史版本都不存在，因此
+   *   永远是回填场景，不像 last_used_mac 还要按列是否存在分支）用真实 MAC
+   *   回填（`DEFAULT ''` 放行等于给 TTL 顺延留一个未认证的洞）。
    * - **successor 行**：旧表主键是 predecessor_lookup，根本不存在
    *   compactInputDigest / edge_lookup。想把它"升级"成 v4 edge，只能编一个
    *   通配或哨兵 digest —— 那会让任意一次不同输入的重试都命中这条边，拿到
@@ -609,9 +641,10 @@ export class OpaqueCompactRepository {
 
       const insert = this.db.prepare(
         `INSERT INTO opaque_states
-           (lookup_digest, key_id, binding, generation, created_at, expires_at, last_used_at,
-            last_used_mac, byte_size, account_binding, predecessor_lookup, nonce, tag, ciphertext)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (lookup_digest, key_id, binding, generation, created_at, expires_at, expires_at_mac,
+            last_used_at, last_used_mac, byte_size, account_binding, predecessor_lookup,
+            nonce, tag, ciphertext)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const row of resealed) {
         insert.run(
@@ -621,6 +654,7 @@ export class OpaqueCompactRepository {
           row.generation,
           row.created_at,
           row.expires_at,
+          row.expires_at_mac,
           row.last_used_at,
           row.last_used_mac,
           row.byte_size,
@@ -714,9 +748,20 @@ export class OpaqueCompactRepository {
     if (resealedSize !== actualByteSize) {
       throw new Error("resealed record size drifted");
     }
+    // expires_at_mac 是 8.4 新增列，任何历史 schema 版本都不存在——不像
+    // last_used_mac 还要按列是否存在分支，这里永远是"从无到有"的回填，
+    // 用当前行的 expires_at 值算出真实 MAC 即可（迁移本身不改变到期时间，
+    // 只是把它从 AAD 移到独立 MAC 保护）。
+    const expiresAtMac = computeMutableMetaMac(
+      this.keyring,
+      row.lookup_digest,
+      "expires_at",
+      row.expires_at,
+    );
     return {
       ...row,
       last_used_mac: expectedMac,
+      expires_at_mac: expiresAtMac,
       nonce: sealed.nonce,
       tag: sealed.tag,
       ciphertext: sealed.ciphertext,
@@ -909,6 +954,7 @@ export class OpaqueCompactRepository {
         generation,
         options.createdAt,
         options.expiresAt,
+        computeMutableMetaMac(this.keyring, lookupDigest, "expires_at", options.expiresAt),
         options.createdAt,
         computeMutableMetaMac(this.keyring, lookupDigest, "last_used_at", options.createdAt),
         byteSize,
@@ -1198,16 +1244,28 @@ export class OpaqueCompactRepository {
    *
    * 顺序是安全关键，不可调换：
    * 1. 先做 AEAD 认证（含 byte_size 与列值比对）；
-   * 2. 认证通过后才读取 expires_at 做 TTL 判定与删除。
+   * 2. 认证通过后才验证 expires_at_mac，确认 expires_at 列本身没被篡改；
+   * 3. 只有 1、2 都过了才敢相信 expires_at 做 TTL 判定与删除，或者顺延它。
    *
-   * 反过来（先信任 expires_at 再解封）会给磁盘攻击者一条捷径：把 expires_at
-   * 改早即可让损坏记录被静默删除，绕过 state_corrupt 并销毁证据。所有依赖
-   * 元数据的删除/预算动作都必须在认证之后。
+   * 反过来（先信任 expires_at 再解封/验 MAC）会给磁盘攻击者一条捷径：把
+   * expires_at 改早即可让损坏记录被静默删除，绕过 state_corrupt 并销毁证据；
+   * 或者改晚来延长一个本该过期的记录的寿命而不留痕迹。所有依赖元数据的
+   * 删除/顺延动作都必须在认证之后。
    *
    * `accountCandidates` 是当前进程已知的账号集合。数据密钥按账号派生，
    * 候选里没有匹配账号 → 该记录不属于本实例可访问的任何账号，fail-closed。
+   *
+   * `slideTtlMs`：8.4 sliding TTL。restore 成功（即将返回 `kind: "found"`）时，
+   * 把 `expires_at` 顺延到 `now() + slideTtlMs`，与 `last_used_at` 在同一条
+   * UPDATE 里一起写、各自的 MAC 也一起重算——不是"读取后再补一次写"，是同一
+   * 次 touch 的两个字段。团队安全复核结论（供实现对照，不一致需要停下重新
+   * 评估）：把 expires_at 移出 AAD、改用独立 MAC 保护后，攻击者能做的至多是
+   * 重放这一行**自己曾经合法达到过**的某个 (expires_at, mac) 对——MAC 绑定了
+   * lookupDigest + 字段名 + 值，无法跨行搬运、无法伪造未曾出现过的新值
+   * （需要 keyring）。也就是说残余风险只是"把寿命改回更早"（DoS 量级，与
+   * last_used_at 现有风险同构），而不是"推到从未合法达到过的更晚时间"。
    */
-  load(stateId: string, accountCandidates: readonly string[]): OpaqueCompactLoadResult {
+  load(stateId: string, accountCandidates: readonly string[], slideTtlMs: number): OpaqueCompactLoadResult {
     const lookupDigest = this.lookupFor(stateId);
     const row = this.stmtSelectByLookup.get(lookupDigest) as RecordRow | undefined;
     if (row === undefined) return { kind: "not_found" };
@@ -1265,6 +1323,14 @@ export class OpaqueCompactRepository {
       ) {
         throw new OpaqueCompactRepositoryError("state_corrupt", "last_used_at is not authenticated");
       }
+      // 8.4：expires_at 现在也是可变字段（sliding TTL），与 last_used_at 同等
+      // 待遇——同样必须在信任它、或用它顺延之前先验旧 MAC，理由完全一样。
+      if (
+        row.expires_at_mac !==
+        computeMutableMetaMac(this.keyring, row.lookup_digest, "expires_at", row.expires_at)
+      ) {
+        throw new OpaqueCompactRepositoryError("state_corrupt", "expires_at is not authenticated");
+      }
 
       // 认证通过之后才敢相信 expires_at，此时删除过期记录是安全的。
       if (row.expires_at <= this.now()) {
@@ -1272,10 +1338,16 @@ export class OpaqueCompactRepository {
         return { kind: "expired" };
       }
 
+      // 8.4 sliding TTL：restore 成功 = 顺延，而不是仅仅 touch last_used_at。
+      // 新值与新 MAC 在同一条 UPDATE 里一起写——单条语句本身就是原子的，
+      // 不需要额外包一层事务。
       const touchedAt = this.now();
+      const slidExpiresAt = touchedAt + slideTtlMs;
       this.stmtTouch.run(
         touchedAt,
         computeMutableMetaMac(this.keyring, lookupDigest, "last_used_at", touchedAt),
+        slidExpiresAt,
+        computeMutableMetaMac(this.keyring, lookupDigest, "expires_at", slidExpiresAt),
         lookupDigest,
       );
       return {
@@ -1288,7 +1360,9 @@ export class OpaqueCompactRepository {
           binding: row.binding,
           generation: row.generation,
           createdAt: row.created_at,
-          expiresAt: row.expires_at,
+          // 顺延后的新值，不是这一行刚刚被认证时读到的旧值——调用方看到的
+          // 应该是"这次 restore 之后"的真实状态。
+          expiresAt: slidExpiresAt,
           byteSize: actualByteSize,
           predecessorLookup: row.predecessor_lookup,
         },
@@ -1447,6 +1521,16 @@ export class OpaqueCompactRepository {
       if (
         row.last_used_mac !==
         computeMutableMetaMac(this.keyring, row.lookup_digest, "last_used_at", row.last_used_at)
+      ) {
+        unreadable += 1;
+        continue;
+      }
+      // 8.4：expires_at 现在同样可变（sliding TTL），同等待遇——冷启动扫描
+      // 也要验证它的独立 MAC，否则攻击者篡改这一列就能在离线状态下伪造一个
+      // 从未合法达到过的到期时间，且不会被 recover() 发现。
+      if (
+        row.expires_at_mac !==
+        computeMutableMetaMac(this.keyring, row.lookup_digest, "expires_at", row.expires_at)
       ) {
         unreadable += 1;
         continue;

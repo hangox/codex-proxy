@@ -220,9 +220,9 @@ export const ConfigSchema = z.object({
   opaque_compact_state: z.object({
     /** state 存活时长。previous 密钥的保留窗口至少覆盖它，
      *  这样密钥轮换不会让仍在有效期内的 marker 失效。 */
-    ttl_minutes: z.number().int().min(1).max(24 * 60).default(30),
+    ttl_minutes: z.number().int().min(1).max(24 * 60).default(720),
     /** LRU 淘汰前保留的最大条目数。 */
-    capacity: z.number().int().min(1).max(10_000).default(128),
+    capacity: z.number().int().min(1).max(10_000).default(1024),
     /** 所有 state 密文的总字节预算。 */
     max_bytes: z.number().int().min(64 * 1024).default(64 * 1024 * 1024),
     /** 外部密钥环文件的绝对路径。

@@ -995,6 +995,24 @@ export class OpaqueCompactStateStore {
   /**
    * 验签。持久化模式下要遍历整个 key ring：轮换之后，上一代密钥签发的 marker
    * 在 previous key 的保留窗口内必须继续有效，否则轮换等同于强制所有会话重来。
+   *
+   * ★ 已知限制（8.4 sliding TTL 引入后仍然存在，非本次改动的回归）：sliding
+   * TTL 只是把"会话必然死亡"的窗口从固定 30 分钟推长到 keyring 的
+   * `previousKeyRetentionMs`，不是消除它。marker 的 HMAC 签名在创建时就已
+   * 绑定当时的 active key；这里的验证是"遍历当前保留窗口内的全部 key"，
+   * 一旦签发时的那把 key 因超出 `previousKeyRetentionMs` 被裁剪出 keyring
+   * （物理删除，见 `opaque-compact-keyring.ts` 的裁剪逻辑），无论对应的
+   * state 被 touch 得多新、多频繁，这里都会因为遍历不到匹配的 key 而返回
+   * false，上层判定为 `tampered`——这是密钥轮换卫生与 marker 寿命之间的
+   * 结构性上限，sliding TTL 无法突破，本轮也不打算修（详见交付记录里对
+   * `retired_key_suspected` 可观测性诉求的可行性结论：marker 不携带
+   * keyId，且被裁剪的旧 key 不留 tombstone，系统内没有可查询的判定信号）。
+   *
+   * ★ 排查线索（留给运维）：单条 `tampered` 日志无法区分"真伪造"与"这条"，
+   * 但**时间分布**能看出来——如果观察到 `tampered` 集中出现在一次 key
+   * 轮换（`rotateOpaqueCompactKeyring`）发生后不久，大概率是这个已知限制
+   * 而不是被攻击：真正的伪造在时间上应该是随机分布的，而"活跃时间跨越了
+   * 一次轮换 + 保留窗口"这类命中会跟轮换事件的时间点强相关。
    */
   private verify(stateId: string, compHash: string, signature: string): boolean {
     const message = `${MARKER_PREFIX}:${stateId}:${compHash}`;

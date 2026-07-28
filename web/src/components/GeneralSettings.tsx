@@ -436,7 +436,30 @@ export function GeneralSettings() {
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsOpaqueCompactHint")}</p>
           </div>
 
-          {/* Client System Prompt Strategy */}
+          {/* Auto-refresh Tokens */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="refresh-enabled"
+                checked={displayRefreshEnabled}
+                onChange={(e) => setDraftRefreshEnabled((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="refresh-enabled" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("generalSettingsRefreshEnabled")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsRefreshEnabledHint")}</p>
+          </div>
+
+          {/* Client System Prompt Strategy — deliberately last among the checkbox
+              switches: it's a checkbox + a select block glued together, not a bare
+              switch, so it reads as an outlier wedged between two ordinary switches.
+              Moving it after every other switch (but still before the plain
+              input-field settings below) keeps the checkbox+select pairing intact
+              and removes the "sandwiched" look without touching their enable/disable
+              relationship. */}
           <div class="space-y-1">
             <div class="flex items-center gap-2">
               <input
@@ -459,27 +482,30 @@ export function GeneralSettings() {
             }`}>
               {t("generalSettingsSystemPromptStrategy")}
             </label>
-            <div class="text-xs text-slate-400 dark:text-text-dim space-y-1">
+            <div class="text-xs text-slate-400 dark:text-text-dim space-y-1.5">
               <p>{t("generalSettingsSystemPromptStrategyHintIntro")}</p>
-              <ul class="space-y-1">
-                <li class="flex gap-2">
-                  <code class="font-mono text-[0.7rem] text-slate-500 dark:text-text-main shrink-0">instructions</code>
-                  <span>{t("generalSettingsSystemPromptStrategyDescInstructions")}</span>
-                </li>
-                <li class="flex gap-2">
-                  <code class="font-mono text-[0.7rem] text-slate-500 dark:text-text-main shrink-0">developer_inline</code>
-                  <span>
-                    {t("generalSettingsSystemPromptStrategyDescDeveloperInline")}
-                    <span class="ml-1 inline-block rounded px-1 py-0.5 text-[0.65rem] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
-                      {t("generalSettingsSystemPromptStrategyRecommended")}
-                    </span>
+              {/* grid_cols-[auto_1fr]: the option-name column's width is driven by
+                  its widest cell across ALL rows (native CSS Grid track sizing),
+                  so "instructions" / "developer_inline" / "system_inline" no longer
+                  need matching string lengths to line up — the description column
+                  starts at the same x for every row for free. The "recommended"
+                  badge sits inline right after its option name instead of trailing
+                  at the end of the description sentence. */}
+              <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 items-baseline">
+                <code class="font-mono text-[0.7rem] text-slate-500 dark:text-text-main">instructions</code>
+                <span>{t("generalSettingsSystemPromptStrategyDescInstructions")}</span>
+
+                <span class="inline-flex items-center gap-1.5">
+                  <code class="font-mono text-[0.7rem] text-slate-500 dark:text-text-main">developer_inline</code>
+                  <span class="inline-block rounded px-1 py-0.5 text-[0.65rem] font-medium leading-none bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+                    {t("generalSettingsSystemPromptStrategyRecommended")}
                   </span>
-                </li>
-                <li class="flex gap-2">
-                  <code class="font-mono text-[0.7rem] text-slate-500 dark:text-text-main shrink-0">system_inline</code>
-                  <span>{t("generalSettingsSystemPromptStrategyDescSystemInline")}</span>
-                </li>
-              </ul>
+                </span>
+                <span>{t("generalSettingsSystemPromptStrategyDescDeveloperInline")}</span>
+
+                <code class="font-mono text-[0.7rem] text-slate-500 dark:text-text-main">system_inline</code>
+                <span>{t("generalSettingsSystemPromptStrategyDescSystemInline")}</span>
+              </div>
             </div>
             <select
               class={`${inputCls} max-w-[240px] ${canEditSystemPromptStrategy ? "" : "cursor-not-allowed opacity-50"}`}
@@ -496,23 +522,6 @@ export function GeneralSettings() {
             {!canEditSystemPromptStrategy && (
               <p class="text-xs text-amber-600 dark:text-amber-400">{t("generalSettingsSystemPromptStrategyDisabledHint")}</p>
             )}
-          </div>
-
-          {/* Auto-refresh Tokens */}
-          <div class="space-y-1">
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="refresh-enabled"
-                checked={displayRefreshEnabled}
-                onChange={(e) => setDraftRefreshEnabled((e.target as HTMLInputElement).checked)}
-                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
-              />
-              <label for="refresh-enabled" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
-                {t("generalSettingsRefreshEnabled")}
-              </label>
-            </div>
-            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsRefreshEnabledHint")}</p>
           </div>
 
           {/* Refresh Margin */}

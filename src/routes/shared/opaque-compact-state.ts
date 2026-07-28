@@ -461,6 +461,41 @@ export function restoreOpaqueCompactInput(
   return [...output as CodexInputItem[], ...preservedTail, ...retained];
 }
 
+const IGNORED_MARKER_PLACEHOLDER_TEXT =
+  "[Earlier conversation history referenced by an opaque compact marker is unavailable and could not be " +
+  "restored. Continuing without it — do not attempt to interpret the original marker text as content.]";
+
+/**
+ * 忽略一枚"确实解析出来了、但不适用于本次请求"或"压根解析不出来"的
+ * marker 时，用一句明示占位替换它，而不是让签名文本原样透传给上游、或者
+ * 悄悄从历史里消失。
+ *
+ * 两者都是"静默降质"：上游模型要么把一串无意义的签名字符串当真实历史去
+ * 理解，要么在毫无提示的情况下发现上下文突然变短——这正是生产回滚事故里
+ * "用户看不到任何报错，但模型已经悄悄失去了 compact 之前的全部上下文"
+ * 那一环的根因（见交接文档 1.2 环 8）。8.2/8.3 把 409 改成放行之后，如果
+ * 什么都不做，就是把这个环从"回滚期间才会发生"搬进了"每一次关开关/绑定
+ * 不匹配/marker 损坏都会发生"的常规路径——降级本身必须可观测。
+ *
+ * 只对"能找到 marker 边界"的情况生效；找不到就原样返回，**不能**退化成
+ * `restoreOpaqueCompactInput` 那种"边界缺失时只保留 output"的行为——那是
+ * 为"marker 必然存在"的权威恢复路径设计的，用在这里会把 marker 之后用户
+ * 当前发言一起丢掉，比什么都不做更危险。
+ */
+export function replaceIgnoredOpaqueCompactMarker(
+  input: CodexInputItem[],
+  marker: string,
+): CodexInputItem[] {
+  if (findOpaqueMarkerBoundaryIndex(input, marker) < 0) return input;
+  return restoreOpaqueCompactInput(input, marker, [
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: IGNORED_MARKER_PLACEHOLDER_TEXT }],
+    },
+  ]);
+}
+
 /**
  * State store。
  *
@@ -1029,35 +1064,56 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
 }
 
 /**
- * "状态不可用"的完整分区收口在这里 + {@link isFatalStoreFailure} +
- * {@link isUnparseableOpaqueCompactMarker} 三个函数里，一共三族，两两互斥。
- * 调用方（路由层）只应该调用这三个分类函数做编排，不应该再散落
+ * "状态不可用"的完整分区收口在这三个函数（{@link isFatalStoreFailure}、
+ * 这里、{@link isUnparseableOpaqueCompactMarker}）+
+ * {@link isOpaqueCompactMarkerBindingMismatch} 一共四个函数、三大族里，
+ * 两两互斥。调用方（路由层）只应该调用这几个分类函数做编排，不应该再散落
  * `reason === "..."` 的字符串比较——那样每加一个 reason 都要记得同步改
  * 所有调用点，正是这次事故"多处症状、同一缺失不变式"的成因。
  *
- * - **致命 / 必须拦**（{@link isFatalStoreFailure}）：单实例锁、keyring 缺失、
- *   schema 不匹配、记录 AEAD 校验失败等——这些意味着 store 本身不可信，必须
- *   fail-closed，并把 runtime 原子转成 NOT_READY。
- * - **良性 / 可自愈**（这里，{@link isSelfHealableOpaqueCompactStateFailure}）：
+ * 判据是"这个失败说明了什么"：
+ *
+ * - **族 C · 致命 / 必须拦**（{@link isFatalStoreFailure}）：单实例锁、
+ *   keyring 缺失、schema 不匹配、记录 AEAD 校验失败、`state_corrupt` 等——
+ *   说明 **store 本身的持久化承诺已经不成立**，必须 fail-closed，并把
+ *   runtime 原子转成 NOT_READY。
+ * - **族 A · 良性可自愈**（这里，{@link isSelfHealableOpaqueCompactStateFailure}）：
  *   `not_found`（行从未存在）与 `expired`（行曾存在、TTL 到期后被自然删
- *   除）。两者都只说明"这一枚 marker 指向的状态没了"，不代表数据被破坏或
- *   账号越权——调用方拿到的 marker 本身就是"过期钥匙"，理应可以直接换一把
- *   新的（即放行到全新 root compact），而不是把用户焊死在死会话里。这一族
+ *   除）——说明**时间过去了**，是系统正常工作的必然结果，不代表数据被破坏
+ *   或账号越权。调用方拿到的 marker 本身就是"过期钥匙"，理应可以直接换一
+ *   把新的（放行到全新 root compact），而不是把用户焊死在死会话里。这一族
  *   **需要**调用方额外确认"本次确实是 compact 请求"才能放行：对着一枚过期
  *   marker 的普通聊天请求，仍然要 409 提示用户去 /compact（现在这条提示是
- *   真的可执行的，见 8.1 的自愈）。
- * - **压根不是 marker**（{@link isUnparseableOpaqueCompactMarker}）：
- *   `invalid_marker`——从未成功解析出合法的 (stateId, compHash, signature)
- *   三元组，多半是截断的 base64url 段、被引用/包裹改变了位置、拼进段落中
- *   部这类传输层损伤。既然从未被认定为合法指令，就不需要"必须是 compact
- *   请求"这个前提——任何请求都该把它当普通文本，不 409。
+ *   真的可执行的，见 8.1 的自愈）——否则就是在没有新 compact 发生的情况下
+ *   静默丢弃这段历史，不是自愈是丢数据。
+ * - **族 B · 这枚 marker 不适用于本次请求**（{@link isUnparseableOpaqueCompactMarker}
+ *   + {@link isOpaqueCompactMarkerBindingMismatch}）：说明**这枚 marker 与
+ *   当前请求无关**，无论是从未被认定为合法指令，还是认对了但绑定的上下文
+ *   变了。两个子函数覆盖两条不同来路，但结论相同——忽略 marker、按普通请求
+ *   继续，不需要"必须是 compact 请求"这个前提（marker 与本次请求无关，
+ *   这个结论不因请求是不是 compact 而改变）：
+ *   - `invalid_marker`——从未成功解析出合法的 (stateId, compHash, signature)
+ *     三元组，多半是截断的 base64url 段、被引用/包裹改变了位置、拼进段落
+ *     中部这类传输层损伤。
+ *   - `session_mismatch` / `model_mismatch` / `variant_mismatch`——marker
+ *     验签**通过**了（确实是我们签发的），只是绑定的会话/模型/variant 跟
+ *     当前请求对不上。`resolve()` 从未把数据返回给错的上下文，安全边界
+ *     已经守住；再额外 409 对安全性没有任何增量，只是把会话推向死路。
+ *   ★ 放行到"当普通请求继续"之后，必须用 {@link replaceIgnoredOpaqueCompactMarker}
+ *   把这枚被忽略的 marker 换成明示占位，不能让签名文本原样透传给上游——
+ *   否则就是把回滚事故里"静默上下文丢失"那一环从"仅回滚期间"搬进日常路径。
  *
- * 其余 reason（`session_mismatch`/`model_mismatch`/`account_mismatch`/
- * `variant_mismatch`/`comp_hash_mismatch`/`tampered`/`preserved_tail_conflict`/
- * `state_too_large`/`stale_generation`）三族都不占：它们是"我们确实解析并
- * 验签出了一枚合法 marker，但它与当前请求对不上"的单请求语义错误（或
- * `tampered`——结构合法但签名验证失败，真实的伪造/完整性信号）。放行会掩盖
- * 真正的账号/会话错配、并发冲突或伪造尝试，因此仍然各自返回 409。
+ * 族 B **刻意不包含** `account_mismatch`：持久化路径下它来自 repository 的
+ * `binding_mismatch`（记录属于本实例完全不认识的账号），是真实的跨账号
+ * 访问边界，不是"上下文对不上"，因此仍然落在"既不致命也不该静默放行"的
+ * 剩余集合里，继续 fail-closed。
+ *
+ * 其余 reason（`account_mismatch`/`comp_hash_mismatch`/`tampered`/
+ * `preserved_tail_conflict`/`state_too_large`/`stale_generation`）三族都不
+ * 占：`tampered` 是结构合法但签名验证失败的真实伪造/完整性信号；
+ * `comp_hash_mismatch`/`account_mismatch` 是数据完整性或账号隔离边界；
+ * `preserved_tail_conflict`/`stale_generation` 是并发/协议冲突。放行会掩盖
+ * 真正的伪造尝试、数据损坏或并发冲突，因此仍然各自返回 409。
  */
 export function isSelfHealableOpaqueCompactStateFailure(reason: OpaqueCompactStateFailure): boolean {
   switch (reason) {
@@ -1071,13 +1127,33 @@ export function isSelfHealableOpaqueCompactStateFailure(reason: OpaqueCompactSta
 }
 
 /**
- * 判定一个失败是否根本没能解析出合法 marker 结构——见上方三族分区说明。
+ * 判定一个失败是否根本没能解析出合法 marker 结构——族 B 的第一条来路，
+ * 完整分区说明见 {@link isSelfHealableOpaqueCompactStateFailure}。
  * 与 `tampered`（结构合法、签名验证失败）刻意区分：那是真实的完整性信号，
  * 仍需 fail-closed；这里是"这段文本长得像 marker，但连三元组都凑不出来"，
  * 按普通文本处理即可。
  */
 export function isUnparseableOpaqueCompactMarker(reason: OpaqueCompactStateFailure): boolean {
   return reason === "invalid_marker";
+}
+
+/**
+ * 判定一个失败是否属于"marker 验签通过（确实是我们签发的），但绑定的
+ * 会话/模型/variant 与本次请求对不上"——族 B 的第二条来路，完整分区说明
+ * 见 {@link isSelfHealableOpaqueCompactStateFailure}。
+ *
+ * 与 `account_mismatch` 刻意区分：后者是跨账号访问边界（见上方分区说明），
+ * 不在这个函数的判定范围内，继续 fail-closed。
+ */
+export function isOpaqueCompactMarkerBindingMismatch(reason: OpaqueCompactStateFailure): boolean {
+  switch (reason) {
+    case "session_mismatch":
+    case "model_mismatch":
+    case "variant_mismatch":
+      return true;
+    default:
+      return false;
+  }
 }
 
 /**

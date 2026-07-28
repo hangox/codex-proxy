@@ -47,8 +47,10 @@ import {
   extractOpaqueCompactStateMarker,
   getOpaqueCompactStateReadiness,
   hasOpaqueCompactStateReference,
+  isOpaqueCompactMarkerBindingMismatch,
   isSelfHealableOpaqueCompactStateFailure,
   isUnparseableOpaqueCompactMarker,
+  replaceIgnoredOpaqueCompactMarker,
   reportOpaqueCompactStoreFault,
 } from "./shared/opaque-compact-state.js";
 
@@ -348,6 +350,11 @@ export function createMessagesRoutes(
     // marker、把请求当普通文本继续（下面 opaqueCompactEnabled=false 会让
     // restoreOpaqueCompactRequest 整体短路，不会再碰 store），不要 409——
     // 事故复盘显示这里曾经 409，止血阀因此形同虚设（关了开关会话照样报错）。
+    // 先记下这枚被忽略的 marker，等 codexRequest 翻译出来后统一做占位替换
+    // （见下方 replaceIgnoredOpaqueCompactMarker）——此时还没有 codexRequest。
+    const ignoredMarkerFromDisabledSwitch = opaqueMarkerCandidate && !opaqueCompactEnabled
+      ? opaqueMarkerCandidate
+      : null;
     // 已开启但 store 未就绪：把结构化 reason 一并给出，便于区分锁/密钥/schema/损坏。
     if (opaqueMarkerCandidate && opaqueCompactEnabled) {
       const readiness = getOpaqueCompactStateReadiness();
@@ -448,37 +455,54 @@ export function createMessagesRoutes(
           accountCandidates: accountPool.getAllEntries().map((entry) => entry.id),
         })
       : { restored: false };
+    // 被忽略（不放行到自愈、但也不 409）的 marker，最终统一在下面对
+    // codexRequest.input 做占位替换——见 replaceIgnoredOpaqueCompactMarker
+    // 的文档：不能让它原样透传给上游，那是把回滚事故里"静默上下文丢失"
+    // 那一环从"仅回滚期间"搬进日常路径。自愈（selfHealable）成功的分支
+    // 走全新 root compact，不在这里处理（见下方该分支单独的说明）。
+    let ignoredMarker: string | null = ignoredMarkerFromDisabledSwitch;
     if (opaqueRestore.error) {
       // store 级故障（损坏/密钥/schema）与单请求语义错误（session 不匹配、
       // marker 过期）走同一个出口，但前者要同时把 runtime 转成 NOT_READY，
-      // 让 /health 与后续请求给出同一个 reason。下面两个分类函数判定为
+      // 让 /health 与后续请求给出同一个 reason。下面几个分类函数判定为
       // "不致命"时这里是 no-op；判定致命时仍然原子转 NOT_READY。
       reportOpaqueCompactStoreFault(opaqueRestore.error);
       const reason = opaqueRestore.error.reason;
-      // 8.1 + 8.3：两条独立、互斥的"不该 409"族，收口在
-      // opaque-compact-state.ts 的分类函数里（完整分区说明见该文件），这里
-      // 只做编排，不再散落 reason === "..." 比较：
-      //   - isSelfHealableOpaqueCompactStateFailure（8.1）：marker 合法但
-      //     state 没了（not_found/expired/missing）。★ 红线：只在这一族放
-      //     行，且额外要求本次确实是 compact 请求——store 级致命故障
-      //     （锁/密钥/schema/quarantine/AEAD 校验失败）永远落在
+      const errorMarker = opaqueRestore.marker ?? null;
+      // 8.1 + 8.3：三条独立、互斥的"不该 409"族，收口在
+      // opaque-compact-state.ts 的分类函数里（完整分区说明见该文件的
+      // isSelfHealableOpaqueCompactStateFailure 文档），这里只做编排，不再
+      // 散落 reason === "..." 比较：
+      //   - 族 A / isSelfHealableOpaqueCompactStateFailure（8.1）：marker
+      //     合法但 state 没了（not_found/expired/missing）。★ 红线：只在
+      //     这一族放行，且额外要求本次确实是 compact 请求——store 级致命
+      //     故障（锁/密钥/schema/quarantine/AEAD 校验失败）永远落在
       //     isFatalStoreFailure 那一族，这里恒为 false，仍然 fail-closed。
-      //   - isUnparseableOpaqueCompactMarker（8.3）：压根没解析出合法 marker
-      //     （invalid_marker，多半是截断/前缀污染/位置偏移），不需要是
-      //     compact 请求，任何请求都当普通文本。
-      // 两族命中后都丢弃 error/marker/output 等字段，视为"从未找到过状
-      // 态"：不能把这枚已经失效或压根解析不出来的旧 marker 当 previousMarker
-      // 传给全新 root compact 分支，那会让它去尝试幂等回放一个不存在的
-      // predecessor edge。
+      //   - 族 B / isUnparseableOpaqueCompactMarker + isOpaqueCompactMarkerBindingMismatch
+      //     （8.3 + 团队三族裁决）：压根没解析出合法 marker，或验签通过但
+      //     session/model/variant 绑定对不上——两者都说明这枚 marker 与
+      //     本次请求无关，不需要是 compact 请求，任何请求都当普通文本。
+      //     ★ 红线：account_mismatch **不**在这一族里，是跨账号访问边界，
+      //     继续 409（见 isOpaqueCompactMarkerBindingMismatch 文档）。
+      // 命中后都丢弃 error/marker/output 等字段，视为"从未找到过状态"：
+      // 不能把这枚已经失效、解析不出来或绑定不对的旧 marker 当
+      // previousMarker 传给全新 root compact 分支，那会让它去尝试幂等回放
+      // 一个不存在或不属于本次请求的 predecessor edge。
       const selfHealable = isSelfHealableOpaqueCompactStateFailure(reason);
-      const treatAsNoMarker = selfHealable
-        ? compactPrompt !== null
-        : isUnparseableOpaqueCompactMarker(reason);
+      const notApplicableToRequest = isUnparseableOpaqueCompactMarker(reason) ||
+        isOpaqueCompactMarkerBindingMismatch(reason);
+      const treatAsNoMarker = selfHealable ? compactPrompt !== null : notApplicableToRequest;
       if (treatAsNoMarker) {
         console.log(
           `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)}` +
-            ` phase=${selfHealable ? "self_heal" : "ignored_unparseable_marker"} reason=${reason}`,
+            ` phase=${selfHealable ? "self_heal" : "ignored_not_applicable_marker"} reason=${reason}`,
         );
+        // 族 A 自愈：全新 root compact 会产出一份全新摘要，旧 marker 文本
+        // 是"这次 compact 输入"的噪音而非"直接透传给用户对话"的内容，
+        // 占位替换的收益小、复杂度高（respondWithOpaqueCompactMarker 内部
+        // 另外用 req 重新构建 compact 请求），本轮范围内不处理，只处理会
+        // 原样进入普通转发路径的族 B。
+        if (!selfHealable) ignoredMarker = errorMarker ?? ignoredMarker;
         opaqueRestore = { restored: false };
       } else {
         c.status(409);
@@ -487,6 +511,9 @@ export function createMessagesRoutes(
           `Opaque compact state is unavailable (${reason}). Run /compact again.`,
         ));
       }
+    }
+    if (ignoredMarker) {
+      codexRequest.input = replaceIgnoredOpaqueCompactMarker(codexRequest.input, ignoredMarker);
     }
 
     const proxyReq = {

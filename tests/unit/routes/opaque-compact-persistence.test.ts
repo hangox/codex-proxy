@@ -1895,7 +1895,7 @@ describe("variantHash — 绑定必须跨 compact 边界稳定", () => {
     expect(opaqueCompactVariantHash(afterCompact)).toBe(opaqueCompactVariantHash(beforeCompact));
   });
 
-  it("不同 Codex 窗口 / 不同 system prompt 仍然互相隔离", () => {
+  it("不同 Codex 窗口 / 不同工具集仍然互相隔离", () => {
     const base = {
       model: "gpt-5.4",
       instructions: "main thread",
@@ -1904,11 +1904,37 @@ describe("variantHash — 绑定必须跨 compact 边界稳定", () => {
     } as unknown as Parameters<typeof opaqueCompactVariantHash>[0];
 
     const otherWindow = { ...base, codexWindowId: "window-2" } as typeof base;
-    const subagent = { ...base, instructions: "subagent prompt" } as typeof base;
+    // tools 是团队裁决后仍然参与哈希的隔离维度（instructions 已经去掉，见下一条）。
+    const differentTools = {
+      ...base,
+      tools: [{ type: "function", name: "WebFetch" }],
+    } as typeof base;
 
     // 需要隔离的并行维度必须仍然产生不同 hash。
     expect(opaqueCompactVariantHash(otherWindow)).not.toBe(opaqueCompactVariantHash(base));
-    expect(opaqueCompactVariantHash(subagent)).not.toBe(opaqueCompactVariantHash(base));
+    expect(opaqueCompactVariantHash(differentTools)).not.toBe(opaqueCompactVariantHash(base));
+  });
+
+  it("仅 system prompt（instructions）不同不再产生隔离——团队裁决，instructions 已从 variant hash 里去掉", () => {
+    // 团队三条证据链裁决（详见 opaqueCompactVariantHash 的文档注释）：compact
+    // 的全部意义就是把历史换成一段摘要，instructions 在 compact 前后必然
+    // 变化，把它留在跨 compact 边界的绑定里，等于让任何一次真实 compact
+    // 后的第一句话都必然撞上 variant_mismatch——这正是本轮要修的事故本身。
+    // 这条用例专门守住"只改 instructions、其余全同"这个最小场景，防止有人
+    // 日后按直觉把 instructions 加回 opaqueCompactVariantHash 的调用参数
+    // 里、重新踩上同一个坑而没有任何测试变红提醒。
+    const base = {
+      model: "gpt-5.4",
+      instructions: "main thread system prompt, 22344 字符量级",
+      tools: [{ type: "function", name: "Read" }],
+      input: [],
+    } as unknown as Parameters<typeof opaqueCompactVariantHash>[0];
+    const rewrittenInstructions = {
+      ...base,
+      instructions: "compact 之后被翻译层重写过的 system prompt, 16472 字符量级",
+    } as typeof base;
+
+    expect(opaqueCompactVariantHash(rewrittenInstructions)).toBe(opaqueCompactVariantHash(base));
   });
 });
 

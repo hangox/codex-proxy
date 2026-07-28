@@ -850,8 +850,10 @@ describe("E2E: POST /v1/messages", () => {
           return makeTransportResponse(buildTextStreamChunks("resp_variant_mismatch_passthrough", "variant mismatch passthrough"));
         });
 
-        // 同一 session/model，但工具集变了——variantHash 绑定 instructions+tools，
-        // 一个真实的窗口/子代理切换就会触发这条分支，而不是刻意构造的边角情形。
+        // 同一 session/model，但工具集变了——variantHash 现在只绑定 tools
+        // （+ codexWindowId），instructions 已经从这个 hash 里去掉（团队裁决，
+        // 见 opaqueCompactVariantHash 的文档），一个真实的窗口/子代理切换
+        // 就会触发这条分支，而不是刻意构造的边角情形。
         const replay = await messagesRequest(defaultBody({
           stream: true,
           tools: [{

@@ -17,9 +17,8 @@
  *
  * 其余已经在内存版 e2e（`tests/e2e/messages.test.ts`）和 repository 单测
  * （`tests/unit/routes/opaque-compact-persistence.test.ts`）里分别覆盖过的
- * 场景（session/model_mismatch、variant_mismatch 仍 409、malformed、开关
- * 关闭、schema 迁移、密钥轮换……）不在这里重复——这个文件只补"两者叠加"
- * 这一个组合缺口。
+ * 场景（session/model/variant_mismatch、malformed、开关关闭、schema 迁移、
+ * 密钥轮换……）不在这里重复——这个文件只补"两者叠加"这一个组合缺口。
  */
 
 import { vi, describe, it, expect, beforeEach, afterEach } from "vitest";

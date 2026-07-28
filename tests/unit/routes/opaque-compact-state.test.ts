@@ -443,18 +443,13 @@ describe("opaque compact failure reason classification (8.1/8.3 collapse point, 
     }
   });
 
-  it("isOpaqueCompactMarkerBindingMismatch: 只有 session/model_mismatch 为真（account_mismatch 是账号隔离边界；variant_mismatch 团队复核裁决暂不归类，均不算）", () => {
-    const expectedTrue = new Set(["session_mismatch", "model_mismatch"]);
+  it("isOpaqueCompactMarkerBindingMismatch: 只有 session/model/variant_mismatch 为真（account_mismatch 是账号隔离边界，不算）", () => {
+    const expectedTrue = new Set(["session_mismatch", "model_mismatch", "variant_mismatch"]);
     for (const reason of ALL_REASONS) {
       expect(isOpaqueCompactMarkerBindingMismatch(reason)).toBe(expectedTrue.has(reason));
     }
     // 团队三族裁决的红线：account_mismatch 显式不在族 B 里。
     expect(isOpaqueCompactMarkerBindingMismatch("account_mismatch")).toBe(false);
-    // 团队复核裁决（非遗漏）：variant_mismatch 命中时 state 本身完好、内容仍
-    // 可恢复，只是指纹算不一致（很可能是翻译层自身 bug）——在 qa 查清真实
-    // 触发原因、确认正确 remedy 之前，不能把它塞进"丢弃并静默继续"的族 B，
-    // 那等于把一份本可完整恢复的历史当垃圾扔掉且用户毫无察觉。仍然默认 409。
-    expect(isOpaqueCompactMarkerBindingMismatch("variant_mismatch")).toBe(false);
   });
 
   it("三族两两互斥：任何 reason 不会同时命中一个以上", () => {

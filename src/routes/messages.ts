@@ -48,6 +48,7 @@ import {
   getOpaqueCompactStateReadiness,
   hasOpaqueCompactStateReference,
   isSelfHealableOpaqueCompactStateFailure,
+  isUnparseableOpaqueCompactMarker,
   reportOpaqueCompactStoreFault,
 } from "./shared/opaque-compact-state.js";
 
@@ -318,13 +319,13 @@ export function createMessagesRoutes(
         "Opaque compact state requires the original Claude Code session and Codex account route. Run /compact again.",
       ));
     }
-    if (hasOpaqueReference && opaqueStateReference === null) {
-      c.status(409);
-      return c.json(makeError(
-        "invalid_request_error",
-        "Opaque compact state marker is malformed. Run /compact again.",
-      ));
-    }
+    // 8.3：解析不出严格 marker（malformed）不再 409。`hasOpaqueReference`
+    // （松检测，见上面的 opaqueSensitive）与 `opaqueStateReference`（严解析）
+    // 口径刻意不同——前者只驱动"这条请求是否按敏感请求做日志脱敏"，后者才
+    // 是唯一允许驱动状态恢复/新建 compact 的信号。两者不一致时（松命中、严
+    // 解析为 null）说明消息里出现了形似 marker 但不可信的文本：不是我们签发
+    // 的、被截断的、或被引用/包裹改变了位置——按普通文本继续处理即可，
+    // 严解析为 null 已经保证它不会被当成恢复凭据使用。
 
     // Auth check
     if (!allowUnauthenticated && !accountPool.hasAnyActiveAccount()) {
@@ -450,33 +451,40 @@ export function createMessagesRoutes(
     if (opaqueRestore.error) {
       // store 级故障（损坏/密钥/schema）与单请求语义错误（session 不匹配、
       // marker 过期）走同一个出口，但前者要同时把 runtime 转成 NOT_READY，
-      // 让 /health 与后续请求给出同一个 reason。isSelfHealableOpaqueCompactStateFailure
-      // 判非致命时这里是 no-op；判致命时仍然原子转 NOT_READY。
+      // 让 /health 与后续请求给出同一个 reason。下面两个分类函数判定为
+      // "不致命"时这里是 no-op；判定致命时仍然原子转 NOT_READY。
       reportOpaqueCompactStoreFault(opaqueRestore.error);
-      // 8.1：reason 属于"状态不存在/已过期"这一良性、可自愈的族
-      // （isSelfHealableOpaqueCompactStateFailure，与 store 级致命故障互斥），
-      // 且本次请求确实是 compact 请求时，不 409——把它当成一次全新的 root
-      // compact 放行。★ 红线：只在这里放行，store 级故障（锁/密钥/schema/
-      // quarantine/AEAD 校验失败）永远落在 isFatalStoreFailure 那一族，
-      // isSelfHealableOpaqueCompactStateFailure 对它们恒为 false，因此仍然
-      // fail-closed 走下面的 409。
-      // 丢弃 error/marker/output 等字段，视为"从未找到过状态"：不能把这枚已经
-      // 失效的旧 marker 当 previousMarker 传给全新 root compact 分支，那会
-      // 让它去尝试幂等回放一个不存在的 predecessor edge。
-      if (
-        compactPrompt !== null &&
-        isSelfHealableOpaqueCompactStateFailure(opaqueRestore.error.reason)
-      ) {
+      const reason = opaqueRestore.error.reason;
+      // 8.1 + 8.3：两条独立、互斥的"不该 409"族，收口在
+      // opaque-compact-state.ts 的分类函数里（完整分区说明见该文件），这里
+      // 只做编排，不再散落 reason === "..." 比较：
+      //   - isSelfHealableOpaqueCompactStateFailure（8.1）：marker 合法但
+      //     state 没了（not_found/expired/missing）。★ 红线：只在这一族放
+      //     行，且额外要求本次确实是 compact 请求——store 级致命故障
+      //     （锁/密钥/schema/quarantine/AEAD 校验失败）永远落在
+      //     isFatalStoreFailure 那一族，这里恒为 false，仍然 fail-closed。
+      //   - isUnparseableOpaqueCompactMarker（8.3）：压根没解析出合法 marker
+      //     （invalid_marker，多半是截断/前缀污染/位置偏移），不需要是
+      //     compact 请求，任何请求都当普通文本。
+      // 两族命中后都丢弃 error/marker/output 等字段，视为"从未找到过状
+      // 态"：不能把这枚已经失效或压根解析不出来的旧 marker 当 previousMarker
+      // 传给全新 root compact 分支，那会让它去尝试幂等回放一个不存在的
+      // predecessor edge。
+      const selfHealable = isSelfHealableOpaqueCompactStateFailure(reason);
+      const treatAsNoMarker = selfHealable
+        ? compactPrompt !== null
+        : isUnparseableOpaqueCompactMarker(reason);
+      if (treatAsNoMarker) {
         console.log(
-          `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=self_heal` +
-            ` reason=${opaqueRestore.error.reason}`,
+          `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)}` +
+            ` phase=${selfHealable ? "self_heal" : "ignored_unparseable_marker"} reason=${reason}`,
         );
         opaqueRestore = { restored: false };
       } else {
         c.status(409);
         return c.json(makeError(
           "invalid_request_error",
-          `Opaque compact state is unavailable (${opaqueRestore.error.reason}). Run /compact again.`,
+          `Opaque compact state is unavailable (${reason}). Run /compact again.`,
         ));
       }
     }

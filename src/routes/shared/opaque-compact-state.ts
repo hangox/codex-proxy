@@ -1029,28 +1029,35 @@ function isFatalStoreFailure(reason: OpaqueCompactStateFailure): boolean {
 }
 
 /**
- * 判定一个失败是否属于"状态单纯不存在了，但 store 本身完全健康"。
- *
- * 这是与 {@link isFatalStoreFailure} 刻意对称、互斥的另一族分类——两者共同
- * 构成"状态不可用"的分区，收口点就是这两个函数，调用方（路由层）不应该再
- * 散落 `reason === "..."` 的字符串比较：
+ * "状态不可用"的完整分区收口在这里 + {@link isFatalStoreFailure} +
+ * {@link isUnparseableOpaqueCompactMarker} 三个函数里，一共三族，两两互斥。
+ * 调用方（路由层）只应该调用这三个分类函数做编排，不应该再散落
+ * `reason === "..."` 的字符串比较——那样每加一个 reason 都要记得同步改
+ * 所有调用点，正是这次事故"多处症状、同一缺失不变式"的成因。
  *
  * - **致命 / 必须拦**（{@link isFatalStoreFailure}）：单实例锁、keyring 缺失、
  *   schema 不匹配、记录 AEAD 校验失败等——这些意味着 store 本身不可信，必须
  *   fail-closed，并把 runtime 原子转成 NOT_READY。
- * - **良性 / 可自愈**（这里）：`not_found`（行从未存在）与 `expired`（行曾
- *   存在、TTL 到期后被自然删除）。两者都只说明"这一枚 marker 指向的状态没
- *   了"，不代表数据被破坏或账号越权——调用方拿到的 marker 本身就是"过期钥
- *   匙"，理应可以直接换一把新的（即放行到全新 root compact），而不是把用户
- *   焊死在死会话里。这一族**需要**调用方额外确认"本次确实是 compact 请求"
- *   才能放行：对着一枚过期 marker 的普通聊天请求，仍然要 409 提示用户去
- *   /compact（现在这条提示是真的可执行的，见 8.1 的自愈）。
+ * - **良性 / 可自愈**（这里，{@link isSelfHealableOpaqueCompactStateFailure}）：
+ *   `not_found`（行从未存在）与 `expired`（行曾存在、TTL 到期后被自然删
+ *   除）。两者都只说明"这一枚 marker 指向的状态没了"，不代表数据被破坏或
+ *   账号越权——调用方拿到的 marker 本身就是"过期钥匙"，理应可以直接换一把
+ *   新的（即放行到全新 root compact），而不是把用户焊死在死会话里。这一族
+ *   **需要**调用方额外确认"本次确实是 compact 请求"才能放行：对着一枚过期
+ *   marker 的普通聊天请求，仍然要 409 提示用户去 /compact（现在这条提示是
+ *   真的可执行的，见 8.1 的自愈）。
+ * - **压根不是 marker**（{@link isUnparseableOpaqueCompactMarker}）：
+ *   `invalid_marker`——从未成功解析出合法的 (stateId, compHash, signature)
+ *   三元组，多半是截断的 base64url 段、被引用/包裹改变了位置、拼进段落中
+ *   部这类传输层损伤。既然从未被认定为合法指令，就不需要"必须是 compact
+ *   请求"这个前提——任何请求都该把它当普通文本，不 409。
  *
  * 其余 reason（`session_mismatch`/`model_mismatch`/`account_mismatch`/
- * `variant_mismatch`/`comp_hash_mismatch`/`tampered`/`invalid_marker`/
- * `preserved_tail_conflict`/`state_too_large`/`stale_generation`）既不致命
- * 也不该静默自愈：它们是"这个 marker 与当前请求对不上"的单请求语义错误，
- * 放行会掩盖真正的账号/会话错配或并发冲突，因此仍然各自返回 409。
+ * `variant_mismatch`/`comp_hash_mismatch`/`tampered`/`preserved_tail_conflict`/
+ * `state_too_large`/`stale_generation`）三族都不占：它们是"我们确实解析并
+ * 验签出了一枚合法 marker，但它与当前请求对不上"的单请求语义错误（或
+ * `tampered`——结构合法但签名验证失败，真实的伪造/完整性信号）。放行会掩盖
+ * 真正的账号/会话错配、并发冲突或伪造尝试，因此仍然各自返回 409。
  */
 export function isSelfHealableOpaqueCompactStateFailure(reason: OpaqueCompactStateFailure): boolean {
   switch (reason) {
@@ -1061,6 +1068,16 @@ export function isSelfHealableOpaqueCompactStateFailure(reason: OpaqueCompactSta
     default:
       return false;
   }
+}
+
+/**
+ * 判定一个失败是否根本没能解析出合法 marker 结构——见上方三族分区说明。
+ * 与 `tampered`（结构合法、签名验证失败）刻意区分：那是真实的完整性信号，
+ * 仍需 fail-closed；这里是"这段文本长得像 marker，但连三元组都凑不出来"，
+ * 按普通文本处理即可。
+ */
+export function isUnparseableOpaqueCompactMarker(reason: OpaqueCompactStateFailure): boolean {
+  return reason === "invalid_marker";
 }
 
 /**

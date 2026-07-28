@@ -583,20 +583,103 @@ describe("E2E: POST /v1/messages", () => {
     expect(JSON.stringify(bodies[1])).not.toContain("codex-opaque-state:v1");
   });
 
-  it("opaque compact bridge: rejects malformed markers before logging or upstream forwarding", async () => {
+  it("opaque compact bridge: treats an unparseable marker as plain text instead of 409 (8.3, matrix #4/#5)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
+    // 结构上"像" marker（松检测会命中），但 token 段不合法——strict parse()
+    // 解析不出 (stateId, compHash, signature) 三元组，reason 是 invalid_marker。
     const malformed =
       "<analysis>Opaque compact state retained locally.</analysis>\n" +
       "<summary>codex-opaque-state:v1:not-a-valid-token</summary>";
+
+    const urls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      return makeTransportResponse(buildTextStreamChunks("resp_malformed_passthrough", "malformed passthrough"));
+    });
 
     const replay = await messagesRequest(defaultBody({
       stream: true,
       messages: [{ role: "assistant", content: malformed }, { role: "user", content: "continue" }],
     }), { "x-claude-code-session-id": "session-malformed-marker" });
 
-    expect(replay.status).toBe(409);
-    expect(await replay.text()).toContain("invalid_marker");
-    expect(getMockTransport().post).not.toHaveBeenCalled();
+    // 8.3：解析不出严格 marker（invalid_marker）不再 409——只有真正解析并
+    // 验签成功的 marker 才允许驱动状态恢复；解析失败的候选按普通文本继续
+    // 处理，不需要判断这是不是 compact 请求（它压根没被当成过合法指令）。
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("malformed passthrough");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: a marker prefixed with explanatory text (not message-initial) is plain text, not 409 (matrix #4)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-mid-message-marker" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+
+    const urls: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      return makeTransportResponse(buildTextStreamChunks("mid_message_passthrough", "mid message passthrough"));
+    });
+
+    // marker 不在消息开头——前面加了一句说明文字，严解析要求 `^` 锚定,
+    // 因此拿不到合法候选（松检测仍会命中，只影响日志脱敏）。
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: `Please continue based on this saved marker: ${marker}` },
+        { role: "user", content: "continue" },
+      ],
+    }), { "x-claude-code-session-id": "session-mid-message-marker" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("mid message passthrough");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
+  });
+
+  it("opaque compact bridge: a marker with a truncated signature segment is plain text, not 409 (matrix #5)", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
+      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+      : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-truncated-marker" });
+    const marker = extractMarkerFromResponse(await compactRes.text());
+    // 截掉最后一段签名（43 字符段）的尾部若干字符：`{43}` 定长量词
+    // 因此不再匹配，strict parse() 拿不到合法三元组。
+    const truncated = marker.slice(0, -8);
+    expect(truncated).toContain("codex-opaque-state:v1:");
+
+    const urls: string[] = [];
+    setTransportPost(async (url) => {
+      urls.push(url);
+      return makeTransportResponse(buildTextStreamChunks("truncated_passthrough", "truncated passthrough"));
+    });
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "assistant", content: truncated }, { role: "user", content: "continue" }],
+    }), { "x-claude-code-session-id": "session-truncated-marker" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("truncated passthrough");
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).not.toContain("/compact");
   });
 
   it("opaque compact bridge: self-heals an expired marker into a brand-new root compact when the request is /compact (8.1, matrix #1/#7)", async () => {

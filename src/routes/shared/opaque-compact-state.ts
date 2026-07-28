@@ -33,7 +33,16 @@ const COMPACT_SUMMARY_RESUME_INSTRUCTION =
 export type OpaqueCompactStateFailure =
   | "invalid_marker"
   | "tampered"
+  /**
+   * 内存模式专用："stateId 在内存 Map 里没有对应条目"（从未写入 / LRU 已淘汰 /
+   * 同 session+model+variant 被更新的 compact 覆盖）。持久化模式不再产生这个
+   * 值——它的等价物拆成了 `not_found`（行从未存在）与 `expired`（行曾存在，
+   * 已到期）。保留 `missing` 只是不破坏既有内存模式单测，不代表两个模式的
+   * "查无此状态"仍是同一件事。
+   */
   | "missing"
+  /** 持久化模式："lookup 在表里完全没有对应行"——从未存在过，或已被清理。 */
+  | "not_found"
   | "expired"
   | "session_mismatch"
   | "model_mismatch"
@@ -792,7 +801,12 @@ export class OpaqueCompactStateStore {
     } catch (error) {
       throw toStateError(error);
     }
-    if (loaded === null) throw new OpaqueCompactStateError("missing");
+    // 两条语义不同的"查无此状态"分别抛出：`not_found`（行从未存在）与
+    // `expired`（行曾存在、已过期，本次 load 已经把它删了）。上层（8.1 自愈）
+    // 靠这个区分决定能不能放行到全新 root compact——都属于"良性缺失"，
+    // 但文案（8.5）需要分别措辞。
+    if (loaded.kind === "not_found") throw new OpaqueCompactStateError("not_found");
+    if (loaded.kind === "expired") throw new OpaqueCompactStateError("expired");
     const payload = parsePersistedPayload(loaded.plaintext);
 
     // 交叉验证：解封用的是候选账号 A 的数据密钥，但 payload 自己声称账号 B 时，

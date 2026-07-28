@@ -91,6 +91,27 @@ export interface OpaqueCompactRecordMeta {
   predecessorLookup: string | null;
 }
 
+/**
+ * `load()` 的结构化结果。
+ *
+ * 历史上"行不存在"与"行存在但已过期(被本次调用删除)"被压平成同一个 `null`，
+ * 调用方因此永远无法区分两者——两条语义完全不同的路径（"从来没有过"
+ * vs "曾经有过、自然到期"）在持久化模式下被迫共用一个 reason。拆开之后
+ * 上层才能把"过期"当作良性、可自愈的信号，而不是一刀切 fail-closed。
+ */
+export type OpaqueCompactLoadResult =
+  | {
+      kind: "found";
+      plaintext: Buffer;
+      meta: OpaqueCompactRecordMeta;
+      /** 实际派生出数据密钥的账号——调用方必须与 payload 交叉验证。 */
+      matchedAccountEntryId: string;
+    }
+  /** lookup 在表里完全没有对应行——从未存在过，或早已被删除。 */
+  | { kind: "not_found" }
+  /** 行存在、通过了完整认证，但 TTL 已过——本次调用已将其删除。 */
+  | { kind: "expired" };
+
 export interface OpaqueCompactRepositoryOptions {
   databasePath: string;
   keyring: OpaqueCompactKeyring;
@@ -1186,15 +1207,10 @@ export class OpaqueCompactRepository {
    * `accountCandidates` 是当前进程已知的账号集合。数据密钥按账号派生，
    * 候选里没有匹配账号 → 该记录不属于本实例可访问的任何账号，fail-closed。
    */
-  load(stateId: string, accountCandidates: readonly string[]): {
-    plaintext: Buffer;
-    meta: OpaqueCompactRecordMeta;
-    /** 实际派生出数据密钥的账号——调用方必须与 payload 交叉验证。 */
-    matchedAccountEntryId: string;
-  } | null {
+  load(stateId: string, accountCandidates: readonly string[]): OpaqueCompactLoadResult {
     const lookupDigest = this.lookupFor(stateId);
     const row = this.stmtSelectByLookup.get(lookupDigest) as RecordRow | undefined;
-    if (row === undefined) return null;
+    if (row === undefined) return { kind: "not_found" };
 
     const key = this.keyring.get(row.key_id);
     if (key === undefined) {
@@ -1253,7 +1269,7 @@ export class OpaqueCompactRepository {
       // 认证通过之后才敢相信 expires_at，此时删除过期记录是安全的。
       if (row.expires_at <= this.now()) {
         this.deleteStateInOwnTransaction(lookupDigest);
-        return null;
+        return { kind: "expired" };
       }
 
       const touchedAt = this.now();
@@ -1263,6 +1279,7 @@ export class OpaqueCompactRepository {
         lookupDigest,
       );
       return {
+        kind: "found",
         plaintext,
         matchedAccountEntryId: account,
         meta: {

@@ -17,6 +17,7 @@ export type { AppConfig, FingerprintConfig } from "./config-schema.js";
 let _config: AppConfig | null = null;
 let _fingerprint: FingerprintConfig | null = null;
 let _localOverrides: Record<string, unknown> | null = null;
+let _compactBridgeDeprecationWarned = false;
 
 // ---------------------------------------------------------------------------
 // Load (first-call initialisation)
@@ -40,9 +41,16 @@ export function loadConfig(configDir?: string): AppConfig {
  * 出新配置（冷启动 `loadConfig` 与热重载 `reloadConfig`，Admin API 改配置
  * 最终也会走到 `reloadConfig`）之后检查一次，读到 `true` 就提示一句——运维
  * 不应该在毫无提示的情况下以为这个开关还在生效。
+ *
+ * ★ 只警告一次（进程生命周期内）：`loadConfig()` 有 `if (_config) return` 缓存，
+ * 本来就只会真正解析一次，但 `reloadConfig()` 没有任何去重——只要这个字段
+ * 还是 `true`，Admin API 每保存一次**任意**设置（改端口、改 model alias 都会
+ * 触发 `reloadConfig`）都会再打一遍这条弃用警告，而运维目前也没有 UI 入口能
+ * 清掉这个残留值（得手改 YAML）。不去重会刷屏，掩盖真正需要关注的新日志。
  */
 function warnIfClaudeCodeCompactBridgeEnabled(config: AppConfig): void {
-  if (config.model.claude_code_compact_bridge) {
+  if (config.model.claude_code_compact_bridge && !_compactBridgeDeprecationWarned) {
+    _compactBridgeDeprecationWarned = true;
     console.warn(
       "[Config] model.claude_code_compact_bridge is deprecated and no longer has any effect " +
         "(classic compact bridge was removed; opaque compact is the only remaining compact path). " +
@@ -149,4 +157,5 @@ export function setConfigForTesting(config: AppConfig): void {
 export function resetConfigForTesting(): void {
   _config = null;
   _fingerprint = null;
+  _compactBridgeDeprecationWarned = false;
 }

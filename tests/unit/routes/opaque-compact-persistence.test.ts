@@ -503,6 +503,41 @@ describe("repository — 存储语义", () => {
     );
   });
 
+  it("8.4 blocker 回归（reviewer 实测复现）：顺延后再次 resolve，now() 跨过原始绝对期限但落在新窗口内必须成功，不能报 expired", () => {
+    // 根因：loadPersisted()（opaque-compact-state.ts）此前把 store.resolve()
+    // 返回值的 expiresAt 写成了 payload.expiresAt——加密 payload 里冻结的
+    // 创建时快照，sliding TTL 的设计前提就是"不重新封装密文，只改列 + MAC"，
+    // 所以这个字段从创建那一刻起永远不变。repository.load() 明明已经把顺延
+    // 后的新值算好、写回 DB、并通过 loaded.meta.expiresAt 返回——上一条用例
+    // （"restore 成功会把 expires_at 顺延..."）只验证了"DB 列被正确顺延"，
+    // 从未验证"顺延之后 store.resolve() 本身是否真的认这个新值"，是同一个
+    // "验证账本记对了，而非账本被正确读出"的盲区在另一层再次出现。这条用例
+    // 直接对着 resolve() 的返回值/是否抛错断言，不下钻到 DB 列。
+    let now = 1_000_000;
+    const { store } = makeStore({ now: () => now });
+    const { marker } = saveCanaryState(store);
+    // save() 时 expires_at = now + TTL_MS，这是"原始绝对期限"。
+    const originalDeadline = now + TTL_MS;
+
+    // 第一次 resolve：仍在原始窗口内，repository 层把 expires_at 顺延到
+    // (此刻 now) + TTL_MS——新窗口比原始窗口晚。
+    now += TTL_MS - 60_000;
+    resolveCanary(store, marker);
+
+    // 第二次 resolve：now 已经越过 originalDeadline（若应用层错误地读了
+    // payload 里冻结的创建时快照，这里会被误判为 expired 并把仍然合法的
+    // state 删掉），但仍落在上一步顺延出的新窗口之内——顺延真正生效时，
+    // 这里必须是一次成功的 restore，而不是 OpaqueCompactStateError("expired")。
+    now = originalDeadline + 200_000;
+    const restored = resolveCanary(store, marker);
+    expect(restored.output).toEqual(OUTPUT);
+
+    // 再验证一次：这不是"侥幸没删"，state 在第三次 resolve 时依然存在、
+    // 内容依然完整（真正被误删的话，这里会变成 not_found/expired）。
+    const restoredAgain = resolveCanary(store, marker);
+    expect(restoredAgain.output).toEqual(OUTPUT);
+  });
+
   it("密文单 bit 翻转报 state_corrupt（integrity_check 检不出的场景）", () => {
     const { store, repository } = makeStore();
     const { marker } = saveCanaryState(store);
@@ -1923,12 +1958,13 @@ function inspectSchema(): {
   }
 }
 
-function seedLegacy(schemaVersion: 2 | 3 | 4, includeLastUsedMac?: boolean) {
+function seedLegacy(schemaVersion: 2 | 3 | 4, includeLastUsedMac?: boolean, extraRecords?: number) {
   return seedLegacyOpaqueStore({
     dir,
     keyringFile: keyringFile(),
     schemaVersion,
     ...(includeLastUsedMac === undefined ? {} : { includeLastUsedMac }),
+    ...(extraRecords === undefined ? {} : { extraRecords }),
   });
 }
 
@@ -2144,6 +2180,92 @@ describe("schema 迁移 — v2/v3 原子升级到 v4", () => {
       variantHash: seeded.variantHash,
       accountCandidates: [seeded.accountEntryId],
     }).output).toEqual(seeded.output);
+  });
+
+  it("多条记录迁移：其中一条损坏时整体 ROLLBACK，健康的那几条不会提前落盘（reviewer major）", () => {
+    // migrateSchema() 是 rows.map(row => resealRecordForMigration(...))——单条
+    // 记录的测试结构上无法验证"多条记录中某一条 reseal 失败时，已经处理成功
+    // 的其他行是否真的一并回滚，而不是部分落盘"。这条种 3 条记录（1 主 + 2
+    // extra），只损坏中间那条，断言另外两条健康记录在失败的迁移尝试里
+    // 一字节都没被动过——而不仅仅是"版本号/行数看起来没变"这种表面断言。
+    const seeded = seedLegacy(3, undefined, 2);
+    expect(seeded.records).toHaveLength(3);
+    const [healthyA, corrupted, healthyB] = seeded.records;
+
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    const snapshotBefore = new Map<string, { nonce: Buffer; tag: Buffer; ciphertext: Buffer }>();
+    for (const record of [healthyA!, healthyB!]) {
+      const row = db.prepare(
+        "SELECT nonce, tag, ciphertext FROM opaque_states WHERE lookup_digest = ?",
+      ).get(record.lookupDigest) as { nonce: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array };
+      snapshotBefore.set(record.lookupDigest, {
+        nonce: Buffer.from(row.nonce),
+        tag: Buffer.from(row.tag),
+        ciphertext: Buffer.from(row.ciphertext),
+      });
+    }
+    // 只破坏中间那条（corrupted）的密文，两侧的记录保持完全健康。
+    const original = Buffer.from(
+      (db.prepare("SELECT ciphertext FROM opaque_states WHERE lookup_digest = ?")
+        .get(corrupted!.lookupDigest) as { ciphertext: Uint8Array }).ciphertext,
+    );
+    const tampered = Buffer.from(original);
+    tampered[0] = tampered[0]! ^ 0xff;
+    db.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(tampered, corrupted!.lookupDigest);
+    db.close();
+
+    const failed = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(failed);
+    expect(failed.ready).toBe(false);
+    expect(failed.reason).toBe("migration_failed");
+
+    const schema = inspectSchema();
+    // 表面断言：版本号/行数确实没变。
+    expect(schema.version).toBe("3");
+    expect(schema.stateCount).toBe(3);
+
+    // 决定性断言：两条健康记录的 nonce/tag/ciphertext 逐字节与迁移尝试之前
+    // 完全相同——不是"看起来还是 v3"，而是"物理上一字节都没被 reseal 写过"。
+    // 如果 map() 在遇到损坏行之前已经把前面几条 reseal 成新格式、只是外层
+    // catch 没有回滚已提交的部分（例如没有包在同一个事务里），这里就会失败：
+    // 健康记录的密文会变成新 AAD 下的新密文，即使 schema_version 列因为某种
+    // 原因没更新，也已经不是"整体 ROLLBACK"了。
+    const dbAfter = new DatabaseSync(resolve(dir, "state.db"));
+    for (const record of [healthyA!, healthyB!]) {
+      const row = dbAfter.prepare(
+        "SELECT nonce, tag, ciphertext FROM opaque_states WHERE lookup_digest = ?",
+      ).get(record.lookupDigest) as { nonce: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array };
+      const before = snapshotBefore.get(record.lookupDigest)!;
+      expect(Buffer.from(row.nonce).equals(before.nonce)).toBe(true);
+      expect(Buffer.from(row.tag).equals(before.tag)).toBe(true);
+      expect(Buffer.from(row.ciphertext).equals(before.ciphertext)).toBe(true);
+    }
+    dbAfter.close();
+    failed.close();
+
+    // 修好损坏的那一条，同一份库必须能整体迁移成功——且全部 3 条（包括此前
+    // "健康但从未真正迁移过"的两条）都能正常 resolve，证明回滚是干净的、
+    // 没有把任何一条记录留在中间状态。
+    const repaired = new DatabaseSync(resolve(dir, "state.db"));
+    repaired.prepare("UPDATE opaque_states SET ciphertext = ? WHERE lookup_digest = ?")
+      .run(original, corrupted!.lookupDigest);
+    repaired.close();
+
+    const retried = startOpaqueCompactRuntime(runtimeConfig());
+    openHandles.push(retried);
+    expect(retried.ready).toBe(true);
+    expect(inspectSchema().version).toBe(String(OPAQUE_REPOSITORY_SCHEMA_VERSION));
+    expect(inspectSchema().stateCount).toBe(3);
+    for (const record of seeded.records) {
+      expect(getOpaqueCompactStateStore().resolve({
+        marker: record.marker,
+        sessionId: record.sessionId,
+        model: record.model,
+        variantHash: record.variantHash,
+        accountCandidates: [record.accountEntryId],
+      }).output).toEqual(record.output);
+    }
   });
 
   it("篡改过的 last_used_mac 不会被迁移洗白", () => {

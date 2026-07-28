@@ -15,10 +15,20 @@ on:
       - "scripts/**"
   push:
     branches: [master]
+    # Must stay in sync with the pull_request paths above: docker-publish.yml
+    # ships every master push, so anything that can break container startup
+    # (e.g. a new `node:sqlite` import) has to be smoke-tested here first.
     paths:
       - "Dockerfile"
       - "docker-entrypoint.sh"
       - "docker-healthcheck.sh"
+      - "docker-compose.yml"
+      - "package*.json"
+      - "src/**"
+      - "web/**"
+      - "shared/**"
+      - "config/**"
+      - "scripts/**"
 
 concurrency:
   group: ci-docker-${{ github.ref }}
@@ -33,6 +43,37 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t codex-proxy:smoke .
+
+      - name: Verify runtime Node version supports node:sqlite
+        run: |
+          NODE_VERSION=$(docker run --rm --entrypoint node codex-proxy:smoke -v)
+          echo "image node version: $NODE_VERSION"
+          MAJOR=$(echo "${NODE_VERSION#v}" | cut -d. -f1)
+          MINOR=$(echo "${NODE_VERSION#v}" | cut -d. -f2)
+          # node:sqlite ships unflagged from Node 22.13.0 onwards.
+          if [ "$MAJOR" -lt 22 ] || { [ "$MAJOR" -eq 22 ] && [ "$MINOR" -lt 13 ]; }; then
+            echo "::error::Runtime Node $NODE_VERSION is older than 22.13.0 and cannot load node:sqlite"
+            exit 1
+          fi
+
+      - name: Verify node:sqlite is loadable inside the image
+        run: |
+          docker run --rm --entrypoint node codex-proxy:smoke \
+            --input-type=module \
+            -e "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(':memory:'); db.exec('CREATE TABLE t (a INTEGER)'); db.close(); console.log('node:sqlite OK');"
+
+      - name: Verify app entrypoint boots without ERR_UNKNOWN_BUILTIN_MODULE
+        run: |
+          set +e
+          OUT=$(docker run --rm --entrypoint node codex-proxy:smoke \
+            -e "import('/app/dist/routes/shared/opaque-compact-repository.js').then(() => console.log('opaque compact module OK')).catch((err) => { console.error(err); process.exit(1); });" 2>&1)
+          CODE=$?
+          set -e
+          echo "$OUT"
+          if [ "$CODE" -ne 0 ]; then
+            echo "::error::opaque compact persistence module failed to load in the image"
+            exit 1
+          fi
 
       - name: Start container
         run: |

@@ -41,9 +41,14 @@ afterEach(() => {
 async function importAll() {
   const { recordStreamCloseEvent } = await import("@src/logs/stream-close-event.js");
   const { logStore } = await import("@src/logs/store.js");
+  // 必须和 stream-close-event.js 同一次 vi.resetModules() 之后动态 import——
+  // auditAccountTag 的盐（AUDIT_SALT）是 randomBytes(32) 在模块顶层算的，
+  // 每次 resetModules 后都是新的一份，静态 import 在文件顶部只会加载一次、
+  // 拿到和被测代码内部不同的盐，算出来的哈希永远对不上。
+  const { auditAccountTag } = await import("@src/routes/shared/opaque-compact-audit.js");
   logStore.clear();
   logStore.setState({ enabled: true, paused: false });
-  return { recordStreamCloseEvent, logStore };
+  return { recordStreamCloseEvent, logStore, auditAccountTag };
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -62,7 +67,7 @@ function readErrorLogLines(): Array<Record<string, unknown>> {
 
 describe("recordStreamCloseEvent", () => {
   it("writes an Errors-tab entry and an audit log entry for upstream-premature", async () => {
-    const { recordStreamCloseEvent, logStore } = await importAll();
+    const { recordStreamCloseEvent, logStore, auditAccountTag } = await importAll();
     recordStreamCloseEvent({
       kind: "upstream-premature",
       requestId: "rid-abc",
@@ -90,13 +95,14 @@ describe("recordStreamCloseEvent", () => {
       requestId: "rid-abc",
       tag: "Responses",
       model: "gpt-5.5",
-      accountEntryId: "e-42",
+      accountHash: auditAccountTag("e-42"),
       responseId: "resp_pc",
       variantHash: "vh-deadbeef",
       eventCount: 1920,
       hadReasoning: true,
       closeCode: 1006,
     });
+    expect(ctx).not.toHaveProperty("accountEntryId");
 
     await flushMicrotasks();
     const audit = logStore.list({ limit: 50 });
@@ -111,13 +117,20 @@ describe("recordStreamCloseEvent", () => {
     const req = log.request as Record<string, unknown>;
     expect(req).toMatchObject({
       kind: "upstream-premature",
-      accountEntryId: "e-42",
+      accountHash: auditAccountTag("e-42"),
       responseId: "resp_pc",
       eventCount: 1920,
       hadReasoning: true,
       closeCode: 1006,
       variantHash: "vh-deadbeef",
     });
+    expect(req).not.toHaveProperty("accountEntryId");
+
+    // blocker（reviewer 复审发现）：raw entryId 不能以任何形态落进
+    // error-log.jsonl——之前 Errors 页的 ErrorRow 会把 context 整段
+    // JSON.stringify 出来，明文账号 ID 因此直接暴露在 Dashboard 上。
+    const raw = readFileSync(resolve(tmpDataDir, "error-log.jsonl"), "utf-8");
+    expect(raw).not.toContain("e-42");
   });
 
   it("emits a client-abort entry with the correct name and message", async () => {

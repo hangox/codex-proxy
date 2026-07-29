@@ -28,16 +28,36 @@ jobs:
       # 用 `--ref v2.0.83` 手动重跑 workflow_dispatch 会撞同一个错误，
       # 因为 workflow_dispatch 选中一个 tag 时 github.ref 同样是 refs/tags/*。
       #
-      # 改成 fetch-depth: 0 + 显式 ref: ${{ github.ref }} 修复：
-      # ① fetch-depth: 0 触发 actions/checkout 的"全历史"分支（无论
-      #    fetch-tags 是否设置都会拉全部 tags，源码 getRefSpecForAllHistory
-      #    无条件带 tagsRefSpec），且这条路径只做两个通配符 refspec
-      #    （refs/heads/* 和 refs/tags/*），不会构造"把某个具体 SHA 写进
-      #    某个具体 tag ref"这种会和通配符冲突的 refspec，天然避开这个 bug；
-      # ② 显式 ref: ${{ github.ref }} 是 release.yml 里已经在用、被验证过
-      #    对 tag push 触发场景生效的同款写法，不是新猜的组合。
-      # LATEST_STABLE（Read version 用来防版本回退）需要的"全部 tags"，
-      # fetch-depth: 0 天然满足，不依赖 fetch-tags。
+      # 改成 fetch-depth: 0 修复：查过 actions/checkout 源码
+      # （ref-helper.ts 的 getRefSpecForAllHistory），fetch-depth: 0 触发的
+      # "全历史"分支无论 fetch-tags 是否设置都会无条件带上
+      # +refs/tags/*:refs/tags/*，且这条路径只做两个通配符 refspec
+      # （refs/heads/* 和 refs/tags/*），不会构造"把某个具体 SHA 写进某个
+      # 具体 tag ref"这种会和通配符冲突的 refspec，天然避开这个 bug——
+      # LATEST_STABLE（Read version 用来防版本回退）需要的"全部 tags"因此
+      # 照样满足，不依赖 fetch-tags。
+      #
+      # 没有加显式 ref:（一开始加过，后来验证后去掉了）：查过
+      # input-helper.ts，同仓库（非 fork）checkout 在 ref 输入为空时会把
+      # settings.ref/settings.commit 直接设成 github.context.ref/sha——和
+      # 显式写 ref: ${{ github.ref }} 解析出来的值完全相同，纯冗余，不改变
+      # 任何实际行为。之前误加是因为 upstream issue #1467 讨论串里有多个
+      # 独立复现者报告"加了 ref: 之后就好了"，但那些报告很可能是巧合
+      # （@v4/@v5 是浮动 tag，他们测试的间隔内可能刚好也捡到了一次补丁版本
+      # 更新，把功劳错记给了加的那行配置）——源码层面这行不可能改变任何
+      # 已解析出来的 settings 值，留着只会让后来人误以为它承担了什么作用。
+      #
+      # 没有直接升级到 actions/checkout@v6（虽然 v6.0.2 官方修了这个 bug，
+      # 是更"治本"的修法）：v5.0.0 起对运行 action 本身的 Node 版本、
+      # runner 最低版本有新要求（GitHub 托管的 ubuntu-latest 会自动满足，
+      # 但这是一条本仓库从未验证过的新约束）；v6.0.0 改了凭据持久化方式
+      # （"Persist creds to a separate file"）——这类行为变化没法在当前
+      # 环境里跑一次真实 GitHub Actions runner 去验证，只能凭 changelog
+      # 文字判断，而这条 workflow 恰恰是"挡着发布、优先级最高"的那条，
+      # 不适合承担一次没有实测过的跨大版本升级风险。相比之下 fetch-depth: 0
+      # 这条路径已经在本仓库的 release.yml 里对着同样的"tag push 触发 +
+      # 需要全部 tags"场景跑通过生产发布（v2.0.83 桌面端 14 个资产已经
+      # 正常发出），是有真实生产验证的既有先例，不是本仓库首次尝试。
       #
       # 权衡：0f65218（#430）当初从 fetch-depth: 0 换成 fetch-tags: true 是
       # 为了"更轻量的 checkout"。这次换回去是刻意的取舍——发布路径完全
@@ -48,7 +68,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref }}
 
       - name: Read version
         id: version

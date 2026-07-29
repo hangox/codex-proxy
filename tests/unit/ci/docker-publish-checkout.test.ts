@@ -27,17 +27,33 @@ const ROOT = resolve(__dirname, "..", "..", "..");
  * 发布链路——不是这次 `enable=` 守卫修坏了什么，是它让一个此前被无条件
  * 打 tag「意外掩盖」的老 bug 第一次暴露出来。
  *
- * 修法：`fetch-tags: true` 换成 `fetch-depth: 0` + 显式 `ref: ${{ github.ref }}`：
- * - `fetch-depth: 0` 触发 `actions/checkout` 的"全历史"分支——查过它的
- *   源码（`ref-helper.ts` 的 `getRefSpecForAllHistory`），这条路径无条件
- *   带上 `+refs/tags/*:refs/tags/*`（不看 `fetch-tags` 设不设），且只做
- *   两个通配符 refspec（`refs/heads/*` 和 `refs/tags/*`），不会构造"某个
- *   具体 SHA 写进某个具体 tag ref"这种会跟通配符冲突的 refspec，天然
- *   避开这个 bug；`Read version` 的 `LATEST_STABLE` 需要的"全部 tags"，
- *   `fetch-depth: 0` 天然满足，不依赖 `fetch-tags`。
- * - `ref: ${{ github.ref }}` 是 `release.yml` 里已经在用、且被 upstream
- *   issue #1467 讨论串里多个独立复现者验证过对 tag push 触发场景确实
- *   生效的同款写法（不是本仓库自创、也不是只凭源码推理就假定有效）。
+ * 修法：`fetch-tags: true` 换成 `fetch-depth: 0`。查过 `actions/checkout`
+ * 源码（`ref-helper.ts` 的 `getRefSpecForAllHistory`），这条路径无条件
+ * 带上 `+refs/tags/*:refs/tags/*`（不看 `fetch-tags` 设不设），且只做
+ * 两个通配符 refspec（`refs/heads/*` 和 `refs/tags/*`），不会构造"某个
+ * 具体 SHA 写进某个具体 tag ref"这种会跟通配符冲突的 refspec，天然
+ * 避开这个 bug；`Read version` 的 `LATEST_STABLE` 需要的"全部 tags"，
+ * `fetch-depth: 0` 天然满足，不依赖 `fetch-tags`。
+ *
+ * **没有加显式 `ref:`**（第一版加过，复审后验证是冗余的去掉了）：查过
+ * `input-helper.ts`，同仓库（非 fork）checkout 在 `ref` 输入为空时会把
+ * `settings.ref`/`settings.commit` 直接设成
+ * `github.context.ref`/`github.context.sha`——和显式写
+ * `ref: ${{ github.ref }}` 解析出来的值完全相同，纯冗余，不改变任何实际
+ * 行为。之前误加是因为 upstream issue #1467 讨论串里有多个独立复现者
+ * 报告"加了 `ref:` 之后就好了"，但源码层面这行不可能改变已解析出来的
+ * `settings` 值，那些报告更可能是巧合（`@v4` 是浮动 tag，恰好在测试
+ * 间隔内也捡到了一次补丁版本更新）——留着这种"看起来在做事、实际什么都
+ * 没改变"的配置只会误导后来人，所以没有沿用团队最初建议的写法。
+ *
+ * **没有直接升级到 `actions/checkout@v6`**（官方 `v6.0.2` 修了这个 bug，
+ * 是更"治本"的修法）：`v5.0.0` 起对运行 action 的 Node 版本、runner 最低
+ * 版本有新要求，`v6.0.0` 改了凭据持久化方式——这类跨大版本的行为变化
+ * 没法在没有真实 GitHub Actions runner 的环境里验证，而这条 workflow
+ * 恰恰是发布链路上最关键的一环，不适合承担一次没有实测过的升级风险。
+ * `fetch-depth: 0` 这条路径已经在本仓库的 `release.yml` 里对着同样的
+ * "tag push 触发 + 需要全部 tags"场景跑通过真实生产发布（`v2.0.83` 桌面端
+ * 已经正常发出），是有生产验证的既有先例，不是本仓库首次尝试。
  *
  * 关键回归点：`0f65218`（#430）当初把这里从 `fetch-depth: 0` 换成
  * `fetch-tags: true` 是为了"更轻量的 checkout"——这个理由本身没错，但
@@ -82,11 +98,6 @@ describe("docker-publish.yml checkout does not hit actions/checkout#1467", () =>
   it("uses fetch-depth: 0 (the combination that avoids the SHA-vs-wildcard tag refspec collision)", () => {
     const step = extractCheckoutStep(readWorkflow());
     expect(step).toMatch(/fetch-depth:\s*0\b/);
-  });
-
-  it("explicitly sets ref: to github.ref (the verified-working companion to fetch-depth: 0 for tag-triggered checkouts)", () => {
-    const step = extractCheckoutStep(readWorkflow());
-    expect(step).toMatch(/ref:\s*\$\{\{\s*github\.ref\s*\}\}/);
   });
 
   it("regression canary: the historically-broken checkout block does not reappear verbatim", () => {

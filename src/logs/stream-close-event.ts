@@ -17,6 +17,10 @@ import { appendErrorLog } from "./error-log.js";
 import { enqueueLogEntry } from "./entry.js";
 import { sanitizeFreeTextForLog } from "./redact.js";
 import { streamCloseErrorName, streamCloseMessage, type StreamCloseKind } from "./stream-close-format.js";
+// 复用 8.6 已经建立的哈希（同一份进程级盐）而不是自己再实现一个：账号
+// 标识要能跨日志来源关联（同一个账号在 opaque compact 事件和 stream-close
+// 事件里应该折叠成同一个短标签），两套哈希互不相同就失去了这个价值。
+import { auditAccountTag } from "../routes/shared/opaque-compact-audit.js";
 
 /** Caller-provided diagnostic context that travels with a streaming request.
  *  Optional fields are filled in opportunistically — missing context still
@@ -77,6 +81,15 @@ export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
   const message = streamCloseMessage(evt.kind, sanitizedDetail, evt.closeCode);
   const numericStatus =
     typeof evt.upstreamStatus === "number" ? evt.upstreamStatus : null;
+  // blocker（reviewer 复审发现）：evt.accountEntryId 是 accounts.json 里的
+  // 账号唯一标识（OAuth 账号形如 `codex:auth:<uuid>`），此前原样落进
+  // context/request——两者都会被 Dashboard 的通用"展开看原始 JSON"视图
+  // （ErrorsPage.tsx 的 ErrorRow、LogsPage.tsx 的选中条目详情）整体
+  // JSON.stringify 出来，明文账号 ID 因此直接出现在 UI 上，可以据此定位到
+  // 具体账号记录。改成 auditAccountTag（8.6 已经在用的同一个哈希，同一份
+  // 进程级盐）——不可逆、同进程内可关联，字段名同步改成 accountHash，
+  // 不再叫 accountEntryId，避免让人以为这个字段还是原始 ID。
+  const accountHash = evt.accountEntryId != null ? auditAccountTag(evt.accountEntryId) : null;
 
   appendErrorLog({
     source: "server",
@@ -88,7 +101,7 @@ export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
       provider: evt.provider,
       path: evt.path,
       model: evt.model,
-      accountEntryId: evt.accountEntryId,
+      accountHash,
       variantHash: evt.variantHash,
       responseId: evt.responseId,
       eventCount: evt.eventCount,
@@ -116,7 +129,7 @@ export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
     request: prune({
       kind: evt.kind,
       tag: evt.tag,
-      accountEntryId: evt.accountEntryId,
+      accountHash,
       variantHash: evt.variantHash,
       responseId: evt.responseId,
       eventCount: evt.eventCount,

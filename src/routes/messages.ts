@@ -32,7 +32,7 @@ import {
   isPromptTooLongLike,
   normalizePromptTooLongMessage,
 } from "../proxy/prompt-too-long-error.js";
-import { extractClaudeCodeCompactPrompt } from "./shared/codex-compact-service.js";
+import { CompactServiceError, extractClaudeCodeCompactPrompt } from "./shared/codex-compact-service.js";
 import {
   respondWithOpaqueCompactMarker,
   restoreOpaqueCompactRequest,
@@ -648,9 +648,15 @@ export function createMessagesRoutes(
         }
         const fallbackErrorName = error instanceof Error ? error.name : "UnknownError";
         const fallbackErrorMessage = error instanceof Error ? error.message : String(error);
+        // retryCount 只有 CompactServiceError 才带（executeCompactOnly 内部
+        // 显式赋值，见 codex-compact-service.ts）；其他错误类型（非
+        // CodexApiError 的意外异常、store 级故障已经在上面分支处理掉）没有
+        // 这个概念，undefined 就是诚实的缺省值，不强行凑一个 0。
+        const fallbackRetryCount = error instanceof CompactServiceError ? error.retryCount : undefined;
         console.warn(
           `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=fallback` +
             ` error=${fallbackErrorName}` +
+            (fallbackRetryCount !== undefined ? ` retry_count=${fallbackRetryCount}` : "") +
             ` message=${sanitizeFreeTextForLog(fallbackErrorMessage)}`,
         );
         if (opaqueRestore.restored) {
@@ -685,6 +691,7 @@ export function createMessagesRoutes(
           generation: opaqueRestore.generation,
           errorName: fallbackErrorName,
           errorMessage: fallbackErrorMessage,
+          retryCount: fallbackRetryCount,
         });
       }
     }

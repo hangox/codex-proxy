@@ -54,6 +54,56 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it("logs a 'giving up' warning with status when a non-retryable error is thrown immediately", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fn = vi.fn().mockRejectedValue(new CodexApiError(400, JSON.stringify({ detail: "bad request detail" })));
+      await expect(withRetry(fn, { maxRetries: 2, baseDelayMs: 1, tag: "TestTag" })).rejects.toThrow();
+
+      const giveUpLine = warnSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes("giving up"));
+      expect(giveUpLine).toBeDefined();
+      expect(giveUpLine).toContain("[TestTag]");
+      expect(giveUpLine).toContain("non-retryable");
+      expect(giveUpLine).toContain("status=400");
+      expect(giveUpLine).toContain("bad request detail");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("logs a 'giving up' warning after retries are exhausted, distinct from the per-attempt retry warning", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fn = vi.fn().mockRejectedValue(new CodexApiError(502, "Bad Gateway"));
+      await expect(withRetry(fn, { maxRetries: 2, baseDelayMs: 1, tag: "TestTag" })).rejects.toThrow();
+
+      const lines = warnSpy.mock.calls.map((c) => String(c[0]));
+      const retryLines = lines.filter((l) => l.includes("Retrying after"));
+      const giveUpLines = lines.filter((l) => l.includes("giving up"));
+      expect(retryLines.length).toBe(2); // one before each of the 2 retries
+      expect(giveUpLines.length).toBe(1); // exactly one, when attempts are truly exhausted
+      expect(giveUpLines[0]).toContain("retries exhausted");
+      expect(giveUpLines[0]).toContain("attempt 3/3");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("'giving up' warning sanitizes an opaque marker embedded in the error message instead of leaking it", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const marker = `codex-opaque-state:v1:${"A".repeat(32)}:${"B".repeat(43)}:${"C".repeat(43)}`;
+      const fn = vi.fn().mockRejectedValue(new CodexApiError(400, marker));
+      await expect(withRetry(fn, { maxRetries: 1, baseDelayMs: 1 })).rejects.toThrow();
+
+      const raw = warnSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(raw).not.toContain(marker);
+      expect(raw).not.toContain("A".repeat(32));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("aborts while waiting in retry backoff", async () => {
     vi.useFakeTimers();
     try {

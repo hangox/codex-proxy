@@ -16,6 +16,7 @@ import { buildCodexApi } from "./proxy-handler-utils.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
 import { auditAccountTag } from "./opaque-compact-audit.js";
 import { canonicalJson } from "./canonical-json.js";
+import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 
 const COMPACT_PROMPT_PREFIX = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.";
 const COMPACT_PROMPT_SECTION_INTRO = "Your summary should include the following sections:";
@@ -405,6 +406,13 @@ export class CompactServiceError extends Error {
     message: string,
     readonly status: number,
     readonly useFormat429 = false,
+    /**
+     * 这次 compact 尝试之前一共拿过多少个不同账号（含最终失败的这一个）。
+     * 纯粹是可观测性字段——不影响任何分支决策，只用于诊断"是账号池太小
+     * 一次就放弃，还是真的轮了好几个账号都不行"。调用方（`messages.ts`）
+     * 把它透传进 `recordOpaqueCompactFallback` 的 `retry_count`。
+     */
+    readonly retryCount?: number,
   ) {
     super(message);
     this.name = "CompactServiceError";
@@ -436,10 +444,20 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
   const released = new Set<string>();
   let modelRetried = false;
   let acquired = acquireAccount(accountPool, compactRequest.model, undefined, tag, requiredEntryId);
-  if (!acquired) throw new CompactServiceError("No available accounts. All accounts are expired or rate-limited.", 503);
+  if (!acquired) {
+    // acquireAccount 本身已经打过一行带账号池状态构成的 warn（见
+    // account-acquisition.ts）；这里再补一行 rid 关联的 phase 标记，方便
+    // 按 rid 在日志流里定位到"从一开始就没账号可用"这一类失败。
+    console.warn(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_no_account model=${compactRequest.model}`);
+    throw new CompactServiceError("No available accounts. All accounts are expired or rate-limited.", 503, false, 0);
+  }
   if (requiredEntryId !== undefined && acquired.entryId !== requiredEntryId) {
+    console.warn(
+      `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_account_mismatch` +
+        ` required=${auditAccountTag(requiredEntryId)} got=${auditAccountTag(acquired.entryId)}`,
+    );
     releaseAccount(accountPool, acquired.entryId, undefined, released);
-    throw new CompactServiceError("The compact state account is unavailable.", 409);
+    throw new CompactServiceError("The compact state account is unavailable.", 409, false, 1);
   }
 
   let entryId = acquired.entryId;
@@ -465,29 +483,51 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
         throw error;
       }
       if (!(error instanceof CodexApiError)) {
+        // 非 CodexApiError（比如响应体解析异常、意料之外的 JS 异常）——不走
+        // 分类/重试，直接冒泡。这类失败此前完全没有 phase 标记，和"上游
+        // 分类后决定不重试"混在一起分不清，单独打一行区分。
+        console.warn(
+          `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_unexpected_error` +
+            ` error_name=${error instanceof Error ? error.name : typeof error}` +
+            ` message=${sanitizeFreeTextForLog(error instanceof Error ? error.message : String(error))}`,
+        );
         releaseAccount(accountPool, entryId, undefined, released);
         throw error;
       }
       const decision = handleCodexApiError(error, accountPool, entryId, compactRequest.model, tag, modelRetried, cookieJar, true);
       if (decision.action === "respond" || requiredEntryId !== undefined) {
             releaseAccount(accountPool, entryId, undefined, released);
+            console.warn(
+              `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_abort` +
+                ` reason=${requiredEntryId !== undefined ? "cross_account_retry_disabled" : "non_retryable"}` +
+                ` status=${requiredEntryId !== undefined ? 409 : decision.status} tried=${triedEntryIds.length}`,
+            );
             throw new CompactServiceError(
               requiredEntryId !== undefined
                 ? "The compact state account failed and cross-account retry is disabled."
                 : decision.message,
               requiredEntryId !== undefined ? 409 : decision.status,
+              false,
+              triedEntryIds.length,
             );
           }
           releaseAccount(accountPool, entryId, undefined, released);
           if (decision.markModelRetried) modelRetried = true;
       acquired = acquireAccount(accountPool, compactRequest.model, triedEntryIds, tag);
       if (!acquired) {
-        throw new CompactServiceError(decision.message, decision.status, decision.useFormat429 === true);
+        console.warn(
+          `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_giveup` +
+            ` tried=${triedEntryIds.length} last_status=${decision.status}`,
+        );
+        throw new CompactServiceError(decision.message, decision.status, decision.useFormat429 === true, triedEntryIds.length);
       }
       entryId = acquired.entryId;
       triedEntryIds.push(entryId);
       api = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
-      console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry acct=${auditAccountTag(entryId)}`);
+      console.log(
+        `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=account_retry acct=${auditAccountTag(entryId)}` +
+          ` prev_status=${decision.status} tried=${triedEntryIds.length}`,
+      );
     }
   }
 }

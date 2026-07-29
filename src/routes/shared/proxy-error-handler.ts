@@ -19,6 +19,7 @@ import type { StatusCode } from "hono/utils/http-status";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import { recordCfPathBlock } from "../../auth/cf-path-block-tracker.js";
 import { appendErrorLog } from "../../logs/error-log.js";
+import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import {
   isPromptTooLongLike,
   normalizePromptTooLongMessage,
@@ -73,6 +74,17 @@ export function handleCodexApiError(
   // safeLog 用于 opaque compact 等受隐私合同约束的调用方：这些路径的审计日志
   // 不得出现明文账号标识或邮箱。此前 safeLog 只隐藏 err.message，entryId/email
   // 仍然逐条泄漏在每个错误分支里。
+  //
+  // ★ 口径调整（排查 19% root compact 静默降级时发现）：safeLog 原来把
+  // err.message **整段**吞掉（见下面 console.error），而不只是账号标识——
+  // 后果是 opaque compact 遇到 transport 层异常（`CodexApiError(0, msg)`，
+  // 比如超时/连接重置/TLS 失败）时，日志里只剩 `status=0`，连是哪一类
+  // 网络故障都分不出来。err.message 本身不是凭据（它要么是上游错误分类
+  // 文案，要么是 Node 网络层异常文案），账号标识才是这里真正需要保密的
+  // 东西——两者被同一个开关误绑在一起。改法：message 一律打印（不再受
+  // safeLog 控制），但先过 `sanitizeFreeTextForLog`（marker 值级脱敏 +
+  // 截断，理由见 opaque-compact-fallback-log.ts 头部注释），账号标识
+  // 仍然受 safeLog 控制、原样不变。
   const email = pool.getEntry(entryId)?.email ?? "?";
   const acct = safeLog ? `acct=${auditAccountTag(entryId)}` : `Account ${entryId} (${email})`;
   const acctShort = safeLog ? `acct=${auditAccountTag(entryId)}` : `Account ${entryId}`;
@@ -101,7 +113,7 @@ export function handleCodexApiError(
 
   console.error(
     `[${tag}] ${acctShort} | Codex API error status=${err.status}` +
-      (safeLog ? "" : ` message=${err.message}`),
+      ` message=${sanitizeFreeTextForLog(err.message)}`,
   );
 
   // 2. Rate-limited — write into cachedQuota.rate_limit (single source of

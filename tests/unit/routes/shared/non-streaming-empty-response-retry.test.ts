@@ -46,6 +46,19 @@ function makePool(acquireResult: AcquiredAccount | null = acquired()): AccountPo
     release: vi.fn(),
     getEntry: vi.fn(() => ({ email: "old@example.test" })),
     recordEmptyResponse: vi.fn(),
+    // acquireAccount 在"没有可用账号"时会调用它拼诊断 warn（19% root
+    // compact 静默降级排查新加的分支），mock 需要提供实现，否则 acquire
+    // 返回 null 的用例会直接抛 TypeError。
+    getPoolSummary: vi.fn(() => ({
+      total: 1,
+      active: 0,
+      expired: 0,
+      quota_exhausted: 0,
+      rate_limited: 1,
+      refreshing: 0,
+      disabled: 0,
+      banned: 0,
+    })),
   } as unknown as AccountPool;
 }
 

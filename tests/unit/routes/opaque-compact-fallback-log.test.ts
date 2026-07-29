@@ -74,6 +74,7 @@ describe("recordOpaqueCompactFallback", () => {
       generation: 3,
       errorName: "CompactServiceError",
       errorMessage: "Codex API error (503): upstream unavailable",
+      retryCount: 2,
     });
 
     const lines = readErrorLogLines();
@@ -96,6 +97,7 @@ describe("recordOpaqueCompactFallback", () => {
         "generation",
         "input_items",
         "model",
+        "retry_count",
         "rid",
       ].sort(),
     );
@@ -105,6 +107,7 @@ describe("recordOpaqueCompactFallback", () => {
     expect(ctx.error_name).toBe("CompactServiceError");
     expect(ctx.error_message).toBe("Codex API error (503): upstream unavailable");
     expect(ctx.generation).toBe(3);
+    expect(ctx.retry_count).toBe(2);
     expect(typeof ctx.conv_hash).toBe("string");
     expect((ctx.conv_hash as string)).toMatch(/^[0-9a-f]{8}$/);
     expect(typeof ctx.account_hash).toBe("string");
@@ -129,6 +132,7 @@ describe("recordOpaqueCompactFallback", () => {
     expect(ctx.conv_hash).toBeNull();
     expect(ctx.account_hash).toBeNull();
     expect(ctx.generation).toBeNull();
+    expect(ctx.retry_count).toBeNull();
   });
 
   it("error_message 里嵌的 opaque marker 不会原样落盘（经 sanitizeFreeTextForLog 脱敏）", async () => {

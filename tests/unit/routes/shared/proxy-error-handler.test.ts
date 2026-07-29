@@ -236,6 +236,62 @@ describe("handleCodexApiError", () => {
     });
   });
 
+  // ── safeLog console.error message（19% root compact 静默降级排查发现的
+  //    口径调整：safeLog 此前把 err.message 整段吞掉，只为了保护账号标识，
+  //    结果 opaque compact 遇到 transport 层异常（status=0）时日志里只剩
+  //    "status=0"，连是超时还是连接重置都分不出来）──
+
+  describe("safeLog console.error message", () => {
+    it("safeLog=true：账号标识仍然脱敏，但 message 现在会打印（经 sanitizeFreeTextForLog）", () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const err = new CodexApiError(0, "connect ETIMEDOUT 1.2.3.4:443");
+        handleCodexApiError(err, pool as never, entryId, model, tag, false, undefined, true);
+
+        expect(errSpy).toHaveBeenCalledTimes(1);
+        const line = String(errSpy.mock.calls[0]![0]);
+        expect(line).toContain("status=0");
+        // 账号标识仍然不能明文出现——safeLog 对这部分的保护没有变。
+        expect(line).not.toContain(entryId);
+        expect(line).not.toContain("test@example.com");
+        // message 现在必须出现——这正是这次要修的盲点。
+        expect(line).toContain("message=");
+        expect(line).toContain("ETIMEDOUT");
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it("safeLog=false：账号标识明文、message 同样打印（未受影响，一直如此）", () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const err = new CodexApiError(0, "connect ECONNRESET");
+        handleCodexApiError(err, pool as never, entryId, model, tag, false, undefined, false);
+
+        const line = String(errSpy.mock.calls[0]![0]);
+        expect(line).toContain(`Account ${entryId}`);
+        expect(line).toContain("ECONNRESET");
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it("message 里嵌的 opaque marker 不会原样打印（经 sanitizeFreeTextForLog 脱敏）", () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const marker = `codex-opaque-state:v1:${"A".repeat(32)}:${"B".repeat(43)}:${"C".repeat(43)}`;
+        const err = new CodexApiError(0, marker);
+        handleCodexApiError(err, pool as never, entryId, model, tag, false, undefined, true);
+
+        const line = String(errSpy.mock.calls[0]![0]);
+        expect(line).not.toContain(marker);
+        expect(line).not.toContain("A".repeat(32));
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+  });
+
   // ── ErrorAction shape ──
 
   describe("ErrorAction shape", () => {

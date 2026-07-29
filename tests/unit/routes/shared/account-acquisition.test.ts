@@ -6,13 +6,28 @@ interface MockPool {
   acquire: ReturnType<typeof vi.fn>;
   release: ReturnType<typeof vi.fn>;
   getEntry: ReturnType<typeof vi.fn>;
+  getPoolSummary: ReturnType<typeof vi.fn>;
 }
+
+const DEFAULT_POOL_SUMMARY = {
+  total: 3,
+  active: 0,
+  expired: 1,
+  quota_exhausted: 0,
+  rate_limited: 2,
+  refreshing: 0,
+  disabled: 0,
+  banned: 0,
+};
 
 function createMockPool(): MockPool {
   return {
     acquire: vi.fn(),
     release: vi.fn(),
     getEntry: vi.fn(),
+    // 排查 19% root compact 静默降级新加的诊断分支——"没有可用账号"时
+    // acquireAccount 会调用它拼一行池状态构成的 warn，mock 需要提供实现。
+    getPoolSummary: vi.fn().mockReturnValue(DEFAULT_POOL_SUMMARY),
   };
 }
 
@@ -46,6 +61,37 @@ describe("acquireAccount", () => {
     const result = acquireAccount(pool as never, "gpt-5.4", [], "OpenAI");
 
     expect(result).toBeNull();
+  });
+
+  it("no-account warn includes pool summary breakdown and already-tried count, not just \"no account\"", () => {
+    pool.acquire.mockReturnValue(null);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      acquireAccount(pool as never, "gpt-5.4", ["e1", "e2"], "OpenAI");
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const line = String(warnSpy.mock.calls[0]![0]);
+      expect(line).toContain('No available account for model "gpt-5.4"');
+      expect(line).toContain("excluded 2 already-tried");
+      expect(line).toContain("total=3");
+      expect(line).toContain("active=0");
+      expect(line).toContain("rate_limited=2");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("no-account warn is silent (no getPoolSummary call, no throw) when tag is omitted", () => {
+    pool.acquire.mockReturnValue(null);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = acquireAccount(pool as never, "gpt-5.4");
+      expect(result).toBeNull();
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(pool.getPoolSummary).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("passes empty excludeIds by default", () => {

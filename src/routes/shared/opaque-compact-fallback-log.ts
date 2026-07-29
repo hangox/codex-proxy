@@ -71,6 +71,13 @@ export interface OpaqueCompactFallbackInput {
    * `context` 前统一过 {@link sanitizeFreeTextForLog}。
    */
   errorMessage: string;
+  /**
+   * `CompactServiceError.retryCount`——这次失败之前一共拿过多少个不同
+   * 账号（含最终失败的这一个）。纯计数，不含任何账号标识，用来区分"账号池
+   * 太小一次就放弃"和"轮了好几个账号都不行"。非 `CompactServiceError`
+   * 的错误没有这个字段，传 `undefined` 即可。
+   */
+  retryCount?: number;
 }
 
 /** 记录一次 root compact 静默降级为普通生成的事件。绝不抛出。 */
@@ -97,6 +104,7 @@ export function recordOpaqueCompactFallback(input: OpaqueCompactFallbackInput): 
           ? auditAccountTag(input.accountEntryId)
           : null,
         generation: input.generation ?? null,
+        retry_count: input.retryCount ?? null,
         error_name: input.errorName,
         error_message: sanitizeFreeTextForLog(input.errorMessage),
       },

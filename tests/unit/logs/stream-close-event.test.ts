@@ -241,4 +241,75 @@ describe("recordStreamCloseEvent", () => {
     const ctx = errEntries[0].context as Record<string, unknown>;
     expect(ctx).not.toHaveProperty("requestId");
   });
+
+  // reviewer 发现：`detail`（调用方捕获到的底层异常自由文本）此前原样拼进
+  // `message`，落进 appendErrorLog 顶层 error.message——那个字段不经过
+  // redactJson，且 Dashboard 的 ErrorsPage 把 group.message 直接渲染出来。
+  // 这里验证修复：顶层 message 与 context.detail 都经过
+  // sanitizeFreeTextForLog（marker 值级脱敏 + 截断），不是简单假设安全。
+  describe("detail sanitization（Dashboard 展示面排查发现的既有风险，本轮一并修）", () => {
+    const MARKER_TOKEN =
+      `codex-opaque-state:v1:${"A".repeat(32)}:${"B".repeat(43)}:${"C".repeat(43)}`;
+
+    it("嵌在 detail 里的 opaque marker 不会原样落进顶层 message 或 context.detail", async () => {
+      const { recordStreamCloseEvent } = await importAll();
+      recordStreamCloseEvent({
+        kind: "client-write-failed",
+        requestId: "rid-marker",
+        detail: `socket hang up while replaying ${MARKER_TOKEN} to client`,
+      });
+
+      const raw = readFileSync(resolve(tmpDataDir, "error-log.jsonl"), "utf-8");
+      expect(raw).not.toContain(MARKER_TOKEN);
+      expect(raw).not.toContain("A".repeat(32));
+      expect(raw).not.toContain("B".repeat(43));
+      expect(raw).not.toContain("C".repeat(43));
+      expect(raw).toContain("codex-opaque-state:***");
+    });
+
+    it("超长 detail 被截断，不会把整段上游异常文本原样落盘", async () => {
+      const { recordStreamCloseEvent } = await importAll();
+      const longDetail = "x".repeat(5000);
+      recordStreamCloseEvent({
+        kind: "upstream-error",
+        requestId: "rid-long-detail",
+        detail: longDetail,
+      });
+
+      const errEntries = readErrorLogLines();
+      const errBody = errEntries[0].error as Record<string, unknown>;
+      const ctx = errEntries[0].context as Record<string, unknown>;
+      expect((errBody.message as string).length).toBeLessThan(longDetail.length);
+      expect(errBody.message).toContain("truncated");
+      expect((ctx.detail as string).length).toBeLessThan(longDetail.length);
+      expect(ctx.detail).toContain("truncated");
+    });
+
+    it("audit log（enqueueLogEntry 的 error 字段）复用同一份脱敏结果，不是第二套逻辑", async () => {
+      const { recordStreamCloseEvent, logStore } = await importAll();
+      recordStreamCloseEvent({
+        kind: "client-write-failed",
+        requestId: "rid-audit-marker",
+        detail: `write failed: ${MARKER_TOKEN}`,
+      });
+
+      await flushMicrotasks();
+      const audit = logStore.list({ limit: 50 });
+      expect(audit.records[0].error).not.toContain(MARKER_TOKEN);
+      expect(audit.records[0].error).toContain("codex-opaque-state:***");
+    });
+
+    it("正常长度、不含 marker 的 detail 不受影响，行为与修复前一致", async () => {
+      const { recordStreamCloseEvent } = await importAll();
+      recordStreamCloseEvent({
+        kind: "upstream-error",
+        requestId: "rid-plain",
+        detail: "connection reset by peer",
+      });
+
+      const errEntries = readErrorLogLines();
+      const errBody = errEntries[0].error as Record<string, unknown>;
+      expect(errBody.message).toBe("Upstream stream failed while proxying response: connection reset by peer");
+    });
+  });
 });

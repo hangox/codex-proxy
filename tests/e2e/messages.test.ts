@@ -1453,10 +1453,34 @@ describe("E2E: POST /v1/messages", () => {
           expect(call.errorMessage).toContain("injected opaque compact failure");
           expect(call.model).toBeTruthy();
           expect(call.inputItems).toBeGreaterThan(0);
+
+          // 事后可查的另一条腿：用户在会话内看不到降级发生（Claude Code
+          // 只显示"✻ Conversation compacted"），所以响应上打一个诊断
+          // header，排查时不用翻日志对时间戳就能确认这次请求走没走降级。
+          expect(res.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
         } finally {
           fallbackLogSpy.mockRestore();
           warnSpy.mockRestore();
         }
+      });
+
+      it("opaque compact bridge: successful compact does NOT set the fallback diagnostic header", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        setTransportPost(async (url) => {
+          return url.endsWith("/codex/responses/compact")
+            ? makeErrorTransportResponse(200, JSON.stringify({
+                output: [{ type: "reasoning", encrypted_content: "opaque-header-negative", summary: [] }],
+              }))
+            : makeTransportResponse(buildTextStreamChunks("resp_opaque_no_fallback", "should not be reached"));
+        });
+
+        const res = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
+        }), { "x-claude-code-session-id": "session-opaque-header-negative" });
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get("x-codex-proxy-compact-fallback")).toBeNull();
       });
 
       it("opaque compact bridge: client abort cancels compact without saving state or falling back", async () => {

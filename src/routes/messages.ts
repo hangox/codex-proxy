@@ -52,6 +52,16 @@ import {
   reportOpaqueCompactStoreFault,
 } from "./shared/opaque-compact-state.js";
 
+/**
+ * 用户在会话内看不到 compact 是否静默降级——Claude Code 只显示"✻
+ * Conversation compacted"，摘要本身不展示给用户，压缩过程中的进度条也是
+ * 客户端画的，插不进任何提示。事后可查的两条腿之一（另一条是
+ * `recordOpaqueCompactFallback` 落进 `error-log.jsonl` + Dashboard 展示）：
+ * 给这次响应打一个诊断 header，排查时不用翻日志对时间戳，直接看这次请求
+ * 的响应头就知道走没走静默降级。用户看不到，纯排查用途。
+ */
+const COMPACT_FALLBACK_HEADER = "x-codex-proxy-compact-fallback";
+
 function makeError(
   type: AnthropicErrorType,
   message: string,
@@ -586,6 +596,8 @@ export function createMessagesRoutes(
       ...(opaqueRestore.requiredEntryId ? { requiredAccountEntryId: opaqueRestore.requiredEntryId } : {}),
     };
 
+    // 见 COMPACT_FALLBACK_HEADER 的文档注释。
+    let compactFallbackOccurred = false;
     if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && opaqueCompactEnabled) {
       // store 不可用时必须在打上游之前 fail-closed：否则会白花一次 compact 调用，
       // 拿到 output 后却无处保存，最终仍要报错。
@@ -693,9 +705,12 @@ export function createMessagesRoutes(
           errorMessage: fallbackErrorMessage,
           retryCount: fallbackRetryCount,
         });
+        compactFallbackOccurred = true;
       }
     }
 
+    // 诊断 header 只在真的走了上面这条 root compact fallback 时才打——
+    // 不改响应本身的 status/body/流式行为，纯附加。
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directModel = routeMatch.resolvedModel ?? req.model;
       const directReq = {
@@ -703,10 +718,14 @@ export function createMessagesRoutes(
         model: directModel,
         codexRequest: { ...codexRequest, model: directModel },
       };
-      return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
+      const res = await handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
+      if (compactFallbackOccurred) res.headers.set(COMPACT_FALLBACK_HEADER, "1");
+      return res;
     }
 
-    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
+    const res = await handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
+    if (compactFallbackOccurred) res.headers.set(COMPACT_FALLBACK_HEADER, "1");
+    return res;
   });
 
   return app;

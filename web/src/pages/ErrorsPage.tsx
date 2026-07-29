@@ -23,6 +23,45 @@ function hasContext(group: ErrorGroup): boolean {
   return group.sample_context !== undefined && Object.keys(group.sample_context).length > 0;
 }
 
+export interface CompactFallbackSummary {
+  count: number;
+  lastSeen: string;
+  lastModel: string | null;
+  lastInputItems: number | null;
+  lastErrorMessage: string | null;
+  lastRetryCount: number | null;
+}
+
+/**
+ * 用户在会话内完全看不到 compact 是否静默降级——这个 banner 是"事后可查"
+ * 的另一条腿（另一条是 x-codex-proxy-compact-fallback 响应 header）。
+ *
+ * 复用现有的 `/admin/error-logs` 分组数据，不新开接口：`recordOpaqueCompactFallback`
+ * 写进 error-log.jsonl 的记录 `error.name` 恒为 `"OpaqueCompactFallback"`，
+ * `groupErrorLog` 按 `name + 首个 stack frame` 分组——这类记录没有 stack，
+ * 所以全部落进同一组，`count` 就是发生次数，`sample_context` 是最近一次
+ * 事件的完整上下文（`rid`/`model`/`input_items`/`error_message`/`retry_count`
+ * 等，见 opaque-compact-fallback-log.ts）。
+ *
+ * 没有做"成功/降级比率"：那需要额外给每次成功的 compact 也记一条结构化
+ * 事件（`appendErrorLog` 语义上是错误日志，不适合塞成功计数），是一个新的
+ * 埋点面，不是"复用现有数据"能低成本做到的，这次刻意不做，只给命中次数
+ * 和时间。
+ */
+export function computeCompactFallbackSummary(groups: ErrorGroup[]): CompactFallbackSummary | null {
+  const group = groups.find((g) => g.name === "OpaqueCompactFallback");
+  if (!group) return null;
+  const ctx = group.sample_context ?? {};
+  return {
+    count: group.count,
+    lastSeen: group.last_seen,
+    lastModel: typeof ctx.model === "string" ? ctx.model : null,
+    lastInputItems: typeof ctx.input_items === "number" ? ctx.input_items : null,
+    lastErrorMessage: typeof ctx.error_message === "string" ? ctx.error_message : null,
+    lastRetryCount: typeof ctx.retry_count === "number" ? ctx.retry_count : null,
+  };
+}
+
 function ErrorRow({ group }: { group: ErrorGroup }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -84,9 +123,55 @@ function ErrorRow({ group }: { group: ErrorGroup }) {
   );
 }
 
+function CompactFallbackBanner({ summary }: { summary: CompactFallbackSummary }) {
+  const t = useT();
+  return (
+    <div class="rounded-xl border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/10 p-4">
+      <div class="flex items-center gap-2">
+        <svg class="size-4 text-amber-600 dark:text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+        </svg>
+        <span class="text-sm font-semibold text-amber-800 dark:text-amber-300">
+          {t("compactFallbackBannerTitle")}
+        </span>
+      </div>
+      <p class="text-xs text-amber-700 dark:text-amber-400 mt-1.5">
+        {t("compactFallbackBannerDesc", { count: summary.count, time: formatRelativeTime(summary.lastSeen) })}
+      </p>
+      <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[11px] text-amber-700/90 dark:text-amber-400/90">
+        {summary.lastModel && (
+          <>
+            <dt class="font-medium">{t("compactFallbackBannerModel")}:</dt>
+            <dd class="font-mono truncate">{summary.lastModel}</dd>
+          </>
+        )}
+        {summary.lastInputItems !== null && (
+          <>
+            <dt class="font-medium">{t("compactFallbackBannerScale")}:</dt>
+            <dd class="font-mono">{summary.lastInputItems}</dd>
+          </>
+        )}
+        {summary.lastRetryCount !== null && (
+          <>
+            <dt class="font-medium">{t("compactFallbackBannerRetries")}:</dt>
+            <dd class="font-mono">{summary.lastRetryCount}</dd>
+          </>
+        )}
+        {summary.lastErrorMessage && (
+          <>
+            <dt class="font-medium">{t("compactFallbackBannerReason")}:</dt>
+            <dd class="font-mono break-all">{summary.lastErrorMessage}</dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 export function ErrorsPage() {
   const t = useT();
   const { groups, count, loading, error, refresh, markAllSeen, clearAll } = useErrorLogs();
+  const compactFallbackSummary = computeCompactFallbackSummary(groups);
 
   return (
     <section class="flex flex-col gap-4">
@@ -132,6 +217,8 @@ export function ErrorsPage() {
           )}
         </div>
       </div>
+
+      {compactFallbackSummary && <CompactFallbackBanner summary={compactFallbackSummary} />}
 
       {loading && groups.length === 0 && (
         <div class="text-center text-xs text-slate-400 dark:text-text-dim py-8">

@@ -15,6 +15,7 @@
 
 import { appendErrorLog } from "./error-log.js";
 import { enqueueLogEntry } from "./entry.js";
+import { sanitizeFreeTextForLog } from "./redact.js";
 import { streamCloseErrorName, streamCloseMessage, type StreamCloseKind } from "./stream-close-format.js";
 
 /** Caller-provided diagnostic context that travels with a streaming request.
@@ -63,7 +64,17 @@ function prune<T extends object>(obj: T): Partial<T> {
  *  helpers swallow themselves. */
 export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
   const name = streamCloseErrorName(evt.kind);
-  const message = streamCloseMessage(evt.kind, evt.detail, evt.closeCode);
+  // reviewer 发现（本轮排查 Dashboard error-log 展示逻辑时确认）：evt.detail
+  // 是"底层错误的自由文本描述"（WS 关闭原因、上游 EOF 消息等，7 个调用点
+  // 各自传入各自捕获到的原始异常文本），此前原样拼进 message，而 message
+  // 落进 appendErrorLog 的**顶层** error.message——那个字段不经过
+  // redactJson（只有 context 会），且 ErrorsPage.tsx 把 group.message 直接
+  // 渲染在 Dashboard 上，等于把未脱敏的自由文本原样展示给了任何能打开
+  // Dashboard 的人。与本轮 opaque compact fallback 那次判断同一类风险、
+  // 同一套处理：先过 sanitizeFreeTextForLog（marker 值级脱敏 + 截断），
+  // 只算一次，message 和 context.detail 共用这份结果，不留一条能绕开的路径。
+  const sanitizedDetail = evt.detail != null ? sanitizeFreeTextForLog(evt.detail) : evt.detail;
+  const message = streamCloseMessage(evt.kind, sanitizedDetail, evt.closeCode);
   const numericStatus =
     typeof evt.upstreamStatus === "number" ? evt.upstreamStatus : null;
 
@@ -88,7 +99,7 @@ export function recordStreamCloseEvent(evt: StreamCloseEvent): void {
       lastSentEvent: evt.lastSentEvent,
       sentTerminal: evt.sentTerminal,
       upstreamStatus: evt.upstreamStatus,
-      detail: evt.detail,
+      detail: sanitizedDetail,
     }),
   });
 

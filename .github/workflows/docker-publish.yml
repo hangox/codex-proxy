@@ -18,9 +18,37 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # `fetch-tags: true`（不带 fetch-depth: 0）在 tag push 触发时会撞上
+      # actions/checkout 的已知 bug（upstream #1467，@v4 未修，v6.0.2 才修）：
+      # checkout 触发 ref 本身就是 refs/tags/vX.Y.Z 时，"把触发 commit 的 SHA
+      # 写进 refs/tags/vX.Y.Z" 和 "拉取全部 tags 也会写同一个 refs/tags/vX.Y.Z"
+      # 两个 refspec 在同一次 git fetch 里冲突，报
+      # `Cannot fetch both <sha> and refs/tags/vX.Y.Z to refs/tags/vX.Y.Z`，
+      # checkout 直接失败——release 推 v2.0.83 tag 触发发布时复现过。
+      # 用 `--ref v2.0.83` 手动重跑 workflow_dispatch 会撞同一个错误，
+      # 因为 workflow_dispatch 选中一个 tag 时 github.ref 同样是 refs/tags/*。
+      #
+      # 改成 fetch-depth: 0 + 显式 ref: ${{ github.ref }} 修复：
+      # ① fetch-depth: 0 触发 actions/checkout 的"全历史"分支（无论
+      #    fetch-tags 是否设置都会拉全部 tags，源码 getRefSpecForAllHistory
+      #    无条件带 tagsRefSpec），且这条路径只做两个通配符 refspec
+      #    （refs/heads/* 和 refs/tags/*），不会构造"把某个具体 SHA 写进
+      #    某个具体 tag ref"这种会和通配符冲突的 refspec，天然避开这个 bug；
+      # ② 显式 ref: ${{ github.ref }} 是 release.yml 里已经在用、被验证过
+      #    对 tag push 触发场景生效的同款写法，不是新猜的组合。
+      # LATEST_STABLE（Read version 用来防版本回退）需要的"全部 tags"，
+      # fetch-depth: 0 天然满足，不依赖 fetch-tags。
+      #
+      # 权衡：0f65218（#430）当初从 fetch-depth: 0 换成 fetch-tags: true 是
+      # 为了"更轻量的 checkout"。这次换回去是刻意的取舍——发布路径完全
+      # 打不出 tag 是更严重的问题，而且这个仓库体积很小（.git 18M，164 个
+      # tag），全历史 fetch 的耗时相对这一步之后的多平台 buildx 构建
+      # （linux/amd64+arm64，QEMU 模拟）可以忽略不计，不是一个值得为了这点
+      # checkout 耗时去承受"发布链路随时可能断"的权衡。
       - uses: actions/checkout@v4
         with:
-          fetch-tags: true
+          fetch-depth: 0
+          ref: ${{ github.ref }}
 
       - name: Read version
         id: version

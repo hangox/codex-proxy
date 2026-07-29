@@ -41,6 +41,7 @@ import { AccountPool } from "@src/auth/account-pool.js";
 import { CookieJar } from "@src/proxy/cookie-jar.js";
 import { ProxyPool } from "@src/proxy/proxy-pool.js";
 import { loadStaticModels } from "@src/models/model-store.js";
+import * as opaqueCompactFallbackLog from "@src/routes/shared/opaque-compact-fallback-log.js";
 
 interface TestContext {
   app: Hono;
@@ -1408,7 +1409,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(urls[0]).toContain("/codex/responses/compact");
       });
 
-      it("opaque compact bridge: first compact failure safely falls back to the original messages path", async () => {
+      it("opaque compact bridge: first compact failure safely falls back to the original messages path, and now leaves a structured trace of why (fallback-error-logging task)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
         setTransportPost(async (url) => {
@@ -1419,16 +1420,43 @@ describe("E2E: POST /v1/messages", () => {
           return makeTransportResponse(buildTextStreamChunks("resp_opaque_fallback", "opaque fallback worked"));
         });
 
-        const res = await messagesRequest(defaultBody({
-          stream: true,
-          messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
-        }), { "x-claude-code-session-id": "session-opaque-fallback" });
+        const fallbackLogSpy = vi.spyOn(opaqueCompactFallbackLog, "recordOpaqueCompactFallback");
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          const res = await messagesRequest(defaultBody({
+            stream: true,
+            messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
+          }), { "x-claude-code-session-id": "session-opaque-fallback" });
 
-        expect(res.status).toBe(200);
-        expect(urls).toHaveLength(2);
-        expect(urls[0]).toContain("/compact");
-        expect(urls[1]).not.toContain("/compact");
-        expect(JSON.stringify(parseAnthropicSSE(await res.text()))).toContain("opaque fallback worked");
+          // 行为本身完全不变：仍然 200，仍然只多打一次非 compact 上游请求，
+          // 仍然正常回退到普通生成——这个任务只补日志，不改这条路径的行为。
+          expect(res.status).toBe(200);
+          expect(urls).toHaveLength(2);
+          expect(urls[0]).toContain("/compact");
+          expect(urls[1]).not.toContain("/compact");
+          expect(JSON.stringify(parseAnthropicSSE(await res.text()))).toContain("opaque fallback worked");
+
+          // 新增部分：19% 静默降级此前唯一的痕迹是一行只打印固定
+          // error.name 的 console.warn；这里锁定 console.warn 现在带上了
+          // 真正有诊断价值的 error.message，且结构化收口点确实被调用到了
+          // （root compact：opaqueRestore.restored === false，不该走 409）。
+          const warnCalls = warnSpy.mock.calls.map((args) => String(args[0]));
+          const fallbackWarn = warnCalls.find((line) => line.includes("phase=fallback"));
+          expect(fallbackWarn).toBeDefined();
+          expect(fallbackWarn).toContain("error=CompactServiceError");
+          expect(fallbackWarn).toContain("message=");
+          expect(fallbackWarn).toMatch(/message=.*injected opaque compact failure/);
+
+          expect(fallbackLogSpy).toHaveBeenCalledTimes(1);
+          const call = fallbackLogSpy.mock.calls[0]![0];
+          expect(call.errorName).toBe("CompactServiceError");
+          expect(call.errorMessage).toContain("injected opaque compact failure");
+          expect(call.model).toBeTruthy();
+          expect(call.inputItems).toBeGreaterThan(0);
+        } finally {
+          fallbackLogSpy.mockRestore();
+          warnSpy.mockRestore();
+        }
       });
 
       it("opaque compact bridge: client abort cancels compact without saving state or falling back", async () => {

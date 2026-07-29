@@ -41,6 +41,31 @@ function redactOpaqueMarkers(value: string): string {
     : value;
 }
 
+/** 自由文本写日志前的截断上限，见 {@link sanitizeFreeTextForLog}。 */
+const FREE_TEXT_LOG_MAX_LEN = 300;
+
+/**
+ * 统一处理"来源不完全可信的自由文本"写日志前的脱敏——典型场景是上游 API
+ * 返回的错误消息（如 `CodexApiError.message`，追踪链路见
+ * `opaque-compact-fallback-log.ts` 头部注释）：它不是本应用生成的固定分类
+ * 字符串，理论上不该带凭据，但也没有任何代码保证过这一点。
+ *
+ * 两层处理，缺一不可：
+ * 1. marker 值级脱敏（复用 {@link redactOpaqueMarkers}）——防止 opaque
+ *    marker 通过被上游回显或拼接进错误文本的方式落盘。
+ * 2. 截断到有限长度——`redactJson` 只按 key 名/marker 值做模式匹配，
+ *    对未知形态的敏感内容没有通用防护；截断至少把最坏情况的暴露面
+ *    从"整段上游 body"收窄到一个有限窗口。
+ *
+ * 不是万能脱敏：如果自由文本里恰好混了一段既不是 marker、又在截断窗口内
+ * 的敏感内容，这里不会拦住。这是已知取舍，不是遗漏。
+ */
+export function sanitizeFreeTextForLog(value: string, maxLen = FREE_TEXT_LOG_MAX_LEN): string {
+  const scrubbed = redactOpaqueMarkers(value);
+  if (scrubbed.length <= maxLen) return scrubbed;
+  return `${scrubbed.slice(0, maxLen)}…(truncated, ${scrubbed.length} chars total)`;
+}
+
 export function redactJson(value: unknown, depth = 0): JsonValue {
   if (depth > 6) return "***";
   if (value === null || value === undefined) return null;

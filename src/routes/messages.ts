@@ -38,6 +38,8 @@ import {
   restoreOpaqueCompactRequest,
 } from "./shared/opaque-compact-bridge.js";
 import { recordOpaqueCompactDenial } from "./shared/opaque-compact-denial-log.js";
+import { recordOpaqueCompactFallback } from "./shared/opaque-compact-fallback-log.js";
+import { sanitizeFreeTextForLog } from "../logs/redact.js";
 import {
   extractOpaqueCompactStateMarker,
   getOpaqueCompactStateReadiness,
@@ -644,9 +646,12 @@ export function createMessagesRoutes(
           c.status(409);
           return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(faultReason)));
         }
+        const fallbackErrorName = error instanceof Error ? error.name : "UnknownError";
+        const fallbackErrorMessage = error instanceof Error ? error.message : String(error);
         console.warn(
           `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=fallback` +
-            ` error=${error instanceof Error ? error.name : "UnknownError"}`,
+            ` error=${fallbackErrorName}` +
+            ` message=${sanitizeFreeTextForLog(fallbackErrorMessage)}`,
         );
         if (opaqueRestore.restored) {
           // 8.5：不建议"再试一次同一个 compact"——刚才这次已经在原账号上失败了，
@@ -666,6 +671,21 @@ export function createMessagesRoutes(
               "Run /clear and start a new session.",
           ));
         }
+        // root compact（未曾 restored 过）：这里不是 store 级故障、也不是
+        // "原账号重新 compact 失败"，行为上仍然按原样跌出 if、继续走下面
+        // 的普通生成路径——这一点没有变。新增的只是这一条结构化日志，让
+        // 19% 的静默降级第一次有 error.message 可查；是否要改这个 fallback
+        // 行为本身是另一件事，等有了这份数据再决策。
+        recordOpaqueCompactFallback({
+          requestId,
+          model: displayModel,
+          inputItems: codexRequest.input.length,
+          clientConversationId,
+          accountEntryId: opaqueRestore.requiredEntryId,
+          generation: opaqueRestore.generation,
+          errorName: fallbackErrorName,
+          errorMessage: fallbackErrorMessage,
+        });
       }
     }
 

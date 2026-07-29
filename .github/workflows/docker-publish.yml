@@ -61,9 +61,21 @@ jobs:
         id: meta
         with:
           images: ${{ steps.image.outputs.name }}
+          # vX.Y.Z 这条必须带 enable 守卫，否则每次 push master 都会把它
+          # 重新指向当次构建产物——Read version 算的是 max(package.json,
+          # 已有最高 stable tag)，master 推送时这个值和上一次发布时完全
+          # 相同，于是变成"每次日常提交都悄悄改写已发布版本 tag 指向"，
+          # 构建全绿、无报错，只有比对 digest 才发现（v2.0.82 的真实事故）。
+          # 只在触发事件本身就是 vX.Y.Z 标签时才产出这个 tag——覆盖两条
+          # 真实路径：(a) push tag 触发（release 流程）；(b) workflow_dispatch
+          # 手动对着一个已有 tag 重跑（release.yml 同款 workflow_dispatch
+          # 手动指定 tag 的用法在这个仓库里是既有模式）。用 github.ref 而不是
+          # github.event_name 判断，是因为 workflow_dispatch 永远不会满足
+          # type=ref,event=tag 要求的"事件类型本身是 tag push"，但选中的 ref
+          # 仍然可以是一个 tag——按事件类型判断会漏掉手动重跑这条路径。
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=v${{ steps.version.outputs.version }}
+            type=raw,value=v${{ steps.version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha,prefix=sha-
             type=ref,event=branch
             type=ref,event=tag

@@ -1238,7 +1238,13 @@ describe("runtime — 生命周期与 readiness", () => {
     expect(second.ready).toBe(false);
     expect(second.reason).toBe("store_locked");
     // readiness 必须透出真实原因，不能折叠成笼统的 store_unavailable。
-    expect(getOpaqueCompactStateReadiness()).toEqual({ ready: false, reason: "store_locked" });
+    // detail（排查生产事故新补的字段）也必须带上真实的锁冲突异常文本，
+    // 不锁死逐字节措辞，只断言确实有内容。
+    expect(getOpaqueCompactStateReadiness()).toEqual({
+      ready: false,
+      reason: "store_locked",
+      detail: expect.stringContaining("another instance holds the opaque compact store"),
+    });
   });
 
   it("热切换 false→true→false：先原子初始化，关闭后回到 zero-touch", () => {

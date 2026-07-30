@@ -77,7 +77,20 @@ export type OpaqueCompactStateFailure =
   | "key_policy_invalid";
 
 export class OpaqueCompactStateError extends Error {
-  constructor(readonly reason: OpaqueCompactStateFailure) {
+  constructor(
+    readonly reason: OpaqueCompactStateFailure,
+    /**
+     * 原始底层异常的诊断文本（通常是 `error.message`），供结构化日志排查
+     * 用——**不是**给客户端看的（客户端只拿得到 `reason` 派生的固定文案，
+     * 见 `describeOpaqueCompactUnavailable`）。绝大多数 throw site 传的是
+     * 本文件自己写的、已知含义的 reason 字面量，这种情况下 `detail` 留空
+     * 就够了（reason 本身已经说明了发生了什么）。真正需要它的是
+     * `toStateError()` 的兜底分支——那里遇到的是"没能归到任何具体分类"的
+     * 未知异常，`reason` 只能给出 `store_unavailable` 这个笼统值，`detail`
+     * 是唯一还留着的线索。
+     */
+    readonly detail?: string,
+  ) {
     super(reason);
     this.name = "OpaqueCompactStateError";
   }
@@ -1049,33 +1062,46 @@ export class OpaqueCompactStateStore {
   }
 }
 
-/** 把仓库层的失败原因映射成对客户端可见的结构化 409 原因。 */
+/**
+ * 把仓库层的失败原因映射成对客户端可见的结构化 409 原因。
+ *
+ * ★ `detail` 的来源（排查生产事故时补的字段，此前这里把原始异常直接丢了）：
+ * 无论最终分类成哪个 `reason`，都统一取一次 `error.message`（或
+ * `String(error)`）当 `detail`——多数分支（`state_corrupt`/`schema_unsupported`
+ * 等）本身已经是明确含义的分类，`detail` 只是锦上添花；但 `default:`/末尾
+ * 兜底这两个 `store_unavailable` 分支不一样——**它们是"这个异常不属于任何
+ * 已知分类"的兜底**，`reason` 本身给不出任何线索，`detail` 是唯一还留着的
+ * 诊断信息。此前这里直接丢弃 `error`，只留分类结果，是生产事故"根因至今
+ * 查不到"的直接原因——原始异常从这一步开始就没有任何痕迹留下来，不是后面
+ * 哪个日志 sink 没接对，是这里从源头没留。
+ */
 function toStateError(error: unknown): OpaqueCompactStateError {
   if (error instanceof OpaqueCompactStateError) return error;
+  const detail = error instanceof Error ? error.message : String(error);
   if (error instanceof OpaqueCompactRepositoryError) {
     switch (error.reason) {
       case "stale_generation":
-        return new OpaqueCompactStateError("stale_generation");
+        return new OpaqueCompactStateError("stale_generation", detail);
       case "schema_unsupported":
-        return new OpaqueCompactStateError("schema_unsupported");
+        return new OpaqueCompactStateError("schema_unsupported", detail);
       case "key_mismatch":
-        return new OpaqueCompactStateError("key_mismatch");
+        return new OpaqueCompactStateError("key_mismatch", detail);
       case "state_corrupt":
-        return new OpaqueCompactStateError("state_corrupt");
+        return new OpaqueCompactStateError("state_corrupt", detail);
       case "binding_mismatch":
         // 记录属于别的账号 —— 这是账号隔离边界，不是会话不匹配。
-        return new OpaqueCompactStateError("account_mismatch");
+        return new OpaqueCompactStateError("account_mismatch", detail);
       case "store_reset_detected":
-        return new OpaqueCompactStateError("store_reset_detected");
+        return new OpaqueCompactStateError("store_reset_detected", detail);
       case "migration_failed":
-        return new OpaqueCompactStateError("migration_failed");
+        return new OpaqueCompactStateError("migration_failed", detail);
       case "state_too_large":
-        return new OpaqueCompactStateError("state_too_large");
+        return new OpaqueCompactStateError("state_too_large", detail);
       default:
-        return new OpaqueCompactStateError("store_unavailable");
+        return new OpaqueCompactStateError("store_unavailable", detail);
     }
   }
-  return new OpaqueCompactStateError("store_unavailable");
+  return new OpaqueCompactStateError("store_unavailable", detail);
 }
 
 // ── 运行时 store 句柄 ─────────────────────────────────────────
@@ -1085,21 +1111,33 @@ function toStateError(error: unknown): OpaqueCompactStateError {
 
 let runtimeStore: OpaqueCompactStateStore | null = null;
 let runtimeUnavailableReason: OpaqueCompactStateFailure | null = null;
+// ★ 排查生产事故补的字段：一次 store 级故障发生后，同一个 reason 会在
+// runtime 恢复之前被后续每一个请求反复读到（生产事故实测 77 次/49 分钟，
+// 全部来自这里）——此前 detail 没有跟 reason 一起存，等于"故障发生的那
+// 一刻录到的诊断信息"只活了一次调用就丢了，后面 76 次复现全部拿不到。
+let runtimeUnavailableDetail: string | undefined;
 
 export function setOpaqueCompactStateStore(store: OpaqueCompactStateStore | null): void {
   runtimeStore = store;
-  if (store !== null) runtimeUnavailableReason = null;
+  if (store !== null) {
+    runtimeUnavailableReason = null;
+    runtimeUnavailableDetail = undefined;
+  }
 }
 
 /** store 初始化失败时记录原因，让后续请求返回精确的结构化 409。 */
-export function setOpaqueCompactStateUnavailable(reason: OpaqueCompactStateFailure): void {
+export function setOpaqueCompactStateUnavailable(
+  reason: OpaqueCompactStateFailure,
+  detail?: string,
+): void {
   runtimeStore = null;
   runtimeUnavailableReason = reason;
+  runtimeUnavailableDetail = detail;
 }
 
 export function getOpaqueCompactStateStore(): OpaqueCompactStateStore {
   if (runtimeStore === null) {
-    throw new OpaqueCompactStateError(runtimeUnavailableReason ?? "store_unavailable");
+    throw new OpaqueCompactStateError(runtimeUnavailableReason ?? "store_unavailable", runtimeUnavailableDetail);
   }
   return runtimeStore;
 }
@@ -1109,15 +1147,24 @@ export function isOpaqueCompactStateStoreReady(): boolean {
 }
 
 /**
- * 只读 readiness。reason 是稳定、非敏感的枚举值，供路由返回结构化 409、
- * 以及运维/E2E 断言使用；不含路径、错误详情等可泄漏信息。
+ * 只读 readiness。`reason` 是稳定、非敏感的枚举值，供路由返回结构化 409、
+ * 以及运维/E2E 断言使用；不含路径、错误详情等可泄漏信息，**可以**直接
+ * 拼进客户端可见的错误文案。
+ *
+ * ★ `detail`（排查生产事故补的字段）是原始异常文本，**只允许流向结构化
+ * 日志**（过 `sanitizeFreeTextForLog` 脱敏截断后），**绝不能**拼进任何
+ * 客户端可见的响应体——调用方（`messages.ts`）必须只把它传给
+ * `recordOpaqueCompactDenial`，不能传给 `describeOpaqueCompactUnavailable`
+ * 或任何构造响应文案的地方。这条边界靠调用方遵守，这里只提供数据，不做
+ * 强制隔离，写调用代码时必须留意。
  */
 export function getOpaqueCompactStateReadiness(): {
   ready: boolean;
   reason: OpaqueCompactStateFailure | null;
+  detail?: string;
 } {
   if (runtimeStore !== null) return { ready: true, reason: null };
-  return { ready: false, reason: runtimeUnavailableReason ?? "store_unavailable" };
+  return { ready: false, reason: runtimeUnavailableReason ?? "store_unavailable", detail: runtimeUnavailableDetail };
 }
 
 /**
@@ -1275,34 +1322,48 @@ export function isOpaqueCompactMarkerBindingMismatch(reason: OpaqueCompactStateF
   }
 }
 
+export interface OpaqueCompactStoreFaultInfo {
+  reason: OpaqueCompactStateFailure;
+  /** 原始异常文本，供结构化日志用；绝不能流入客户端响应，见调用方注释。 */
+  detail?: string;
+}
+
 /**
  * 统一的动态故障入口。
  *
- * 运行期发现 store 级故障时调用：原子移除 runtimeStore、记录精确 reason，
- * 于是当前请求、后续请求、/health 与 Admin readiness 拿到的是**同一个**
- * 机器可判定的原因，而不是"当前请求泛化 409、readiness 仍显示 ready"。
+ * 运行期发现 store 级致命故障时调用：原子移除 runtimeStore、记录精确
+ * reason（+ 排查生产事故补的 `detail`——原始异常文本，此前只有 reason
+ * 被保留，`error.message` 在这一步之前就已经从 `toStateError()` 里带出来，
+ * 但如果这里不往下传，还是会在这个入口断掉），于是当前请求、后续请求、
+ * /health 与 Admin readiness 拿到的是**同一个**机器可判定的原因（和同一份
+ * 诊断细节），而不是"当前请求泛化 409、readiness 仍显示 ready"。
  */
-export function reportOpaqueCompactStoreFault(error: unknown): OpaqueCompactStateFailure | null {
+export function reportOpaqueCompactStoreFault(error: unknown): OpaqueCompactStoreFaultInfo | null {
   // 只有 store 自己抛出的结构化错误才可能是 store 故障。上游 4xx/5xx、网络
   // 错误等一律不是——把它们也判成 fault 会让一次普通的上游失败把整个
   // opaque 功能打成 NOT_READY，并且阻断本该允许的首次 compact 回退。
   if (!(error instanceof OpaqueCompactStateError)) return null;
   const reason = error.reason;
   if (!isFatalStoreFailure(reason)) return null;
+  const detail = error.detail;
   // 交给 runtime 层执行真正的 detach：只清指针会留下 DB/锁仍被持有的
   // 半下线状态，后续任何 start 都会撞上 store_locked（已实测）。
-  return runtimeFaultHandler !== null
-    ? runtimeFaultHandler(reason)
-    : (setOpaqueCompactStateUnavailable(reason), reason);
+  if (runtimeFaultHandler !== null) {
+    return { reason: runtimeFaultHandler(reason, detail), detail };
+  }
+  setOpaqueCompactStateUnavailable(reason, detail);
+  return { reason, detail };
 }
 
 /**
  * runtime 在启动时注册的故障接管回调（注入以避免 state ↔ runtime 循环依赖）。
  */
-let runtimeFaultHandler: ((reason: OpaqueCompactStateFailure) => OpaqueCompactStateFailure) | null = null;
+let runtimeFaultHandler:
+  | ((reason: OpaqueCompactStateFailure, detail?: string) => OpaqueCompactStateFailure)
+  | null = null;
 
 export function setOpaqueCompactRuntimeFaultHandler(
-  handler: ((reason: OpaqueCompactStateFailure) => OpaqueCompactStateFailure) | null,
+  handler: ((reason: OpaqueCompactStateFailure, detail?: string) => OpaqueCompactStateFailure) | null,
 ): void {
   runtimeFaultHandler = handler;
 }

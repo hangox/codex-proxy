@@ -86,11 +86,24 @@ EXPOSE 8080 11434
 
 # Ensure data dir exists in the image (bind mount may override at runtime).
 # /app/opaque-keys is the conventional home for opaque_compact_state.keyring_file
-# (must live outside /app/data — see config-schema.ts). Pre-creating it here
-# (root-owned, at build time) means docker-entrypoint.sh always has a real
-# target to chown, whether or not the operator bind-mounts a host directory
-# over it — a fresh bind mount and this baked-in dir both start root-owned,
-# so the chown step behaves identically either way.
+# (must live outside /app/data — see config-schema.ts).
+#
+# ★ Why mkdir -p here matters (reviewer-verified, not what an earlier version
+# of this comment claimed): `chown -R` treats each listed path independently —
+# a missing path only makes chown fail (and warn) for *that* path; it does not
+# stop the others from being chown'd correctly. So this is NOT here to
+# "guarantee entrypoint always has a target" — that already holds without it.
+# The real reason: this entire build stage runs as root (no `USER` switch
+# anywhere in this Dockerfile), so `mkdir -p` here bakes the directory into
+# the image already root-owned; docker-entrypoint.sh also starts as root
+# (before `gosu node`), so chowning an already-existing directory just
+# succeeds silently. Without this line, the overwhelming majority of
+# deployments — which never enable opaque compact and never bind-mount
+# anything here — would hit a missing path on every single container start,
+# and (paired with the entrypoint change that turns chown failures into a
+# visible `[Init] WARNING` instead of silently swallowing them) that would
+# print a spurious warning on every boot. This line is what keeps "failure is
+# now visible" from degrading into "it warns every time, so nobody reads it."
 RUN mkdir -p /app/data /app/opaque-keys
 
 # Backup default configs so entrypoint can seed empty bind mounts

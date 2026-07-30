@@ -32,6 +32,15 @@ describe("paths — CLI mode (default)", () => {
     expect(getDataDir()).toBe(resolve(process.cwd(), "data"));
   });
 
+  it("getDefaultOpaqueCompactKeyringFile is a sibling of data/, not nested inside it (cwd/opaque-keys/keyring.json)", async () => {
+    const { getDefaultOpaqueCompactKeyringFile, getDataDir } = await importPaths();
+    const keyringFile = getDefaultOpaqueCompactKeyringFile();
+    expect(keyringFile).toBe(resolve(process.cwd(), "opaque-keys", "keyring.json"));
+    // 决定性断言：不是 data 目录的子路径——这正是 config-schema.ts 那条
+    // "keyring_file 必须在 data 目录之外" 校验要求的关系。
+    expect(keyringFile.startsWith(`${getDataDir()}/`)).toBe(false);
+  });
+
   it("getBinDir returns cwd/bin by default", async () => {
     const { getBinDir } = await importPaths();
     expect(getBinDir()).toBe(resolve(process.cwd(), "bin"));
@@ -79,6 +88,26 @@ describe("paths — Electron mode (setPaths)", () => {
       publicDir: "/app/public",
     });
     expect(isEmbedded()).toBe(true);
+  });
+
+  it("getDefaultOpaqueCompactKeyringFile follows setPaths()'s dataDir, not the CLI default — same formula covers Electron without a platform-specific branch", async () => {
+    const { setPaths, getDefaultOpaqueCompactKeyringFile } = await importPaths();
+    // 真实验证过（启动打包好的 .app、ps 看实际 --user-data-dir）：桌面版的
+    // dataDir 是 <userData>/data，userData 实际解出来是
+    // ~/Library/Application Support/@codex-proxy/electron（npm 包名，
+    // 不是 electron-builder.yml 的 productName "Codex Proxy"——这个落差
+    // 记录进了 CHANGELOG，这里用真实验证过的那个值做测试输入）。
+    const userData = "/Users/example/Library/Application Support/@codex-proxy/electron";
+    setPaths({
+      rootDir: "/app",
+      configDir: resolve(userData, "config"),
+      dataDir: resolve(userData, "data"),
+      binDir: "/app/bin",
+      publicDir: "/app/public",
+    });
+    expect(getDefaultOpaqueCompactKeyringFile()).toBe(
+      resolve(userData, "opaque-keys", "keyring.json"),
+    );
   });
 
 });

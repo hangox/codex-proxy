@@ -124,16 +124,6 @@ export interface LoadOpaqueCompactKeyringOptions {
   now?: () => number;
   /** previous key 保留窗口；默认 TTL + 安全余量。 */
   previousKeyRetentionMs?: number;
-  /**
-   * 文件缺失且 `allowCreate=false` 时抛出的 message——调用方按自己掌握的
-   * 上下文覆盖默认文案。默认那句"persisted state exists"只在真的存在
-   * `firstInit=false`（sentinel 已 ready，即真有过既有 state）时准确；
-   * `firstInit=true` 但策略不允许创建（例如 `allowKeyringBootstrap` 未开）
-   * 时用默认文案会误导——那种情况下压根没有任何 state，只是不允许自动
-   * 创建，运维据此报出的默认文案会往错误的方向排查（见
-   * `startOpaqueCompactRuntime` 的调用点）。
-   */
-  missingFileMessage?: string;
 }
 
 interface StoredKey {
@@ -399,9 +389,14 @@ export function loadOpaqueCompactKeyring(
 
   if (!existsSync(keyringFile)) {
     if (!options.allowCreate) {
+      // `startOpaqueCompactRuntime()` 把 allowCreate 恒等于 firstInit
+      // （不再有第二个 allowKeyringBootstrap 开关）——所以走到这里的唯一
+      // 组合是 firstInit=false，真的存在既有 state（sentinel 已 ready）
+      // 而密钥丢了，这句报错对这个组合是准确的，不需要按调用方上下文
+      // 覆盖措辞。
       throw new OpaqueCompactKeyringError(
         "key_unavailable",
-        options.missingFileMessage ?? "opaque compact keyring is missing while persisted state exists",
+        "opaque compact keyring is missing while persisted state exists",
       );
     }
     const createdAt = now();

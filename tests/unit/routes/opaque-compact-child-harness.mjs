@@ -35,7 +35,6 @@ const CONFIG = {
   maxBytes: payload.maxBytes ?? 64 * 1024 * 1024,
   directory: dir,
   keyringFile: KEYRING_FILE,
-  allowKeyringBootstrap: true,
 };
 
 const OUTPUT = [

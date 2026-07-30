@@ -298,7 +298,6 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
       maxBytes: 64 * 1024 * 1024,
       directory: dir,
       keyringFile: resolve(keyDir, "keyring.json"),
-      allowKeyringBootstrap: true,
     };
 
     const first = startOpaqueCompactRuntime(lockGuardConfig);

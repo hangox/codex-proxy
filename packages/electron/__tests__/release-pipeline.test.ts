@@ -205,6 +205,81 @@ describe("release pipeline", () => {
     }
   }, 180_000);
 
+  it("opening the opaque compact switch via Admin auto-bootstraps the keyring on a real packaged app — no manual step, matching the desktop app's only usable path", async () => {
+    // 上一轮那个"桌面版根本用不了这个功能"的缺口能活下来，就是因为此前
+    // 所有验证都在 Docker 上做。这条测试挂在真实打包冷启动那条旁边（复用
+    // 它刚打好的同一份 app.asar，不重新跑一次 electron-builder），第一次
+    // 在真实打包产物上验证这条链路：桌面版 .dmg 不打包 scripts/、没有
+    // 终端，`npm run opaque:bootstrap-keyring` 在这上面本来就跑不了——
+    // 唯一可行的路径就是这条：Dashboard 开关本身触发自动初始化。
+    expect(existsSync(APP_EXECUTABLE)).toBe(true);
+
+    const isolatedRoot = mkdtempSync(resolve(tmpdir(), "codex-proxy-opaque-autoinit-"));
+    const userData = resolve(isolatedRoot, "user-data");
+    const dataDir = resolve(userData, "data");
+    const logPath = resolve(isolatedRoot, "app.log");
+    mkdirSync(dataDir, { recursive: true });
+    const port = await reservePort();
+    writeFileSync(
+      resolve(dataDir, "local.yaml"),
+      // 刻意不配置 opaque_compact_state.keyring_file——测的正是"用户什么
+      // 都没配"这个真实默认场景，getDefaultOpaqueCompactKeyringFile() 算出
+      // 的路径必须能在真实打包 app 上工作。
+      `server:\n  host: 127.0.0.1\n  port: ${port}\n  proxy_api_key: null\nupdate:\n  auto_update: false\n`,
+      { encoding: "utf-8", mode: 0o600 },
+    );
+    const logFd = openSync(logPath, "a");
+    const child = spawn(
+      APP_EXECUTABLE,
+      [`--user-data-dir=${userData}`, "--disable-gpu"],
+      {
+        cwd: isolatedRoot,
+        detached: false,
+        stdio: ["ignore", logFd, logFd],
+        env: {
+          ...process.env,
+          CLAUDECODE: "",
+          HTTP_PROXY: "",
+          HTTPS_PROXY: "",
+          ALL_PROXY: "",
+          NO_PROXY: "127.0.0.1,localhost",
+        },
+      },
+    );
+    try {
+      await waitForPackagedAppStart(child, logPath, port);
+
+      // getDefaultOpaqueCompactKeyringFile() = sibling of dataDir = 这个
+      // 隔离出来的 userData 目录下的 opaque-keys/keyring.json。
+      const keyringFile = resolve(userData, "opaque-keys", "keyring.json");
+      expect(existsSync(keyringFile)).toBe(false);
+
+      const response = await fetch(`http://127.0.0.1:${port}/admin/general-settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claude_code_opaque_compact_experimental: true }),
+      });
+      expect(response.ok).toBe(true);
+      const body = await response.json() as {
+        claude_code_opaque_compact_experimental: boolean;
+        opaque_compact_state_readiness: { ready: boolean; reason: string | null };
+      };
+      expect(body.claude_code_opaque_compact_experimental).toBe(true);
+      // 决定性断言：不需要重启、不需要跑脚本、不需要手填 keyring_file——
+      // 这一次打开开关的 HTTP 调用本身就完成了"从未初始化"到 ready 的
+      // 全过程。
+      expect(body.opaque_compact_state_readiness).toEqual({ ready: true, reason: null });
+
+      expect(existsSync(keyringFile)).toBe(true);
+      // assertKeyringFileSafe 在下次加载时会强制要求 0600——不比这更宽松。
+      expect(statSync(keyringFile).mode & 0o777).toBe(0o600);
+    } finally {
+      await stopPackagedApp(child);
+      closeSync(logFd);
+      rmSync(isolatedRoot, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it("version is consistent between root and electron package", () => {
     const rootPkg = JSON.parse(
       readFileSync(resolve(ROOT_DIR, "package.json"), "utf-8"),

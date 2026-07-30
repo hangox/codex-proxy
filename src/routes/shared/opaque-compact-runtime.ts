@@ -23,7 +23,7 @@
 
 import { basename, dirname, resolve, sep } from "node:path";
 import { realpathSync } from "node:fs";
-import { getDataDir } from "../../paths.js";
+import { getDataDir, getDefaultOpaqueCompactKeyringFile } from "../../paths.js";
 import {
   loadOpaqueCompactKeyring,
   OpaqueCompactKeyringError,
@@ -71,12 +71,18 @@ export interface OpaqueCompactRuntimeConfig {
   capacity: number;
   maxBytes: number;
   /**
-   * 外部密钥环文件的绝对路径。生产必填且不得位于 data 目录内。
-   * 未配置时 opaque 功能 fail-closed，绝不自动生成。
+   * 外部密钥环文件的绝对路径，不得位于 data 目录内。这个字段本身缺省
+   * （`undefined`/`null`/空串）时 `startOpaqueCompactRuntime()` 一律
+   * fail-closed——这条约束没有变。
+   *
+   * `buildOpaqueCompactRuntimeConfig()`（生产唯一入口）在用户完全没配
+   * `opaque_compact_state.keyring_file` 时，会用 `getDefaultOpaqueCompactKeyringFile()`
+   * 计算出一个合理默认值传进来，不再是裸的 `null`——具体是否真的据此
+   * 创建新 keyring，仍然完全由下面的 `firstInit` 判定，不受这里传的是
+   * 默认值还是用户显式配置值影响。直接调用本函数（测试）想要"未配置"
+   * 这条 fail-closed 分支，仍然传 `null`/省略即可。
    */
   keyringFile?: string | null;
-  /** 允许在密钥文件缺失时创建——仅供测试 fixture 使用。 */
-  allowKeyringBootstrap?: boolean;
   /** 覆盖数据目录，主要用于测试。 */
   directory?: string;
   now?: () => number;
@@ -332,28 +338,36 @@ export function startOpaqueCompactRuntime(
       );
     }
 
-    // 4) keyring：首次初始化且显式允许时才可 bootstrap；
-    //    store 已 ready 而密钥不见了，一律 fail-closed。
+    // 4) keyring：★ 产品决定（用户拍板"开启开关时直接帮忙初始化，不用
+    //    那么复杂"）——firstInit 本身就是完整、独立的安全闸门，不再需要
+    //    第二个人工开关。这不是削弱 9b2763a 的加固：那次真正要挡的是
+    //    "有任何已存在 state 时悄悄用新 key 顶替"，而这正是 firstInit
+    //    单独就能保证的事——sentinel 严格按 lock→sentinel→keyring→DB
+    //    两阶段提交，firstInit=true 时 DB 这一步在时间线上根本还没发生
+    //    过，不可能有依赖这把 key 的密文已经落盘；`firstInit=false`
+    //    （真有既有 state）时，无论如何都不自动创建，继续 fail-closed，
+    //    这条硬约束逐字未变。
+    //
+    //    之前的 allowKeyringBootstrap 二级开关已删除——生产代码路径
+    //    (buildOpaqueCompactRuntimeConfig()) 从来没有设置过它，留着一个
+    //    不再被读取的字段只会制造"这个能力已经存在"的错觉。桌面版
+    //    (dmg 不打包 scripts/、没有终端)靠的正是这次的自动初始化，不是
+    //    那个只在 Docker/源码环境才够得到的脚本。
+    //
+    //    此时 !existsSync(keyringFile) 且 firstInit=false 仍然是唯一
+    //    会走到 loadOpaqueCompactKeyring() 那句默认报错（"keyring is
+    //    missing while persisted state exists"）的组合——这句话对这个
+    //    组合来说依然准确（真的有既有 state，密钥真的丢了），不需要
+    //    像上一轮那样再传自定义 missingFileMessage 覆盖它：firstInit=true
+    //    时 allowCreate 恒为 true，根本不会走到那条报错分支。
     const keyring = loadOpaqueCompactKeyring({
       keyringFile,
-      allowCreate: firstInit && config.allowKeyringBootstrap === true,
+      allowCreate: firstInit,
       stateTtlMs: ttlMs,
       previousKeyRetentionMs: ttlMs + KEY_RETENTION_SAFETY_MARGIN_MS,
       // 保留窗口还要覆盖磁盘上真实存活记录：管理员调小 TTL 后重启，
       // 不能把仍未过期 state 依赖的密钥裁掉。
       liveStateExpiresAtMax: OpaqueCompactRepository.peekMaxExpiresAt(databasePath),
-      // ★ 默认文案"keyring is missing while persisted state exists"只在
-      // firstInit=false（sentinel 已 ready，真的有过既有 state）时准确。
-      // firstInit=true 时——不管是真正首次部署、还是 allowKeyringBootstrap
-      // 未开——压根没有任何持久化 state，用默认文案会把运维导向"数据损坏"
-      // 这个错误方向；`9b2763a` 之后 allowKeyringBootstrap 在生产代码路径
-      // 上永远不可达，所以 firstInit=true 时命中这条分支实际上就是"从未
-      // 引导过"，指向真正需要做的事：跑 opaque-keyring-bootstrap 脚本。
-      missingFileMessage: firstInit
-        ? "opaque compact keyring has never been created for this store (this is not persisted-" +
-          "state corruption — there is no prior state at all). Run " +
-          "`npm run opaque:bootstrap-keyring` once to initialize it."
-        : undefined,
       ...(config.now ? { now: config.now } : {}),
     });
 
@@ -511,8 +525,15 @@ const RUNTIME_DEFAULTS = {
  * 从应用配置构造 runtime 配置。启动与 Admin 热切换共用，避免两处漂移。
  *
  * 对缺失的 `opaque_compact_state` 段回退到 schema 默认值：升级后尚未写入该段的
- * 旧配置（以及测试里的部分 config double）不应触发运行时 TypeError。缺 keyring
- * 路径本身仍会在 start 时 fail-closed，安全性不受影响。
+ * 旧配置（以及测试里的部分 config double）不应触发运行时 TypeError。
+ *
+ * `keyring_file` 显式配置了就用配置值；完全没配时落到
+ * `getDefaultOpaqueCompactKeyringFile()`（`paths.ts`）算出的默认路径，
+ * 不再是裸的 `null`——这是"开启开关就地初始化"这个产品决定成立的前提：
+ * 桌面版用户不可能去手填一个 `keyring_file` 路径，必须有默认值。真正
+ * 决定"要不要据此创建新 keyring"的仍然是 `startOpaqueCompactRuntime()`
+ * 里的 `firstInit` 判定，这个函数只负责给出一个路径，不代表安全性判断
+ * 挪到了这里。
  */
 export function buildOpaqueCompactRuntimeConfig(config: {
   model?: { claude_code_opaque_compact_experimental?: boolean };
@@ -529,6 +550,6 @@ export function buildOpaqueCompactRuntimeConfig(config: {
     ttlMinutes: section.ttl_minutes ?? RUNTIME_DEFAULTS.ttlMinutes,
     capacity: section.capacity ?? RUNTIME_DEFAULTS.capacity,
     maxBytes: section.max_bytes ?? RUNTIME_DEFAULTS.maxBytes,
-    keyringFile: section.keyring_file ?? null,
+    keyringFile: section.keyring_file ?? getDefaultOpaqueCompactKeyringFile(),
   };
 }

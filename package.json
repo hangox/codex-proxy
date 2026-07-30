@@ -26,7 +26,8 @@
     "extract": "tsx scripts/build/extract-fingerprint.ts",
     "apply-update": "tsx scripts/build/apply-update.ts",
     "apply-update:dry": "tsx scripts/build/apply-update.ts --dry-run",
-    "update": "tsx scripts/build/full-update.ts"
+    "update": "tsx scripts/build/full-update.ts",
+    "opaque:bootstrap-keyring": "tsx scripts/build/opaque-keyring-bootstrap.ts"
   },
   "dependencies": {
     "@electron/asar": "^3.2.0",

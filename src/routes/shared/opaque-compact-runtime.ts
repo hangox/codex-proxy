@@ -93,12 +93,25 @@ function resolveDirectory(config: OpaqueCompactRuntimeConfig): string {
 }
 
 /**
+ * sentinel 文件的实际路径，供一次性运维工具（`scripts/build/opaque-keyring-bootstrap.ts`）
+ * 只读探测"这个 store 是否已经初始化过"，不需要启动完整 runtime（不抢锁、
+ * 不开库）。复用与 `startOpaqueCompactRuntime()` 完全相同的目录解析，避免
+ * 引导脚本和真实 runtime 各自算出不同路径而互相看不见对方。
+ */
+export function resolveOpaqueCompactSentinelPath(directory?: string): string {
+  return resolve(directory ?? resolve(getDataDir(), DEFAULT_DIR_NAME), SENTINEL_FILE);
+}
+
+/**
  * 判断密钥环是否落在 data 目录内（含目录本身）。
  *
  * 对已存在的路径优先用 realpath 比较，这样 symlink 指回 data 卷也会被识破；
  * 路径尚不存在时退回其父目录的 realpath，覆盖"密钥文件还没创建"的首次启动。
+ *
+ * 导出给一次性运维工具（`scripts/build/opaque-keyring-bootstrap.ts`）复用——
+ * 引导脚本必须用同一份判断，不能自己重写一遍可能漂移的版本。
  */
-function isInsideDataDir(keyringFile: string): boolean {
+export function isOpaqueCompactKeyringFileInsideDataDir(keyringFile: string): boolean {
   const canonical = (target: string): string => {
     try {
       return realpathSync(target);
@@ -272,7 +285,7 @@ export function startOpaqueCompactRuntime(
   }
   // 与密文同卷存放钥匙，等于备份/卷泄漏即全量泄漏。
   // 用 realpath 比较，避免 symlink 绕过；同时排除 keyring 就是 data 目录本身。
-  if (isInsideDataDir(keyringFile)) {
+  if (isOpaqueCompactKeyringFileInsideDataDir(keyringFile)) {
     return fail(token, "key_unavailable", "keyring must live outside the data directory");
   }
 
@@ -329,6 +342,18 @@ export function startOpaqueCompactRuntime(
       // 保留窗口还要覆盖磁盘上真实存活记录：管理员调小 TTL 后重启，
       // 不能把仍未过期 state 依赖的密钥裁掉。
       liveStateExpiresAtMax: OpaqueCompactRepository.peekMaxExpiresAt(databasePath),
+      // ★ 默认文案"keyring is missing while persisted state exists"只在
+      // firstInit=false（sentinel 已 ready，真的有过既有 state）时准确。
+      // firstInit=true 时——不管是真正首次部署、还是 allowKeyringBootstrap
+      // 未开——压根没有任何持久化 state，用默认文案会把运维导向"数据损坏"
+      // 这个错误方向；`9b2763a` 之后 allowKeyringBootstrap 在生产代码路径
+      // 上永远不可达，所以 firstInit=true 时命中这条分支实际上就是"从未
+      // 引导过"，指向真正需要做的事：跑 opaque-keyring-bootstrap 脚本。
+      missingFileMessage: firstInit
+        ? "opaque compact keyring has never been created for this store (this is not persisted-" +
+          "state corruption — there is no prior state at all). Run " +
+          "`npm run opaque:bootstrap-keyring` once to initialize it."
+        : undefined,
       ...(config.now ? { now: config.now } : {}),
     });
 

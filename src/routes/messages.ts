@@ -415,6 +415,10 @@ export function createMessagesRoutes(
           reason: readiness.reason ?? "store_unavailable",
           clientConversationId,
           marker: opaqueMarkerCandidate,
+          // 排查生产事故补的字段：readiness.detail 只允许流向这里（结构化
+          // 日志），绝不能拼进下面的客户端响应文案——见
+          // getOpaqueCompactStateReadiness() 的文档注释。
+          detail: readiness.detail,
         });
         c.status(409);
         return c.json(makeError(
@@ -529,6 +533,11 @@ export function createMessagesRoutes(
       // "不致命"时这里是 no-op；判定致命时仍然原子转 NOT_READY。
       reportOpaqueCompactStoreFault(opaqueRestore.error);
       const reason = opaqueRestore.error.reason;
+      // 排查生产事故补的字段：只有 store 级致命故障才会真的有内容
+      // （isFatalStoreFailure 之外的 reason，比如 session_mismatch，
+      // detail 从 toStateError() 那一步就是 undefined），非致命场景
+      // 传 undefined 给 recordOpaqueCompactDenial 不会强凑内容。
+      const detail = opaqueRestore.error.detail;
       const errorMarker = opaqueRestore.marker ?? null;
       // 8.1 + 8.3：三条独立、互斥的"不该 409"族，收口在
       // opaque-compact-state.ts 的分类函数里（完整分区说明见该文件的
@@ -579,6 +588,7 @@ export function createMessagesRoutes(
           reason,
           clientConversationId,
           marker: errorMarker,
+          detail,
         });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(reason)));
@@ -612,6 +622,7 @@ export function createMessagesRoutes(
           marker: opaqueRestore.marker,
           accountEntryId: opaqueRestore.requiredEntryId,
           generation: opaqueRestore.generation,
+          detail: readiness.detail,
         });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(readiness.reason ?? "store_unavailable")));
@@ -642,10 +653,12 @@ export function createMessagesRoutes(
         // store 级故障必须原子转 NOT_READY，并且当前请求返回同一个机器码。
         // 否则会出现"当前请求泛化 409、/health 仍显示 ready"，且失败可能被
         // 降级成 classic/普通路径继续跑——那等于把持久化保证悄悄丢掉。
-        const faultReason = reportOpaqueCompactStoreFault(error);
-        if (faultReason !== null) {
+        const fault = reportOpaqueCompactStoreFault(error);
+        if (fault !== null) {
+          const { reason: faultReason, detail: faultDetail } = fault;
           console.warn(
-            `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=store_fault reason=${faultReason}`,
+            `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=store_fault reason=${faultReason}` +
+              (faultDetail != null ? ` detail=${sanitizeFreeTextForLog(faultDetail)}` : ""),
           );
           recordOpaqueCompactDenial({
             requestId,
@@ -654,6 +667,7 @@ export function createMessagesRoutes(
             marker: opaqueRestore.marker,
             accountEntryId: opaqueRestore.requiredEntryId,
             generation: opaqueRestore.generation,
+            detail: faultDetail,
           });
           c.status(409);
           return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(faultReason)));

@@ -57,6 +57,8 @@ import {
   setOpaqueCompactStateUnavailable,
   type OpaqueCompactStateFailure,
 } from "./opaque-compact-state.js";
+import { recordOpaqueCompactRuntimeFault } from "./opaque-compact-runtime-fault-log.js";
+import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 
 const DEFAULT_DIR_NAME = "opaque-compact";
 const DB_FILE = "state.db";
@@ -175,7 +177,7 @@ interface RuntimeSlot {
 let current: RuntimeSlot | null = null;
 
 // 让 state 层的动态故障最终由 runtime 执行资源释放。
-setOpaqueCompactRuntimeFaultHandler((reason) => reportOpaqueCompactRuntimeFault(reason));
+setOpaqueCompactRuntimeFaultHandler((reason, detail) => reportOpaqueCompactRuntimeFault(reason, detail));
 
 /** 关闭当前 runtime（幂等）。进程 shutdown 应当调用它，而不是任何历史 handle。 */
 export function closeCurrentOpaqueCompactRuntime(): void {
@@ -200,10 +202,16 @@ export function closeCurrentOpaqueCompactRuntime(): void {
  */
 export function reportOpaqueCompactRuntimeFault(
   reason: OpaqueCompactStateFailure,
+  detail?: string,
 ): OpaqueCompactStateFailure {
   closeCurrentOpaqueCompactRuntime();
-  setOpaqueCompactStateUnavailable(reason);
-  console.warn(`[ClaudeOpaqueCompact] phase=store_fault reason=${reason}`);
+  setOpaqueCompactStateUnavailable(reason, detail);
+  const sanitizedDetail = detail != null ? sanitizeFreeTextForLog(detail) : undefined;
+  console.warn(
+    `[ClaudeOpaqueCompact] phase=store_fault reason=${reason}` +
+      (sanitizedDetail !== undefined ? ` detail=${sanitizedDetail}` : ""),
+  );
+  recordOpaqueCompactRuntimeFault({ reason, detail, phase: "runtime" });
   return reason;
 }
 
@@ -224,8 +232,10 @@ function makeHandle(
 }
 
 function fail(token: symbol, reason: OpaqueCompactStateFailure, detail: string): OpaqueCompactRuntimeHandle {
-  setOpaqueCompactStateUnavailable(reason);
-  console.warn(`[ClaudeOpaqueCompact] phase=store_unavailable reason=${reason} detail=${detail}`);
+  setOpaqueCompactStateUnavailable(reason, detail);
+  const sanitizedDetail = sanitizeFreeTextForLog(detail);
+  console.warn(`[ClaudeOpaqueCompact] phase=store_unavailable reason=${reason} detail=${sanitizedDetail}`);
+  recordOpaqueCompactRuntimeFault({ reason, detail, phase: "startup" });
   current = { token, repository: null, lock: null };
   return makeHandle(token, false, reason);
 }
@@ -400,7 +410,15 @@ export function startOpaqueCompactRuntime(
     const reason = classify(error);
     repository?.close();
     lock?.release();
-    return fail(token, reason, error instanceof Error ? error.name : "UnknownError");
+    // ★ 排查生产事故发现：这里此前传的是 error.name——这些自定义 Error
+    // 子类（OpaqueCompactRepositoryError 等）的 .name 在构造函数里恒为
+    // 固定的类名字符串（比如 "OpaqueCompactRepositoryError"），跟 reason
+    // 分类是同一件事的两种说法，不含任何具体诊断信息；真正描述"具体出了
+    // 什么错"的是 .message（各个子系统的 throw site 各自传的自定义文本，
+    // 比如"keyring file is not valid JSON"）。两者都留：.name 说明异常
+    // 属于哪个子系统，.message 说明具体原因。
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    return fail(token, reason, detail);
   }
 }
 

@@ -8,7 +8,8 @@
  *
  * 字段白名单靠**函数签名本身**强制，不接受"调用方传什么就落什么"的通用
  * context——那正是让完整 body 落盘的通道。允许的字段只有：
- *   rid、reason、session hash、marker 长度、account hash、generation。
+ *   rid、reason、session hash、marker 长度、account hash、generation、
+ *   detail（见下方"排查生产事故补的字段"说明，唯一的自由文本例外）。
  *
  * 硬禁止：raw marker 或其任意子串/前缀、payload、account id（原文）、
  * token、cookie。marker 参数只取 `.length`，账号/会话只取
@@ -24,9 +25,21 @@
  * 缺省时也读不出 `null`。改名成 `conv_hash`（对应 clientConversationId）
  * 绕开这个子串匹配，同时不改变语义。写新字段名前**务必**用真实值跑一遍
  * `appendErrorLog`，光读 `redact.ts` 源码容易漏掉子串匹配这种隐性坑。
+ *
+ * ★ 排查生产事故补的字段：`detail`（原始异常文本，来自
+ * `OpaqueCompactStateError.detail`，见 `opaque-compact-state.ts`）——
+ * 真实事故里一个会话在 49 分钟内撞了 77 次同一个 `store_unavailable`
+ * 409，全部只记了分类后的 `reason`，原始异常早已随旧容器一起消失，事后
+ * 排查不出根因。**这不是放宽"不接受自由文本"这条纪律**：`reason` 依然
+ * 必须是结构化分类值，`detail` 是唯一、显式声明的自由文本例外，写入前
+ * 强制过 {@link sanitizeFreeTextForLog}（marker 值级脱敏 + 截断），和
+ * `opaque-compact-fallback-log.ts`/`opaque-compact-runtime-fault-log.ts`
+ * 对同一类"上游/底层自由文本"字段的处理是同一套判断依据、同一个函数，
+ * 不是又发明一遍脱敏逻辑。
  */
 
 import { appendErrorLog } from "../../logs/error-log.js";
+import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { auditAccountTag, auditSessionTag } from "./opaque-compact-audit.js";
 
 export interface OpaqueCompactDenialInput {
@@ -42,6 +55,15 @@ export interface OpaqueCompactDenialInput {
   marker?: string | null;
   accountEntryId?: string | null;
   generation?: number;
+  /**
+   * 原始异常文本（`OpaqueCompactStateError.detail` / 只读 readiness 的
+   * `detail`）。调用方不需要预先脱敏——这个函数内部会在写入 `context`
+   * 前统一过 {@link sanitizeFreeTextForLog}。只有 store 级致命故障才会有
+   * 这个值（session/model/variant 不匹配这类单请求语义错误没有，`reason`
+   * 本身就是完整解释），非 store-fault 场景传 `undefined` 即可，不用
+   * 强凑。
+   */
+  detail?: string | null;
 }
 
 /** 记录一次 opaque compact 的 409 / fail-closed 决策。绝不抛出。 */
@@ -66,6 +88,7 @@ export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void
           ? auditAccountTag(input.accountEntryId)
           : null,
         generation: input.generation ?? null,
+        detail: input.detail != null ? sanitizeFreeTextForLog(input.detail) : null,
       },
     });
   } catch {

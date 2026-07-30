@@ -174,9 +174,12 @@ describe("8.6: opaque compact denial log — real /v1/messages integration", () 
 
     const ctxFields = entry.context as Record<string, unknown>;
     expect(Object.keys(ctxFields).sort()).toEqual(
-      ["account_hash", "conv_hash", "generation", "marker_length", "reason", "rid"].sort(),
+      ["account_hash", "conv_hash", "detail", "generation", "marker_length", "reason", "rid"].sort(),
     );
     expect(ctxFields.reason).toBe("expired");
+    // "expired" 是良性分类（族 A，自愈候选），不是 store 级致命故障——
+    // detail 只在 toStateError() 的兜底分支才有内容，这里理应是 null。
+    expect(ctxFields.detail).toBeNull();
     expect(typeof ctxFields.rid).toBe("string");
     expect(typeof ctxFields.conv_hash).toBe("string");
     expect(ctxFields.conv_hash).toMatch(/^[0-9a-f]{8}$/);

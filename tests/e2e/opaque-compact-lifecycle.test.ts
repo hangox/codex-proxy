@@ -331,7 +331,15 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
     const second = startOpaqueCompactRuntime(lockGuardConfig);
     expect(second.ready).toBe(false);
     expect(second.reason).toBe("store_locked");
-    expect(getOpaqueCompactStateReadiness()).toEqual({ ready: false, reason: "store_locked" });
+    // detail 是排查生产事故新补的字段（原始异常文本，供结构化日志用）——
+    // 这里断言它确实带上了真实的锁冲突异常信息，不是空的，同时不锁死
+    // 逐字节的措辞（底层 Error.message 的具体文案不是这条测试要守护的
+    // 契约）。
+    expect(getOpaqueCompactStateReadiness()).toEqual({
+      ready: false,
+      reason: "store_locked",
+      detail: expect.stringContaining("another instance holds the opaque compact store"),
+    });
     // 决定性断言：store_locked 落在"致命族"——不是良性可自愈族，也不是
     // "marker 不适用于本次请求"的族 B，是三族分类里穷举排除法之后唯一
     // 剩下的那一族。这条不是重新发明 isFatalStoreFailure，是从它的两个

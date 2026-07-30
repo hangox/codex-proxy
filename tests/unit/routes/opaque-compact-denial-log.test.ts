@@ -4,8 +4,13 @@
  * 事故复盘（交接文档 6.4）：事故窗口内 opaque 相关的 409 零条结构化证据，
  * 直接导致 malformed 的具体触发方式永久无法定论。`recordOpaqueCompactDenial`
  * 就是补这个洞——但补洞本身不能开一个新的泄漏通道，所以这里既测"确实落盘
- * 了"，也测"落盘的只有白名单六个字段，raw marker/session/account 原文
+ * 了"，也测"落盘的只有白名单字段，raw marker/session/account 原文
  * 一个字符都不出现"。
+ *
+ * `detail` 字段（排查另一次生产事故新补——单个会话 49 分钟内撞了 77 次
+ * `store_unavailable` 409，根因永久查不到，因为原始异常从未落进结构化
+ * 日志）是白名单里唯一的自由文本例外，额外测它的脱敏/截断行为，见文件
+ * 下方专门的用例。
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -56,7 +61,7 @@ const SESSION_ID = "claude-session-canary-6f10ab";
 const ACCOUNT_ENTRY_ID = "entry-account-canary-9f31cd";
 
 describe("recordOpaqueCompactDenial", () => {
-  it("落盘的 context 只含白名单六个字段，rid/reason 原样保留", async () => {
+  it("落盘的 context 只含白名单七个字段，rid/reason/detail 原样保留（detail 已脱敏）", async () => {
     const { recordOpaqueCompactDenial } = await import(
       "@src/routes/shared/opaque-compact-denial-log.js"
     );
@@ -67,6 +72,7 @@ describe("recordOpaqueCompactDenial", () => {
       marker: MARKER_TOKEN,
       accountEntryId: ACCOUNT_ENTRY_ID,
       generation: 3,
+      detail: "OpaqueCompactRepositoryError: SQLITE_CORRUPT: database disk image is malformed",
     });
 
     const lines = readErrorLogLines();
@@ -79,7 +85,7 @@ describe("recordOpaqueCompactDenial", () => {
 
     const ctx = entry.context as Record<string, unknown>;
     expect(Object.keys(ctx).sort()).toEqual(
-      ["account_hash", "generation", "marker_length", "reason", "rid", "conv_hash"].sort(),
+      ["account_hash", "detail", "generation", "marker_length", "reason", "rid", "conv_hash"].sort(),
     );
     expect(ctx.rid).toBe("rid-abcdef12");
     expect(ctx.reason).toBe("expired");
@@ -89,6 +95,61 @@ describe("recordOpaqueCompactDenial", () => {
     expect((ctx.conv_hash as string)).toMatch(/^[0-9a-f]{8}$/);
     expect(typeof ctx.account_hash).toBe("string");
     expect((ctx.account_hash as string)).toMatch(/^[0-9a-f]{8}$/);
+    expect(ctx.detail).toBe("OpaqueCompactRepositoryError: SQLITE_CORRUPT: database disk image is malformed");
+  });
+
+  it("detail 缺省时是 null，不是省略键也不是空字符串", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-no-detail",
+      reason: "session_mismatch",
+      clientConversationId: null,
+      marker: null,
+    });
+
+    const lines = readErrorLogLines();
+    const ctx = lines[0]!.context as Record<string, unknown>;
+    expect(ctx.detail).toBeNull();
+  });
+
+  it("detail 里嵌的 opaque marker 不会原样落盘（经 sanitizeFreeTextForLog 脱敏）", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-detail-marker",
+      reason: "store_unavailable",
+      clientConversationId: null,
+      marker: null,
+      detail: `some raw error text mentioning ${MARKER_TOKEN} inline`,
+    });
+
+    const raw = readFileSync(resolve(tmpDataDir, "error-log.jsonl"), "utf-8");
+    expect(raw).not.toContain(MARKER_TOKEN);
+    expect(raw).not.toContain("A".repeat(32));
+    expect(raw).toContain("codex-opaque-state:***");
+  });
+
+  it("超长 detail 被截断，不会把整段底层异常文本原样落盘", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    const longDetail = "x".repeat(5000);
+    recordOpaqueCompactDenial({
+      requestId: "rid-long-detail",
+      reason: "store_unavailable",
+      clientConversationId: null,
+      marker: null,
+      detail: longDetail,
+    });
+
+    const lines = readErrorLogLines();
+    const ctx = lines[0]!.context as Record<string, unknown>;
+    const stored = ctx.detail as string;
+    expect(stored.length).toBeLessThan(longDetail.length);
+    expect(stored).toContain("truncated");
   });
 
   it("硬禁止：整条落盘的 JSON 行不包含 raw marker 的任意一段、session id 原文、account id 原文", async () => {

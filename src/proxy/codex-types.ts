@@ -87,9 +87,27 @@ export interface CodexCompactRequest {
   parentThreadId?: string;
 }
 
-/** Response body from POST /codex/responses/compact. */
+/**
+ * Response body from POST /codex/responses/compact.
+ *
+ * The raw upstream body also carries `usage` (top-level, not nested under a
+ * `response` wrapper like the streaming SSE events) — same shape as the
+ * streaming path's `response.usage`. `createCompactResponse` (`codex-api.ts`)
+ * parses it via `parseNormalizedHostModelUsage` (`codex-events.ts`) before
+ * handing this object back, so `usage` here is already the flattened shape
+ * (`input_tokens`/`output_tokens`/`cached_tokens?`/`reasoning_tokens?`), not
+ * upstream's raw nested `input_tokens_details`/`output_tokens_details`.
+ * Optional because callers must treat "upstream omitted it" as unknown, not
+ * silently record zero usage for a real compact call.
+ */
 export interface CodexCompactResponse {
   output: unknown[];
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cached_tokens?: number;
+    reasoning_tokens?: number;
+  };
 }
 
 /** Structured content part for multimodal Codex input. */

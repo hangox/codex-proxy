@@ -456,6 +456,7 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
       `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_account_mismatch` +
         ` required=${auditAccountTag(requiredEntryId)} got=${auditAccountTag(acquired.entryId)}`,
     );
+    // usage: undefined 是对的——账号不匹配，从未发起过 compact 调用，没有响应体。
     releaseAccount(accountPool, acquired.entryId, undefined, released);
     throw new CompactServiceError("The compact state account is unavailable.", 409, false, 1);
   }
@@ -475,10 +476,20 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
       );
       const compactLatencyMs = Date.now() - compactStarted;
       console.log(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_end acct=${auditAccountTag(entryId)} items=${compactResult.output.length} latency_ms=${compactLatencyMs}`);
-      releaseAccount(accountPool, entryId, undefined, released);
+      // qa 实测：compact 响应带真实 usage，但此前六处 releaseAccount 调用
+      // 全部传 undefined——账号轮转的本地 usage 统计因此把每一次 compact
+      // 都记成 0 token（同规模：1 次 compact +0，1 次普通请求 +41756）。
+      // 这是六处里**唯一**的成功路径（其余五处要么在拿到响应之前就失败，
+      // 要么是重试/中止分支，压根没有响应体可传）——失败路径继续传
+      // undefined 是对的，不是漏改，见下方各分支旁的说明。
+      // compactResult.usage 缺失时保持 undefined（不是 0）：upstream 没给
+      // 就是"不知道"，recordUsage 对 undefined 字段本来就是 no-op 累加，
+      // 不会把"未知"污染成"确实是 0"。
+      releaseAccount(accountPool, entryId, compactResult.usage, released);
       return { output: compactResult.output, entryId, compactLatencyMs };
     } catch (error) {
       if (signal.aborted) {
+        // usage: undefined 是对的——请求被中止，不存在完整响应体。
         releaseAccount(accountPool, entryId, undefined, released);
         throw error;
       }
@@ -491,11 +502,13 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
             ` error_name=${error instanceof Error ? error.name : typeof error}` +
             ` message=${sanitizeFreeTextForLog(error instanceof Error ? error.message : String(error))}`,
         );
+        // usage: undefined 是对的——非 CodexApiError 的意外异常，没有可信响应体。
         releaseAccount(accountPool, entryId, undefined, released);
         throw error;
       }
       const decision = handleCodexApiError(error, accountPool, entryId, compactRequest.model, tag, modelRetried, cookieJar, true);
       if (decision.action === "respond" || requiredEntryId !== undefined) {
+            // usage: undefined 是对的——上游返回的是错误分类结果，不是一次成功的 compact 响应。
             releaseAccount(accountPool, entryId, undefined, released);
             console.warn(
               `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_abort` +
@@ -511,6 +524,7 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
               triedEntryIds.length,
             );
           }
+          // usage: undefined 是对的——这次账号的尝试失败了，即将换账号重试，没有响应体可记。
           releaseAccount(accountPool, entryId, undefined, released);
           if (decision.markModelRetried) modelRetried = true;
       acquired = acquireAccount(accountPool, compactRequest.model, triedEntryIds, tag);

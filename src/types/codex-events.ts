@@ -205,6 +205,52 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** Flattened, normalized host-model usage — shared shape between the SSE
+ *  streaming path (`CodexResponseData.usage`) and any other endpoint that
+ *  returns the same upstream `usage` object (e.g. the compact JSON response). */
+export interface NormalizedHostModelUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+}
+
+/**
+ * Parse the upstream Responses-API `usage` object shape (nested
+ * `input_tokens_details.cached_tokens` / `output_tokens_details.reasoning_tokens`)
+ * into the flattened shape this codebase records usage in.
+ *
+ * Extracted out of `parseResponseData` (below) so it has exactly one
+ * implementation — `createCompactResponse` (`codex-api.ts`) reuses it for the
+ * `/codex/responses/compact` JSON response, which carries the identical raw
+ * `usage` shape at its top level (not nested under `response`). Keeping this
+ * as the single source of truth means the compact path can never silently
+ * drift from how the streaming path interprets the same upstream fields —
+ * e.g. `input_tokens` is always the *total* prompt token count (cache hits
+ * included), never `input_tokens - cached_tokens`; that's how
+ * `AccountRegistry.recordUsage` already accumulates it for the streaming
+ * path, so the compact path must match, not invent its own convention.
+ *
+ * Returns `undefined` when `usage` isn't a record at all (upstream omitted
+ * it) — callers must treat that as "unknown", not silently record zero.
+ */
+export function parseNormalizedHostModelUsage(usage: unknown): NormalizedHostModelUsage | undefined {
+  if (!isRecord(usage)) return undefined;
+  const result: NormalizedHostModelUsage = {
+    input_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+    output_tokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+  };
+  const inputDetails = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : undefined;
+  if (inputDetails && typeof inputDetails.cached_tokens === "number") {
+    result.cached_tokens = inputDetails.cached_tokens;
+  }
+  const outputDetails = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : undefined;
+  if (outputDetails && typeof outputDetails.reasoning_tokens === "number") {
+    result.reasoning_tokens = outputDetails.reasoning_tokens;
+  }
+  return result;
+}
+
 function safeStringify(value: unknown): string {
   if (typeof value === "string") return value;
   try {
@@ -267,21 +313,9 @@ function parseResponseData(data: unknown): CodexResponseData | undefined {
   if (!isRecord(resp)) return undefined;
   const result: CodexResponseData = {};
   if (typeof resp.id === "string") result.id = resp.id;
-  if (isRecord(resp.usage)) {
-    result.usage = {
-      input_tokens: typeof resp.usage.input_tokens === "number" ? resp.usage.input_tokens : 0,
-      output_tokens: typeof resp.usage.output_tokens === "number" ? resp.usage.output_tokens : 0,
-    };
-    // Extract cached_tokens from input_tokens_details
-    const inputDetails = isRecord(resp.usage.input_tokens_details) ? resp.usage.input_tokens_details : undefined;
-    if (inputDetails && typeof inputDetails.cached_tokens === "number") {
-      result.usage.cached_tokens = inputDetails.cached_tokens;
-    }
-    // Extract reasoning_tokens from output_tokens_details
-    const outputDetails = isRecord(resp.usage.output_tokens_details) ? resp.usage.output_tokens_details : undefined;
-    if (outputDetails && typeof outputDetails.reasoning_tokens === "number") {
-      result.usage.reasoning_tokens = outputDetails.reasoning_tokens;
-    }
+  const baseUsage = parseNormalizedHostModelUsage(resp.usage);
+  if (baseUsage) {
+    result.usage = baseUsage;
   }
   // Extract image_generation tokens from tool_usage.image_gen (separate from host-model usage).
   if (isRecord(resp.tool_usage) && isRecord(resp.tool_usage.image_gen)) {

@@ -31,6 +31,7 @@ import {
 
 export type { WsPoolContext };
 import { parseSSEBlock, parseSSEStream } from "./codex-sse.js";
+import { parseNormalizedHostModelUsage } from "../types/codex-events.js";
 import { fetchUsage } from "./codex-usage.js";
 import { fetchModels, probeEndpoint as probeEndpointFn } from "./codex-models.js";
 import type { CookieJar } from "./cookie-jar.js";
@@ -552,7 +553,19 @@ export class CodexApi {
     }
 
     try {
-      return JSON.parse(responseBody) as CodexCompactResponse;
+      const parsed = JSON.parse(responseBody) as CodexCompactResponse;
+      // qa 实测：compact 响应顶层确实带 usage（{input_tokens,
+      // input_tokens_details:{cached_tokens}, output_tokens,
+      // output_tokens_details:{reasoning_tokens}, total_tokens}），但此前
+      // CodexCompactResponse 只声明了 output——usage 被自己的类型遮蔽，没人
+      // 读就跟着 JSON.parse 一起被丢弃了（同账号同规模：1 次 compact 记
+      // window_input_tokens +0，1 次普通请求记 +41756）。这里复用
+      // parseNormalizedHostModelUsage（streaming 路径同一份实现，见
+      // codex-events.ts 文档），不是重新发明一套解析口径。缺 usage（或形状
+      // 不对）时返回 undefined，不是 0——调用方（codex-compact-service.ts）
+      // 必须能区分"这次真的没有 usage"和"usage 是 0"，不能替上游瞎猜。
+      const usage = parseNormalizedHostModelUsage((parsed as { usage?: unknown }).usage);
+      return usage ? { ...parsed, usage } : parsed;
     } catch {
       throw new CodexApiError(502, `Compact response is not valid JSON: ${responseBody.slice(0, 200)}`);
     }

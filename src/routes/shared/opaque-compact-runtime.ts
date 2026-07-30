@@ -385,7 +385,36 @@ export function startOpaqueCompactRuntime(
           ` retained=${recovered.retained} isolated=${quarantined.ok}` +
           ` files=${quarantined.moved.length} marker=${quarantined.markerWritten}`,
       );
-      setOpaqueCompactStateUnavailable("state_corrupt");
+      // reviewer 复审发现的第三个 sink：这个分支此前只调用了
+      // setOpaqueCompactStateUnavailable("state_corrupt")（不带 detail），
+      // 也没有调用 recordOpaqueCompactRuntimeFault——新加的
+      // OpaqueCompactRuntimeFault 结构化事件因此只覆盖了两条路径（启动
+      // fail() + 运行时 reportOpaqueCompactRuntimeFault），第三条真实存在
+      // 的掉线路径完全不出现在里面。一个只覆盖 2/3 场景的"新信号"比没有
+      // 信号更危险：以后有人盯着这个事件名找"store 什么时候掉线"，会被
+      // 这一类漏掉，且不会意识到自己漏看了。
+      //
+      // detail 内容只取上面这行 console.warn 已经打印过的字段（计数/布尔值
+      // + quarantineOpaqueCompactStore 自己文档化过"不含敏感内容"的
+      // error），不是把整行原样塞进去：
+      //   - unreadable/retained：聚合计数，安全。
+      //   - quarantined.ok/markerWritten：布尔值，安全。
+      //   - quarantined.moved.length：只取数组长度（隔离移动了几个文件），
+      //     不取 quarantined.moved 本身（虽然那也只是固定的 DB 文件名列表，
+      //     不是路径，但没有必要放进去，计数已经足够诊断）。
+      //   - quarantined.directory：绝对路径，不放进去——即便这是本地 data
+      //     卷内部路径、不含用户数据，跟其余字段"零路径"的一致性优先。
+      //   - quarantined.error：接口文档明确"失败原因（不含敏感内容）"，
+      //     但仍然照统一纪律过一遍 sanitizeFreeTextForLog，不因为"文档说
+      //     安全"就跳过防御层。
+      const quarantineDetail = sanitizeFreeTextForLog(
+        `recover_unreadable: unreadable=${recovered.unreadable} retained=${recovered.retained}` +
+          ` quarantine_ok=${quarantined.ok} quarantine_files=${quarantined.moved.length}` +
+          ` marker_written=${quarantined.markerWritten}` +
+          (quarantined.error ? ` quarantine_error=${quarantined.error}` : ""),
+      );
+      setOpaqueCompactStateUnavailable("state_corrupt", quarantineDetail);
+      recordOpaqueCompactRuntimeFault({ reason: "state_corrupt", detail: quarantineDetail, phase: "startup" });
       current = { token, repository: null, lock: null };
       return makeHandle(token, false, "state_corrupt");
     }

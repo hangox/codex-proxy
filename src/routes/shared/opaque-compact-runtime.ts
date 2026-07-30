@@ -395,8 +395,7 @@ export function startOpaqueCompactRuntime(
       // 这一类漏掉，且不会意识到自己漏看了。
       //
       // detail 内容只取上面这行 console.warn 已经打印过的字段（计数/布尔值
-      // + quarantineOpaqueCompactStore 自己文档化过"不含敏感内容"的
-      // error），不是把整行原样塞进去：
+      // + quarantined.error），不是把整行原样塞进去：
       //   - unreadable/retained：聚合计数，安全。
       //   - quarantined.ok/markerWritten：布尔值，安全。
       //   - quarantined.moved.length：只取数组长度（隔离移动了几个文件），
@@ -404,9 +403,13 @@ export function startOpaqueCompactRuntime(
       //     不是路径，但没有必要放进去，计数已经足够诊断）。
       //   - quarantined.directory：绝对路径，不放进去——即便这是本地 data
       //     卷内部路径、不含用户数据，跟其余字段"零路径"的一致性优先。
-      //   - quarantined.error：接口文档明确"失败原因（不含敏感内容）"，
-      //     但仍然照统一纪律过一遍 sanitizeFreeTextForLog，不因为"文档说
-      //     安全"就跳过防御层。
+      //   - quarantined.error：★ `ccbb824` 之后这个字段可能带本地文件路径
+      //     （`${error.name}: ${error.message}`，mkdirSync/renameSync 失败
+      //     时的真实描述，见 opaque-compact-quarantine.ts 的
+      //     QuarantineResult.error 文档）——这里不依赖"上游保证不含敏感
+      //     内容"这类前提（那类保证已经被同一次改动推翻过一次），一律先过
+      //     下面的 sanitizeFreeTextForLog 才放行；脱敏是这里唯一站得住的
+      //     安全依据，不是"反正本来就干净、脱敏只是锦上添花的双保险"。
       const quarantineDetail = sanitizeFreeTextForLog(
         `recover_unreadable: unreadable=${recovered.unreadable} retained=${recovered.retained}` +
           ` quarantine_ok=${quarantined.ok} quarantine_files=${quarantined.moved.length}` +

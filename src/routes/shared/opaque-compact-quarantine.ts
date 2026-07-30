@@ -94,7 +94,19 @@ export interface QuarantineResult {
   ok: boolean;
   /** active marker 是否已经落盘。 */
   markerWritten: boolean;
-  /** 失败原因（不含敏感内容）。 */
+  /**
+   * 失败原因：`${error.name}: ${error.message}`（Error 以外的抛出值退化为
+   * `String(error)`）。
+   *
+   * ★ lint 守卫覆盖的历史坑（见 `tests/unit/lint/error-name-as-diagnostic.test.ts`）：
+   * 这里此前只取 `error.name`——`mkdirSync`/`renameSync` 抛出的是 Node 的
+   * `fs` 错误，`.name` 恒为常量 `"Error"`，真正含路径的描述在 `.message`
+   * 里，诊断价值等于零，只是"刚好因为是常量所以不会泄漏路径"。现在带上
+   * `.message` 之后**可能包含本地文件路径**（data 卷内部路径，不含用户
+   * 会话内容/密钥材料），调用方（`opaque-compact-runtime.ts`）在把这个字段
+   * 接进结构化日志前必须过 `sanitizeFreeTextForLog`，不能假设这里"不含
+   * 敏感内容"就跳过脱敏。
+   */
   error?: string;
 }
 
@@ -251,7 +263,7 @@ export function quarantineOpaqueCompactStore(options: {
       moved: [],
       ok: false,
       markerWritten: false,
-      error: error instanceof Error ? error.name : "mkdir failed",
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
     };
   }
 
@@ -275,7 +287,7 @@ export function quarantineOpaqueCompactStore(options: {
         moved: [],
         ok: false,
         markerWritten: false,
-        error: error instanceof Error ? error.name : "rename failed",
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
       };
     }
   }

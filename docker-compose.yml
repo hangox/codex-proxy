@@ -18,6 +18,15 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+      # Opaque compact's master keyring must live outside /app/data (see
+      # opaque_compact_state.keyring_file in config-schema.ts — same-volume
+      # storage would put the encryption key and the ciphertext it protects
+      # on one disk, defeating at-rest isolation). Always mounted, even
+      # though the feature defaults off: enabling it later without
+      # recreating the container still gets a real, correctly-permissioned,
+      # persistent directory. Point keyring_file at e.g.
+      # /app/opaque-keys/keyring.json when you turn the feature on.
+      - ./opaque-keys:/app/opaque-keys
     restart: unless-stopped
     env_file:
       - .env

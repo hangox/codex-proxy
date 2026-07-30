@@ -84,8 +84,14 @@ RUN npm prune --omit=dev && npm install --no-save tsx
 
 EXPOSE 8080 11434
 
-# Ensure data dir exists in the image (bind mount may override at runtime)
-RUN mkdir -p /app/data
+# Ensure data dir exists in the image (bind mount may override at runtime).
+# /app/opaque-keys is the conventional home for opaque_compact_state.keyring_file
+# (must live outside /app/data — see config-schema.ts). Pre-creating it here
+# (root-owned, at build time) means docker-entrypoint.sh always has a real
+# target to chown, whether or not the operator bind-mounts a host directory
+# over it — a fresh bind mount and this baked-in dir both start root-owned,
+# so the chown step behaves identically either way.
+RUN mkdir -p /app/data /app/opaque-keys
 
 # Backup default configs so entrypoint can seed empty bind mounts
 RUN cp -r /app/config /defaults

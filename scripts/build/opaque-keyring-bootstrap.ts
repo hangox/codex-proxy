@@ -2,25 +2,29 @@
 /**
  * 一次性引导 opaque compact 的外部主密钥环（`opaque_compact_state.keyring_file`）。
  *
- * ## 为什么这个脚本存在
+ * ## 现状：可选工具，不再是必需步骤
  *
- * `9b2763a`（安全加固）把 keyring 从应用内部管理的路径移到运维显式配置的
- * 外部路径，并加了 `allowKeyringBootstrap` 这道闸门——`buildOpaqueCompactRuntimeConfig()`
- * （`index.ts`/`admin/settings.ts` 启动路径唯一共用的入口）**从未**把这个字段
- * 设成 `true`，所以正常服务器启动流程在任何真实场景下都不会自动生成 keyring。
+ * `startOpaqueCompactRuntime()` 现在会在 `firstInit=true`（真正的全新
+ * 部署，从未有过既有 state）时**自动**创建 keyring——用户在 Dashboard
+ * 里打开开关就是那次刻意的人工操作，不需要再额外跑这个脚本或手动配置
+ * `keyring_file`（未配置时会落到 `getDefaultOpaqueCompactKeyringFile()`
+ * 算出的默认路径，见 `paths.ts`）。这是产品决定："不用那么复杂，开启
+ * 就直接帮忙初始化"——也是桌面版（`.dmg` 不打包 `scripts/`、没有终端，
+ * 这个脚本在那上面本来就跑不了）唯一可行的路径。
  *
- * 这不是遗留的正确性漏洞——`firstInit`（sentinel 是否已经完整初始化过）本身
- * 已经足够防止"悄悄用一把新 key 顶替已有 state 的加密"：sentinel 严格按
- * `lock → sentinel → keyring → DB` 顺序两阶段提交，`firstInit=true` 时 DB 这一步
- * 在时间线上根本还没发生过，不可能有依赖这把 key 的密文已经落盘。`allowKeyringBootstrap`
- * 挡的是另一件事：**生成主密钥是不可逆操作，不该只靠一条今天看起来正确的逻辑
- * 推导就自动执行**——这是纵深防御，不是给 `firstInit` 打补丁。
+ * `firstInit=false`（真有既有 state）时，无论如何都不会自动创建，继续
+ * fail-closed——这条硬约束没有变，见 `opaque-compact-runtime.ts` 的
+ * `allowCreate: firstInit`。
  *
- * 也就是说，这道闸门本来就设计成"必须由人显式按下"，只是从没配一个真正的
- * 开关——生产环境目前的 keyring 是一次未记录的手动操作产生的。这个脚本就是
- * 那个从来没写出来的开关：**只做这一件事，一次性，不碰运行时配置本身**
- * （`allowKeyringBootstrap` 在真实服务器启动路径上依然、并将继续永远是
- * unreachable——这个脚本不通过那条路径，直接调用同一个底层函数）。
+ * **这个脚本仍然有用，只是从"唯一入口"降级成"可选工具"**：
+ *   - 想在打开开关之前先确认 keyring 已经就位（不依赖 Dashboard 的
+ *     副作用去创建它）；
+ *   - 灾难恢复场景下，想要脚本化、可审计的显式操作而不是点开关；
+ *   - 自动化/IaC 流水线里不想依赖一次 HTTP 调用去触发副作用。
+ *
+ * 内部逻辑完全独立于 `startOpaqueCompactRuntime()` 的自动初始化路径——
+ * 直接调用同一个底层函数（`loadOpaqueCompactKeyring`），带四道独立安全
+ * 检查（见下），不依赖、也不影响运行时那条 `firstInit` 判定。
  *
  * ## 安全检查（都不依赖调用方按正确顺序操作）
  *

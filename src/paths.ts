@@ -5,7 +5,7 @@
  * Electron mode: paths set by setPaths() before backend imports.
  */
 
-import { resolve } from "path";
+import { dirname, resolve } from "path";
 
 interface PathConfig {
   rootDir: string;
@@ -53,4 +53,36 @@ export function getPublicDir(): string {
 /** Whether running in embedded mode (Electron). */
 export function isEmbedded(): boolean {
   return _paths !== null;
+}
+
+/**
+ * Default location for opaque compact's master keyring
+ * (`opaque_compact_state.keyring_file`) when the operator hasn't configured
+ * one explicitly.
+ *
+ * Must resolve outside `getDataDir()` (see `config-schema.ts` — this is
+ * checked at runtime, not just documented): the master key and the ciphertext
+ * it protects can't share a volume, or a single backup/leak exposes both.
+ * One formula covers every deployment form because `getDataDir()` is already
+ * correctly configured per-form by `setPaths()` — this just takes its parent
+ * and adds a sibling directory, it does not hardcode a platform-specific path:
+ *
+ *   - Docker:        dataDir=/app/data                  → /app/opaque-keys/keyring.json
+ *     (provisioned by docker-compose.yml's volume mount + the Dockerfile's
+ *     `mkdir -p`, both already root-owned/chown'd by docker-entrypoint.sh).
+ *   - Electron:      dataDir=<userData>/data             → <userData>/opaque-keys/keyring.json
+ *     (verified by actually launching a packaged build and inspecting its
+ *     real `--user-data-dir` via `ps` — do not assume this matches
+ *     `productName`; it does not, see CHANGELOG).
+ *   - Running from a source checkout (no setPaths() call): dataDir=<cwd>/data
+ *     → <cwd>/opaque-keys/keyring.json — a real, irreversible encryption key
+ *     ends up at the repo root. `.gitignore`/`.dockerignore` both exclude
+ *     `opaque-keys/` for exactly this reason; don't remove those entries
+ *     without re-checking this comment.
+ *
+ * Only used as a fallback — explicit `opaque_compact_state.keyring_file`
+ * configuration always wins over this.
+ */
+export function getDefaultOpaqueCompactKeyringFile(): string {
+  return resolve(dirname(getDataDir()), "opaque-keys", "keyring.json");
 }

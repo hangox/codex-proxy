@@ -185,7 +185,6 @@ beforeEach(async () => {
     maxBytes: 64 * 1024 * 1024,
     directory: dir,
     keyringFile: resolve(keyDir, "keyring.json"),
-    allowKeyringBootstrap: true,
   });
   expect(runtime.ready).toBe(true);
 

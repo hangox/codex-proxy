@@ -1,6 +1,13 @@
 node_modules/
 dist/
 data/
+# A developer's local source-run may have bootstrapped a real opaque compact
+# master keyring here (getDefaultOpaqueCompactKeyringFile() in src/paths.ts,
+# sibling of data/). docker-compose.yml's `build: .` option runs `COPY . .`
+# against this same checkout — without this line a real key could end up
+# baked into the image layer. .gitignore has the matching entry; Docker does
+# not read .gitignore, so this needs its own, independent exclusion.
+opaque-keys/
 bin/
 tmp/
 .asar-out/

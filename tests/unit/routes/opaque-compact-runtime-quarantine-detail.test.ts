@@ -85,7 +85,6 @@ describe("opaque compact runtime — recover_unreadable quarantine 分支的 det
       maxBytes: 64 * 1024 * 1024,
       directory: dir,
       keyringFile: resolve(keyDir, "keyring.json"),
-      allowKeyringBootstrap: true,
     };
 
     const first = startOpaqueCompactRuntime(config);

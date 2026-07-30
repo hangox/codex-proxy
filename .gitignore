@@ -4,6 +4,12 @@ dist-electron/
 release/
 public-desktop/
 data/
+# Opaque compact's master keyring default location when running from source
+# (a sibling of data/, computed by getDefaultOpaqueCompactKeyringFile() in
+# src/paths.ts). This is a real, irreversible encryption key for whatever
+# opaque compact state exists locally — must never be committed, same as
+# data/ above.
+opaque-keys/
 public/
 docs/
 bin/*

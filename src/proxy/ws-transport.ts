@@ -20,9 +20,11 @@
 import type { CodexInputItem } from "./codex-api.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
-import { CodexApiError } from "./codex-types.js";
+import { CodexApiError, PreviousResponseWebSocketError } from "./codex-types.js";
 import { getProxyUrl } from "../tls/proxy.js";
+import { isPreviousResponseNotFoundError } from "./error-classification.js";
 import {
+  DEFAULT_WS_RESPONSE_START_TIMEOUT_MS,
   PersistentWs,
   WsReusedConnectionError,
   type PersistentWsHooks,
@@ -85,7 +87,10 @@ function isTerminalWsEvent(type: string): boolean {
 }
 
 function isEarlyMetadataWsEvent(type: string): boolean {
-  return type === "response.created" || type === "response.in_progress";
+  return type === "response.created" ||
+    type === "response.in_progress" ||
+    type === "response.metadata" ||
+    type === "codex.response.metadata";
 }
 
 const WS_CONNECTING = 0;
@@ -249,9 +254,41 @@ export async function createWebSocketResponse(
   onRateLimits?: (rl: ParsedRateLimit) => void,
   poolCtx?: WsPoolContext,
 ): Promise<Response> {
-  if (poolCtx) {
+  const previousResponseId = request.previous_response_id;
+
+  if (previousResponseId) {
+    if (!poolCtx) {
+      throw new PreviousResponseWebSocketError(
+        "No pooled WebSocket context is available for previous_response_id",
+        "no_context",
+      );
+    }
+    const acquired = poolCtx.pool.acquireForResponse(poolCtx.entryId, previousResponseId);
+    if (!("ws" in acquired)) {
+      poolCtx.onDecision?.({ kind: "bypass", reason: acquired.bypass });
+      throw new PreviousResponseWebSocketError(
+        `Owning WebSocket is unavailable (${acquired.bypass})`,
+        acquired.bypass,
+      );
+    }
+    poolCtx.onDecision?.({ kind: "reuse", wsId: acquired.ws.id });
     try {
-      const acquired = await poolCtx.pool.acquire(
+      return await acquired.ws.send({ request, signal, onRateLimits, reused: true });
+    } catch (err) {
+      if (isPreviousResponseNotFoundError(err)) {
+        poolCtx.pool.forgetResponseOwner(previousResponseId);
+      }
+      if (err instanceof WsReusedConnectionError) {
+        throw new PreviousResponseWebSocketError(err.message, "transport");
+      }
+      throw err;
+    }
+  }
+
+  if (poolCtx) {
+    let acquired;
+    try {
+      acquired = await poolCtx.pool.acquire(
         poolCtx.entryId,
         poolCtx.poolKey,
         (deps) =>
@@ -264,33 +301,36 @@ export async function createWebSocketResponse(
             hooks: deps.hooks,
           }),
       );
-      if ("ws" in acquired) {
-        poolCtx.onDecision?.({
-          kind: acquired.reused ? "reuse" : "new",
-          wsId: acquired.ws.id,
-        });
-        try {
-          return await acquired.ws.send({ request, signal, onRateLimits, reused: acquired.reused });
-        } catch (err) {
-          if (err instanceof WsReusedConnectionError) {
-            // Stale-reuse: open a fresh one-shot WS for this single request.
-            // The pool's onDead hook has already evicted the dead entry.
-            poolCtx.onDecision?.({ kind: "retry-after-stale-reuse", wsId: acquired.ws.id });
-            return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
-          }
-          throw err;
-        }
-      }
-      // Bypass (busy / cap / dead / no_key / disabled) → fall through to one-shot.
-      poolCtx.onDecision?.({ kind: "bypass", reason: acquired.bypass });
     } catch (err) {
-      // Pool itself failed (e.g. factory could not connect). Don't punish the
-      // caller — fall back to the legacy one-shot path. The error is still
-      // visible in the one-shot path if the underlying issue persists.
+      // Only connection construction/acquisition errors reach this fallback.
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[ws-pool] acquire failed, using one-shot fallback: ${msg}`);
       poolCtx.onDecision?.({ kind: "bypass", reason: "factory_error" });
+      return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
     }
+
+    if ("ws" in acquired) {
+      poolCtx.onDecision?.({
+        kind: acquired.reused ? "reuse" : "new",
+        wsId: acquired.ws.id,
+      });
+      try {
+        return await acquired.ws.send({ request, signal, onRateLimits, reused: acquired.reused });
+      } catch (err) {
+        // With full input and no previous_response_id, a pre-response failure
+        // on a reused WS is safe to replay once on a fresh one-shot.
+        if (err instanceof WsReusedConnectionError) {
+          poolCtx.onDecision?.({ kind: "retry-after-stale-reuse", wsId: acquired.ws.id });
+          return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
+        }
+        // Real upstream errors must propagate. They are not pool acquisition
+        // failures and must never trigger a cross-WS replay.
+        throw err;
+      }
+    }
+
+    // No previous_response_id: a full-input one-shot is safe on pool bypass.
+    poolCtx.onDecision?.({ kind: "bypass", reason: acquired.bypass });
   }
 
   return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
@@ -323,6 +363,7 @@ async function openOneShotWs(
     let expectedCloseBeforeOpen = false;
     const earlyMetadataChunks: Uint8Array[] = [];
     let pingTimer: ReturnType<typeof setInterval> | undefined;
+    let responseStartTimer: ReturnType<typeof setTimeout> | undefined;
 
     // Open timeout: if the WS handshake never completes, reject after 20s.
     const openTimer = setTimeout(() => {
@@ -334,8 +375,15 @@ async function openOneShotWs(
       }
     }, 20_000);
 
+    function clearResponseStartTimer() {
+      if (!responseStartTimer) return;
+      clearTimeout(responseStartTimer);
+      responseStartTimer = undefined;
+    }
+
     function cleanupTimers() {
       clearTimeout(openTimer);
+      clearResponseStartTimer();
       if (pingTimer) {
         clearInterval(pingTimer);
         pingTimer = undefined;
@@ -381,6 +429,7 @@ async function openOneShotWs(
     function resolveResponse() {
       if (earlyDecisionMade) return;
       earlyDecisionMade = true;
+      clearResponseStartTimer();
       resolve(buildResponse());
       for (const chunk of earlyMetadataChunks.splice(0)) {
         enqueueChunk(chunk);
@@ -433,6 +482,17 @@ async function openOneShotWs(
       console.log(`[WS-Open] 🟢 WebSocket successfully opened for request. wsUrl: ${wsUrl}`);
       clearTimeout(openTimer);
       ws.send(JSON.stringify(request));
+      responseStartTimer = setTimeout(() => {
+        if (earlyDecisionMade) return;
+        const timeoutError = new Error(
+          `WebSocket response start timeout after ${DEFAULT_WS_RESPONSE_START_TIMEOUT_MS}ms`,
+        );
+        earlyDecisionMade = true;
+        errorStream(timeoutError);
+        closeWs(1000, "response start timeout");
+        reject(timeoutError);
+      }, DEFAULT_WS_RESPONSE_START_TIMEOUT_MS);
+      responseStartTimer.unref?.();
       pingTimer = setInterval(() => {
         try { ws.ping(); } catch { /* ws already closed */ }
       }, 25_000);

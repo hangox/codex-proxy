@@ -318,7 +318,7 @@ describe("proxy-handler integration", () => {
     const affinityMap = getSessionAffinityMap();
     expect(affinityMap.lookup("resp_meta")).toBe("e1");
     expect(affinityMap.lookupConversationId("resp_meta")).toBe("thread-collect");
-    expect(affinityMap.lookupTurnState("resp_meta")).toBe("turn-success");
+    expect(affinityMap.lookupTurnState("resp_meta")).toBeNull();
     expect(affinityMap.lookupInstructionsHash("resp_meta")).toBe("58d0189aa8572b25a2e4ba09928df2c3d924d07f53de9aeb94ffe7f6f2a1de2b");
     expect(affinityMap.lookupInputTokens("resp_meta")).toBe(33);
     expect(affinityMap.lookupFunctionCallIds("resp_meta")).toEqual(["call_a", "call_b"]);
@@ -1084,8 +1084,8 @@ describe("proxy-handler integration", () => {
     expect(accountPool.acquire).toHaveBeenCalledTimes(1);
   });
 
-  // 19. Cascading Ban Defense — strips only when preferred is banned
-  it("strips previous_response_id and turnState when preferred account is banned (cascading ban defense)", async () => {
+  // 19. Explicit continuation account fallback — preserve state and fail closed in transport
+  it("preserves explicit continuation state on banned-owner fallback for fail-closed continuity", async () => {
     const affinityMap = getSessionAffinityMap();
     affinityMap.record(
       "resp_preferred",
@@ -1125,9 +1125,9 @@ describe("proxy-handler integration", () => {
     expect(res.status).toBe(200);
 
     expect(capturedRequest).toBeDefined();
-    expect(capturedRequest?.previous_response_id).toBeUndefined();
+    expect(capturedRequest?.previous_response_id).toBe("resp_preferred");
     expect(capturedRequest?.turnState).toBeUndefined();
-    expect(affinityMap.lookup("resp_preferred")).toBeNull();
+    expect(affinityMap.lookup("resp_preferred")).toBe("e_preferred");
   });
 
   // 19b. Cascading Ban Defense — does NOT strip for quota exhaustion

@@ -29,11 +29,9 @@ function makeProxyRequest(): ProxyRequest {
 }
 
 function makeAffinityLookup(options: {
-  turnState?: string | null;
   inputTokens?: number | null;
 } = {}): ImplicitResumeAffinityLookup {
   return {
-    lookupTurnState: vi.fn(() => options.turnState ?? null),
     lookupInputTokens: vi.fn(() => options.inputTokens ?? null),
   };
 }
@@ -54,10 +52,7 @@ describe("implicit resume request state helpers", () => {
 
   it("applies implicit resume by using the previous response id, WebSocket, sliced input, and usage hint", () => {
     const request = makeProxyRequest();
-    const affinityMap = makeAffinityLookup({
-      turnState: "turn-implicit",
-      inputTokens: 123,
-    });
+    const affinityMap = makeAffinityLookup({ inputTokens: 123 });
 
     const usageHint = applyImplicitResumeRequest({
       request,
@@ -68,12 +63,11 @@ describe("implicit resume request state helpers", () => {
 
     expect(request.codexRequest.previous_response_id).toBe("resp_implicit");
     expect(request.codexRequest.useWebSocket).toBe(true);
-    expect(request.codexRequest.turnState).toBe("turn-implicit");
+    expect(request.codexRequest.turnState).toBe("turn-original");
     expect(request.codexRequest.input).toEqual([
       { role: "user", content: "continue" },
     ]);
     expect(usageHint).toEqual({ reusedInputTokensUpperBound: 123 });
-    expect(affinityMap.lookupTurnState).toHaveBeenCalledWith("resp_implicit");
     expect(affinityMap.lookupInputTokens).toHaveBeenCalledWith("resp_implicit");
   });
 
@@ -84,10 +78,7 @@ describe("implicit resume request state helpers", () => {
       request,
       implicitPrevRespId: "resp_implicit",
       continuationInputStart: 2,
-      affinityMap: makeAffinityLookup({
-        turnState: "turn-implicit",
-        inputTokens: 123,
-      }),
+      affinityMap: makeAffinityLookup({ inputTokens: 123 }),
       reasoningReplayItems: [
         { type: "reasoning", id: "rs_replay", summary: [], encrypted_content: "encrypted" },
         { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{}" },
@@ -96,7 +87,7 @@ describe("implicit resume request state helpers", () => {
 
     expect(request.codexRequest.previous_response_id).toBe("resp_implicit");
     expect(request.codexRequest.useWebSocket).toBe(true);
-    expect(request.codexRequest.turnState).toBe("turn-implicit");
+    expect(request.codexRequest.turnState).toBe("turn-original");
     expect(request.codexRequest.input).toEqual([
       { type: "reasoning", id: "rs_replay", summary: [], encrypted_content: "encrypted" },
       { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{}" },
@@ -126,7 +117,7 @@ describe("implicit resume request state helpers", () => {
       request,
       implicitPrevRespId: "resp_implicit",
       continuationInputStart: 2,
-      affinityMap: makeAffinityLookup({ turnState: "turn-implicit", inputTokens: 123 }),
+      affinityMap: makeAffinityLookup({ inputTokens: 123 }),
       reasoningReplayItems: [{ type: "reasoning", id: "rs_replay", summary: [], encrypted_content: "encrypted" }],
     });
     request.codexRequest.instructions = "mutated-system";

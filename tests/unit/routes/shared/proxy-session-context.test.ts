@@ -84,7 +84,6 @@ describe("buildProxySessionContext", () => {
     expect(context.implicitPrevRespId).toBeNull();
     expect(context.prevRespId).toBe("resp_prev");
     expect(context.preferredEntryId).toBe("entry-prev");
-    expect(context.explicitTurnState).toBe("turn-prev");
     expect(context.continuationInputStart).toBe(0);
     expect(context.resumeEvaluationInput.implicitPrevRespId).toBeNull();
   });
@@ -150,7 +149,6 @@ describe("buildProxySessionContext", () => {
     expect(context.implicitPrevRespId).toBe("resp_implicit");
     expect(context.prevRespId).toBe("resp_implicit");
     expect(context.preferredEntryId).toBe("entry-implicit");
-    expect(context.explicitTurnState).toBeNull();
     expect(context.implicitStoredInstructionsHash).toBe(sha256("system"));
     expect(context.implicitStoredFunctionCallIds).toEqual(["call_a"]);
     expect(context.requiredFunctionCallOutputIds).toEqual(["call_a"]);

@@ -266,6 +266,68 @@ describe("createWebSocketResponse", () => {
     await expect(promise).rejects.toThrow("WebSocket closed before terminal event");
   });
 
+  it("rejects, detaches abort handling, and closes a metadata-only one-shot WS", async () => {
+    vi.useFakeTimers();
+    try {
+      const abortController = new AbortController();
+      const removeAbortListener = vi.spyOn(abortController.signal, "removeEventListener");
+      const promise = createWebSocketResponse(
+        "wss://test/ws",
+        {},
+        BASE_REQUEST,
+        abortController.signal,
+      );
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = lastWs();
+      ws.emit("message", JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_waiting" },
+      }));
+      ws.emit("message", JSON.stringify({
+        type: "codex.response.metadata",
+        headers: { "x-test": "1" },
+      }));
+
+      vi.advanceTimersByTime(180_000);
+
+      expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
+      await expect(promise).rejects.toThrow("WebSocket response start timeout after 180000ms");
+      expect(ws.readyState).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the one-shot deadline after the first client-visible event", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = lastWs();
+      ws.emit("message", JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_started" },
+      }));
+      ws.emit("message", JSON.stringify({
+        type: "response.output_text.delta",
+        delta: "started",
+      }));
+      const response = await promise;
+
+      await vi.advanceTimersByTimeAsync(360_000);
+
+      expect(ws.readyState).toBe(1);
+      ws.emit("message", JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_started" },
+      }));
+      await expect(readStream(response)).resolves.toContain("response.completed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores codex.rate_limits for early response resolution", async () => {
     let rateLimitCalled = false;
     const onRateLimits = () => { rateLimitCalled = true; };
@@ -290,19 +352,16 @@ describe("createWebSocketResponse", () => {
     ws.close();
   });
 
-  it("passes previous_response_id without store/stream fields", async () => {
+  it("fails closed before opening a one-shot when previous_response_id has no pool owner", async () => {
     const req: WsCreateRequest = {
       ...BASE_REQUEST,
       previous_response_id: "resp_prev_123",
     };
 
-    const { ws } = await startConnect(req);
-    const sent = JSON.parse(ws.sentMessages[0]);
-    expect(sent.previous_response_id).toBe("resp_prev_123");
-    expect(sent.store).toBeUndefined();
-    expect(sent.stream).toBeUndefined();
-
-    ws.close();
+    await expect(createWebSocketResponse("wss://test/ws", {}, req)).rejects.toMatchObject({
+      name: "PreviousResponseWebSocketError",
+    });
+    expect(wsInstances).toHaveLength(0);
   });
 
   it("preserves message ordering", async () => {

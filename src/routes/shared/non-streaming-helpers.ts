@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
-import type { SessionAffinityMap } from "../../auth/session-affinity.js";
+import type { ChainAdvanceTicket, SessionAffinityMap } from "../../auth/session-affinity.js";
 import type { AccountPool } from "../../auth/account-pool.js";
 import { clearCfChallengeCooldown } from "../../auth/cf-challenge-cooldown.js";
 import type { CodexApi, WsPoolContext } from "../../proxy/codex-api.js";
@@ -36,6 +36,7 @@ export interface RecordNonStreamingSuccessAffinityOptions {
   inputTokens: number;
   responseFunctionCallIds: Iterable<string>;
   variantHash?: string;
+  chainAdvanceTicket?: ChainAdvanceTicket;
 }
 
 export function recordNonStreamingSuccessAffinity(
@@ -51,6 +52,7 @@ export function recordNonStreamingSuccessAffinity(
     inputTokens,
     responseFunctionCallIds,
     variantHash,
+    chainAdvanceTicket,
   } = options;
 
   if (!responseId || !affinityMap || !conversationId) return false;
@@ -64,6 +66,7 @@ export function recordNonStreamingSuccessAffinity(
     inputTokens,
     Array.from(new Set(responseFunctionCallIds)),
     variantHash,
+    chainAdvanceTicket,
   );
   return true;
 }

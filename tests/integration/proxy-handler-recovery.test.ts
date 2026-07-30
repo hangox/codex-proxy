@@ -114,7 +114,7 @@ describe("proxy-handler recovery & defense", () => {
     vi.clearAllMocks();
   });
 
-  it("recovers from previous_response_not_found by stripping ID and retrying", async () => {
+  it("fails closed for explicit previous_response_not_found without retrying delta-only input", async () => {
     const notFoundBody = JSON.stringify({
       error: {
         type: "invalid_request_error",
@@ -150,10 +150,11 @@ describe("proxy-handler recovery & defense", () => {
     const { app } = buildTestApp({ accountPool, fmt, req });
     const res = await app.request("/test", { method: "POST" });
 
-    expect(res.status).toBe(200);
-    expect(createCount).toBe(2);
-    expect(seenPrevIds[0]).toBe("resp_0e2e6e7917486cfd0069eec8532d988194a3da6379c70abe68");
-    expect(seenPrevIds[1]).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(createCount).toBe(1);
+    expect(seenPrevIds).toEqual([
+      "resp_0e2e6e7917486cfd0069eec8532d988194a3da6379c70abe68",
+    ]);
   });
 
   it("replays full original input after implicit previous-response WebSocket failure", async () => {
@@ -221,7 +222,7 @@ describe("proxy-handler recovery & defense", () => {
       {
         input: [{ role: "user", content: "continue" }],
         previousResponseId: "resp_implicit_ws",
-        turnState: "turn-implicit",
+        turnState: "turn-original",
         useWebSocket: true,
       },
       {
@@ -232,7 +233,7 @@ describe("proxy-handler recovery & defense", () => {
         ],
         previousResponseId: undefined,
         turnState: "turn-original",
-        useWebSocket: false,
+        useWebSocket: true,
       },
     ]);
     expect(accountPool.acquire).toHaveBeenCalledTimes(1);
@@ -242,7 +243,64 @@ describe("proxy-handler recovery & defense", () => {
     });
   });
 
-  it("recovers when collectTranslator raises previous_response_not_found", async () => {
+  it("retries implicit continuity recovery at most once", async () => {
+    const req: ProxyRequest = {
+      ...createDefaultRequest(),
+      codexRequest: {
+        ...createDefaultRequest().codexRequest,
+        prompt_cache_key: "thread-retry-once",
+        input: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "ok" },
+          { role: "user", content: "continue" },
+        ],
+      },
+    };
+    const identity = resolvePromptCacheIdentity(req.codexRequest, req.clientConversationId);
+    const variantHash = computeVariantHash(
+      req.codexRequest.instructions,
+      req.codexRequest.tools,
+      buildVariantIdentity(req.codexRequest, identity),
+    );
+    getSessionAffinityMap().record(
+      "resp_retry_once",
+      "e1",
+      "thread-retry-once",
+      undefined,
+      "You are helpful",
+      undefined,
+      undefined,
+      variantHash,
+    );
+
+    let createCount = 0;
+    const seen: Array<{ previousResponseId?: string; inputLength: number; useWebSocket?: boolean }> = [];
+    mockCreateResponse = (request) => {
+      createCount++;
+      seen.push({
+        previousResponseId: request.previous_response_id,
+        inputLength: request.input.length,
+        useWebSocket: request.useWebSocket,
+      });
+      return Promise.reject(new PreviousResponseWebSocketError("still unavailable", "transport"));
+    };
+
+    const { app } = buildTestApp({
+      accountPool: createMockAccountPool(),
+      fmt: createMockFormatAdapter(),
+      req,
+    });
+    const res = await app.request("/test", { method: "POST" });
+
+    expect(res.status).toBe(502);
+    expect(createCount).toBe(2);
+    expect(seen).toEqual([
+      { previousResponseId: "resp_retry_once", inputLength: 1, useWebSocket: true },
+      { previousResponseId: undefined, inputLength: 3, useWebSocket: true },
+    ]);
+  });
+
+  it("fails closed when explicit collect raises previous_response_not_found", async () => {
     const notFoundBody = JSON.stringify({
       error: {
         type: "invalid_request_error",
@@ -283,17 +341,12 @@ describe("proxy-handler recovery & defense", () => {
     const { app } = buildTestApp({ accountPool, fmt, req });
 
     const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
 
-    expect(createCount).toBe(2);
-    expect(collectCount).toBe(2);
-    expect(seenPrevIds[0]).toBe("resp_collect_stale");
-    expect(seenPrevIds[1]).toBeUndefined();
+    expect(createCount).toBe(1);
+    expect(collectCount).toBe(1);
+    expect(seenPrevIds).toEqual(["resp_collect_stale"]);
     expect(accountPool.release).toHaveBeenCalledTimes(1);
-    expect(accountPool.release).toHaveBeenCalledWith("e1", {
-      input_tokens: 7,
-      output_tokens: 3,
-    });
   });
 
   it("does not loop forever when previous_response_not_found persists after strip", async () => {
@@ -320,10 +373,10 @@ describe("proxy-handler recovery & defense", () => {
 
     const res = await app.request("/test", { method: "POST" });
     expect(res.status).toBe(400);
-    expect(createCount).toBe(2);
+    expect(createCount).toBe(1);
   });
 
-  it("recovers from unanswered function_call by stripping ID and retrying", async () => {
+  it("fails closed for explicit unanswered function_call without delta-only retry", async () => {
     const unansweredBody = JSON.stringify({
       error: {
         type: "invalid_request_error",
@@ -352,10 +405,9 @@ describe("proxy-handler recovery & defense", () => {
     const { app } = buildTestApp({ accountPool, fmt, req });
     const res = await app.request("/test", { method: "POST" });
 
-    expect(res.status).toBe(200);
-    expect(createCount).toBe(2);
-    expect(seenPrevIds[0]).toBe("resp_unanswered_chain");
-    expect(seenPrevIds[1]).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(createCount).toBe(1);
+    expect(seenPrevIds).toEqual(["resp_unanswered_chain"]);
   });
 
   it("returns descriptive error when banned and remaining accounts disabled/expired", async () => {

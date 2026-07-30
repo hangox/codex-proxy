@@ -216,9 +216,23 @@ export class CodexApiError extends Error {
   }
 }
 
-/** previous_response_id 只能通过 WebSocket 安全续链，失败后不能降级为 HTTP delta-only。 */
+export type PreviousResponseContinuityReason =
+  | "busy"
+  | "dead"
+  | "expired"
+  | "missing_owner"
+  | "account_mismatch"
+  | "disabled"
+  | "no_key"
+  | "no_context"
+  | "transport";
+
+/** previous_response_id can only continue on its owning physical WebSocket. */
 export class PreviousResponseWebSocketError extends CodexApiError {
-  constructor(public readonly causeMessage: string) {
+  constructor(
+    public readonly causeMessage: string,
+    public readonly continuityReason?: PreviousResponseContinuityReason,
+  ) {
     super(
       0,
       JSON.stringify({

@@ -32,6 +32,19 @@ Codex-proxy ships three artifacts: backend (Docker), Electron desktop, web front
 - [ ] If `packages/electron/**` or `electron-builder.yml` changed → Electron config validates
 - [ ] If `native/**` changed → native addon still builds
 
+## Deployment-form verification coverage
+
+This repo ships to three deployment forms with genuinely different file layouts, available commands, path sources, and permission models — a feature exercised on only one of them has not been "verified", it has been verified on one form:
+
+- **Docker**: has `scripts/` and `tsx` available; starts as root, then drops to the `node` user via `gosu`; paths resolve under `/app/*`.
+- **Desktop (Electron)**: the packaged `.dmg`/`.app` does **not** bundle `scripts/` or `tsx` — anything that assumes a CLI/npm-script entry point simply does not exist inside it; runs as whichever user is logged in, no privilege drop; paths resolve via `app.getPath("userData")`.
+- **Running from source**: full repo checkout, no packaging step; paths resolve via `process.cwd()`.
+
+- [ ] Any change to a feature's setup/initialization/recovery path states explicitly which deployment form(s) were actually exercised, not just "which form(s) it should theoretically work on"
+- [ ] "Verified in Docker" is not "verified" — if the change is reachable from the desktop app or a source checkout, those forms need their own pass, because the file layout, available tooling, and path resolution are genuinely different, not just a different install method for the same thing
+
+**Case (2026-07-30)**: the opaque compact keyring bootstrap fix went through full code review and passed real Docker end-to-end verification (fresh named volume, real container, real HTTP request) — but the desktop `.dmg` build doesn't contain `scripts/` or `tsx` at all, so the `npm run opaque:bootstrap-keyring` command that fix relied on simply does not exist inside the packaged app. Desktop users who opened the switch got a 409 with zero way to recover — no CLI, no terminal, no alternate UI/IPC path. Verification had been entirely on Docker, so no amount of rigor *there* would ever have caught it. It only surfaced because the user asked one question: "does the dmg need to run that script too?"
+
 ## Tests
 
 - [ ] New behavior has new tests (TDD: tests written first when feasible)

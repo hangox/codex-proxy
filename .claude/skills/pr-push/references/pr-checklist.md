@@ -52,6 +52,7 @@ A green build is not a green release. v2.0.80 built clean, passed CI, and then e
 - [ ] Container actually reaches `healthy`, `/health` returns 200, `RestartCount == 0`
 - [ ] One ordinary request (`/v1/chat/completions`) returns 200 with the expected content
 - [ ] Opaque compact end-to-end: root compact → resume with the same marker → **container restart → resume with the same marker again** (without the restart step, persistence is unverified)
+- [ ] On a genuinely fresh deployment (new volumes, first time `claude_code_opaque_compact_experimental` is turned on): the master keyring does not bootstrap itself. `allowKeyringBootstrap` is never `true` on any production code path (`9b2763a`, intentional — auto-generating a master key is an irreversible operation and shouldn't happen without an explicit human action). Run `npm run opaque:bootstrap-keyring -- --yes` **once**, as the same user the server process runs as (`docker exec -u node <container> ...`, not bare `docker exec` — a root-created keyring file fails `assertKeyringFileSafe`'s ownership check on every later load), before expecting the store to reach `ready`
 - [ ] The digest that was verified is the digest that gets deployed (compare `RepoDigests`; tags can be re-pushed, digests cannot)
 - [ ] No build artifact from a failed version is reused as the deploy candidate
 - [ ] A failed deploy is rolled back immediately to the last known-healthy digest, keeping the failed image / key / state for forensics

@@ -190,10 +190,14 @@ export function probeOpaqueCompactStoreLock(lockPath: string): {
   } catch (error) {
     if (isBusyError(error)) return { held: true, unavailable: false };
     // 损坏、权限、非 SQLite 文件等都属于"锁不可用"，绝不能当作未占用。
+    // ★ lint 守卫覆盖的历史坑：这里此前只取 error.name（对这批错误多半是
+    // 常量），诊断价值为零，真正有用的描述在 .message 里——本函数目前没有
+    // 生产调用方（探针尚未接线），但保持和其余同类修复一致，不留一个
+    // "只有没人用才安全"的写法在代码里。
     return {
       held: false,
       unavailable: true,
-      reason: error instanceof Error ? error.name : "unknown",
+      reason: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
     };
   } finally {
     try {

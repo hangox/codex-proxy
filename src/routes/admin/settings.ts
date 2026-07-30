@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { getConfig, getLocalConfigPath, reloadAllConfigs, ROTATION_STRATEGIES } from "../../config.js";
 import { logStore } from "../../logs/store.js";
+import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { mutateYaml } from "../../utils/yaml-mutate.js";
 import {
   buildOpaqueCompactRuntimeConfig,
@@ -440,9 +441,16 @@ export function createSettingsRoutes(): Hono {
       } catch (error) {
         // 重配置失败不能让设置保存整体 500——配置已经落盘，此时 store 已被
         // 置空（fail-closed），readiness 会如实反映原因，运维据此处置即可。
+        //
+        // ★ lint 守卫覆盖的历史坑：这里此前只取 error.name——
+        // reconfigureOpaqueCompactRuntime() 内部 closeCurrentOpaqueCompactRuntime()
+        // 的 repository.close()/lock.release() 若抛错，通常是 fs 层错误，
+        // .name 恒为常量 "Error"，诊断价值为零，真正有用的描述在
+        // .message 里。带上 .message 后过 sanitizeFreeTextForLog 再打印
+        // （可能含本地文件路径，不能假设它天然安全）。
+        const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
         console.warn(
-          `[ClaudeOpaqueCompact] phase=reconfigure_failed` +
-            ` detail=${error instanceof Error ? error.name : "UnknownError"}`,
+          `[ClaudeOpaqueCompact] phase=reconfigure_failed detail=${sanitizeFreeTextForLog(detail)}`,
         );
       }
     }

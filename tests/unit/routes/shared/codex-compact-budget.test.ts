@@ -87,17 +87,22 @@ describe("resolveCompactTokenBudget", () => {
 
 describe("estimateCompactInputTokens", () => {
   it("整除时返回精确值", () => {
-    // 2180 / 2.18 = 1000 精确整除。
-    expect(estimateCompactInputTokens(2180)).toBe(1000);
+    // ★ 8.9：换算比例从 2.18 改成 2.70（真实会话实测下界，见
+    // COMPACT_BYTES_PER_TOKEN_ESTIMATE 头部注释——2.18 是合成负载测出来的，
+    // 系统性高估真实会话的 token 数，在生产造成过反复无谓降级）。
+    // 2700 / 2.70 = 1000 精确整除。
+    expect(estimateCompactInputTokens(2700)).toBe(1000);
   });
 
   it("★ 取整方向必须是向上（Math.ceil），不能是向下——这是整套预算设计的安全前提", () => {
-    // 2181 / 2.18 = 1000.4587...：ceil → 1001，floor/round-down → 1000。
+    // 2701 / 2.70 = 1000.37...：ceil → 1001，floor/round-down → 1000。
     // 如果实现改成向下取整，会系统性低估 token 数，把本该拦截的请求放过去，
-    // 这是整个方案里唯一一处"估算方向不能错"的地方。
-    const tokens = estimateCompactInputTokens(2181);
+    // 这是整个方案里唯一一处"估算方向不能错"的地方——这条和比例值本身
+    // （8.9 从 2.18 改成 2.70）是两回事：比例值可以按实测调整，但取整方向
+    // 必须始终朝"高估"，不能反过来。
+    const tokens = estimateCompactInputTokens(2701);
     expect(tokens).toBe(1001);
-    expect(tokens).toBeGreaterThan(2181 / 2.18);
+    expect(tokens).toBeGreaterThan(2701 / 2.70);
   });
 
   it("0 字节输入返回 0 token，不炸也不返回负数/NaN", () => {
@@ -184,12 +189,13 @@ describe("planCompactRequestForBudget", () => {
   });
 
   it("超预算但裁剪能救回来：trimmedCount>0 且最终 withinBudget:true", () => {
-    // 预算 260000 token ≈ 566800 字节（估算比例 2.18 bytes/token）。单条
-    // 600000 字节的 tool 输出会让初次估算超预算，但它是 function_call_output，
-    // 裁到默认 10000 字节（测试环境没有加载模型目录，getModelInfo 返回
-    // undefined，退回默认值）之后应该远远落回预算内。
+    // ★ 8.9：预算 260000 token ≈ 702000 字节（估算比例 2.70 bytes/token，
+    // 从 2.18 改成 2.70 后阈值相应变大）。单条 900000 字节的 tool 输出会让
+    // 初次估算超预算，但它是 function_call_output，裁到默认 10000 字节
+    // （测试环境没有加载模型目录，getModelInfo 返回 undefined，退回默认值）
+    // 之后应该远远落回预算内。
     const request = buildRequest({
-      input: [functionCallOutput("c1", "a".repeat(600_000))],
+      input: [functionCallOutput("c1", "a".repeat(900_000))],
     });
     const plan = planCompactRequestForBudget(request);
 
@@ -202,14 +208,15 @@ describe("planCompactRequestForBudget", () => {
       CodexInputItem,
       { type: "function_call_output" }
     >;
-    expect(trimmedItem.output.length).toBeLessThan(600_000);
+    expect(trimmedItem.output.length).toBeLessThan(900_000);
   });
 
   it("★ 超预算且裁剪救不回来（不可裁剪的巨大纯文本，模拟图片会话那类不可裁剪的形状）：必须诚实返回 withinBudget:false，不能乐观放行", () => {
-    // 700000 字节的纯文本消息（不是 function_call_output）——trim 完全不touch
-    // 这种形状，裁剪前后体积不变，估算 token 数应该仍然远超预算。
+    // ★ 8.9：900000 字节的纯文本消息（不是 function_call_output，阈值同上
+    // 一条测试，跟着 2.70 的比例一起调大）——trim 完全不 touch 这种形状，
+    // 裁剪前后体积不变，估算 token 数应该仍然远超预算。
     const request = buildRequest({
-      input: [{ role: "user", content: "x".repeat(700_000) }],
+      input: [{ role: "user", content: "x".repeat(900_000) }],
     });
     const plan = planCompactRequestForBudget(request);
 
@@ -219,10 +226,11 @@ describe("planCompactRequestForBudget", () => {
   });
 
   it("tools 计入预算估算，不能只统计 input——否则会系统性低估真实发送体积", () => {
-    // input 本身很小；tools 单独就有约 700000 字节，足够单独把估算推过预算。
+    // ★ 8.9：input 本身很小；tools 单独就有约 900000 字节（阈值同上，跟着
+    // 2.70 的比例一起调大），足够单独把估算推过预算。
     const request = buildRequest({
       input: [{ role: "user", content: "tiny" }],
-      tools: [{ description: "x".repeat(700_000) }],
+      tools: [{ description: "x".repeat(900_000) }],
     });
     const plan = planCompactRequestForBudget(request);
 

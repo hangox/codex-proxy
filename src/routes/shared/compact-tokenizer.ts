@@ -48,6 +48,24 @@
  * 加载失败（理论上不该发生，防御性处理）时返回 `null`，调用方必须回退到
  * 粗筛比例估算，不能让整个 compact 请求因为分词器加载失败而报错——分词器
  * 只是让估算更准，不是这条链路能不能工作的前提。
+ *
+ * ★★ 8.14 qa 门禁复审补记：Docker 和 Electron 两个平台上"加载失败"这个
+ * 失败模式**不是同一回事**，写"防护编码表加载失败"这类代码/文档前必须
+ * 知道这个差异——`import("js-tiktoken/ranks/o200k_base")` 在 Docker 里是
+ * 真实文件系统 IO（编码表以独立文件形式随镜像分发），文件缺失/损坏是一种
+ * 真实可能发生的失败；但 Electron 打包（`packages/electron/electron/
+ * build.mjs` 的 esbuild 配置）**没有把 `js-tiktoken` 加进 `external` 数组**，
+ * 整个包（含 ~2.3MB 的 o200k_base 编码表）被静态内联进单一产物
+ * `server.mjs`（qa 用 `npx asar list app.asar | grep js-tiktoken` 验证过：
+ * `node_modules/` 下零条目，都在 bundle 里）——这意味着 Electron 上
+ * "编码表文件缺失/损坏"这种失败模式**根本不存在**，`import()` 要么从已经
+ * 编译进 bundle 的代码里同步拿到数据（本质上退化成一次内存访问），要么
+ * 是真正的 bug（比如打包脚本本身漏打）。qa 验证降级路径时也因此只能靠
+ * 注入 `throw` 模拟失败，不能像 Docker 那样删文件——两个平台"加载失败"
+ * 的真实触发方式不同，`null` 返回值这层防御性兜底本身两边都需要保留（防
+ * 的是"万一走到了这个分支"，不是针对某一种具体失败原因），但不要以为
+ * Electron 上也存在"文件系统层面失败"这个具体场景去写新的防护代码。
+ * 副作用：多约 2.3MB 打包体积进 asar，这是已知代价，不是这次要修的问题。
  */
 
 import type { Tiktoken } from "js-tiktoken/lite";
@@ -197,6 +215,21 @@ import type { Tiktoken } from "js-tiktoken/lite";
  * 独立于具体用哪个 tiktoken 实现，不依赖"哪个实现更快"这个前提。
  */
 const CHUNK_SIZE_CHARS = 500;
+/**
+ * ★★ 8.14 qa 门禁复审补记：这个值是**单次 `tokenizeCompactContent` 调用**
+ * 的预算，不是"一次 compact 预算判断"的总预算——`planCompactRequestForBudget`
+ * 一次判断里会调用它最多两次（trim 前判断一次；即使没有实际发生裁剪，
+ * trim 后仍会对内容重新估算一次，见该函数文档"裁剪之后的重新核算同样走
+ * 两级估算"）。qa 用真实病态内容实测过：单次调用最坏耗时符合下面文档
+ * 算出的 ~2125ms 上界，但**一次预算判断的最坏总耗时是 4025~4280ms——
+ * 接近这个值的 2 倍，不是这个值本身**。4280ms 仍在可接受范围（远低于
+ * 请求整体超时，compact 也不是热路径），所以这次**不需要改这个值本身**，
+ * 但这个"单次 vs 总耗时"的落差必须写清楚——否则以后有人按"最坏情况是
+ * `CUMULATIVE_TIME_BUDGET_MS` 量级"去估算这条链路的耗时上界，会算出实际
+ * 值的一半，重复 `COMPACT_BYTES_PER_TOKEN_ESTIMATE`（2.18 那次）同一类
+ * 错误：测量值和它的适用范围（"这是单次调用的数字，不是端到端数字"）被
+ * 分开存放，用的人只看到孤立的数字。
+ */
 const CUMULATIVE_TIME_BUDGET_MS = 2000;
 /**
  * 熔断触发时，已处理内容占总长度的比例低于这个下限就不外推，直接返回

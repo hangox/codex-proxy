@@ -1483,6 +1483,92 @@ describe("E2E: POST /v1/messages", () => {
         expect(res.headers.get("x-codex-proxy-compact-fallback")).toBeNull();
       });
 
+      it("opaque compact bridge: recompact hitting a genuine upstream 'prompt too long' degrades to plain generation instead of 409 (task #25)", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        const urls: string[] = [];
+        setTransportPost(async (url) => {
+          urls.push(url);
+          if (url.endsWith("/codex/responses/compact")) {
+            const compactCallCount = urls.filter((u) => u.endsWith("/codex/responses/compact")).length;
+            if (compactCallCount === 1) {
+              // 第一次 root compact 成功，拿到一个真实 marker。
+              return makeErrorTransportResponse(200, JSON.stringify({
+                output: [{ type: "reasoning", encrypted_content: "opaque-recompact-overflow-seed", summary: [] }],
+              }));
+            }
+            // 第二次（recompact）真实撞上上游 400 prompt-too-long——不是预算
+            // 预判拦下来的，是真的打了上游、上游自己说太长了。
+            return makeErrorTransportResponse(400, JSON.stringify({
+              error: { message: "Prompt is too long: Your input exceeds the context window of this model." },
+            }));
+          }
+          return makeTransportResponse(buildTextStreamChunks("resp_recompact_overflow", "recompact fallback worked"));
+        });
+
+        const compactRes = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+        }), { "x-claude-code-session-id": "session-recompact-overflow" });
+        const marker = extractMarkerFromResponse(await compactRes.text());
+
+        const recompactRes = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: marker },
+            { role: "user", content: "more history" },
+            { role: "user", content: compactPrompt },
+          ],
+        }), { "x-claude-code-session-id": "session-recompact-overflow" });
+
+        // 决定性断言：8.7 之前这里会是 409 "Run /clear and start a new
+        // session"（8.5 那条无条件规则）；8.7 之后 prompt-too-long 这一类
+        // 从 409 改判成可降级——换普通生成端点，不作废会话。
+        expect(recompactRes.status).toBe(200);
+        expect(JSON.stringify(parseAnthropicSSE(await recompactRes.text()))).toContain("recompact fallback worked");
+        expect(recompactRes.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
+        expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(2);
+      });
+
+      it("opaque compact bridge: recompact whose estimated size clearly exceeds budget skips the upstream compact call entirely (task #25 preflight)", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        const urls: string[] = [];
+        setTransportPost(async (url) => {
+          urls.push(url);
+          if (url.endsWith("/codex/responses/compact")) {
+            return makeErrorTransportResponse(200, JSON.stringify({
+              output: [{ type: "reasoning", encrypted_content: "opaque-preflight-seed", summary: [] }],
+            }));
+          }
+          return makeTransportResponse(buildTextStreamChunks("resp_preflight_skip", "preflight fallback worked"));
+        });
+
+        const compactRes = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+        }), { "x-claude-code-session-id": "session-preflight-skip" });
+        const marker = extractMarkerFromResponse(await compactRes.text());
+
+        // ~3MB 纯文本（不是 tool_result），远超默认预算（260K token），且
+        // trimCompactInputForBudget 只裁 function_call_output，救不了这种
+        // 形状——预算预判应该判定"裁不动"，直接跳过上游 compact 调用。
+        const hugeText = "x".repeat(3_000_000);
+        const recompactRes = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            { role: "assistant", content: marker },
+            { role: "user", content: hugeText },
+            { role: "user", content: compactPrompt },
+          ],
+        }), { "x-claude-code-session-id": "session-preflight-skip" });
+
+        expect(recompactRes.status).toBe(200);
+        expect(JSON.stringify(parseAnthropicSSE(await recompactRes.text()))).toContain("preflight fallback worked");
+        expect(recompactRes.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
+        // 决定性断言：第二次请求从未打过 /codex/responses/compact——预算
+        // 预判在发上游之前就拦下来了，日志里总共只有第一次成功的那次。
+        expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(1);
+      });
+
       it("opaque compact bridge: client abort cancels compact without saving state or falling back", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         let upstreamSignal: AbortSignal | undefined;

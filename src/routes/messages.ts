@@ -685,7 +685,18 @@ export function createMessagesRoutes(
             (fallbackRetryCount !== undefined ? ` retry_count=${fallbackRetryCount}` : "") +
             ` message=${sanitizeFreeTextForLog(fallbackErrorMessage)}`,
         );
-        if (opaqueRestore.restored) {
+        // ★ 8.7（task #25）：prompt-too-long 从 409 改判成可降级——不是"再试
+        // 一次同一个 compact"（8.5 那条理由仍然成立，重放同一个 compact 确实
+        // 没有意义），而是换一个端点（普通生成）。生产实测这条失败 100% 是
+        // "会话大到连 compact 自己都塞不下"，不是账号/网络故障；`opaque-compact-
+        // bridge.ts` 的预算预判会在多数情况下提前拦截、连上游都不打就抛出这个
+        // 分类；少数估算失准的情况下真的打了上游、拿到真实 400，也会在这里
+        // 落到同一个判断——两条来源统一处理，调用方不需要关心是哪一种。
+        // 旧 marker 不会被这次失败作废：`save()`（真正推进 generation 的那步）
+        // 在 `executeCompactOnly`/预算预判之后才会被调用，两者都没走到就抛错，
+        // 旧记录原封不动，下一轮仍然可以正常 resolve。
+        const isRecompactContextOverflow = opaqueRestore.restored && isPromptTooLongLike(fallbackErrorMessage);
+        if (opaqueRestore.restored && !isRecompactContextOverflow) {
           // 8.5：不建议"再试一次同一个 compact"——刚才这次已经在原账号上失败了，
           // 没有理由认为立即重放会不同。给一个必然可行的退出路径。
           recordOpaqueCompactDenial({
@@ -703,11 +714,18 @@ export function createMessagesRoutes(
               "Run /clear and start a new session.",
           ));
         }
-        // root compact（未曾 restored 过）：这里不是 store 级故障、也不是
-        // "原账号重新 compact 失败"，行为上仍然按原样跌出 if、继续走下面
-        // 的普通生成路径——这一点没有变。新增的只是这一条结构化日志，让
-        // 19% 的静默降级第一次有 error.message 可查；是否要改这个 fallback
-        // 行为本身是另一件事，等有了这份数据再决策。
+        // 走到这里有两种情况，处理方式相同：
+        // 1. root compact（未曾 restored 过）——这里不是 store 级故障、也不是
+        //    "原账号重新 compact 失败"，行为上仍然按原样跌出 if、继续走下面
+        //    的普通生成路径——这一点没有变。这部分新增的只是结构化日志，让
+        //    19% 的静默降级第一次有 error.message 可查；是否要改这个 fallback
+        //    行为本身是另一件事，等有了这份数据再决策。
+        // 2. ★ 8.7 新增：recompact 撞上 `isRecompactContextOverflow`——会话
+        //    大到连 compact 自己都塞不下，换普通生成端点可能吃得下（详见
+        //    `opaque-compact-bridge.ts` 预算预判处的注释）；旧 marker 未被
+        //    这次失败作废，见上面 `isRecompactContextOverflow` 分支的注释。
+        // `generation` 字段天然区分这两种情况（root 时是初始值，recompact
+        // 时 ≥1），查日志时不需要额外字段就能分开统计两条 population。
         recordOpaqueCompactFallback({
           requestId,
           model: displayModel,

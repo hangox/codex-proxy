@@ -6,8 +6,10 @@ import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
 import {
   buildClaudeCodeOpaqueCompactRequest,
+  CompactServiceError,
   executeCompactOnly,
   opaqueCompactSemanticDigest,
+  planCompactRequestForBudget,
 } from "./codex-compact-service.js";
 import {
   OpaqueCompactStateError,
@@ -211,8 +213,60 @@ export async function respondWithOpaqueCompactMarker(options: {
     );
     compactRequest.input = restoreOpaqueCompactInput(compactRequest.input, previousMarker, previousOutput);
   }
-  // digest 必须算在**最终真正送上游的** compactRequest 上：preservedTail 合并与
-  // predecessor 历史还原都会改写 input，早算等于给同一份内容算出不同 edge。
+
+  // ★ 8.7 · 发上游前的预算校验（task #25），必须排在这里——digest 计算之前、
+  // 且在上面 preservedTail/predecessor 历史还原之后。生产实测 472 次 compact
+  // 尝试 440 次失败，100% 是上游 400 "Prompt is too long"：这条调用注定失败
+  // 时，与其真的打一次上游拿 400 再降级，不如先估算体积、判定"裁不动"就
+  // 直接跳过上游调用，省一次真实网络往返和一次账号租约（`executeCompactOnly`
+  // 从未被调用，不占账号池）。
+  //
+  // 排序原因（不能挪到 digest 计算之后）：裁剪会原地改写 `compactRequest.input`，
+  // 而下面紧跟着的 digest 计算、回放查询、`executeCompactOnly` 三处全部依赖
+  // "compactRequest.input 就是最终真正送上游的那份内容"这个不变量（见下面
+  // digest 注释）。如果先算 digest 再裁剪，digest 描述的内容和真正送上游的
+  // 内容就对不上——同一个 edge 会同时代表两份不同的密文语义，content-addressed
+  // 幂等回放的前提被破坏。裁剪必须在任何"这次到底发了什么"被记录下来之前
+  // 完成。
+  //
+  // 这里不是唯一防线——如果这次估算本身有误差（比如型号预算表还没校准过
+  // 这个型号，或者字节→token 换算在某种内容形态上失真），真正打上游后仍然
+  // 可能收到 400；那种情况由 `messages.ts` 里对 `isPromptTooLongLike` 的
+  // 判断兜底，走同一条降级路径，不会 409。这里的预判是"提前拦"，不是
+  // "唯一拦"。
+  const budgetPlan = planCompactRequestForBudget(compactRequest);
+  if (budgetPlan.trimmedCount > 0) {
+    compactRequest.input = budgetPlan.compactRequest.input;
+    console.warn(
+      `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=compact_trim` +
+        ` trimmed=${budgetPlan.trimmedCount} estimated_tokens=${budgetPlan.estimatedTokens}` +
+        ` budget_tokens=${budgetPlan.budgetTokens} within_budget=${budgetPlan.withinBudget}`,
+    );
+  }
+  if (!budgetPlan.withinBudget) {
+    console.warn(
+      `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=compact_budget_exceeded` +
+        ` model=${translated.model} estimated_tokens=${budgetPlan.estimatedTokens}` +
+        ` budget_tokens=${budgetPlan.budgetTokens} trimmed=${budgetPlan.trimmedCount}`,
+    );
+    // 消息里刻意包含 "exceeds the context window"——`isPromptTooLongLike`
+    // （`prompt-too-long-error.ts`）认这个短语，messages.ts 的降级分支靠它
+    // 识别"这是预判超限，不是账号/网络故障"，两条路径（预判 vs 真实上游
+    // 400）落到同一套 fallback 处理逻辑，不需要调用方区分来源。
+    // status 400、retryCount 0：从未联系上游、从未占用账号，如实反映。
+    throw new CompactServiceError(
+      `Estimated compact input (~${budgetPlan.estimatedTokens} tokens) exceeds the context window ` +
+        `budget (~${budgetPlan.budgetTokens} tokens) for model ${translated.model}; skipping upstream ` +
+        "compact call.",
+      400,
+      false,
+      0,
+    );
+  }
+
+  // digest 必须算在**最终真正送上游的** compactRequest 上：preservedTail 合并、
+  // predecessor 历史还原、以及上面的预算裁剪都会改写 input，早算等于给同一份
+  // 内容算出不同 edge。
   const compactInputDigest = opaqueCompactSemanticDigest(compactRequest);
   const variantHash = opaqueCompactVariantHash(translated);
 

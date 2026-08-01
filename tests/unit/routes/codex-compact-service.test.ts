@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  anthropicHistoryToLosslessCodexInput,
+  anthropicHistoryToCompactCodexInput,
   buildClaudeCodeCompactRequest,
   buildClaudeCodeOpaqueCompactRequest,
   extractClaudeCodeCompactPrompt,
@@ -410,21 +410,28 @@ describe("Claude Code compact bridge requests", () => {
     expect(JSON.stringify(opaque.compactRequest.input)).toContain("unmatched");
   });
 
-  it("preserves thinking, redacted thinking, documents, and unknown blocks as JSON", () => {
+  it("preserves documents and unknown blocks as JSON, but drops thinking/redacted_thinking (8.7)", () => {
     const blocks = [
       { type: "thinking", thinking: "private reasoning", signature: "sig" },
       { type: "redacted_thinking", data: "ciphertext" },
       { type: "document", source: { type: "base64", data: "docdata" } },
       { type: "future_block", nested: { value: 42 } },
     ];
-    const input = anthropicHistoryToLosslessCodexInput([
+    const input = anthropicHistoryToCompactCodexInput([
       { role: "assistant", content: blocks },
     ] as AnthropicMessagesRequest["messages"]);
     const serialized = JSON.stringify(input);
-    expect(serialized).toContain("private reasoning");
-    expect(serialized).toContain("ciphertext");
+    // thinking / redacted_thinking 是 8.7 故意丢弃的两类——生产实测它们占
+    // compact 与普通路径体积差的 91.2%，且信息在紧邻的 tool_use 里已有记录，
+    // 见 anthropicHistoryToCompactCodexInput 头部注释。
+    expect(serialized).not.toContain("private reasoning");
+    expect(serialized).not.toContain("ciphertext");
+    // 未知块类型（document、future_block）仍然走 JSON 包装兜底，不受影响。
     expect(serialized).toContain("docdata");
     expect(serialized).toContain("future_block");
     expect(serialized).toContain("42");
+    // 只有两个 unknown 块被保留（document + future_block），thinking 两类
+    // 应该完全不产出 input item。
+    expect(input).toHaveLength(2);
   });
 });

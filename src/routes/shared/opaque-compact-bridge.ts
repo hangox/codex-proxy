@@ -21,6 +21,7 @@ import {
 } from "./opaque-compact-state.js";
 import { computeVariantHash } from "./variant-hash.js";
 import { auditAccountTag } from "./opaque-compact-audit.js";
+import { recordCompactOutcome } from "./compact-outcome-log.js";
 
 /**
  * 计算 opaque state 的 variant 绑定。
@@ -234,25 +235,29 @@ export async function respondWithOpaqueCompactMarker(options: {
   // 可能收到 400；那种情况由 `messages.ts` 里对 `isPromptTooLongLike` 的
   // 判断兜底，走同一条降级路径，不会 409。这里的预判是"提前拦"，不是
   // "唯一拦"。
-  const budgetPlan = planCompactRequestForBudget(compactRequest);
+  // ★ 8.11：planCompactRequestForBudget 现在可能懒加载分词器（粗筛怀疑
+  // 超限时），异步——见该函数文档"两级估算"部分。
+  const budgetPlan = await planCompactRequestForBudget(compactRequest);
   if (budgetPlan.trimmedCount > 0) {
     compactRequest.input = budgetPlan.compactRequest.input;
     console.warn(
       `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=compact_trim` +
         ` trimmed=${budgetPlan.trimmedCount} estimated_tokens=${budgetPlan.estimatedTokens}` +
-        ` budget_tokens=${budgetPlan.budgetTokens} within_budget=${budgetPlan.withinBudget}`,
+        ` budget_tokens=${budgetPlan.budgetTokens} within_budget=${budgetPlan.withinBudget}` +
+        ` estimate_method=${budgetPlan.estimateMethod}`,
     );
   }
   if (!budgetPlan.withinBudget) {
     console.warn(
       `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=compact_budget_exceeded` +
         ` model=${translated.model} estimated_tokens=${budgetPlan.estimatedTokens}` +
-        ` budget_tokens=${budgetPlan.budgetTokens} trimmed=${budgetPlan.trimmedCount}`,
+        ` budget_tokens=${budgetPlan.budgetTokens} trimmed=${budgetPlan.trimmedCount}` +
+        ` estimate_method=${budgetPlan.estimateMethod}`,
     );
-    // 消息里刻意包含 "exceeds the context window"——`isPromptTooLongLike`
-    // （`prompt-too-long-error.ts`）认这个短语，messages.ts 的降级分支靠它
-    // 识别"这是预判超限，不是账号/网络故障"，两条路径（预判 vs 真实上游
-    // 400）落到同一套 fallback 处理逻辑，不需要调用方区分来源。
+    // 消息里仍然保留 "exceeds the context window"——旧调用方/日志里靠这句
+    // 文本识别的路径继续有效，不做破坏性变更。★ 8.10：`messages.ts` 判断
+    // 要不要跳过 409 不再需要解析这句话——`skippedUpstream`/`promptTooLong`
+    // 是结构化字段，直接读，见 CompactServiceError 类定义处的说明。
     // status 400、retryCount 0：从未联系上游、从未占用账号，如实反映。
     throw new CompactServiceError(
       `Estimated compact input (~${budgetPlan.estimatedTokens} tokens) exceeds the context window ` +
@@ -261,6 +266,12 @@ export async function respondWithOpaqueCompactMarker(options: {
       400,
       false,
       0,
+      {
+        skippedUpstream: true,
+        promptTooLong: true,
+        estimatedTokens: budgetPlan.estimatedTokens,
+        budgetTokens: budgetPlan.budgetTokens,
+      },
     );
   }
 
@@ -303,6 +314,15 @@ export async function respondWithOpaqueCompactMarker(options: {
           ` root=${previousMarker ? "0" : "1"}` +
           (requiredEntryId ? ` acct=${auditAccountTag(requiredEntryId)}` : ""),
       );
+      // ★ 8.10：用户视角这是"压缩成功了"——幂等短路是内部实现细节，不该
+      // 体现在成功率上，但 replayed:true 保留区分，供以后单独统计幂等命中率。
+      recordCompactOutcome({
+        requestId,
+        clientConversationId,
+        model: translated.model,
+        outcome: "success",
+        replayed: true,
+      });
       return makeMarkerResponse(replayed, model);
     }
   }
@@ -344,6 +364,15 @@ export async function respondWithOpaqueCompactMarker(options: {
       ` generation=${stored.generation} compact_ms=${compact.compactLatencyMs}` +
       ` total_ms=${Date.now() - started} marker_chars=${stored.marker.length}`,
   );
+  // ★ 8.10：这是唯一一处此前只打 console.log、重启就丢的"成功"事件——
+  // Dashboard 快速压缩成功率需要它落盘，见 compact-outcome-log.ts 头部注释。
+  recordCompactOutcome({
+    requestId,
+    clientConversationId,
+    model: translated.model,
+    outcome: "success",
+    replayed: stored.replayed,
+  });
   return makeMarkerResponse(stored.marker, model);
 }
 

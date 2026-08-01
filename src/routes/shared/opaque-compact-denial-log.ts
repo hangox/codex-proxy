@@ -41,6 +41,7 @@
 import { appendErrorLog } from "../../logs/error-log.js";
 import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { auditAccountTag, auditSessionTag } from "./opaque-compact-audit.js";
+import { recordCompactOutcome } from "./compact-outcome-log.js";
 
 export interface OpaqueCompactDenialInput {
   requestId: string;
@@ -64,6 +65,14 @@ export interface OpaqueCompactDenialInput {
    * 强凑。
    */
   detail?: string | null;
+  /**
+   * ★ 8.10：请求声明的原始 model（`req.model`，未必已解析成
+   * `displayModel`——两处最早的调用点发生在模型解析之前）。仅供 Dashboard
+   * 快速压缩成功率统计的 `denied` 分类使用，不影响这个函数原有的 409
+   * 决策/日志行为。缺省时用 `"unknown"`，不强行等调用方拿到 displayModel
+   * 才能记录（409 决策本身不能因为这个可选统计字段被推迟）。
+   */
+  model?: string;
 }
 
 /** 记录一次 opaque compact 的 409 / fail-closed 决策。绝不抛出。 */
@@ -95,4 +104,15 @@ export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void
     // 日志失败绝不能影响主流程——appendErrorLog 内部已经兜底，这里再包一层
     // 纯粹是防御性的，避免未来有人在 context 构造里引入会抛错的逻辑。
   }
+
+  // ★ 8.10：Dashboard 快速压缩成功率统计——409/fail-closed 语义和"悄悄降级
+  // 但仍然成功"完全不同（客户端拿到硬错误，会话可能直接死），刻意单独
+  // 一类，不并入 upstream_failed，见 compact-outcome-log.ts 头部注释。
+  recordCompactOutcome({
+    requestId: input.requestId,
+    clientConversationId: input.clientConversationId,
+    model: input.model ?? "unknown",
+    outcome: "denied",
+    reason: input.reason,
+  });
 }

@@ -54,6 +54,16 @@ function readErrorLogLines(): Array<Record<string, unknown>> {
     .map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
+function readCompactOutcomeLines(): Array<Record<string, unknown>> {
+  const path = resolve(tmpDataDir, "compact-outcomes.jsonl");
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf-8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
 // 真实长度的 canary（32/43/43），假 canary 会让"截断也不泄漏"这类断言产生假阴性。
 const MARKER_TOKEN =
   `codex-opaque-state:v1:${"A".repeat(32)}:${"B".repeat(43)}:${"C".repeat(43)}`;
@@ -245,5 +255,65 @@ describe("recordOpaqueCompactFallback", () => {
         errorMessage: "boom",
       }),
     ).not.toThrow();
+  });
+
+  // ★ 8.10：Dashboard 快速压缩成功率——recordOpaqueCompactFallback 现在
+  // 顺带把 outcome 落进独立的 compact-outcomes.jsonl（budget_exceeded vs
+  // upstream_failed，靠 classification.skippedUpstream 区分），见
+  // compact-outcome-log.ts。这里只验证路由对不对，字段/隐私细节已经在
+  // compact-outcome-log.test.ts 里覆盖过，不重复。
+  describe("compact-outcomes.jsonl 落盘（8.10）", () => {
+    it("classification.skippedUpstream=true → outcome=budget_exceeded，带上 estimated/budget tokens", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-budget",
+        model: "gpt-5.6-terra",
+        inputItems: 500,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Estimated compact input (~448457 tokens) exceeds the context window budget (~390000 tokens)",
+        classification: { skippedUpstream: true, estimatedTokens: 448457, budgetTokens: 390000 },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect(entry.outcome).toBe("budget_exceeded");
+      expect(entry.estimated_tokens).toBe(448457);
+      expect(entry.budget_tokens).toBe(390000);
+    });
+
+    it("classification.skippedUpstream=false → outcome=upstream_failed", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-upstream",
+        model: "gpt-5.6-sol",
+        inputItems: 10,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Codex API error (400): Prompt is too long",
+        classification: { skippedUpstream: false },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect(entry.outcome).toBe("upstream_failed");
+      expect(entry.estimated_tokens).toBeUndefined();
+    });
+
+    it("没有 classification（非 CompactServiceError 的调用方）→ 保守当作 upstream_failed", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-no-classification",
+        model: "m",
+        inputItems: 1,
+        clientConversationId: null,
+        errorName: "UnexpectedError",
+        errorMessage: "something else broke",
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect(entry.outcome).toBe("upstream_failed");
+    });
   });
 });

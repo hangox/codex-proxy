@@ -55,6 +55,7 @@
 import { appendErrorLog } from "../../logs/error-log.js";
 import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { auditAccountTag, auditSessionTag } from "./opaque-compact-audit.js";
+import { recordCompactOutcome } from "./compact-outcome-log.js";
 
 export interface OpaqueCompactFallbackInput {
   requestId: string;
@@ -78,6 +79,19 @@ export interface OpaqueCompactFallbackInput {
    * 的错误没有这个字段，传 `undefined` 即可。
    */
   retryCount?: number;
+  /**
+   * ★ 8.10：`CompactServiceError` 的结构化分类字段（见
+   * `codex-compact-service.ts`），Dashboard 快速压缩成功率统计要用它区分
+   * `budget_exceeded`（预算预判提前拦下，`skippedUpstream:true`）和
+   * `upstream_failed`（真打了上游被拒）。非 `CompactServiceError` 的错误
+   * 没有这个字段，传 `undefined` 即可——此时按 `upstream_failed` 处理
+   * （保守假设：既然不是我们自己的预判判断，就当作真的联系过上游）。
+   */
+  classification?: {
+    skippedUpstream?: boolean;
+    estimatedTokens?: number;
+    budgetTokens?: number;
+  };
 }
 
 /** 记录一次 root compact 静默降级为普通生成的事件。绝不抛出。 */
@@ -113,4 +127,16 @@ export function recordOpaqueCompactFallback(input: OpaqueCompactFallbackInput): 
     // 日志失败绝不能影响主流程——appendErrorLog 内部已经兜底，这里再包一层
     // 纯粹是防御性的。
   }
+
+  // ★ 8.10：Dashboard 快速压缩成功率统计——独立文件，独立于上面的
+  // error-log.jsonl 落盘，见 compact-outcome-log.ts 头部注释。
+  recordCompactOutcome({
+    requestId: input.requestId,
+    clientConversationId: input.clientConversationId,
+    model: input.model,
+    outcome: input.classification?.skippedUpstream ? "budget_exceeded" : "upstream_failed",
+    estimatedTokens: input.classification?.estimatedTokens,
+    budgetTokens: input.classification?.budgetTokens,
+    reason: input.errorName,
+  });
 }

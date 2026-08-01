@@ -241,4 +241,44 @@ describe("recordOpaqueCompactDenial", () => {
       }),
     ).not.toThrow();
   });
+
+  // ★ 8.10：Dashboard 快速压缩成功率——recordOpaqueCompactDenial 现在顺带
+  // 把 outcome=denied 落进独立的 compact-outcomes.jsonl，见
+  // compact-outcome-log.ts 头部注释（409/fail-closed 语义和"悄悄降级但
+  // 仍然成功"完全不同，刻意单独一类）。
+  it("顺带落一条 outcome=denied 到 compact-outcomes.jsonl，reason 透传", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-denied-outcome",
+      reason: "store_unavailable",
+      clientConversationId: SESSION_ID,
+      marker: null,
+      model: "gpt-5.6-sol",
+    });
+
+    const path = resolve(tmpDataDir, "compact-outcomes.jsonl");
+    expect(existsSync(path)).toBe(true);
+    const [entry] = readFileSync(path, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(entry.outcome).toBe("denied");
+    expect(entry.reason).toBe("store_unavailable");
+    expect(entry.model).toBe("gpt-5.6-sol");
+  });
+
+  it("model 缺省时 compact-outcomes.jsonl 里落 \"unknown\"，不强凑/不报错", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-no-model",
+      reason: "missing_session_context",
+      clientConversationId: null,
+      marker: null,
+    });
+
+    const path = resolve(tmpDataDir, "compact-outcomes.jsonl");
+    const [entry] = readFileSync(path, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(entry.model).toBe("unknown");
+  });
 });

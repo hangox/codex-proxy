@@ -362,6 +362,9 @@ export function createMessagesRoutes(
         reason: "missing_session_context",
         clientConversationId,
         marker: opaqueStateReference,
+        // displayModel 还没算出来（在模型解析之前）——用原始 req.model，
+        // 只供 Dashboard 统计使用，不影响这里的 409 决策。
+        model: req.model,
       });
       c.status(409);
       return c.json(makeError(
@@ -419,6 +422,7 @@ export function createMessagesRoutes(
           // 日志），绝不能拼进下面的客户端响应文案——见
           // getOpaqueCompactStateReadiness() 的文档注释。
           detail: readiness.detail,
+          model: req.model,
         });
         c.status(409);
         return c.json(makeError(
@@ -589,6 +593,7 @@ export function createMessagesRoutes(
           clientConversationId,
           marker: errorMarker,
           detail,
+          model: displayModel,
         });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(reason)));
@@ -623,6 +628,7 @@ export function createMessagesRoutes(
           accountEntryId: opaqueRestore.requiredEntryId,
           generation: opaqueRestore.generation,
           detail: readiness.detail,
+          model: displayModel,
         });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(readiness.reason ?? "store_unavailable")));
@@ -668,6 +674,7 @@ export function createMessagesRoutes(
             accountEntryId: opaqueRestore.requiredEntryId,
             generation: opaqueRestore.generation,
             detail: faultDetail,
+            model: displayModel,
           });
           c.status(409);
           return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(faultReason)));
@@ -695,7 +702,14 @@ export function createMessagesRoutes(
         // 旧 marker 不会被这次失败作废：`save()`（真正推进 generation 的那步）
         // 在 `executeCompactOnly`/预算预判之后才会被调用，两者都没走到就抛错，
         // 旧记录原封不动，下一轮仍然可以正常 resolve。
-        const isRecompactContextOverflow = opaqueRestore.restored && isPromptTooLongLike(fallbackErrorMessage);
+        // ★ 8.10：改成读 `CompactServiceError.promptTooLong` 结构化字段，
+        // 不再对 `fallbackErrorMessage` 做 `isPromptTooLongLike` 字符串匹配——
+        // reviewer 复审 task #24/#25 时提过这个建议，这次 Dashboard 需求
+        // （区分 budget_exceeded/upstream_failed）撞上了第二个用例，一并解决。
+        // 非 CompactServiceError 的错误没有这个字段，保守当 false（继续走
+        // 409），和字符串匹配失配时的行为一致。
+        const isRecompactContextOverflow = opaqueRestore.restored &&
+          error instanceof CompactServiceError && error.promptTooLong;
         if (opaqueRestore.restored && !isRecompactContextOverflow) {
           // 8.5：不建议"再试一次同一个 compact"——刚才这次已经在原账号上失败了，
           // 没有理由认为立即重放会不同。给一个必然可行的退出路径。
@@ -706,6 +720,7 @@ export function createMessagesRoutes(
             marker: opaqueRestore.marker,
             accountEntryId: opaqueRestore.requiredEntryId,
             generation: opaqueRestore.generation,
+            model: displayModel,
           });
           c.status(409);
           return c.json(makeError(
@@ -736,6 +751,18 @@ export function createMessagesRoutes(
           errorName: fallbackErrorName,
           errorMessage: fallbackErrorMessage,
           retryCount: fallbackRetryCount,
+          // ★ 8.10：透传结构化分类，供 Dashboard 快速压缩成功率区分
+          // budget_exceeded（预算预判提前拦下）和 upstream_failed（真打了
+          // 上游被拒）——见 recordOpaqueCompactFallback 的字段文档。
+          ...(error instanceof CompactServiceError
+            ? {
+                classification: {
+                  skippedUpstream: error.skippedUpstream,
+                  estimatedTokens: error.estimatedTokens,
+                  budgetTokens: error.budgetTokens,
+                },
+              }
+            : {}),
         });
         compactFallbackOccurred = true;
       }

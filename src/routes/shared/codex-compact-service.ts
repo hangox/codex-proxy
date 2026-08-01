@@ -19,6 +19,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { getModelInfo } from "../../models/model-store.js";
 import { isPromptTooLongLike } from "../../proxy/prompt-too-long-error.js";
+import { tokenizeCompactContent } from "./compact-tokenizer.js";
 
 const COMPACT_PROMPT_PREFIX = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.";
 const COMPACT_PROMPT_SECTION_INTRO = "Your summary should include the following sections:";
@@ -658,8 +659,159 @@ export function resolveCompactTokenBudget(model: string): number {
  */
 const COMPACT_BYTES_PER_TOKEN_ESTIMATE = 2.70;
 
+/**
+ * ★ 8.11：这个比例式估算现在只当"粗筛"用，不再是唯一的估算手段——见
+ * `planCompactRequestForBudget`。粗筛的角色决定了它必须继续保持"系统性
+ * 偏高"这个方向性质：只有粗筛怀疑超限时才会触发下面更贵的精确估算
+ * （`estimateCompactInputTokensPrecise`，真分词器），如果粗筛本身开始
+ * 系统性偏低，会让一部分真正超限的请求连粗筛这一关都过不了、永远摸不到
+ * 精确估算，直接把超预算的请求放给上游。
+ */
 export function estimateCompactInputTokens(totalBytes: number): number {
   return Math.ceil(totalBytes / COMPACT_BYTES_PER_TOKEN_ESTIMATE);
+}
+
+/**
+ * 每个 input item 的固定结构开销（token）——弥补"只 tokenize 语义内容、
+ * 不 tokenize JSON 包装"必然产生的欠估。
+ *
+ * 依据（评估阶段 4 组真实样本，见 `compact-tokenizer.ts` 头部注释里引用的
+ * 完整数据）：隐含结构开销实测在 2.86～5.94 token/item 之间波动，取中间值
+ * 4，四组样本全部压到 <0.5% 误差。★ 这个常数只用 4 组样本校准，样本全部
+ * 来自同一个用户、同一个模型（gpt-5.6-sol）——`compact-outcome-log.ts`
+ * 落盘的 `estimated_tokens`/`budget_tokens` 会随生产流量持续积累更多真实
+ * 配对，以后有条件时应该用更大样本重新校准，见 `estimate-accuracy.test.ts`
+ * 头部注释。这里的回归测试只锁"这个常数没有离谱漂移"（2~8 token/item 的
+ * 合理区间），不锁死具体等于 4。★ 导出仅供
+ * `codex-compact-per-item-overhead.test.ts` 的回归断言使用——那条测试锁的
+ * 是"这个常数没有离谱漂移"，不是重新推导它应该等于多少。
+ */
+export const PER_ITEM_TOKEN_OVERHEAD = 4;
+
+/**
+ * 精确估算（分词器 + 结构开销模型）之上再叠加的安全边际。
+ *
+ * ★ 8.11：分词器把误差带从 ±41% 收窄到 <1.5%，但**不能撤掉边际**——分词器
+ * 模拟的是 OpenAI 公开的 o200k_base 编码表，不是上游内部真正用来计费的
+ * 那一套（我们看不到，也没有渠道验证两者是否逐字节一致）。评估阶段实测的
+ * 最大误差是 1.47%（rung3-B，未加结构开销修正前），这里留 3%——大约是
+ * 实测最大误差的 2 倍，覆盖"评估用的 4 组样本没覆盖到的内容形态"这类
+ * 未知风险，同时远小于旧的比例估算法需要的边际（2.70 那套隐含了几十个
+ * 百分点的安全冗余）。
+ */
+const TOKENIZER_ESTIMATE_SAFETY_MARGIN = 1.03;
+
+/**
+ * 一次 compact 请求里是否含有图片内容（`input_image` content part）。
+ *
+ * ★ 8.11：图片是分词器路径刻意排除在外的盲区，必须显式处理，不能"碰巧
+ * 没处理"——评估阶段用的 4 组真实样本都不含图片，没有真实数据支撑"给图片
+ * 一个固定 token 估算值"这个做法准不准。base64 图片的字节数和真实 image
+ * token 数几乎无关（图片按像素网格计费，不是按 base64 文本长度），把一大段
+ * base64 喂给分词器只会得到一个毫无意义的数字，可能离谱高估也可能离谱
+ * 低估。
+ *
+ * 选择：含图片的请求**整体跳过精确估算**，退回粗筛比例估算——粗筛对图片
+ * 天然保守（`estimateCompactInputTokens` 头部注释：base64 字节数会把图片
+ * 的 token 占用系统性高估，让含图片的大请求更容易被判超预算、更早改走
+ * 降级，不会漏判成"看起来还好"）。这是团队评估阶段列的两个选项之一
+ * （另一个是"按张数/尺寸给图片估一个固定值"）——这里选前者，因为它不需要
+ * 新增一个同样没有真实数据支撑的估算模型，且和现状（8.9 之前）的安全性质
+ * 完全一致，只是现在明确知道并且写下来了这是故意的选择，不是遗漏。
+ */
+function compactRequestHasImageContent(compactRequest: CodexCompactRequest): boolean {
+  for (const item of compactRequest.input) {
+    if ("type" in item) continue; // function_call / function_call_output 不携带图片
+    if (typeof item.content === "string") continue;
+    if (item.content.some((part) => part.type === "input_image")) return true;
+  }
+  return false;
+}
+
+/**
+ * 从一次 compact 请求里抽出"语义内容"——文本/参数/输出字符串，去掉 JSON
+ * 包装（字段名、引号、花括号）。这是分词器路径能达到 <1.5% 误差的关键
+ * 前提，见 `compact-tokenizer.ts` 头部注释里"为什么不能直接 tokenize
+ * JSON.stringify"那段完整论证，这里不重复。
+ *
+ * 结构上和 `summarizeCompactInputBytes`/`classifyInputItem` 走的是同一套
+ * "按 item 类型分派"模式（team-lead 要求"复用它的结构"）——但这里要的是
+ * 语义文本本身，不是字节长度，所以是并列的独立实现，不是同一个函数的
+ * 两种用法。
+ *
+ * `input_image` 内容 part 被跳过（不进 tokenize 批次）——纵深防御：真正
+ * 挡住图片请求走到这个函数的是 `compactRequestHasImageContent` 那道闸门
+ * （`planCompactRequestForBudget` 里调用），这里的 skip 只是防御性的，
+ * 万一闸门被绕过也不会把一大段 base64 塞进分词器。
+ */
+function extractCompactContentForTokenizing(
+  compactRequest: CodexCompactRequest,
+): { contentText: string; itemCount: number } {
+  const parts: string[] = [];
+  if (compactRequest.instructions) parts.push(compactRequest.instructions);
+
+  for (const item of compactRequest.input) {
+    if ("type" in item) {
+      if (item.type === "function_call") {
+        parts.push(item.name, item.arguments);
+      } else if (item.type === "function_call_output") {
+        parts.push(item.output);
+      }
+      continue;
+    }
+    if (typeof item.content === "string") {
+      parts.push(item.content);
+      continue;
+    }
+    for (const part of item.content) {
+      if (part.type === "input_image") continue; // 见函数文档"纵深防御"说明
+      if ("text" in part) parts.push(part.text);
+    }
+  }
+
+  if (compactRequest.tools?.length) {
+    for (const tool of compactRequest.tools) parts.push(JSON.stringify(tool));
+  }
+
+  return { contentText: parts.join("\n"), itemCount: compactRequest.input.length };
+}
+
+/**
+ * 精确估算：语义内容真实 tokenize + 每 item 固定结构开销 + 安全边际。
+ *
+ * 调用方（`planCompactRequestForBudget`）只在粗筛（`estimateCompactInputTokens`）
+ * 已经判定超限时才会调用这个函数——分词器的懒加载成本因此只有"粗筛怀疑
+ * 超限"的请求才会真正付出，正常大小的会话永远不会触发。
+ *
+ * 返回 `null` 时（分词器加载失败——理论上不该发生，防御性处理）调用方
+ * 必须回退到粗筛估算，不能让整条 compact 链路因为分词器不可用而报错。
+ */
+async function estimateCompactInputTokensPrecise(
+  compactRequest: CodexCompactRequest,
+): Promise<number | null> {
+  const { contentText, itemCount } = extractCompactContentForTokenizing(compactRequest);
+  const contentTokens = await tokenizeCompactContent(contentText);
+  if (contentTokens === null) return null;
+  const raw = contentTokens + itemCount * PER_ITEM_TOKEN_OVERHEAD;
+  return Math.ceil(raw * TOKENIZER_ESTIMATE_SAFETY_MARGIN);
+}
+
+/**
+ * 给一次预算判定选一种估算方法：含图片时强制粗筛（见
+ * `compactRequestHasImageContent` 文档）；否则尝试精确估算，精确估算不可用
+ * （分词器加载失败）时回退粗筛。返回的 `method` 供调用方打日志/落盘诊断用，
+ * 不参与判定本身。
+ */
+async function estimateTokensForBudgetCheck(
+  compactRequest: CodexCompactRequest,
+  toolsBytes: number,
+): Promise<{ tokens: number; method: "cheap" | "tokenizer" }> {
+  if (!compactRequestHasImageContent(compactRequest)) {
+    const precise = await estimateCompactInputTokensPrecise(compactRequest);
+    if (precise !== null) return { tokens: precise, method: "tokenizer" };
+  }
+  const { totalBytes } = summarizeCompactInputBytes(compactRequest.input);
+  return { tokens: estimateCompactInputTokens(totalBytes + toolsBytes), method: "cheap" };
 }
 
 /**
@@ -706,6 +858,14 @@ export interface CompactBudgetPlan {
   budgetTokens: number;
   withinBudget: boolean;
   trimmedCount: number;
+  /**
+   * ★ 8.11：这次 `estimatedTokens` 是用哪种方法算出来的——`"cheap"`（字节
+   * 比例粗筛，粗筛本身就在预算内，没必要为了确认再付分词器加载成本）或
+   * `"tokenizer"`（粗筛怀疑超限后触发的精确估算）。纯诊断字段，不参与
+   * `withinBudget` 判定本身，供日志/Dashboard 排查"这次降级是不是分词器
+   * 也判超限，还是只有粗筛这么认为"。
+   */
+  estimateMethod: "cheap" | "tokenizer";
 }
 
 /**
@@ -718,36 +878,71 @@ export interface CompactBudgetPlan {
  *
  * `tools` 也计入体积（固定 ~101KB ≈ 47K token，生产实测），因为它是真实
  * 送上游的一部分——只统计 `input` 会系统性低估。
+ *
+ * ★ 8.11 · 两级估算，不是"直接上分词器"：
+ *
+ *   1. 粗筛（`estimateCompactInputTokens`，字节比例，零加载成本）——它
+ *      本来就系统性偏高（见头部注释），如果连粗筛都判定在预算内，精确值
+ *      只会更小，没必要为了"确认"再付一次分词器懒加载成本（~200ms + 2.3MB
+ *      内存）。这是"懒加载"这个要求的核心：正常大小的会话（多数请求）
+ *      永远不会触发分词器加载。
+ *   2. 粗筛怀疑超限后，才用 `estimateTokensForBudgetCheck`（精确估算，
+ *      含图片时强制退回粗筛，见该函数与 `compactRequestHasImageContent`
+ *      的文档）重新核算一遍——这一步存在的意义正是修 terra 那类"粗筛本身
+ *      就估错了"的误判：粗筛说超了，不代表真的超了，精确估算才是真正
+ *      拍板的依据。
+ *
+ * 裁剪之后的重新核算同样走两级估算（`estimateTokensForBudgetCheck`），
+ * 不会在裁剪后退化回只用粗筛——裁剪本身省不了多少（见
+ * `trimCompactInputForBudget` 文档"中位数只省3.2%"），精确估算在裁剪前后
+ * 都应该是更可信的判据。
  */
-export function planCompactRequestForBudget(compactRequest: CodexCompactRequest): CompactBudgetPlan {
+export async function planCompactRequestForBudget(
+  compactRequest: CodexCompactRequest,
+): Promise<CompactBudgetPlan> {
   const budgetTokens = resolveCompactTokenBudget(compactRequest.model);
   const toolsBytes = compactRequest.tools?.length
     ? Buffer.byteLength(JSON.stringify(compactRequest.tools), "utf8")
     : 0;
 
   const initial = summarizeCompactInputBytes(compactRequest.input);
-  const initialEstimatedTokens = estimateCompactInputTokens(initial.totalBytes + toolsBytes);
-  if (initialEstimatedTokens <= budgetTokens) {
+  const cheapEstimate = estimateCompactInputTokens(initial.totalBytes + toolsBytes);
+  if (cheapEstimate <= budgetTokens) {
     return {
       compactRequest,
-      estimatedTokens: initialEstimatedTokens,
+      estimatedTokens: cheapEstimate,
       budgetTokens,
       withinBudget: true,
       trimmedCount: 0,
+      estimateMethod: "cheap",
+    };
+  }
+
+  const refined = await estimateTokensForBudgetCheck(compactRequest, toolsBytes);
+  if (refined.tokens <= budgetTokens) {
+    return {
+      compactRequest,
+      estimatedTokens: refined.tokens,
+      budgetTokens,
+      withinBudget: true,
+      trimmedCount: 0,
+      estimateMethod: refined.method,
     };
   }
 
   const perOutputByteLimit = getModelInfo(compactRequest.model)?.truncationPolicyLimit ?? 10_000;
   const { input: trimmedInput, trimmedCount } = trimCompactInputForBudget(compactRequest.input, perOutputByteLimit);
-  const trimmedSummary = summarizeCompactInputBytes(trimmedInput);
-  const estimatedTokens = estimateCompactInputTokens(trimmedSummary.totalBytes + toolsBytes);
+  const trimmedRequest: CodexCompactRequest =
+    trimmedCount > 0 ? { ...compactRequest, input: trimmedInput } : compactRequest;
+  const final = await estimateTokensForBudgetCheck(trimmedRequest, toolsBytes);
 
   return {
-    compactRequest: trimmedCount > 0 ? { ...compactRequest, input: trimmedInput } : compactRequest,
-    estimatedTokens,
+    compactRequest: trimmedRequest,
+    estimatedTokens: final.tokens,
     budgetTokens,
-    withinBudget: estimatedTokens <= budgetTokens,
+    withinBudget: final.tokens <= budgetTokens,
     trimmedCount,
+    estimateMethod: final.method,
   };
 }
 
@@ -757,7 +952,47 @@ export interface CompactOnlyResult {
   compactLatencyMs: number;
 }
 
+/**
+ * ★ 8.10：`skippedUpstream`/`promptTooLong`/`estimatedTokens`/`budgetTokens`
+ * 这四个字段是本轮新增，专门解决 reviewer 复审 task #24/#25 时提过、这次
+ * Dashboard 需求又撞上第二次的同一个问题——此前调用方只能靠对
+ * `error.message` 做字符串匹配（比如判断有没有那句 "skipping upstream
+ * compact call"）来区分"预算预判提前拦下的降级"和"真打了上游被拒"，
+ * 任何人改一下文案就会让判断静默失效。这里改成显式的结构化字段，调用方
+ * 直接读，不用再解析文本。
+ *
+ * 刻意没有做的事：没有把这次改动扩大成一次错误传递机制重构（team-lead
+ * 明确划的边界）——`isPromptTooLongLike` 对 `error.message`/上游原始文本
+ * 的字符串匹配**没有被这几个字段取代**，那部分是在分类"上游返回的自由
+ * 文本属于哪一类"，本质上就得读文本，不是这次要解决的脆弱性。这几个
+ * 字段解决的只是"我们自己已经分类好的结果，要不要再重新解析一遍"这一层。
+ */
+export interface CompactServiceErrorClassification {
+  /**
+   * true 当且仅当这次失败在预算预判阶段就被拦下（`opaque-compact-bridge.ts`
+   * 的 `planCompactRequestForBudget` 判定 `withinBudget:false`），从未真正
+   * 联系上游、没有账号租约发生。false（默认）表示确实打了上游，不管上游
+   * 是否真的返回了响应。
+   */
+  skippedUpstream?: boolean;
+  /**
+   * true 当且仅当这次失败被分类为"会话大到塞不下"这一类（不管是预算预判
+   * 提前拦下的，还是真打了上游被判定 `Prompt is too long`）——`messages.ts`
+   * 判断要不要跳过 409、改走降级时直接读这个字段。
+   */
+  promptTooLong?: boolean;
+  /** 仅 `skippedUpstream:true` 时有意义：预算预判阶段算出的估算 token 数。 */
+  estimatedTokens?: number;
+  /** 仅 `skippedUpstream:true` 时有意义：当时对应型号的预算 token 数。 */
+  budgetTokens?: number;
+}
+
 export class CompactServiceError extends Error {
+  readonly skippedUpstream: boolean;
+  readonly promptTooLong: boolean;
+  readonly estimatedTokens?: number;
+  readonly budgetTokens?: number;
+
   constructor(
     message: string,
     readonly status: number,
@@ -769,9 +1004,14 @@ export class CompactServiceError extends Error {
      * 把它透传进 `recordOpaqueCompactFallback` 的 `retry_count`。
      */
     readonly retryCount?: number,
+    classification: CompactServiceErrorClassification = {},
   ) {
     super(message);
     this.name = "CompactServiceError";
+    this.skippedUpstream = classification.skippedUpstream ?? false;
+    this.promptTooLong = classification.promptTooLong ?? false;
+    this.estimatedTokens = classification.estimatedTokens;
+    this.budgetTokens = classification.budgetTokens;
   }
 }
 
@@ -902,6 +1142,12 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
               crossAccountBlocked ? 409 : decision.status,
               false,
               triedEntryIds.length,
+              // crossAccountBlocked 已经把"是不是 prompt-too-long"这个判断
+              // 消费掉了（!isPromptTooLongFailure 是它的构成条件之一），这里
+              // 直接透传 isPromptTooLongFailure 本身——覆盖 crossAccountBlocked
+              // 为 false 的两种情况：真实是 prompt-too-long（跨账号限制被
+              // 绕过），或者是 root compact（requiredEntryId 本来就没设）。
+              { promptTooLong: isPromptTooLongFailure },
             );
           }
           // usage: undefined 是对的——这次账号的尝试失败了，即将换账号重试，没有响应体可记。

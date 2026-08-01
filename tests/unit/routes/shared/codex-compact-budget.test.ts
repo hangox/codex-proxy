@@ -33,18 +33,55 @@ function functionCallOutput(callId: string, output: string): CodexInputItem {
 }
 
 describe("resolveCompactTokenBudget", () => {
-  it("已校准型号返回各自的实测预算值", () => {
+  it("★ 8.8：8 型号实测矩阵，每个已校准型号返回各自的预算值", () => {
+    // 数值来自 qa 完整实测矩阵（17 次真实调用），见 codex-compact-service.ts
+    // 里 COMPACT_TOKEN_BUDGET_BY_MODEL 头部注释的完整表格与两条结论。
+    expect(resolveCompactTokenBudget("gpt-5.3-codex-spark")).toBe(110_000);
     expect(resolveCompactTokenBudget("gpt-5.4-mini")).toBe(260_000);
-    expect(resolveCompactTokenBudget("gpt-5.6-luna")).toBe(390_000);
+    expect(resolveCompactTokenBudget("gpt-5.5")).toBe(270_000);
     expect(resolveCompactTokenBudget("gpt-5.6-sol")).toBe(390_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-terra")).toBe(390_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-luna")).toBe(390_000);
+    expect(resolveCompactTokenBudget("codex-auto-review")).toBe(580_000);
+    expect(resolveCompactTokenBudget("gpt-5.4")).toBe(680_000);
   });
 
-  it("未校准型号精确退回全表最小值 260000——不是别的默认值", () => {
+  it("gpt-5.5 明显低于同代的 sol/terra/luna，不能被合并进 390000 那一档", () => {
+    // 声明 contextWindow 和 sol/terra/luna 一样都是 272000，但实测成功
+    // 最大只有 284,961（vs 三者的 405,1xx）——这条测试锁住"同代不等于同预算"，
+    // 防止以后有人看 model 名字像同一代就把它合并档位。
+    const gpt55Budget = resolveCompactTokenBudget("gpt-5.5");
+    const sameGenBudget = resolveCompactTokenBudget("gpt-5.6-sol");
+    expect(gpt55Budget).toBeLessThan(sameGenBudget);
+  });
+
+  it("★ gpt-5.3-codex-spark 不会被误套大窗口档——它的真实上限几乎贴着声明值走，必须单独给保守预算，不能落进任何其它档位", () => {
+    const sparkBudget = resolveCompactTokenBudget("gpt-5.3-codex-spark");
+    // 决定性断言：spark 的预算严格小于表里其它所有已校准型号——如果它被
+    // 误合并进任何一档（哪怕是 mini 那档 260,000），这里就会失败。
+    for (const model of ["gpt-5.4-mini", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review", "gpt-5.4"]) {
+      expect(sparkBudget).toBeLessThan(resolveCompactTokenBudget(model));
+    }
+    // 且严格小于未入表型号的兜底值——spark 比"完全不认识的新模型"还要保守，
+    // 不能反过来更宽松。
+    expect(sparkBudget).toBeLessThan(resolveCompactTokenBudget("some-brand-new-model-never-seen"));
+  });
+
+  it("未校准型号返回固定兜底值 260000——★ 8.8 起不再等于表内最小值（spark=110000 才是最小值，但兜底刻意不跟着它走，理由见 COMPACT_TOKEN_BUDGET_DEFAULT 头部注释）", () => {
     expect(resolveCompactTokenBudget("some-brand-new-model-never-seen")).toBe(260_000);
     expect(resolveCompactTokenBudget("")).toBe(260_000);
-    // 最小值必须恰好等于表里最小的那个已校准值（mini），不是独立设定的
-    // 一个巧合相同的数字——两者理应同源，这里顺带断言这层关系。
-    expect(resolveCompactTokenBudget("unknown-model-xyz")).toBe(resolveCompactTokenBudget("gpt-5.4-mini"));
+    // 决定性断言：兜底值不等于表内最小值（spark）——这是 8.8 这次改动的
+    // 一个关键设计决策，必须显式锁住，防止以后有人"顺手"把兜底值改回
+    // "取 Math.min(...表内所有值)"这种看起来更"安全"实则会拖慢所有新
+    // 模型的写法。
+    expect(resolveCompactTokenBudget("some-brand-new-model-never-seen")).not.toBe(
+      resolveCompactTokenBudget("gpt-5.3-codex-spark"),
+    );
+    // 兜底值恰好等于 mini 的校准值，是刻意的选择（mini 量级对未来新模型
+    // 而言是保守但不过度保守的默认值），不是巧合。
+    expect(resolveCompactTokenBudget("some-brand-new-model-never-seen")).toBe(
+      resolveCompactTokenBudget("gpt-5.4-mini"),
+    );
   });
 });
 

@@ -10,6 +10,12 @@
 
 ### Changed
 
+- **修复一次已在生产发生的真实回归**：compact 预算表从 3 个型号扩到 8 个（qa 完整实测矩阵，17 次真实调用覆盖全部带 `contextWindow` 声明的型号）。起因：`gpt-5.6-terra` 此前不在表里，退到默认预算 260,000，一个 350,454 token、**本来能成功**的请求（terra 实测能吃到 405,173）被误判超限、降级到全量压缩慢路径，用户自己感知到变慢（`phase=compact_budget_exceeded model=gpt-5.6-terra estimated_tokens=350454 budget_tokens=260000`）——这次是修复，不是预防性加固。
+
+  **最值得记的结论：上游元数据的 `contextWindow` 完全不可信，任何用公式从声明值推导预算的做法都是错的。** 8 个型号里 6 个统一声明 `272,000`，但实测真实成功上限从 271,261（`gpt-5.4-mini`，几乎等于声明值，1.00x）到 715,220（`gpt-5.4`，2.63x）不等，差 2.63 倍——不存在一个系数能同时拟合这整张表，只能逐型号实测入表，这也是为什么预算表是一张手工维护的 `Record`，不是一个"读字段乘系数"的函数。**唯一的反例、也是最危险的一个**：`gpt-5.3-codex-spark` 真实上限几乎贴着声明值走（~0.93x，128,000 声明 vs 119,036 实测成功上限）——不是"留了安全边际"，是"声明值本身就基本可信"；如果照着其他型号"实测普遍是声明值 1.49 倍"的经验给它套一个激进预算，会把它直接推过真实上限 3.3 倍，必炸，所以 spark 必须单独按自己的实测下界给，不能跟着别的型号"抄近路"。
+
+  新预算表（每档 = 实测成功最大值打 ~95% 折，留出字节→token 估算噪声的余量；同代且实测值接近的型号才合并同一档——`gpt-5.5` 虽然和 sol/terra/luna 同代但实测明显更低，刻意没有合并进 390,000 那一档）：`gpt-5.3-codex-spark` 110,000、`gpt-5.4-mini` 260,000、`gpt-5.5` 270,000、`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna` 390,000、`codex-auto-review` 580,000、`gpt-5.4` 680,000；未入表型号兜底预算维持 260,000 不变（刻意不跟着 spark 的实测下界往下压——兜底只服务未来新出现、还没实测过的型号，本轮 8 型号矩阵里除 spark 外全部 ≥260,000，260,000 对未来新型号是保守估计；就算撞线，后果是走降级慢路径而不是 409 杀会话，代价不对称，两个方向都不会导致数据损坏或误判成功，选对新模型更友好的方向）（`src/routes/shared/codex-compact-service.ts`、`tests/unit/routes/shared/codex-compact-budget.test.ts`）。
+
 - **★ 打破 opaque compact 的"无损"承诺（产品语义变化，不是普通 bug 修复）**：`compact` 序列化历史给上游时不再保留 `thinking`/`redacted_thinking` 块（`anthropicHistoryToLosslessCodexInput` 改名为 `anthropicHistoryToCompactCodexInput`，函数原本"无损"的注释承诺到这里正式打破）。**理由必须写清楚，只用下面两条，不用别的说法**（第一版曾经写过"thinking 块反正很小，丢了无所谓"，已被 qa 用真实会话 `c382c880` 的 1325 个真实 thinking 块实测推翻——p50=1116 字节、mean=2418、max=76436 字节，因会话而异极大，简单会话是标题、复杂 agentic 会话是完整推理，这个论据不成立，不要再用）：
   1. **结构性对齐，不是新增信息损失**：普通生成路径本来就 100% 丢弃 thinking（`anthropic-to-codex.ts` 的 `extractTextContent` 只提取 `type==="text"` 块）——模型在正常多轮对话里**从来看不到历史 thinking**，compact 这条路径保留它是唯一的例外。丢弃它只是让 compact 路径的输入形状和生成路径对齐，不是砍掉一个"本来有用"的信息源。
   2. **端到端 A/B 实测（qa）**：同一份 805 条真实消息切片、真实 39 个工具定义（117759 字节）、真实 compact prompt 模板，打 gpt-5.6-sol——保留 thinking：**400 `Prompt is too long`**；去掉 thinking：**200，真实 `usage.input_tokens=282519`**。唯一变量是 thinking 在不在。更大的切片（979 条消息）测"去掉 thinking"依然成功，真实 input_tokens 到过 312084（★ qa 只测到这个成功点，没有测到失败点，不能当作已验证的上限）。

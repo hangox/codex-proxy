@@ -126,6 +126,11 @@ export const ConfigSchema = z.object({
   observability: z.object({
     local_error_log: z.boolean().default(true),
     max_log_bytes: z.number().int().min(1024).default(10 * 1024 * 1024),
+    // 8.10：compact 快速压缩成功率统计（data/compact-outcomes.jsonl）用独立
+    // 字节上限，不与 error-log.jsonl 共享额度——这个文件"每次尝试都记一条"，
+    // 量级比"只记错误"大得多，共享额度会挤占错误日志的留存时间。复用
+    // local_error_log 做总开关（同属本地可观测性），只有上限单独给。
+    compact_outcomes_max_bytes: z.number().int().min(1024).default(5 * 1024 * 1024),
   }).default({}),
   usage_stats: z.object({
     /** How often to record local usage history snapshots. 0 disables history recording. */

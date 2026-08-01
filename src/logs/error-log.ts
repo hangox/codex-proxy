@@ -25,8 +25,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "fs";
@@ -35,6 +33,7 @@ import { getConfig } from "../config.js";
 import { getDataDir } from "../paths.js";
 import { redactJson } from "./redact.js";
 import { normalizeStreamCloseErrorForDisplay } from "./stream-close-format.js";
+import { rotateJsonlIfNeeded } from "./jsonl-rotation.js";
 
 export type ErrorSource = "main" | "renderer" | "server" | "external";
 
@@ -115,23 +114,13 @@ function cursorPath(): string {
   return resolve(ensureDataDir(), CURSOR_FILE);
 }
 
-/** Rotate `error-log.jsonl` → `error-log.1.jsonl` if current size exceeds the cap. */
+/**
+ * Rotate `error-log.jsonl` → `error-log.1.jsonl` if current size exceeds
+ * the cap. Thin wrapper over the shared {@link rotateJsonlIfNeeded} —
+ * kept as a local function so call sites below don't change.
+ */
 function rotateIfNeeded(maxBytes: number): void {
-  const current = logPath();
-  if (!existsSync(current)) return;
-  const size = statSync(current).size;
-  if (size <= maxBytes) return;
-  // renameSync overwrites the destination on POSIX; on Windows the
-  // backup is removed first because rename-onto-existing fails there.
-  const backup = backupPath();
-  if (existsSync(backup) && process.platform === "win32") {
-    try {
-      writeFileSync(backup, "");
-    } catch {
-      /* fall through; renameSync will surface the real error */
-    }
-  }
-  renameSync(current, backup);
+  rotateJsonlIfNeeded(logPath(), backupPath(), maxBytes);
 }
 
 /**

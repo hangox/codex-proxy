@@ -18,15 +18,38 @@
  * 预期收益，安全性就塌了。
  */
 
-import { describe, expect, it } from "vitest";
-import {
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { CodexCompactRequest, CodexInputItem } from "@src/proxy/codex-types.js";
+
+// ★ 8.11：planCompactRequestForBudget 现在可能懒加载真分词器（js-tiktoken，
+// 见 compact-tokenizer.ts）。这个文件测的是**预算判定逻辑**（超没超、裁不裁、
+// 用哪种估算方法）本身，不是分词器准不准——分词器准不准有专门的独立测试层
+// （`compact-tokenizer.test.ts`，构造内容 + 快照断言，见 team-lead 要求的
+// "三层测试"）。这里 mock 掉 `tokenizeCompactContent`，用一个简单、确定、
+// 与真实 BPE 无关的字符数/token 比例（4 chars/token）——这样测试用例可以用
+// 简单重复字符串（"a".repeat(N)）构造，不用担心真实分词器对高度重复内容的
+// 压缩率失真（真实 BPE 对 "aaaa...a" 这种内容的压缩率极高，用真分词器测会让
+// 这些特意构造的"应该超预算"的测试用例得出错误结论）。
+const mockTokenizeCompactContent = vi.fn(async (text: string): Promise<number | null> => {
+  return Math.ceil(text.length / 4);
+});
+vi.mock("@src/routes/shared/compact-tokenizer.js", () => ({
+  tokenizeCompactContent: (text: string) => mockTokenizeCompactContent(text),
+  loadCompactTokenizer: vi.fn(),
+  _resetCompactTokenizerCacheForTest: vi.fn(),
+}));
+
+const {
   estimateCompactInputTokens,
   planCompactRequestForBudget,
   resolveCompactTokenBudget,
   summarizeCompactInputBytes,
   trimCompactInputForBudget,
-} from "@src/routes/shared/codex-compact-service.js";
-import type { CodexCompactRequest, CodexInputItem } from "@src/proxy/codex-types.js";
+} = await import("@src/routes/shared/codex-compact-service.js");
+
+beforeEach(() => {
+  mockTokenizeCompactContent.mockClear();
+});
 
 function functionCallOutput(callId: string, output: string): CodexInputItem {
   return { type: "function_call_output", call_id: callId, output };
@@ -176,65 +199,89 @@ describe("planCompactRequestForBudget", () => {
     };
   }
 
-  it("预算内：原样放行，不裁剪，返回同一个 compactRequest 引用", () => {
+  it("预算内：原样放行，不裁剪，不触发分词器懒加载（cheap 粗筛已经够用）", async () => {
     const request = buildRequest({
       input: [{ role: "user", content: "hello, this is a small compact input" }],
     });
-    const plan = planCompactRequestForBudget(request);
+    const plan = await planCompactRequestForBudget(request);
 
     expect(plan.withinBudget).toBe(true);
     expect(plan.trimmedCount).toBe(0);
     expect(plan.budgetTokens).toBe(260_000);
     expect(plan.compactRequest).toBe(request); // 预算内不重新构造对象
+    expect(plan.estimateMethod).toBe("cheap");
+    // ★ 懒加载的核心断言：粗筛已经在预算内，不该为了"确认"再付分词器
+    // 加载/调用的成本。
+    expect(mockTokenizeCompactContent).not.toHaveBeenCalled();
   });
 
-  it("超预算但裁剪能救回来：trimmedCount>0 且最终 withinBudget:true", () => {
-    // ★ 8.9：预算 260000 token ≈ 702000 字节（估算比例 2.70 bytes/token，
-    // 从 2.18 改成 2.70 后阈值相应变大）。单条 900000 字节的 tool 输出会让
-    // 初次估算超预算，但它是 function_call_output，裁到默认 10000 字节
-    // （测试环境没有加载模型目录，getModelInfo 返回 undefined，退回默认值）
-    // 之后应该远远落回预算内。
+  it("超预算但裁剪能救回来：trimmedCount>0 且最终 withinBudget:true，走了精确估算（estimateMethod=tokenizer）", async () => {
+    // mock 比例 4 chars/token：预算 260000 token → 阈值约 1,040,000 字符。
+    // 用 1,200,000 字节确保裁剪前 cheap 和精确估算都判超限，裁到默认
+    // 10000 字节（测试环境没有加载模型目录，getModelInfo 返回 undefined，
+    // 退回默认值）之后应该远远落回预算内。
     const request = buildRequest({
-      input: [functionCallOutput("c1", "a".repeat(900_000))],
+      input: [functionCallOutput("c1", "a".repeat(1_200_000))],
     });
-    const plan = planCompactRequestForBudget(request);
+    const plan = await planCompactRequestForBudget(request);
 
     expect(plan.trimmedCount).toBe(1);
     expect(plan.withinBudget).toBe(true);
     expect(plan.estimatedTokens).toBeLessThan(plan.budgetTokens);
+    expect(plan.estimateMethod).toBe("tokenizer");
+    // 粗筛怀疑超限后才应该触发分词器——确实被调用了。
+    expect(mockTokenizeCompactContent).toHaveBeenCalled();
     // 裁剪确实发生了：返回的是新对象，且 input 内容比原始的短得多。
     expect(plan.compactRequest).not.toBe(request);
     const trimmedItem = plan.compactRequest.input[0] as Extract<
       CodexInputItem,
       { type: "function_call_output" }
     >;
-    expect(trimmedItem.output.length).toBeLessThan(900_000);
+    expect(trimmedItem.output.length).toBeLessThan(1_200_000);
   });
 
-  it("★ 超预算且裁剪救不回来（不可裁剪的巨大纯文本，模拟图片会话那类不可裁剪的形状）：必须诚实返回 withinBudget:false，不能乐观放行", () => {
-    // ★ 8.9：900000 字节的纯文本消息（不是 function_call_output，阈值同上
-    // 一条测试，跟着 2.70 的比例一起调大）——trim 完全不 touch 这种形状，
-    // 裁剪前后体积不变，估算 token 数应该仍然远超预算。
+  it("★ 超预算且裁剪救不回来（不可裁剪的巨大纯文本，模拟图片会话那类不可裁剪的形状）：必须诚实返回 withinBudget:false，不能乐观放行", async () => {
+    // 同上：1,200,000 字节的纯文本消息（不是 function_call_output）——trim
+    // 完全不 touch 这种形状，裁剪前后体积不变，精确估算应该仍然远超预算。
     const request = buildRequest({
-      input: [{ role: "user", content: "x".repeat(900_000) }],
+      input: [{ role: "user", content: "x".repeat(1_200_000) }],
     });
-    const plan = planCompactRequestForBudget(request);
+    const plan = await planCompactRequestForBudget(request);
 
     expect(plan.trimmedCount).toBe(0); // 裁剪确实"裁不动"这种形状
     expect(plan.withinBudget).toBe(false);
     expect(plan.estimatedTokens).toBeGreaterThan(plan.budgetTokens);
+    expect(plan.estimateMethod).toBe("tokenizer");
   });
 
-  it("tools 计入预算估算，不能只统计 input——否则会系统性低估真实发送体积", () => {
-    // ★ 8.9：input 本身很小；tools 单独就有约 900000 字节（阈值同上，跟着
-    // 2.70 的比例一起调大），足够单独把估算推过预算。
+  it("tools 计入预算估算，不能只统计 input——否则会系统性低估真实发送体积", async () => {
+    // input 本身很小；tools 单独就有约 1,200,000 字节，足够单独把精确估算
+    // 也推过预算。
     const request = buildRequest({
       input: [{ role: "user", content: "tiny" }],
-      tools: [{ description: "x".repeat(900_000) }],
+      tools: [{ description: "x".repeat(1_200_000) }],
     });
-    const plan = planCompactRequestForBudget(request);
+    const plan = await planCompactRequestForBudget(request);
 
     expect(plan.withinBudget).toBe(false);
     expect(plan.estimatedTokens).toBeGreaterThan(plan.budgetTokens);
+  });
+
+  it("★ 8.11：含图片内容时强制退回 cheap 估算，不把 base64 喂给分词器——即便粗筛怀疑超限", async () => {
+    // 图片 + 一段不算特别大的文本，cheap 粗筛会因为 base64 字节数偏大而
+    // 判定超限（这是刻意保留的保守行为，见 compactRequestHasImageContent
+    // 文档），但不应该触发分词器调用。
+    const request = buildRequest({
+      input: [{
+        role: "user",
+        content: [
+          { type: "input_image", image_url: `data:image/png;base64,${"A".repeat(1_200_000)}` },
+        ],
+      }],
+    });
+    const plan = await planCompactRequestForBudget(request);
+
+    expect(plan.estimateMethod).toBe("cheap");
+    expect(mockTokenizeCompactContent).not.toHaveBeenCalled();
   });
 });

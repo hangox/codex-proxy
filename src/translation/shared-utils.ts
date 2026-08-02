@@ -93,7 +93,12 @@ export function budgetToEffort(budget: number | undefined): string | undefined {
 
 /**
  * 推理档位（reasoning effort）在不同档位字符串之间的相对高低——用于
- * `clampReasoningEffortToModel` 判断"模型支持的最高档是哪个"。
+ * `clampReasoningEffortToModel` 按 rank 距离找"最接近的支持档位"，
+ * 以及 `isRecognizedReasoningEffort` 判断某个字符串是不是已知档位。
+ *
+ * ★ 8.16 起不再是"找最高档"：那是 8.15 的旧策略，已被证明在"请求低于
+ * 模型支持下限"时会把 `low` 钳成 `xhigh`（要最便宜的给了最贵的），见
+ * `clampReasoningEffortToModel` 头部注释。
  *
  * ★ 8.15：这张表本身不是穷举出来的猜测，是从三处真实数据源交叉核对过的：
  * 生产 `models-cache.yaml`（`gpt-5.6-sol`/`terra` 实测到 `low/medium/high/
@@ -114,6 +119,17 @@ const REASONING_EFFORT_RANK: Readonly<Record<string, number>> = {
   max: 6,
   ultra: 7,
 };
+
+/**
+ * 这个字符串是不是一个我们认识的推理档位名（`REASONING_EFFORT_RANK` 里
+ * 的键）。★★ 8.16：供调用方（目前是 `translateAnthropicToCodexRequest`）
+ * 在把 `output_config.effort` 这类客户端自由文本纳入优先级链之前先校验
+ * ——校验逻辑本身见那边的调用点注释，这里只导出判断函数，不重复放置
+ * "为什么要校验"的完整论证。
+ */
+export function isRecognizedReasoningEffort(effort: string): boolean {
+  return Object.hasOwn(REASONING_EFFORT_RANK, effort);
+}
 
 export interface ReasoningEffortClampResult {
   /** 最终应该使用的档位——未钳制时等于传入的 `effort`。 */
@@ -141,28 +157,47 @@ export interface ReasoningEffortClampResult {
  * 型缺口，模式和 `contextWindow`/`truncationPolicyLimit` 完全一样：数据
  * 一直都在，只是没人接进真正的判定逻辑。
  *
- * 钳制策略：不在支持列表里 → 钳到该模型支持的最高档（不是钳到"最接近的
- * 档"，也不是拒绝请求）——用户选了个模型不支持的高档位，最合理的退让方向
- * 是"给这个模型能给的最好的"，不是报错中断整个请求，也不是静默降到某个
- * 任意固定值。模型完全没有声明任何支持档位（`supportedReasoningEfforts`
- * 为空数组，比如纯图片生成模型）时不钳制、原样放行——没有数据就不该假装
- * 有判断依据，这种情况理论上也不会真的把 `effort` 发给这类模型（上游
- * 调用方在别处已经会跳过设置 `reasoning` 字段），这里只是防御性地不做
- * 无根据的判断。
+ * ★★ 8.16：钳制策略改成"钳到最接近的支持档位"，不是"永远钳到最高档"
+ * ——8.15 那版"永远钳到最高档"是任务描述阶段的错误（只想到了 qa 实测的
+ * `mini+max` 这一个方向），实现和两轮 review 都没跳出这个框，直到生产
+ * `models-cache.yaml` 里被找出反例才发现：**32 个模型不支持 `low`**
+ * （比如 `gpt-5.4-pro` 只声明 `medium/high/xhigh`，`gpt-5-2-pro` 只有
+ * 单档 `medium`）——在这些模型上请求 `low`，旧策略会钳到 `xhigh`：
+ * **用户要最便宜的，给了最贵的**，方向反了，且和"防止 502"这个初衷完全
+ * 无关（`low` 从不是那个会让上游空转的方向）。
  *
- * ★★ reviewer2 复审确认的已知残留风险，写在这里防止后人误以为这个函数
- * 已经是全局兜底：**目前只有 `anthropic-to-codex.ts` 的
- * `translateAnthropicToCodexRequest`（Claude Code / Anthropic Messages
- * 这一条路径）接了这个函数。** `responses.ts` 的直通端点（`/v1/responses`，
- * 普通请求约 918~931 行、compact 约 700~705 行）直接透传客户端发来的
- * `body.reasoning.effort`，完全不经过这里；OpenAI 兼容路径、Gemini
- * 翻译层也没有调用这个函数。这些入口如果收到一个目标模型不支持的
- * `effort`，本文件头部说的那个"连接空转到 502"的隐患**依然存在，没有
- * 被这次改动覆盖**。这是已知的、经过讨论后暂不处理的范围（passthrough
- * 端点的调用方是自己构造请求的高级用户，和 Claude Code 终端用户不是
- * 同一类风险敞口，且改动面会明显更大）——如果以后产品目标变成"所有入口
- * 的 effort 都不能触发上游空转"，这些地方也需要接入 `clampReasoningEffort
- * ToModel`，不能假设这个函数已经覆盖了全部请求路径。
+ * 新策略：按 `REASONING_EFFORT_RANK` 的距离找**最接近**的支持档位——
+ * 请求高于模型上限 → 钳到上限（8.15 那版覆盖到的场景，行为不变）；
+ * 请求低于模型下限 → 钳到下限（这次修复的部分）；请求落在区间内但不是
+ * 声明支持的具体值（比如模型只支持 `low`/`high`，请求 `medium`）→ 钳到
+ * 距离更近的那个。**距离相等时取更低的档位**——往上钳的代价是用户多花
+ * 钱、多等；往下钳只是效果弱一点，两个方向后果不对称，不确定时不该替
+ * 用户多花钱（和 `COMPACT_BYTES_PER_TOKEN_ESTIMATE` 那次"高估的代价是
+ * 无谓降级、低估的代价有兜底，选后果更轻的方向"是同一类权衡）。
+ *
+ * 模型完全没有声明任何支持档位（`supportedReasoningEfforts` 为空数组，
+ * 比如纯图片生成模型）时不钳制、原样放行——没有数据就不该假装有判断
+ * 依据，这种情况理论上也不会真的把 `effort` 发给这类模型（上游调用方在
+ * 别处已经会跳过设置 `reasoning` 字段），这里只是防御性地不做无根据的
+ * 判断。
+ *
+ * ★★ 8.16：完全未知的档位字符串（不在 `REASONING_EFFORT_RANK` 里，比如
+ * `"banana"`）怎么处理——这里有两层防御，职责分开：
+ *
+ * 1. **主防线在调用方**：`translateAnthropicToCodexRequest` 现在会用
+ *    `isRecognizedReasoningEffort` 先校验 `output_config.effort`，未识别
+ *    的值视为"客户端没有提供这个字段"，让优先级链下一级（`thinking` →
+ *    suffix → config default）接管——不是钳到最高，也不是猜一个钳到
+ *    最低，是**换一个我们真正理解语义的来源**，比在两种"瞎猜"里选一种
+ *    更可信。这是三个选项里选出来的（另外两个是"钳到最高"/"钳到最低"，
+ *    都是在猜用户想要什么，这个不是），完整取舍见该调用点的注释。
+ * 2. **这个函数自己的兜底**（万一未来有别的调用方没做第 1 层校验就直接
+ *    把未知字符串传进来）：未知档位在距离计算里 rank 记为 `-1`——比所有
+ *    真实档位（`none`=0 起步）都低，因此在"取最近"的排序下必然落到模型
+ *    支持列表里 rank 最低的那个，即"钳到最低档"。这是故意选的方向，不是
+ *    实现细节的偶然结果：面对一个我们完全不认识的值，与其在"可能想要
+ *    最低"和"可能想要最高"之间随便选，不如选代价更轻的那个方向——和
+ *    上面"距离相等时取更低"的理由是同一条原则。
  */
 export function clampReasoningEffortToModel(
   effort: string,
@@ -172,10 +207,15 @@ export function clampReasoningEffortToModel(
   if (supported.length === 0 || supported.includes(effort)) {
     return { effort, clamped: false, supported };
   }
-  const highest = [...supported].sort(
-    (a, b) => (REASONING_EFFORT_RANK[a] ?? -1) - (REASONING_EFFORT_RANK[b] ?? -1),
-  ).at(-1);
-  return { effort: highest ?? effort, clamped: true, supported };
+  const rankOf = (e: string): number => REASONING_EFFORT_RANK[e] ?? -1;
+  const requestedRank = rankOf(effort);
+  const nearest = [...supported].sort((a, b) => {
+    const distanceDelta = Math.abs(rankOf(a) - requestedRank) - Math.abs(rankOf(b) - requestedRank);
+    if (distanceDelta !== 0) return distanceDelta;
+    // 距离相等时取更低的档位——理由见函数头部注释。
+    return rankOf(a) - rankOf(b);
+  })[0];
+  return { effort: nearest ?? effort, clamped: true, supported };
 }
 
 /**

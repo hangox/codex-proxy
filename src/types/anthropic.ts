@@ -168,6 +168,25 @@ export const AnthropicMessagesRequestSchema = z.preprocess(normalizeInlineSystem
       AnthropicThinkingAdaptiveSchema,
     ])
     .optional(),
+  /**
+   * ★★ qa 用 TCP 层抓包发现的真实字段——Claude Code 用 adaptive thinking 时
+   * （`thinking:{type:"adaptive"}`，不带 `budget_tokens`）用**这个**字段传
+   * 用户在客户端选的 effort 档位（`"low"|"medium"|"high"|"xhigh"|"max"|...`），
+   * 不是靠 `thinking.budget_tokens` 反推。此前这个仓库完全没有声明这个字段
+   * ——`z.object()` 默认对未声明字段静默 strip（不是 `.strict()` 报错，是
+   * 悄悄丢掉，两者行为天差地别但都不会在日志/测试里露出任何异常），导致
+   * 用户在 Claude Code 里选的档位从 `safeParse` 那一刻起就没了，`/admin/logs`
+   * 记的 `parsed.data` 自然也查不到——不是客户端没发，是我们自己在业务逻辑
+   * 看到它之前就吃掉了。这里必须用 `.passthrough()`，不能只声明 `effort`
+   * 一个子字段就 `.strict()`——`output_config` 未来还可能带 `format`/
+   * `task_budget` 等其它子字段（评估阶段在 Claude Code 二进制里见过），
+   * `.passthrough()` 保证即使这次没声明的子字段也不会被这同一种"未声明就
+   * 静默丢弃"的坑再吃一次。使用方见 `anthropic-to-codex.ts`
+   * `translateAnthropicToCodexRequest` 里的 effort 优先级链。
+   */
+  output_config: z.object({
+    effort: z.string().optional(),
+  }).passthrough().optional(),
   // Tool-related fields. Custom tools are converted to Codex function tools;
   // Anthropic hosted web search is converted to Codex hosted web_search.
   tools: z.array(z.union([

@@ -500,6 +500,7 @@ export function createMessagesRoutes(
     const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
       injectHostedWebSearch: !allowUnauthenticated,
       mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
+      requestId,
     });
     // CODEX_PROXY_DISABLE_WS=1 临时绕开 ws 路径上游阻断（incident 2026-05-07）
     if (!allowUnauthenticated && process.env.CODEX_PROXY_DISABLE_WS !== "1") {

@@ -33,6 +33,7 @@ tests/_fixtures/local/
 # Design / internal files
 stitch-designs/
 stitch-screens/
-CLAUDE.md
+# CLAUDE.md 现已纳入版本控制——它是给 AI agent 的强约束提醒，
+# 内含真实发布事故的教训，需要跨机器、跨会话共享，不能只存在本地。
 *.tar.gz
 stitch-output/

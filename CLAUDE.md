@@ -1,0 +1,66 @@
+# CLAUDE.md
+
+面向在本仓库工作的 Claude Code / AI agent 的强约束提醒。使用说明请看 `README.md`，贡献流程看 `.claude/skills/pr-push`。
+
+## 生产 Docker 发布门禁
+
+镜像能 build 成功 ≠ 能起来。v2.0.80 就是构建全绿、CI 全绿、进生产后每次启动都因 `node:sqlite` 在 Node 20 上不存在而 exit 1，被 `restart: unless-stopped` 拧成崩溃循环。因此**任何要进生产的镜像，必须先在容器里跑通下面这条链，才允许部署**：
+
+1. `node -v` ≥ Dockerfile 声明的最低运行时版本，且镜像内 `node:sqlite` 可 `new DatabaseSync(":memory:")`。
+2. Linux native TLS addon（`/app/native/codex-tls.linux-*.node`）可被 `require`——它加载失败同样是启动致命错误。
+3. 容器真实启动到 `healthy`，`/health` 返回 200 且 `RestartCount == 0`。
+4. 一次普通请求（`/v1/chat/completions`）返回 200 且内容符合预期。
+5. opaque compact 全链路：root compact 出 marker → 同 marker 下一轮恢复 → **容器 restart 后同 marker 仍能恢复**。少了最后一步就没有验证持久化。
+
+硬性要求：
+
+- **验证过的 digest 必须等于部署的 digest。** 按 tag 部署时先核对 `RepoDigests`；tag 可以被重推，digest 不会。
+- **★ 门禁必须验 CI 用 tag 构建出来的那个镜像，不能自己 build。** 这条比上一条更容易漏——上一条防的是「验的镜像 ≠ 部署的镜像」，这条防的是「**验的源码 ≠ tag 里的源码**」。2026-08-02 发 `v2.0.91` 时真实中招：tag 打完之后 qa 在门禁中发现 bug、developer 在**共享工作区**改好、qa 用**工作区文件本地 build** 了容器和 dmg 来验证，全部通过；而 release 部署的是 CI 按 tag 构建的镜像，里面是**修复前**的代码。整条 digest 核对链（`head_sha`、`RepoDigests`）**完好无损地通过了**，因为镜像确实一致——不一致的是源码。**判据：门禁开始前 `git status` 必须干净；tag 打完之后代码若有任何改动，必须重新提交、重新打 tag、重新构建、拿新 digest 重验，不存在「改动很小可以就地验」这种情况。**
+- **禁止复用失败版本的构建产物**当候选，重新在干净上下文构建。
+- **部署失败立即回滚**到上一个已知健康的 digest，保留失败镜像、key、state 作为取证，不要先清理再排查。
+- 发布前确认唯一真正的 compact 开关（`claude_code_opaque_compact_experimental`）产品默认仍是 `false`；`claude_code_compact_bridge` 是已废弃的死配置键（classic bridge 已移除，不接任何行为，设成 `true` 只会打一条一次性弃用警告），不是需要单独核对的第二个开关。
+
+前 3 项已固化成代码守卫，不要绕过：Dockerfile 内的 build-time 断言、`.github/workflows/ci-docker.yml` 的 smoke step、`tests/unit/ci/docker-node-runtime.test.ts`。新增任何"只在新版本 Node 存在"的内建模块依赖时，同步更新 `tests/unit/ci/docker-node-runtime.test.ts` 里的 `BUILTIN_MIN_NODE`。
+
+## 发布链路的单点：只有 tag push 能产出「tag 真正指向的那个 commit」的镜像
+
+这条**不是配置问题、无法用代码守卫**，只能靠发布时核对。2026-08-01 发 `v2.0.88` 时第一次暴露：
+
+```
+1. push master (6cfa6a7)        → 触发 Publish Docker Image，产出 sha-6cfa6a7
+2. Sync CHANGELOG bot (2d16fa6) → 带 [skip ci]，不触发任何 workflow
+3. git tag v2.0.88              → 指向 2d16fa6
+4. git push origin v2.0.88      → 本该构建 2d16fa6 ← 这一步偶发失灵
+```
+
+**步骤 1 构建的永远是 bot 提交之前的版本，步骤 2 被 `[skip ci]` 主动跳过**——所以能产出 tag 对应镜像的，全链路只有步骤 4 这一条路，没有任何冗余。
+
+它失灵时**断得极安静**：master 那个 run 是绿的、tag 是好的、`sha-<commit>` 镜像也确实存在，只是那个镜像对应的是**上一个 commit**。这次是 release 核对了 job 的 `head_sha` 才发现，否则会把 `sha-6cfa6a7` 当成 `v2.0.88` 部署上去，而且事后无从察觉（两者代码只差 README 自动同步，跑起来一模一样）。
+
+**硬性要求：部署前必须核对构建 run 的 `head_sha` 等于 tag 指向的 commit**，不能只看 run 是否 success、镜像是否存在。
+
+## `docker-publish.yml` 的三个历史坑
+
+**坑 1 —— 版本 tag 曾经无条件覆盖**：`type=raw,value=vX.Y.Z` 这条 tag 规则此前没有 `enable=` 守卫，任何一次 `push master`（不只是发版）都会把当前最高版本号 tag 重新指向这次构建产物，真实事故过（`v2.0.82` 的 digest 被静默改指）。已修（`enable=${{ startsWith(github.ref, 'refs/tags/v') }}`），有 `tests/unit/ci/docker-publish-tag-guard.test.ts` 锁住。
+
+**坑 2 —— checkout 的 `fetch-tags: true` 与 tag ref 冲突**：触发事件本身是一个 `refs/tags/vX.Y.Z` 时（推 release tag、或 `workflow_dispatch` 手动选中一个 tag 重跑），checkout 直接报错 `Cannot fetch both <sha> and refs/tags/vX.Y.Z to refs/tags/vX.Y.Z`，**tag push 这条发布路径完全构建不起来**。这条**此前在本仓库没有任何文档**，是这次 release 推 `v2.0.83` tag 时第一次实测撞到的——不是"忘了记的已知问题"，是这次调查才第一次确认它存在（根因是 `actions/checkout` 的上游已知 bug `actions/checkout#1467`，`@v4` 未修、`v6.0.2` 才修，但这一点本仓库同样此前没查过）。历史上一直靠"手动 `--ref master` 重跑"绕过——旧代码无条件打版本 tag，绕开 checkout 用 master 一样能打出正确版本号，这也正是这个 checkout bug 长期没被发现的原因。**修好坑 1 之后，`--ref master` 不再产出版本 tag（`enable=` 判断 `github.ref` 不是 tag ref），这条绕行路径也失效了**——两个坑叠在一起，一度让发布链路彻底打不出版本 tag。已修（`fetch-tags: true` 换成 `fetch-depth: 0`；**没有**加显式 `ref:`，验证过是冗余的；**没有**升级到 `actions/checkout@v6`，理由是跨大版本行为变化没法在无 runner 环境验证，`fetch-depth: 0` 已经在 `release.yml` 里对同样场景跑通过真实生产发布），有 `tests/unit/ci/docker-publish-checkout.test.ts` 锁住。**2026-08-01 发 `v2.0.88` 时首次在真实 tag ref 上验证了这个修复**：`gh workflow run docker-publish.yml --ref v2.0.88` 与 `release.yml -f tag=v2.0.88` 两条路径的 checkout 都干净通过，没有再报 `Cannot fetch both`。
+
+**坑 3 —— tag push 事件基本不触发任何 workflow（已是常态，不是偶发）**：和前两个坑性质完全不同，**前两个是配置问题（改代码可修、可测试锁住），这个是事件层面的，没有代码守卫能防**。2026-08-01 一天内发 `v2.0.88` / `v2.0.89` / `v2.0.90` **三次，三次全部命中**：`git push origin vX.Y.Z` 返回成功，`git ls-remote --tags` 和 GitHub API 都确认 tag ref 真实存在且指向正确 commit，但 `Publish Docker Image` 和 `Release Electron App` **一个 run 对象都没创建**——不是排队、不是失败，是压根没有。
+
+（这条最初记为「偶发」，是基于 `v2.0.88` 那一次。当天后续两次发布连续复现后改为「常态」——**不要因为它没有已知根因就假设它罕见**。）
+
+排查排除的：不是 concurrency 吞掉（`release.yml` 没有 concurrency 组，同样没触发）；不是 workflow 被禁用或配置错（`gh workflow list --all` 全 active，触发条件都是 `tags: ["v*"]`）；不是平台整体故障（同一时间 master push 的 run 正常创建并跑完）。**根因未查明**，events API 连历史上成功触发的 tag 事件也查不到（有采样/延迟），证明不了任何事。
+
+**绕行方案（已验证可用）**：手动 `gh workflow run <workflow> --ref vX.Y.Z`（或 `release.yml` 的 `-f tag=vX.Y.Z`），数秒内正常创建 run。注意这条路**依赖坑 2 已修**——`fetch-depth: 0` 之前，手动对 tag ref dispatch 会撞 checkout 报错，那时这条绕行也是死的。
+
+**操作口径（已从「异常处理」提升为标准发布步骤）**：推完 tag **直接手动 dispatch**，不用先等、也不用先确认有没有触发——三次三中，等待只是浪费 2 分钟。
+
+```bash
+git push origin vX.Y.Z
+gh workflow run docker-publish.yml --ref vX.Y.Z
+gh workflow run release.yml -f tag=vX.Y.Z
+```
+
+若哪天 tag push 自己触发了，会出现两组重复 run，`docker-publish.yml` 有 concurrency 组会自动取消先起的那个，`release.yml` 重复跑一次只是浪费 CI 时间，**都不会产出错误结果**——所以无脑手动触发是安全的。
+
+**不要删 tag 重推**（`v2.0.85` 那次的教训是 tag 拓扑一旦搞乱，收拾起来比原问题麻烦得多）。

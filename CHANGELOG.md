@@ -10,6 +10,19 @@
 
 ### Fixed
 
+- **★ 修一个隐蔽 bug：用户在 Claude Code 里选的推理档位，一直被我们自己静默丢弃。** 根因：Claude Code 用 adaptive thinking 时（`thinking:{type:"adaptive"}`，不带 `budget_tokens`）通过 `output_config.effort` 字段传递用户在客户端选的档位（low/medium/high/xhigh/max/ultra）——qa 用 TCP 层抓包证实客户端零配置就在发这个字段。但 `AnthropicMessagesRequestSchema` 顶层对象没有 `.passthrough()`，Zod 默认对未声明字段静默 strip（不是 `.strict()` 报错，是悄悄丢掉），`output_config` 字段在 `safeParse()` 那一刻就没了，业务逻辑从未见过它。效果：不管用户在 Claude Code 里选 `high` 还是 `max`，最终发给 Codex 的永远只是服务端 `default_reasoning_effort` 配置默认值，用户的选择完全不起作用。
+
+  **这条查了三轮才发现，最贵的教训是**：我们自己的请求日志记的是 `safeParse()` 之后的 `parsed.data`，字段已经被吃掉了，日志里天然查不到——**不能靠"生产日志零命中"就断定客户端没发，得去查 schema 本身声明了什么，日志只能证明"解析后有什么"，证明不了"客户端发过什么"**。最终是 qa 绕过应用层直接抓 TCP 层原始 wire body 才实锤。
+
+  三块改动：
+  1. schema 补 `output_config` 字段，用 `.passthrough()`（不是只声明 `effort` 就 `.strict()`——这个字段未来还可能带 `format`/`task_budget` 等子字段，`passthrough` 防止同一种"未声明就丢弃"的坑在子字段层面再犯一次）。
+  2. `translateAnthropicToCodexRequest` 里的优先级链把 `output_config.effort` 提到最前（> thinking config > suffix > config default）——这是唯一真正来自客户端显式选择的信号，比其余三个来源都可信。
+  3. **新增 `clampReasoningEffortToModel`**，把请求到的档位钳制到目标模型 `supportedReasoningEfforts` 真实支持的范围内。这份元数据此前只当展示用的静态信息存着，从没有代码真正读它做判定——**不钳制的后果 qa 已经实测过：不支持的模型收到不支持的 effort，上游不报错也不降级，是连接空转、3 次重试全部超时、502**（`gpt-5.4-mini` + `"max"` 必现，2.2s/次）。现在 `output_config.effort` 真正被采纳后，这个隐患从"理论上可能"变成"用户选 max、模型只到 xhigh 时必现"，必须在这里挡住。钳制触发时打一行 `phase=effort_clamped` 的 warn（带 rid/model/requested/clamped_to/supported）。
+
+  **reviewer2 复审阶段抓出两个真缺陷，同一提交里一并修掉**：`output_config.effort` 为空字符串 `""` 时，`typeof==="string"` 检查能通过，但 `??` 只处理 `null`/`undefined` 不处理空串，会把 `""` 当成"已提供"顶掉整条 fallback 链，最终请求完全不带 `reasoning` 字段发出去——**比这次改动之前更差**（改动前至少还能落到 config 默认值兜底）；纯空白字符串 `"   "` 更隐蔽：它是 truthy，不会被空串判断挡住，会正常进入钳制逻辑，因为不在任何模型的 `supportedReasoningEfforts` 里而被钳到该模型支持的最高档——**等于把一个空白值悄悄升级成 max，不是"处理了"，是悄悄换了语义**。两者都修成：trim 后非空才算"客户端真的提供了"，否则回退到下一优先级；trim 后非空的情况也用规范化（trim 后）的值参与判断。
+
+  **已知残留风险，写在 `clampReasoningEffortToModel` 头部注释里，如实不隐藏**：这次只接了 Anthropic Messages 这一条路径，`/v1/responses` 的直通端点（普通请求和 compact 各一处）仍然直接透传客户端的 `reasoning.effort`，不经过钳制；OpenAI 兼容路径、Gemini 翻译层也没有调用这个函数——这些入口如果收到目标模型不支持的 effort，502 空转的隐患依然存在。本次评估为已知范围外（passthrough 端点的调用方是自己构造请求的高级用户，和 Claude Code 终端用户不是同一类风险敞口，改动面也会明显更大），不是这次顺手漏掉的（`src/types/anthropic.ts`、`src/translation/anthropic-to-codex.ts`、`src/translation/shared-utils.ts`、`src/routes/messages.ts`，新增 20 条定向测试锁住优先级链/钳制边界（含空串/空白串两个 reviewer2 发现的场景）/schema passthrough 行为）。
+
 - **★ 补上 `v2.0.91` 漏掉的分词器熔断修复——不是新特性，是补一个从未真正进入过发布产物的缺陷。** `v2.0.91` 打 tag 之后，qa 门禁复审发现 8.13 那版的 400ms 熔断阈值在真实（非病态）大体积 compact 内容上同样会被触发：用生产真实会话切片（rung3-B，真实 `usage.input_tokens=312,084`，明确在预算内、本该成功）复现——400ms 内只处理了 691500/932680 字符就熔断，退回粗筛（系统性高估 ~33%），导致这个本该成功的会话被误判超限降级。**分词器恰好在最需要它的场景（粗筛怀疑超限、精确估算最该顶上去兜底）被自己的熔断挡住，反而帮不上忙**——和分词器最初要解决的问题（cheap 估算不准导致误判）是同一类问题，只是换了个触发路径。
 
   developer 在共享工作区改好、qa 也验过，**但那份修复从未提交、从未进入 `v2.0.91` 的 tag**——`v2.0.91` tag 实际指向的提交里这个文件仍是未修复的 400ms 版本，生产 `sha-722e778` 部署的正是这个版本，不是 qa 验证过的那份代码。整条 digest 核对链（`head_sha`、`RepoDigests`）当时全部核对一致，因为**镜像确实和构建产物一致**——不一致的是"验证用的源码"和"进入 tag 的源码"这两者本身。不算灾难：400ms 版本的净效果和 v2.0.90 基本一致（同样被 cheap 的 33% 高估误判，只是每次多等约 400ms 熔断开销），没有比上一版更差，且同一提交里的 Dashboard 成功率功能是好的、已验证生效。这次通过正常提交流程补上，往后 qa 门禁改为直接拉 CI 按 tag 构建出的镜像验证，不允许用工作区/本地 build 的产物代替。

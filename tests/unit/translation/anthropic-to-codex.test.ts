@@ -19,12 +19,13 @@ vi.mock("@src/paths.js", () => ({
   getConfigDir: vi.fn(() => "/tmp/test-config"),
 }));
 
-// ★ 8.15：`clampReasoningEffortToModel` 的 mock 复刻真实实现的行为（不是
-// stub 成恒等函数）——因为本文件里"output_config.effort 优先级最高"/
-// "钳制"这两组新测试依赖它的真实语义（不在 supported 列表里就钳到最高档，
-// supported 为空就不钳）。钳制逻辑本身的独立单测在
+// ★ 8.15/8.16：`clampReasoningEffortToModel`/`isRecognizedReasoningEffort`
+// 的 mock 复刻真实实现的行为（不是 stub 成恒等函数）——因为本文件里
+// "output_config.effort 优先级最高"/"钳制"这两组新测试依赖它们的真实
+// 语义（不在 supported 列表里就钳到最接近的档、supported 为空就不钳、
+// 未识别的档位名视为未提供）。算法本身的独立单测在
 // `tests/unit/translation/shared-utils.test.ts`，这里只是复用同一份逻辑
-// 让翻译层的优先级测试能跑通，不重复验证钳制算法本身对不对。
+// 让翻译层的优先级测试能跑通，不重复验证算法本身对不对。
 const REASONING_EFFORT_RANK: Record<string, number> = {
   none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6, ultra: 7,
 };
@@ -37,16 +38,23 @@ vi.mock("@src/translation/shared-utils.js", () => ({
     if (budget < 20000) return "high";
     return "xhigh";
   }),
+  isRecognizedReasoningEffort: vi.fn((effort: string) => Object.hasOwn(REASONING_EFFORT_RANK, effort)),
+  // ★ 8.16：钳到"最接近"的支持档位，不是永远钳到最高——8.15 那版"永远
+  // 钳到最高"的方向性错误已经修掉，mock 必须跟着换，否则这里的测试会
+  // 继续验证一个已经被证明是错的行为。
   clampReasoningEffortToModel: vi.fn(
     (effort: string, modelInfo: { supportedReasoningEfforts?: { reasoningEffort: string }[] } | undefined) => {
       const supported = (modelInfo?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
       if (supported.length === 0 || supported.includes(effort)) {
         return { effort, clamped: false, supported };
       }
-      const highest = [...supported].sort(
-        (a, b) => (REASONING_EFFORT_RANK[a] ?? -1) - (REASONING_EFFORT_RANK[b] ?? -1),
-      ).at(-1);
-      return { effort: highest ?? effort, clamped: true, supported };
+      const rankOf = (e: string) => REASONING_EFFORT_RANK[e] ?? -1;
+      const requestedRank = rankOf(effort);
+      const nearest = [...supported].sort((a, b) => {
+        const d = Math.abs(rankOf(a) - requestedRank) - Math.abs(rankOf(b) - requestedRank);
+        return d !== 0 ? d : rankOf(a) - rankOf(b);
+      })[0];
+      return { effort: nearest ?? effort, clamped: true, supported };
     },
   ),
 }));
@@ -93,6 +101,19 @@ vi.mock("@src/models/model-store.js", () => ({
           { reasoningEffort: "xhigh", description: "" },
           { reasoningEffort: "max", description: "" },
           { reasoningEffort: "ultra", description: "" },
+        ],
+      };
+    }
+    // ★ 8.16：真实型号（生产 models-cache.yaml 里的 gpt-5.4-pro）——不含
+    // low，专供"钳到最高是方向性错误"这条回归测试用：请求 low 应该钳到
+    // medium（下限），不是钳到 xhigh（上限）。
+    if (id === "no-low-model") {
+      return {
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
         ],
       };
     }
@@ -499,6 +520,32 @@ describe("translateAnthropicToCodexRequest", () => {
       }
     });
 
+    // ★★ 8.16：修方向性错误本身——8.15 那版把这种情况也钳到最高档
+    // （xhigh），是"我们脑子里只有 qa 实测的 max 那个方向"导致的真实生产
+    // 反例：生产 models-cache.yaml 里有 32 个模型不支持 low（比如
+    // gpt-5.4-pro 只声明 medium/high/xhigh），客户端明确要最便宜的 low，
+    // 旧版会给最贵的 xhigh。新版必须钳到该模型支持的下限（medium），不是
+    // 上限。
+    it("★★ 钳制方向修复：模型最低只支持 medium（真实 gpt-5.4-pro 的形状，不含 low），客户端选 low 时必须钳到 medium（下限），不能钳到 xhigh（上限）", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "no-low-model",
+            output_config: { effort: "low" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("xhigh");
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain("requested=low");
+        expect(logged).toContain("clamped_to=medium");
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it("模型支持 max/ultra 时不钳制，原样放行，也不打 warn", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
@@ -606,6 +653,43 @@ describe("translateAnthropicToCodexRequest", () => {
       } finally {
         warnSpy.mockRestore();
       }
+    });
+
+    // ★★ 8.16：完全未知的档位字符串（不在 REASONING_EFFORT_RANK 里，比如
+    // 客户端发了个我们没见过的新档位名）——三个候选处理方式里选的是"当成
+    // 没提供，让下一优先级接管"，不是"钳到最高"也不是"钳到最低"（两个都是
+    // 在猜），完整取舍见 anthropic-to-codex.ts 调用点和
+    // clampReasoningEffortToModel 头部注释。这里要断言的是"确实换到了
+    // thinking 那一级"，不是"没有崩"。
+    it("★ effort 是完全未识别的档位字符串（比如 'banana'）——视为未提供，回退到 thinking 那一级，不钳到任何档位、也不打 warn", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model", // 支持到 max/ultra——如果走了"钳到最高"这条错路，会得到 ultra
+            output_config: { effort: "banana" },
+            thinking: { type: "enabled", budget_tokens: 5000 },
+          }),
+        );
+        // 决定性断言：必须是 thinking 算出来的 medium，既不是 "banana"
+        // 原样透传（那样上游铁定拒绝），也不是被误判成需要钳制。
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("banana");
+        expect(result.reasoning?.effort).not.toBe("ultra");
+        // 未识别值在优先级链的过滤阶段就被拦下了，压根不会进入
+        // clampReasoningEffortToModel，因此不应该有 phase=effort_clamped。
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("effort 是完全未识别的档位字符串，且没有任何下一级可回退——落到 config 默认值", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ model: "full-effort-model", output_config: { effort: "banana" } }),
+        makeModelConfig({ default_reasoning_effort: "medium" }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
     });
   });
 

@@ -17,7 +17,7 @@ vi.mock("@src/config.js", () => ({
   })),
 }));
 
-import { budgetToEffort, buildInstructions, clampReasoningEffortToModel } from "@src/translation/shared-utils.js";
+import { budgetToEffort, buildInstructions, clampReasoningEffortToModel, isRecognizedReasoningEffort } from "@src/translation/shared-utils.js";
 import { getConfig } from "@src/config.js";
 import type { CodexModelInfo } from "@src/models/model-store.js";
 
@@ -109,6 +109,30 @@ describe("budgetToEffort additional edge cases", () => {
  * 不重复验证算法本身对不对，职责分开：那边测优先级链接线对不对，这里测
  * 算法本身对不对。
  */
+describe("isRecognizedReasoningEffort", () => {
+  it("识别所有已知档位", () => {
+    for (const e of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
+      expect(isRecognizedReasoningEffort(e)).toBe(true);
+    }
+  });
+
+  it("不认识空字符串、大小写变体、完全陌生的字符串", () => {
+    expect(isRecognizedReasoningEffort("")).toBe(false);
+    expect(isRecognizedReasoningEffort("High")).toBe(false); // 大小写敏感，不做归一化猜测
+    expect(isRecognizedReasoningEffort("banana")).toBe(false);
+  });
+});
+
+/**
+ * ★★ 8.16：`clampReasoningEffortToModel` 的钳制方向修复——8.15 那版
+ * "不在支持列表里就钳到最高档"是任务描述阶段的方向性错误（只想到了 qa
+ * 实测的 `mini+max→502` 这一个方向，完全没考虑"请求的档位低于模型下限"
+ * 这个反方向），实现和两轮 review 都没跳出这个框，直到生产
+ * `models-cache.yaml` 里找出反例才发现——见 `shared-utils.ts` 里这个
+ * 函数头部注释的完整背景。这里的测试模型形状尽量用真实生产型号（
+ * `gpt-5.4-pro`: medium/high/xhigh 不含 low；`gpt-5-2-pro`: 只有单档
+ * medium），不编造不存在的组合。
+ */
 describe("clampReasoningEffortToModel", () => {
   function model(efforts: string[]): Pick<CodexModelInfo, "supportedReasoningEfforts"> {
     return { supportedReasoningEfforts: efforts.map((e) => ({ reasoningEffort: e, description: "" })) };
@@ -119,7 +143,7 @@ describe("clampReasoningEffortToModel", () => {
     expect(result).toEqual({ effort: "high", clamped: false, supported: ["low", "medium", "high", "xhigh"] });
   });
 
-  it("★ 请求的档位超出模型支持范围——钳到该模型支持的最高档，不是钳到最接近的档", () => {
+  it("请求高于模型支持上限——钳到上限（回归：8.15 覆盖过的方向，这次不能改坏）", () => {
     // gpt-5.4-mini 那类真实场景：只到 xhigh，客户端选 max。
     const result = clampReasoningEffortToModel("max", model(["low", "medium", "high", "xhigh"]));
     expect(result.effort).toBe("xhigh");
@@ -127,10 +151,42 @@ describe("clampReasoningEffortToModel", () => {
     expect(result.supported).toEqual(["low", "medium", "high", "xhigh"]);
   });
 
-  it("请求 ultra，模型只到 max——钳到 max", () => {
-    const result = clampReasoningEffortToModel("ultra", model(["low", "medium", "high", "xhigh", "max"]));
-    expect(result.effort).toBe("max");
+  it("★★ 请求低于模型支持下限——钳到下限，不是钳到上限（这是这轮真正要修的方向）", () => {
+    // 真实 gpt-5.4-pro 的形状：medium/high/xhigh，不含 low。客户端要最
+    // 便宜的 low，绝不能给出最贵的 xhigh。
+    const result = clampReasoningEffortToModel("low", model(["medium", "high", "xhigh"]));
+    expect(result.effort).toBe("medium");
     expect(result.clamped).toBe(true);
+  });
+
+  it("请求 minimal，模型最低只到 medium——同样钳到下限 medium", () => {
+    const result = clampReasoningEffortToModel("minimal", model(["medium", "high", "xhigh"]));
+    expect(result.effort).toBe("medium");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("★ 请求落在区间内但不是声明支持的具体值——钳到距离更近的那个（不是上限也不是下限，是真正的最近邻）", () => {
+    // 模型只支持 low 和 xhigh（跳过中间档），请求 medium：
+    // medium(3) 到 low(2) 距离1，到 xhigh(5) 距离2 → 应该钳到 low。
+    const result = clampReasoningEffortToModel("medium", model(["low", "xhigh"]));
+    expect(result.effort).toBe("low");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("★ 距离相等时取更低的档位——不确定时不该替用户多花钱", () => {
+    // 模型只支持 low 和 high，请求 medium：medium(3) 到 low(2) 距离1，
+    // 到 high(4) 距离1，平局，必须取 low。
+    const result = clampReasoningEffortToModel("medium", model(["low", "high"]));
+    expect(result.effort).toBe("low");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("★ 只有单档的模型（真实 gpt-5-2-pro 的形状，只有 medium）——无论请求什么都钳到这唯一一档", () => {
+    for (const requested of ["none", "minimal", "low", "high", "xhigh", "max", "ultra"]) {
+      const result = clampReasoningEffortToModel(requested, model(["medium"]));
+      expect(result.effort).toBe("medium");
+      expect(result.clamped).toBe(true);
+    }
   });
 
   it("请求的档位是模型支持列表里的最高档本身——不钳制（边界：等于上限不算超出）", () => {
@@ -139,30 +195,44 @@ describe("clampReasoningEffortToModel", () => {
     expect(result.effort).toBe("xhigh");
   });
 
-  it("模型声明支持 max/ultra——请求 max 原样放行，不钳到 xhigh", () => {
+  it("模型声明支持 max/ultra——请求 max 原样放行，不钳到别的档位", () => {
     const result = clampReasoningEffortToModel("max", model(["low", "medium", "high", "xhigh", "max", "ultra"]));
     expect(result.clamped).toBe(false);
     expect(result.effort).toBe("max");
   });
 
-  it("modelInfo 为 undefined（未知型号，没有任何元数据）——不钳制，原样放行", () => {
+  it("modelInfo 为 undefined（未知型号，没有任何元数据）——不钳制，原样放行（回归）", () => {
     const result = clampReasoningEffortToModel("ultra", undefined);
     expect(result).toEqual({ effort: "ultra", clamped: false, supported: [] });
   });
 
-  it("supportedReasoningEfforts 是空数组（比如纯图片生成模型）——不钳制，原样放行", () => {
+  it("supportedReasoningEfforts 是空数组（比如纯图片生成模型）——不钳制，原样放行（回归）", () => {
     const result = clampReasoningEffortToModel("high", model([]));
     expect(result).toEqual({ effort: "high", clamped: false, supported: [] });
   });
 
-  it("支持列表乱序也能正确找到最高档（不依赖声明顺序）", () => {
+  it("支持列表乱序也能正确找到最近邻（不依赖声明顺序）", () => {
     const result = clampReasoningEffortToModel("ultra", model(["xhigh", "low", "high", "medium"]));
     expect(result.effort).toBe("xhigh");
     expect(result.clamped).toBe(true);
   });
 
-  it("请求的档位是完全未知的字符串（既不在支持列表也不在排序表里）——钳到支持列表里排序最高的那个", () => {
-    const result = clampReasoningEffortToModel("super-ultra-mega", model(["low", "medium", "high"]));
+  // ★★ 8.16：这个函数自己对"完全未知字符串"的防御性兜底——主防线在调用方
+  // （`translateAnthropicToCodexRequest` 用 `isRecognizedReasoningEffort`
+  // 提前过滤，未识别值视为未提供、走 fallback 链，见该调用点注释），这里
+  // 测的是"万一有别的调用方没做那层过滤，直接把未知字符串传进来"时这个
+  // 函数自己的行为——未知档位的 rank 记为 -1（比所有已知档位都低），因此
+  // 会被判定为"最接近支持列表里 rank 最低的那个"，即钳到最低档，不是最高
+  // 档。选这个方向的理由和"距离相等时取更低"一致：面对完全不认识的值，
+  // 不确定时不该替用户多花钱。
+  it("请求的档位是完全未知的字符串——钳到支持列表里 rank 最低的那个（不是最高），这是这个函数自己的防御性默认方向", () => {
+    const result = clampReasoningEffortToModel("banana", model(["low", "medium", "high"]));
+    expect(result.effort).toBe("low");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("未知字符串 + 模型只支持 high/xhigh（不含更低档）——仍然钳到这份列表里最低的 high", () => {
+    const result = clampReasoningEffortToModel("banana", model(["high", "xhigh"]));
     expect(result.effort).toBe("high");
     expect(result.clamped).toBe(true);
   });

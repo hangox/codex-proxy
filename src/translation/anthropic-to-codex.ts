@@ -10,7 +10,7 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions, budgetToEffort, clampReasoningEffortToModel } from "./shared-utils.js";
+import { buildInstructions, budgetToEffort, clampReasoningEffortToModel, isRecognizedReasoningEffort } from "./shared-utils.js";
 import type { ModelConfigOverride } from "./shared-utils.js";
 import {
   anthropicToolsToCodex,
@@ -338,9 +338,24 @@ export function translateAnthropicToCodexRequest(
   // （trim 后）的值**参与后续判断，不能用原始值——否则 `" high "` 这种
   // 带前后空白但语义明确的值，会因为字符串不完全等于 `"high"` 而被误判成
   // "不在支持列表里"，同样被错误钳到最高档。
-  const explicitEffort = typeof req.output_config?.effort === "string" && req.output_config.effort.trim() !== ""
-    ? req.output_config.effort.trim()
-    : undefined;
+  //
+  // ★★ 8.16：trim 之后还要再过 `isRecognizedReasoningEffort` 这一关——
+  // 完全未知的档位字符串（比如客户端发了个我们没见过的新档位名，或者
+  // 纯粹的畸形值）不该被当成"客户端提供了一个具体选择"硬塞进
+  // `clampReasoningEffortToModel` 去猜一个钳制方向。这里在"钳到最高"
+  // /"钳到最低"/"当成没提供、让下一优先级接管"三个选项里选了第三个：
+  // 前两个都是在猜用户到底想要什么（我们连这个字符串是什么意思都不
+  // 知道，猜任何一个方向都没有依据），第三个是换到一个我们真正理解语义
+  // 的信号源（`thinking`/模型后缀/config 默认值），不是在赌概率。
+  // `clampReasoningEffortToModel` 自己对"万一还是收到未知字符串"这个
+  // 场景也有独立的防御性兜底（钳到最低档），两层职责分开，见该函数头部
+  // 注释。
+  const explicitEffort = (() => {
+    if (typeof req.output_config?.effort !== "string") return undefined;
+    const trimmed = req.output_config.effort.trim();
+    if (trimmed === "" || !isRecognizedReasoningEffort(trimmed)) return undefined;
+    return trimmed;
+  })();
   const thinkingEffort = mapThinkingToEffort(req.thinking);
   const requestedEffort =
     explicitEffort ??

@@ -17,8 +17,9 @@ vi.mock("@src/config.js", () => ({
   })),
 }));
 
-import { budgetToEffort, buildInstructions } from "@src/translation/shared-utils.js";
+import { budgetToEffort, buildInstructions, clampReasoningEffortToModel } from "@src/translation/shared-utils.js";
 import { getConfig } from "@src/config.js";
+import type { CodexModelInfo } from "@src/models/model-store.js";
 
 describe("budgetToEffort", () => {
   it("returns undefined for 0", () => {
@@ -97,5 +98,72 @@ describe("budgetToEffort additional edge cases", () => {
 
   it("returns 'xhigh' for very large budget (100000)", () => {
     expect(budgetToEffort(100000)).toBe("xhigh");
+  });
+});
+
+/**
+ * ★★ 8.15：`clampReasoningEffortToModel` 的独立单测——qa 实测过不钳制的
+ * 真实后果（gpt-5.4-mini + "max" → 上游连接空转、3 次重试全空、502），
+ * 这里锁住钳制算法本身的边界行为。`anthropic-to-codex.test.ts` 里的
+ * "output_config.effort" 那组测试用的是这个函数的 mock（复刻同一份逻辑），
+ * 不重复验证算法本身对不对，职责分开：那边测优先级链接线对不对，这里测
+ * 算法本身对不对。
+ */
+describe("clampReasoningEffortToModel", () => {
+  function model(efforts: string[]): Pick<CodexModelInfo, "supportedReasoningEfforts"> {
+    return { supportedReasoningEfforts: efforts.map((e) => ({ reasoningEffort: e, description: "" })) };
+  }
+
+  it("请求的档位在支持列表里——原样放行，不钳制", () => {
+    const result = clampReasoningEffortToModel("high", model(["low", "medium", "high", "xhigh"]));
+    expect(result).toEqual({ effort: "high", clamped: false, supported: ["low", "medium", "high", "xhigh"] });
+  });
+
+  it("★ 请求的档位超出模型支持范围——钳到该模型支持的最高档，不是钳到最接近的档", () => {
+    // gpt-5.4-mini 那类真实场景：只到 xhigh，客户端选 max。
+    const result = clampReasoningEffortToModel("max", model(["low", "medium", "high", "xhigh"]));
+    expect(result.effort).toBe("xhigh");
+    expect(result.clamped).toBe(true);
+    expect(result.supported).toEqual(["low", "medium", "high", "xhigh"]);
+  });
+
+  it("请求 ultra，模型只到 max——钳到 max", () => {
+    const result = clampReasoningEffortToModel("ultra", model(["low", "medium", "high", "xhigh", "max"]));
+    expect(result.effort).toBe("max");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("请求的档位是模型支持列表里的最高档本身——不钳制（边界：等于上限不算超出）", () => {
+    const result = clampReasoningEffortToModel("xhigh", model(["low", "medium", "high", "xhigh"]));
+    expect(result.clamped).toBe(false);
+    expect(result.effort).toBe("xhigh");
+  });
+
+  it("模型声明支持 max/ultra——请求 max 原样放行，不钳到 xhigh", () => {
+    const result = clampReasoningEffortToModel("max", model(["low", "medium", "high", "xhigh", "max", "ultra"]));
+    expect(result.clamped).toBe(false);
+    expect(result.effort).toBe("max");
+  });
+
+  it("modelInfo 为 undefined（未知型号，没有任何元数据）——不钳制，原样放行", () => {
+    const result = clampReasoningEffortToModel("ultra", undefined);
+    expect(result).toEqual({ effort: "ultra", clamped: false, supported: [] });
+  });
+
+  it("supportedReasoningEfforts 是空数组（比如纯图片生成模型）——不钳制，原样放行", () => {
+    const result = clampReasoningEffortToModel("high", model([]));
+    expect(result).toEqual({ effort: "high", clamped: false, supported: [] });
+  });
+
+  it("支持列表乱序也能正确找到最高档（不依赖声明顺序）", () => {
+    const result = clampReasoningEffortToModel("ultra", model(["xhigh", "low", "high", "medium"]));
+    expect(result.effort).toBe("xhigh");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("请求的档位是完全未知的字符串（既不在支持列表也不在排序表里）——钳到支持列表里排序最高的那个", () => {
+    const result = clampReasoningEffortToModel("super-ultra-mega", model(["low", "medium", "high"]));
+    expect(result.effort).toBe("high");
+    expect(result.clamped).toBe(true);
   });
 });

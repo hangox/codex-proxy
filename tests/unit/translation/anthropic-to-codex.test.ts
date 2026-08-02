@@ -19,6 +19,15 @@ vi.mock("@src/paths.js", () => ({
   getConfigDir: vi.fn(() => "/tmp/test-config"),
 }));
 
+// ★ 8.15：`clampReasoningEffortToModel` 的 mock 复刻真实实现的行为（不是
+// stub 成恒等函数）——因为本文件里"output_config.effort 优先级最高"/
+// "钳制"这两组新测试依赖它的真实语义（不在 supported 列表里就钳到最高档，
+// supported 为空就不钳）。钳制逻辑本身的独立单测在
+// `tests/unit/translation/shared-utils.test.ts`，这里只是复用同一份逻辑
+// 让翻译层的优先级测试能跑通，不重复验证钳制算法本身对不对。
+const REASONING_EFFORT_RANK: Record<string, number> = {
+  none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6, ultra: 7,
+};
 vi.mock("@src/translation/shared-utils.js", () => ({
   buildInstructions: vi.fn((text: string) => text),
   budgetToEffort: vi.fn((budget: number | undefined) => {
@@ -28,6 +37,18 @@ vi.mock("@src/translation/shared-utils.js", () => ({
     if (budget < 20000) return "high";
     return "xhigh";
   }),
+  clampReasoningEffortToModel: vi.fn(
+    (effort: string, modelInfo: { supportedReasoningEfforts?: { reasoningEffort: string }[] } | undefined) => {
+      const supported = (modelInfo?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
+      if (supported.length === 0 || supported.includes(effort)) {
+        return { effort, clamped: false, supported };
+      }
+      const highest = [...supported].sort(
+        (a, b) => (REASONING_EFFORT_RANK[a] ?? -1) - (REASONING_EFFORT_RANK[b] ?? -1),
+      ).at(-1);
+      return { effort: highest ?? effort, clamped: true, supported };
+    },
+  ),
 }));
 
 vi.mock("@src/translation/tool-format.js", async (importOriginal) => {
@@ -48,6 +69,33 @@ vi.mock("@src/models/model-store.js", () => ({
   }),
   getModelInfo: vi.fn((id: string) => {
     if (id === "gpt-5.4") return { defaultReasoningEffort: "medium" };
+    // ★ 8.15：专供 output_config.effort 优先级/钳制测试用——只声明到
+    // xhigh，不含 max/ultra，模拟真实 gpt-5.4-mini 那类模型。
+    if (id === "limited-effort-model") {
+      return {
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+        ],
+      };
+    }
+    // ★ 8.15：支持到 max/ultra 的模型，模拟真实 gpt-5.6-sol。
+    if (id === "full-effort-model") {
+      return {
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+          { reasoningEffort: "max", description: "" },
+          { reasoningEffort: "ultra", description: "" },
+        ],
+      };
+    }
     return undefined;
   }),
 }));
@@ -390,6 +438,174 @@ describe("translateAnthropicToCodexRequest", () => {
       );
       // adaptive without budget → undefined, no config default → no effort set
       expect(result.reasoning?.effort).toBeUndefined();
+    });
+  });
+
+  // ── output_config.effort（8.15：qa 抓包证实的真实 Claude Code 信号）────
+
+  describe("output_config.effort", () => {
+    it("优先级最高——比 thinking.budget_tokens 推出来的档位优先采纳", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          // adaptive 模式，budget_tokens 缺失是真实 Claude Code 的常态，
+          // 这里额外显式给了 budget_tokens 是为了证明"就算两者都在，
+          // output_config.effort 也赢"——不是因为 thinking 那条路失效了
+          // 才轮到它。
+          thinking: { type: "adaptive", budget_tokens: 500 } as never,
+          output_config: { effort: "high" },
+        }),
+      );
+      // budgetToEffort(500) 会得到 "low"，但 output_config.effort="high"
+      // 必须赢。
+      expect(result.reasoning?.effort).toBe("high");
+    });
+
+    it("没有 thinking 字段时单独生效（真实 Claude Code adaptive 模式的常态：只有 output_config，没有 budget_tokens）", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "xhigh" },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("xhigh");
+    });
+
+    it("不带 output_config 时完全不影响现有优先级链（thinking > suffix > config default）", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("★★ 钳制：模型只支持到 xhigh，客户端选 max 时钳到 xhigh，并打一行 warn 日志", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "limited-effort-model",
+            output_config: { effort: "max" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("xhigh");
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain("phase=effort_clamped");
+        expect(logged).toContain("requested=max");
+        expect(logged).toContain("clamped_to=xhigh");
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("模型支持 max/ultra 时不钳制，原样放行，也不打 warn", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "max" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("max");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("模型没有 supportedReasoningEfforts 元数据（未知型号）时不钳制，原样放行——没有依据就不假装有判断", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "totally-unknown-model",
+            output_config: { effort: "ultra" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("ultra");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("effort 不是字符串（畸形请求）时忽略 output_config，回退到下一优先级", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          output_config: { effort: 123 } as never,
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      // output_config.effort 不是字符串 → 视为未提供，回退到 thinking
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    // ★★ reviewer2 揪出的真缺陷：`typeof==="string"` 通不过空串/空白串
+    // 这一关，`??` 又只处理 null/undefined 不处理空字符串，两个坏结果都
+    // 不报错，只是安静地做错事——必须分别锁住"到底回退到了哪一级"，不能
+    // 只断言"没崩"。
+
+    it("★ effort 是空字符串——不能整条 fallback 链都被顶掉、变成完全不带 reasoning（这是改动前都不会出现的更差结果），必须回退到下一级", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          output_config: { effort: "" },
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      // 决定性断言：不是"没报错"，是"真的回退到了 thinking 算出来的 medium"
+      // ——如果这里退化成 undefined（bug 修复前的行为），说明空串又把
+      // 整条链吞掉了。
+      expect(result.reasoning?.effort).toBe("medium");
+      expect(result.reasoning?.effort).not.toBeUndefined();
+    });
+
+    it("★ effort 是空字符串，且没有任何下一级可回退——必须落到 config 默认值，而不是完全不带 reasoning", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ output_config: { effort: "" } }),
+        makeModelConfig({ default_reasoning_effort: "medium" }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("★★ effort 是纯空白字符串——不能被钳制成模型支持的最高档（等于把一个空白值悄悄升级成 max，这不是处理，是换了语义），必须回退到下一级", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model", // 支持到 max/ultra，最容易暴露"被钳成 max"这个坏结果
+            output_config: { effort: "   " },
+            thinking: { type: "enabled", budget_tokens: 5000 },
+          }),
+        );
+        // 决定性断言：必须是 thinking 算出来的 medium，不能是 max（钳制的
+        // 产物）——如果这里是 "max"，说明空白串被当成"未知档位"送进了
+        // clampReasoningEffortToModel，被钳到了这个模型支持的最高档。
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("max");
+        // 空白串在回退阶段就被过滤掉了，压根不会进入钳制逻辑，因此不应该
+        // 有任何 phase=effort_clamped 的 warn。
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("effort 带前后空白但本身是合法档位（' high '）——应该按 trim 后的规范值 'high' 处理，不能因为原始字符串不完全匹配而被误判成未知档位、钳到最高档", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "limited-effort-model", // 支持到 xhigh，若被误钳会变成 xhigh 而不是 high
+            output_config: { effort: " high " },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("high");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

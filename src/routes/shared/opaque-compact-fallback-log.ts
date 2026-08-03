@@ -92,6 +92,17 @@ export interface OpaqueCompactFallbackInput {
     estimatedTokens?: number;
     budgetTokens?: number;
     /**
+     * ★ #97（team-lead 派发，reviewer 交叉审查 #96 时发现的观测缺口）：
+     * `CompactServiceError.estimateSource`——见该字段在
+     * `CompactServiceErrorClassification` 的完整文档。只对
+     * `budget_exceeded`（`skippedUpstream:true`）有意义。
+     */
+    estimateSource?: "cheap" | "precise" | "precise_extrapolated";
+    /** ★ #97：`CompactServiceError.processedFraction`，见同名字段文档。 */
+    processedFraction?: number;
+    /** ★ #97：`CompactServiceError.cheapEstimateTokens`，见同名字段文档。 */
+    cheapEstimateTokens?: number;
+    /**
      * ★ #88：`CompactServiceError.durationMs`——见
      * `compact-outcome-log.ts` 的 `CompactOutcomeEvent.duration_ms` 文档。
      * 非 `CompactServiceError` 的错误没有这个字段，传 `undefined` 即可，
@@ -146,6 +157,11 @@ export function recordOpaqueCompactFallback(input: OpaqueCompactFallbackInput): 
     outcome: input.classification?.skippedUpstream ? "budget_exceeded" : "upstream_failed",
     estimatedTokens: input.classification?.estimatedTokens,
     budgetTokens: input.classification?.budgetTokens,
+    // ★ #97：三件套原样透传——只对 budget_exceeded 有意义，upstream_failed
+    // 场景 input.classification?.estimateSource 等本来就是 undefined。
+    estimateSource: input.classification?.estimateSource,
+    processedFraction: input.classification?.processedFraction,
+    cheapEstimateTokens: input.classification?.cheapEstimateTokens,
     reason: input.errorName,
     durationMs: input.classification?.durationMs,
     upstreamMs: input.classification?.upstreamMs,

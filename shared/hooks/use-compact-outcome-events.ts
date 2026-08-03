@@ -20,6 +20,33 @@ export interface CompactOutcomeEvent {
   replayed?: boolean;
   estimated_tokens?: number;
   budget_tokens?: number;
+  /**
+   * ★ #97（用户原话："这个为什么是降级？上面能不能加个 id？"——team-lead
+   * 排查用户报告的一条具体降级记录时发现的观测缺口）：`estimated_tokens`
+   * 是用哪种方法算出来的。
+   *
+   * - `"cheap"`：字节比例粗筛，粗筛本身就在预算内。
+   * - `"precise"`：真分词器完整跑完，没有触发 2000ms 熔断。
+   * - `"precise_extrapolated"`：精确估算触发了熔断，是按已处理比例外推
+   *   出来的——**可信度明显低于 `"precise"`**，具体看 `processed_fraction`。
+   *
+   * 判据是"这个数可不可信"：不做区分（合并成一个标签）会把可信度天差
+   * 地别的两种情况标成同一个值，比完全不记录更糟。仅 `budget_exceeded`
+   * 有值。
+   */
+  estimate_source?: "cheap" | "precise" | "precise_extrapolated";
+  /**
+   * ★ #97：仅 `estimate_source === "precise_extrapolated"` 时有值——已
+   * 处理内容占总长度的比例（0~1）。判断外推可信度**最关键**的字段：外推
+   * 自 20%（刚过下限）和外推自 90% 的可信度不是一个量级。
+   */
+  processed_fraction?: number;
+  /**
+   * ★ #97：`planCompactRequestForBudget` 判断一开始就会算的粗筛值，跟
+   * `estimated_tokens`（可能是精确值）并存——每一条 `budget_exceeded`
+   * 记录因此是一个"粗筛 vs 精确"的真实标定样本。仅 `budget_exceeded` 有值。
+   */
+  cheap_estimate_tokens?: number;
   reason?: string;
   /**
    * ★ #96（reviewer 交叉审查发现的用户可见误导）：`denied` 记录的真实 HTTP

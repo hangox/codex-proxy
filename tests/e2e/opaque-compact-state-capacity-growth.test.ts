@@ -1,9 +1,16 @@
 /**
  * ★ 8.20（team-lead 派发，task #78 续）：TTL 从 12h 放到 7 天之后，
  * predecessor state 从不显式删除（只靠 LRU/TTL 自然回收）意味着存量条数
- * 按 ~14 倍累积——`capacity`(1024) 可能先于 `maxBytes`(64MiB) 触顶
- * （实测 byte_size≈48.8KB < 64MiB/1024=64KB，按 team-lead 的判据，条数
- * 上限确实先到）。
+ * 按 ~14 倍累积——这轮实测发现之后，`capacity`/`max_bytes` 的默认值本身
+ * 也跟着调整过（当时是 1024/64MiB，配平计算过程见 `config-schema.ts`
+ * 里 `capacity`/`max_bytes` 各自的字段注释）。
+ *
+ * ★ #96（reviewer 交叉审查发现的文档脱节）：**当前**生产默认已经是
+ * `capacity=4096`/`max_bytes=256MiB`，不是这里历史narrative 里提到的
+ * 1024/64MiB——下面测试用例里出现的 `capacity: 8`/`capacity: 1` 这类小
+ * 数值是**刻意**为了快速复现淘汰边界而调小的测试参数，跟当前生产默认值
+ * 无关，不需要跟着改；这条注释只更新"当时触发这轮调查的默认值是多少"
+ * 这段历史叙述，避免被误读成"生产现在还是 1024/64MiB"。
  *
  * 这个文件回答两个具体问题（本地测，不碰生产）：
  *
@@ -13,9 +20,10 @@
  *    `opaque-compact-repository.ts` 的 `pruneWithinTransaction` 里
  *    `victim === undefined → throw` 分支只在"受保护的行本身就超过
  *    capacity"时触发（当前写入的新行 + 它的 predecessor 两行永远受保护，
- *    不参与淘汰）——正常 capacity（1024，或者这里为了快速复现调小到 8）
- *    远大于这个保护下限（2），预期是优雅降级；capacity 小到 1 才会真的
- *    触发硬失败分支，用来确认"万一真的顶到"时客户端看到的是什么。
+ *    不参与淘汰）——正常 capacity（无论是当时的 1024 还是现在的 4096，
+ *    或者这里为了快速复现调小到 8）远大于这个保护下限（2），预期是优雅
+ *    降级；capacity 小到 1 才会真的触发硬失败分支，用来确认"万一真的顶到"
+ *    时客户端看到的是什么。
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";

@@ -42,9 +42,10 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
       // 是刻意的（Docker/nginx 健康检查不能要求登录），生产经 nginx 对外
       // 暴露，这条路径因此是匿名可读的。容量数字不是凭据，但是运营信息
       // （活跃会话规模、离上限多远），理论上能给资源耗尽攻击做侦察，不该
-      // 放在免鉴权端点上。挪到了 `GET /admin/compact-outcomes/capacity`
-      // （受 `dashboardAuth` 中间件保护，和其它 Dashboard 数据端点同等
-      // 待遇），`/health` 只保留原有的 readiness 布尔值。
+      // 放在免鉴权端点上。挪到了 `GET /admin/general-settings` 返回体里的
+      // `opaque_compact_state_capacity` 字段（受 `dashboardAuth` 中间件
+      // 保护，和其它 Dashboard 数据端点同等待遇——不是独立路径，见
+      // `settings.ts` 的同名字段），`/health` 只保留原有的 readiness 布尔值。
       // ★ version 字段是这条注释写下之后唯一新增的字段——刻意只加这一个，
       // 不要顺手塞别的运营信息进来，见上面这条注释的教训。
       opaque_compact_state: {

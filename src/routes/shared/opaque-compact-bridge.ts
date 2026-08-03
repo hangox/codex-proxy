@@ -271,6 +271,10 @@ export async function respondWithOpaqueCompactMarker(options: {
         promptTooLong: true,
         estimatedTokens: budgetPlan.estimatedTokens,
         budgetTokens: budgetPlan.budgetTokens,
+        // ★ #88：从未联系上游，这个耗时纯粹是 restore/preservedTail 合并/
+        // 预算预判本身的开销——理应是毫秒级，如果这里也慢了说明瓶颈根本
+        // 不在上游。
+        durationMs: Date.now() - started,
       },
     );
   }
@@ -322,20 +326,48 @@ export async function respondWithOpaqueCompactMarker(options: {
         model: translated.model,
         outcome: "success",
         replayed: true,
+        // ★ #88：这条路径没有真正联系上游（edge 命中直接回放），只有总耗时，
+        // 没有 upstreamMs——理应是毫秒级的 DB 查找，耗时异常本身就是线索
+        // （比如锁竞争）。
+        durationMs: Date.now() - started,
       });
       return makeMarkerResponse(replayed, model);
     }
   }
 
-  const compact = await executeCompactOnly({
-    accountPool,
-    cookieJar,
-    proxyPool,
-    compactRequest,
-    signal: abortController.signal,
-    requestId,
-    requiredEntryId,
-  });
+  let compact: Awaited<ReturnType<typeof executeCompactOnly>>;
+  try {
+    compact = await executeCompactOnly({
+      accountPool,
+      cookieJar,
+      proxyPool,
+      compactRequest,
+      signal: abortController.signal,
+      requestId,
+      requiredEntryId,
+    });
+  } catch (error) {
+    // ★ #88：补 durationMs，用这个函数自己的 `started`（bridge 入口），
+    // 不是 executeCompactOnly 内部各 throw site 现场算的——起点必须跟
+    // success outcome 的 duration_ms 一致（同样是 bridge 入口），两种
+    // outcome 的耗时数字才能直接比较。只补这一个字段，其余分类原样保留，
+    // 不吞异常、不改变错误类型——非 CompactServiceError（比如 AbortError）
+    // 原样穿透。
+    if (error instanceof CompactServiceError) {
+      throw new CompactServiceError(error.message, error.status, error.useFormat429, error.retryCount, {
+        skippedUpstream: error.skippedUpstream,
+        promptTooLong: error.promptTooLong,
+        estimatedTokens: error.estimatedTokens,
+        budgetTokens: error.budgetTokens,
+        cause: error.cause,
+        durationMs: Date.now() - started,
+        // upstreamMs（如果 executeCompactOnly 内部已经设置过）原样保留——
+        // 这里只补总耗时，不动这个子集字段。
+        upstreamMs: error.upstreamMs,
+      });
+    }
+    throw error;
+  }
   if (abortController.signal.aborted) throw new DOMException("Aborted", "AbortError");
   // save() 内部在一个事务里完成 CAS + 落盘；只有它正常返回（COMMIT 成功）
   // 之后 marker 才会发给客户端，避免客户端拿到一个数据库里不存在的 marker。
@@ -366,12 +398,21 @@ export async function respondWithOpaqueCompactMarker(options: {
   );
   // ★ 8.10：这是唯一一处此前只打 console.log、重启就丢的"成功"事件——
   // Dashboard 快速压缩成功率需要它落盘，见 compact-outcome-log.ts 头部注释。
+  // ★ #88：total_ms/compact_ms 此前只打进 console.log，重启就丢，跟 8.10
+  // 之前"成功"事件本身的命运一样——一并落进 compact-outcomes.jsonl。
+  // `compact.compactLatencyMs` 是 executeCompactOnly 已经算好的上游调用
+  // 耗时（哪怕重试了几次账号，也是最终成功那一次的耗时，不含前面失败尝试
+  // 的时间——这是"这次真正拿到 output 花了多久"，不是"整个函数调用花了
+  // 多久"，两者刻意不同）；`Date.now() - started` 才是总耗时，两者的差值
+  // 就是 restore/preservedTail 合并/预算裁剪/save 这些"我们自己的开销"。
   recordCompactOutcome({
     requestId,
     clientConversationId,
     model: translated.model,
     outcome: "success",
     replayed: stored.replayed,
+    durationMs: Date.now() - started,
+    upstreamMs: compact.compactLatencyMs,
   });
   return makeMarkerResponse(stored.marker, model);
 }

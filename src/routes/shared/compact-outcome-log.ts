@@ -70,6 +70,28 @@ export interface CompactOutcomeEvent {
   budget_tokens?: number;
   /** `upstream_failed` 的 error name / `denied` 的结构化 reason。 */
   reason?: string;
+  /**
+   * ★ #88：这次尝试从进入 compact 相关代码路径到落盘/拒绝/降级为止的总耗时
+   * （毫秒）。**四种 outcome 都记**——不仅是 `success`：`denied`（409/
+   * fail-closed）本该是毫秒级，`budget_exceeded`（预算预判提前拦截，从未
+   * 打上游）同样该是毫秒级；如果哪次这类"本该快"的 outcome 耗时到了秒级，
+   * 耗时数字本身就是排查线索（比如锁竞争、store 慢查询），不是只有
+   * `upstream_failed`/`success` 才有耗时值得看。
+   *
+   * 可选字段：旧版本写的历史行没有这个字段，读侧（Dashboard/统计聚合）必须
+   * 按"缺失=未知"处理，不能假设它总是存在，也不能补 0（0 会被误读成"真的
+   * 是 0ms"）。
+   */
+  duration_ms?: number;
+  /**
+   * ★ #88：仅当这次尝试真的发起了上游 compact 调用时才有值（`success`
+   * 的非 `replayed` 分支、`upstream_failed`）——`upstream_ms` 是
+   * `duration_ms` 的一个子集，用来回答"慢在上游还是慢在我们自己这边
+   * （restore/preserved tail 合并/预算裁剪/save）"这个问题。`replayed`
+   * 命中幂等短路、`budget_exceeded`、`denied` 都没有真正联系上游，这个
+   * 字段应该缺省（不是 0）。
+   */
+  upstream_ms?: number;
 }
 
 export interface RecordCompactOutcomeInput {
@@ -81,6 +103,10 @@ export interface RecordCompactOutcomeInput {
   estimatedTokens?: number;
   budgetTokens?: number;
   reason?: string;
+  /** 见 {@link CompactOutcomeEvent.duration_ms}。 */
+  durationMs?: number;
+  /** 见 {@link CompactOutcomeEvent.upstream_ms}。 */
+  upstreamMs?: number;
 }
 
 const LOG_FILE = "compact-outcomes.jsonl";
@@ -129,6 +155,8 @@ export function recordCompactOutcome(input: RecordCompactOutcomeInput): void {
       ...(input.estimatedTokens !== undefined ? { estimated_tokens: input.estimatedTokens } : {}),
       ...(input.budgetTokens !== undefined ? { budget_tokens: input.budgetTokens } : {}),
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.durationMs !== undefined ? { duration_ms: input.durationMs } : {}),
+      ...(input.upstreamMs !== undefined ? { upstream_ms: input.upstreamMs } : {}),
     };
 
     rotateJsonlIfNeeded(logPath(), backupPath(), maxBytes);

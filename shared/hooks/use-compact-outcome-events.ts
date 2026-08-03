@@ -21,6 +21,18 @@ export interface CompactOutcomeEvent {
   estimated_tokens?: number;
   budget_tokens?: number;
   reason?: string;
+  /**
+   * ★ #88：这次尝试的总耗时（毫秒）——四种 outcome 都可能有值，缺省是
+   * "没采集到"（旧版本落盘的历史行），不是 0，前端渲染时要区分这两种情况。
+   */
+  duration_ms?: number;
+  /**
+   * ★ #88：这次尝试里确定花在联系上游的那一段耗时（毫秒），是
+   * `duration_ms` 的子集。只有真的发起过上游 compact 调用才有值——
+   * `success` 的幂等回放分支、`budget_exceeded`、大多数 `denied` 都没有
+   * 这个概念，缺省不代表异常。
+   */
+  upstream_ms?: number;
 }
 
 export type CompactOutcomeFilter = CompactOutcome | "all";

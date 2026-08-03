@@ -315,5 +315,42 @@ describe("recordOpaqueCompactFallback", () => {
       const [entry] = readCompactOutcomeLines();
       expect(entry.outcome).toBe("upstream_failed");
     });
+
+    // ★ #88：classification.durationMs/upstreamMs 透传到 compact-outcomes.jsonl。
+    it("classification.durationMs/upstreamMs 原样透传给 duration_ms/upstream_ms", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-timed",
+        model: "gpt-5.6-sol",
+        inputItems: 10,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Codex API error (429): rate limited",
+        classification: { skippedUpstream: false, durationMs: 1234, upstreamMs: 980 },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect(entry.duration_ms).toBe(1234);
+      expect(entry.upstream_ms).toBe(980);
+    });
+
+    it("没有 durationMs/upstreamMs 时省略键，不补 0", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-untimed",
+        model: "m",
+        inputItems: 1,
+        clientConversationId: null,
+        errorName: "CompactServiceError",
+        errorMessage: "boom",
+        classification: { skippedUpstream: true, estimatedTokens: 1, budgetTokens: 1 },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect("duration_ms" in entry).toBe(false);
+      expect("upstream_ms" in entry).toBe(false);
+    });
   });
 });

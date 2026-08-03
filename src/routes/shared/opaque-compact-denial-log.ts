@@ -86,6 +86,22 @@ export interface OpaqueCompactDenialInput {
    * 本身对得上，不用光靠注释自律。
    */
   cause?: RecompactFailureCause | OpaqueCompactStateFailure;
+  /**
+   * ★ #88：这次请求从进入 `/v1/messages` 处理到这次 409/fail-closed 决策
+   * 为止的耗时（毫秒）。只喂进 `compact-outcomes.jsonl`（供 Dashboard 压缩
+   * 明细面板显示），不进 `error-log.jsonl` 的白名单 context——那份是独立的
+   * 取证日志（8.6），字段白名单变更影响更大，这次不动它。409/fail-closed
+   * 理应是毫秒级；如果哪次耗时到了秒级，耗时数字本身就是排查线索（锁竞争/
+   * store 慢查询），不是只有真正打了上游的失败才值得记耗时。
+   */
+  durationMs?: number;
+  /**
+   * ★ #88：只有 `recompact_failed_original_account` 这一类 denial 可能真的
+   * 联系过上游（`CompactServiceError.upstreamMs`，见该字段文档）——其它
+   * denial 分支（缺 session 上下文、store 未就绪等）在联系上游之前就
+   * fail-closed 了，没有这个概念，不强凑。
+   */
+  upstreamMs?: number;
 }
 
 /** 记录一次 opaque compact 的 409 / fail-closed 决策。绝不抛出。 */
@@ -131,5 +147,7 @@ export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void
     model: input.model ?? "unknown",
     outcome: "denied",
     reason: input.reason,
+    durationMs: input.durationMs,
+    upstreamMs: input.upstreamMs,
   });
 }

@@ -163,6 +163,27 @@ describe("CompactDetailPage — 列表", () => {
     expect(setOutcome).toHaveBeenCalledWith("denied");
   });
 
+  // ★ #88：列表新增耗时列。只显示总耗时（简洁），不含上游耗时的括注——
+  // 那个更详细的展示放在详情面板那一行。
+  it("★ #88：列表行显示总耗时列（毫秒/秒格式化），缺省时显示占位符", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(
+      makeEventsState({ events: [makeEvent({ duration_ms: 1234, upstream_ms: 980 })] }),
+    );
+    renderPage();
+    // 列表列只显示总耗时的秒/毫秒格式化值，不含"（upstream ...）"括注。
+    expect(screen.getByText("1.2s")).toBeTruthy();
+  });
+
+  it("★ #88：duration_ms 缺省（旧版本落盘的历史行）时列表显示 '—'，不是 '0ms'", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(
+      makeEventsState({ events: [makeEvent({ duration_ms: undefined, upstream_ms: undefined })] }),
+    );
+    renderPage();
+    expect(screen.getByText("—")).toBeTruthy();
+  });
+
   it("★★ 汇总区点击结果行也调用 setOutcome——这是汇总和列表联动的落地机制", () => {
     const setOutcome = vi.fn();
     mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
@@ -350,6 +371,40 @@ describe("CompactDetailPage — 详情面板", () => {
 
     expect(screen.getByText("CompactServiceError")).toBeTruthy();
     expect(screen.getByText(/Upstream was contacted and rejected/)).toBeTruthy();
+  });
+
+  // ★ #88：详情面板新增耗时行——总耗时 + 上游耗时括注，适用于所有 outcome
+  // （不是只有 success/upstream_failed 才显示），放在跟 outcome 无关的
+  // "Record" 分组里。
+  it("★ #88：详情面板显示耗时行，upstream_ms 存在时括注上游耗时", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ outcome: "success", replayed: false, duration_ms: 622, upstream_ms: 480 });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText(/622ms/)).toBeTruthy();
+    expect(screen.getByText(/480ms/)).toBeTruthy();
+  });
+
+  it("★ #88：upstream_ms 缺省时详情面板只显示总耗时，不括注上游耗时", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ outcome: "success", replayed: true, duration_ms: 4, upstream_ms: undefined });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("4ms")).toBeTruthy();
+  });
+
+  it("★ #88：duration_ms 也缺省时详情面板的耗时行本身仍然存在，只是显示占位符", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ outcome: "denied", reason: "store_unavailable", duration_ms: undefined, upstream_ms: undefined });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    // "Duration" 同时出现在列表列头和详情面板的行标签里——这里只要详情
+    // 面板那个（在右侧详情卡片容器内），不是列头。
+    const durationLabels = screen.getAllByText("Duration");
+    expect(durationLabels.length).toBeGreaterThanOrEqual(2);
   });
 
   it("★ conv_hash 隐私提示在详情面板里可见，不是只在页头出现一次", () => {

@@ -8,7 +8,7 @@ import { getConfigDir, getDataDir, getBinDir, isEmbedded } from "../../paths.js"
 import { getTransportInfo } from "../../tls/transport.js";
 import { getProxyUrl } from "../../tls/proxy.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
-import { getOpaqueCompactStateReadiness } from "../shared/opaque-compact-state.js";
+import { getOpaqueCompactStateReadiness, getOpaqueCompactStateCapacity } from "../shared/opaque-compact-state.js";
 
 export function createHealthRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -23,9 +23,14 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
       pool: { total: poolSummary.total, active: poolSummary.active },
       // opaque state readiness。reason 与 Admin、路由 409 三处同名同义，
       // 且只含封闭枚举值——不含 session/account/stateId/路径等可识别信息。
+      // ★ 8.20（生产事故复盘）：新增 capacity 字段——排查"用户是被 TTL
+      // 过期还是被 LRU 挤掉"这次完全靠翻客户端 transcript 交叉验证，服务端
+      // 自己对"当前有多少条 state、离 capacity/maxBytes 上限还有多远"没有
+      // 任何可观测性。只含聚合数值，store 未就绪时为 null（不强凑假数据）。
       opaque_compact_state: {
         enabled: config.model.claude_code_opaque_compact_experimental,
         ...getOpaqueCompactStateReadiness(),
+        capacity: getOpaqueCompactStateCapacity(),
       },
       timestamp: new Date().toISOString(),
     });

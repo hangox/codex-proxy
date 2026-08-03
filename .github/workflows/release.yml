@@ -11,6 +11,32 @@ on:
         required: true
         type: string
 
+# 按 ref 隔离并发组，且 cancel-in-progress 必须是 false，不是 true——
+# 2026-08-03 发 v2.0.96 时真实撞到：tag push 自己触发的一条和手动
+# workflow_dispatch 的一条并发跑（此前完全没有 concurrency 组），两条
+# 抢同一个 `gh release create $TAG ... || true`，其中一条的 macOS arm64
+# job 在 `gh release upload` 那步报 HTTP 404（release 对象在它读到 ID 和
+# 它真正上传之间被另一条并发跑动过）。
+#
+# 修法特意不照抄 docker-publish.yml 的 `cancel-in-progress: true`：两个
+# workflow 的"可中断性"不一样。docker-publish.yml 被 cancel 掉的是镜像
+# 构建，中途取消没有副作用（没有镜像 = 没有镜像，天然幂等）。这个
+# workflow 被 cancel 掉的是**正在给一个 `--draft=false` 的公开 GitHub
+# Release 上传资产**——如果在某个平台 job 上传到一半被 cancel，会留下一个
+# 真实存在、对外可见、但资产不全的 release，比现在"两条都跑完、只是其中
+# 一条失败"更糟：失败的 run 只是浪费一次 CI 资源、真正 checkout 了 tag
+# ref 的那条完整发布了所有资产，用户看到的 release 从来没有缺过东西。
+# 换成 `true` 会用一个更隐蔽的问题（release 悄悄资产不全）换掉一个更
+# 明显的问题（一条 run 失败），是倒退不是修复。
+# 用 `cancel-in-progress: false`（排队，不抢占）——仓库里 bump-electron.yml
+# 已经是这个选择（`group: bump-version, cancel-in-progress: false`），
+# 不是本仓库第一次这么做。代价是第二个触发要多等第一个跑完，换来的是不
+# 会再有"半成品 release 对外可见"这个更危险的失败模式。
+# 锁定测试：tests/unit/ci/release-concurrency.test.ts
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 

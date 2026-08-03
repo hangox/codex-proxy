@@ -15,6 +15,45 @@ const OUTCOME_META: Record<CompactOutcome, { icon: string; labelKey: Translation
   denied: { icon: "🛑", labelKey: "compactOutcomeDenied", pillClass: "bg-danger-container text-danger border-danger/30" },
 };
 
+/**
+ * ★ #96（reviewer 交叉审查发现的用户可见误导）：`#91` 之前 `denied` 恒等于
+ * 409，Dashboard 一直硬编码"denied = 409 = 建议 /clear"这个假设。`#91` 之后
+ * 族 A（自愈候选撞在非 compact 请求上）改成了 400，同一个 `denied` 集合里
+ * 现在混着三种性质完全不同的记录——继续给统一指引会教用户做错事（对一条
+ * 400/族 A 的记录说"用 /clear"，而正确动作是"下次 /compact 自动恢复"，
+ * /clear 还会真的清空整个会话）。
+ *
+ * 这里镜像后端两处判断（不是重新发明分类）：
+ * - `messages.ts` 的 `isSelfHealableOpaqueCompactStateFailure`（族 A：
+ *   not_found/expired/missing）——命中时这条 denied 记录的 `reason` 就是
+ *   这三个值之一，说明这是一次撞在非 compact 请求上的自愈候选（真正的
+ *   compact 请求会走 200 自愈，不会出现在这里）。
+ * - `messages.ts` 的 `describeRecompactFailure` 三桶划分——只有
+ *   `reason === "recompact_failed_original_account"` 的记录会带 `cause`。
+ *
+ * 判断顺序：先查 `reason`（族 A 判断不需要 `cause`，旧数据也能正确分类），
+ * 再查 `cause`（族 A 之外，只有 recompact 聚合桶的记录才有 `cause`）。
+ */
+const SELF_HEALABLE_DENIED_REASONS = new Set(["expired", "not_found", "missing"]);
+const CONCURRENCY_DENIED_CAUSES = new Set(["stale_generation", "preserved_tail_conflict"]);
+
+function deniedGuidanceKey(e: CompactOutcomeEvent): TranslationKey {
+  if (e.reason !== undefined && SELF_HEALABLE_DENIED_REASONS.has(e.reason)) {
+    return "compactDetailHowDeniedSelfHeal";
+  }
+  if (e.cause === "state_too_large") {
+    return "compactDetailHowDeniedTooLarge";
+  }
+  if (e.cause !== undefined && CONCURRENCY_DENIED_CAUSES.has(e.cause)) {
+    return "compactDetailHowDeniedConflict";
+  }
+  // 默认桶：致命 store 故障、tampered/account_mismatch/comp_hash_mismatch、
+  // 以及 recompact 聚合桶里"账号失败"那类 cause（含缺省的旧数据，没有
+  // http_status/cause 字段时也落在这里——这是改动前唯一的行为，不是新增的
+  // 猜测）。
+  return "compactDetailHowDeniedClear";
+}
+
 /** 列表里"关键信息"那一列——按 outcome 类型拼一句摘要，字段都是已有数据，不是新增采集。 */
 function keyInfoLine(e: CompactOutcomeEvent, t: (key: TranslationKey, vars?: Record<string, string | number>) => string): string {
   if (e.outcome === "budget_exceeded") {
@@ -24,6 +63,11 @@ function keyInfoLine(e: CompactOutcomeEvent, t: (key: TranslationKey, vars?: Rec
   }
   if (e.outcome === "success") {
     return e.replayed ? t("compactDetailReplayedYes") : "—";
+  }
+  // ★ #96：denied 记录顺带把真实状态码摆在最前面——之前列表和详情面板都
+  // 隐含"denied = 409"，现在直接把号码亮出来，不用点进详情才知道。
+  if (e.outcome === "denied" && e.http_status !== undefined) {
+    return `${e.http_status} · ${e.reason ?? "—"}`;
   }
   return e.reason ?? "—";
 }
@@ -373,6 +417,11 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
       )}
       {(e.outcome === "upstream_failed" || e.outcome === "denied") && (
         <DetailGroup title={t("compactDetailGroupWhy")}>
+          {/* ★ #96：denied 专有——HTTP 状态码不再是隐含的 409，直接摆出来，
+              跟下面"怎么回退的"里的指引对应，不用用户自己去猜。 */}
+          {e.outcome === "denied" && (
+            <DetailRow label={t("compactDetailHttpStatus")}>{e.http_status ?? "—"}</DetailRow>
+          )}
           <DetailRow label={t("compactDetailReason")}>{e.reason ?? "—"}</DetailRow>
         </DetailGroup>
       )}
@@ -380,7 +429,7 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
       <DetailGroup title={t("compactDetailGroupHow")}>
         <p class="text-xs text-slate-600 dark:text-text-dim leading-relaxed">
           {e.outcome === "budget_exceeded" && t("compactDetailHowBudgetExceeded")}
-          {e.outcome === "denied" && t("compactDetailHowDenied")}
+          {e.outcome === "denied" && t(deniedGuidanceKey(e))}
           {e.outcome === "upstream_failed" && t("compactDetailHowUpstreamFailed")}
           {e.outcome === "success" && (e.replayed ? t("compactDetailHowSuccessReplayed") : t("compactDetailHowSuccess"))}
         </p>

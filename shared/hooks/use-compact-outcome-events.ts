@@ -22,6 +22,28 @@ export interface CompactOutcomeEvent {
   budget_tokens?: number;
   reason?: string;
   /**
+   * ★ #96（reviewer 交叉审查发现的用户可见误导）：`denied` 记录的真实 HTTP
+   * 状态码。`#91` 之前 `denied` 恒等于 409，Dashboard 一直硬编码这个假设
+   * （标签写死"Denied (409)"、指引写死"用 /clear"）；`#91` 之后族 A（自愈
+   * 候选撞在非 compact 请求上）改成了 400，同一个 `outcome: "denied"` 集合
+   * 里现在混着 400 和 409——继续按旧假设渲染会给用户错误的指引（对一条
+   * 400/族 A 的记录说"用 /clear"，而正确动作是"下次 /compact 自动恢复，
+   * 不需要 /clear"，/clear 还会真的清空整个会话）。只有 `denied` 会有这个
+   * 字段——其它三种 outcome 的状态码是隐式已知的常量，不需要重复记录。
+   * 缺省时是这次改动之前落盘的历史行，前端必须当"未知"处理，不能默认成
+   * 409（那正是要修的那个假设）。
+   */
+  http_status?: number;
+  /**
+   * ★ #96：`denied` 的失败子因（`#83` 产出，只对 `reason ===
+   * "recompact_failed_original_account"` 这个聚合桶有值——其它 `denied`
+   * reason 本身已经是完整分类）。前端靠这个字段在 `state_too_large`/
+   * `stale_generation`/`preserved_tail_conflict` 和其余账号失败之间给出
+   * 不同指引，镜像后端 `describeRecompactFailure` 的三桶划分（见
+   * `messages.ts`），不是重新发明一套分类。
+   */
+  cause?: string;
+  /**
    * ★ #88：这次尝试的总耗时（毫秒）——四种 outcome 都可能有值，缺省是
    * "没采集到"（旧版本落盘的历史行），不是 0，前端渲染时要区分这两种情况。
    */

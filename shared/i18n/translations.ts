@@ -293,7 +293,10 @@ export const translations = {
     compactOutcomeSuccess: "Success",
     compactOutcomeBudgetExceeded: "Predicted downgrade",
     compactOutcomeUpstreamFailed: "Upstream failed",
-    compactOutcomeDenied: "Denied (409)",
+    // ★ #96：不再硬编码 "(409)"——#91 之后族 A 撞在非 compact 请求上改成了
+    // 400，这个标签覆盖的记录现在混着 400 和 409，具体状态码见每条记录自己
+    // 的 HTTP Status 行（compactDetailHttpStatus）/列表关键信息列。
+    compactOutcomeDenied: "Denied",
     compactNoData: "No data yet",
     // ★ 8.19（reviewer2 P1 修复）：压缩明细页的汇总卡片固定按请求计数（不再
     // 提供按会话/按请求的视图切换——切换过去列表也不会跟着聚合，对不上），
@@ -339,9 +342,21 @@ export const translations = {
     compactDetailReplayedYes: "Yes (reused an existing edge)",
     compactDetailReplayedNo: "No",
     compactDetailReason: "Reason",
+    // ★ #96：denied 记录的真实状态码——不再隐含假设成 409。
+    compactDetailHttpStatus: "HTTP Status",
     compactDetailHowBudgetExceeded:
       "Skipped the upstream call, fell straight through to the full-generation slow path. No account quota used, no failed request produced.",
-    compactDetailHowDenied: "Returned 409 — the client session was cut off. The user needs to /clear and start over.",
+    // ★ #96：denied 不再是一句固定文案——按 reason/cause 给出对应指引，
+    // 镜像后端 messages.ts 的 describeOpaqueCompactUnavailable（族 A）/
+    // describeRecompactFailure（三桶）。
+    compactDetailHowDeniedSelfHeal:
+      "Returned 400 — this session's compacted state expired or was cleared. It will be refreshed automatically on your next /compact. No need to /clear.",
+    compactDetailHowDeniedTooLarge:
+      "Returned 409 — this session's compacted context was too large to save. Run /clear and start a new session with a smaller working set.",
+    compactDetailHowDeniedConflict:
+      "Returned 409 — this attempt conflicted with another compact operation on the same session (a concurrency/protocol race). Continuing the conversation should resolve it automatically. No need to /clear.",
+    compactDetailHowDeniedClear:
+      "Returned 409 — the client session was cut off. The user needs to /clear and start over.",
     compactDetailHowSuccess: "Completed normally, the marker was issued and persisted.",
     compactDetailHowSuccessReplayed:
       "Idempotent short-circuit — reused the previous marker without calling upstream again.",
@@ -804,7 +819,9 @@ export const translations = {
     compactOutcomeSuccess: "成功",
     compactOutcomeBudgetExceeded: "预判降级",
     compactOutcomeUpstreamFailed: "上游失败",
-    compactOutcomeDenied: "拒绝 (409)",
+    // ★ #96：不再硬编码"(409)"——#91 之后族 A 撞在非 compact 请求上改成了
+    // 400，具体状态码见每条记录自己的 HTTP Status 行/列表关键信息列。
+    compactOutcomeDenied: "拒绝",
     compactNoData: "暂无数据",
     compactCountingBasisRequest:
       "计数口径：按请求（不按会话去重）——可能和总览页那张卡片的数字不同。点击下方某一类只筛选下方列表，本汇总始终显示全部结果类型的合计。",
@@ -844,8 +861,12 @@ export const translations = {
     compactDetailReplayedYes: "是（命中已有 edge）",
     compactDetailReplayedNo: "否",
     compactDetailReason: "原因",
+    compactDetailHttpStatus: "HTTP 状态码",
     compactDetailHowBudgetExceeded: "跳过上游调用，直接走全量生成慢路径。未占用账号配额，未产生失败请求。",
-    compactDetailHowDenied: "返回 409，客户端会话中断。用户需 /clear 重开。",
+    compactDetailHowDeniedSelfHeal: "返回 400——本次会话的压缩状态已过期或被清除，下次 /compact 会自动重新生成，不需要 /clear。",
+    compactDetailHowDeniedTooLarge: "返回 409——本次会话待保存的压缩内容太大。运行 /clear 并以更小的上下文开一个新会话。",
+    compactDetailHowDeniedConflict: "返回 409——这次尝试跟同一会话上的另一次 compact 撞车了（并发/协议冲突）。继续对话应该会自动恢复，不需要 /clear。",
+    compactDetailHowDeniedClear: "返回 409，客户端会话中断。用户需 /clear 重开。",
     compactDetailHowSuccess: "正常完成，marker 已签发并落盘。",
     compactDetailHowSuccessReplayed: "幂等短路，直接复用上一次的 marker，未重复调用上游。",
     compactDetailHowUpstreamFailed: "已联系上游，被上游拒绝，随即降级为全量生成慢路径。",

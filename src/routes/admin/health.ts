@@ -8,7 +8,7 @@ import { getConfigDir, getDataDir, getBinDir, isEmbedded } from "../../paths.js"
 import { getTransportInfo } from "../../tls/transport.js";
 import { getProxyUrl } from "../../tls/proxy.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
-import { getOpaqueCompactStateReadiness, getOpaqueCompactStateCapacity } from "../shared/opaque-compact-state.js";
+import { getOpaqueCompactStateReadiness } from "../shared/opaque-compact-state.js";
 
 export function createHealthRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -23,14 +23,17 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
       pool: { total: poolSummary.total, active: poolSummary.active },
       // opaque state readiness。reason 与 Admin、路由 409 三处同名同义，
       // 且只含封闭枚举值——不含 session/account/stateId/路径等可识别信息。
-      // ★ 8.20（生产事故复盘）：新增 capacity 字段——排查"用户是被 TTL
-      // 过期还是被 LRU 挤掉"这次完全靠翻客户端 transcript 交叉验证，服务端
-      // 自己对"当前有多少条 state、离 capacity/maxBytes 上限还有多远"没有
-      // 任何可观测性。只含聚合数值，store 未就绪时为 null（不强凑假数据）。
+      // ★ 8.20（reviewer 复审发现）：容量字段（count/bytes/离上限多远）
+      // **不放在这里**——`/health` 在 `dashboard-auth.ts` 的豁免名单里
+      // 是刻意的（Docker/nginx 健康检查不能要求登录），生产经 nginx 对外
+      // 暴露，这条路径因此是匿名可读的。容量数字不是凭据，但是运营信息
+      // （活跃会话规模、离上限多远），理论上能给资源耗尽攻击做侦察，不该
+      // 放在免鉴权端点上。挪到了 `GET /admin/compact-outcomes/capacity`
+      // （受 `dashboardAuth` 中间件保护，和其它 Dashboard 数据端点同等
+      // 待遇），`/health` 只保留原有的 readiness 布尔值。
       opaque_compact_state: {
         enabled: config.model.claude_code_opaque_compact_experimental,
         ...getOpaqueCompactStateReadiness(),
-        capacity: getOpaqueCompactStateCapacity(),
       },
       timestamp: new Date().toISOString(),
     });

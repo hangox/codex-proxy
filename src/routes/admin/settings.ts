@@ -8,7 +8,7 @@ import {
   buildOpaqueCompactRuntimeConfig,
   reconfigureOpaqueCompactRuntime,
 } from "../shared/opaque-compact-runtime.js";
-import { getOpaqueCompactStateReadiness } from "../shared/opaque-compact-state.js";
+import { getOpaqueCompactStateReadiness, getOpaqueCompactStateCapacity } from "../shared/opaque-compact-state.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -146,6 +146,14 @@ export function createSettingsRoutes(): Hono {
       claude_code_compact_bridge: config.model.claude_code_compact_bridge,
       claude_code_opaque_compact_experimental: config.model.claude_code_opaque_compact_experimental,
       opaque_compact_state_readiness: getOpaqueCompactStateReadiness(),
+      // ★ 8.20（reviewer 复审发现，从 /health 挪过来）：容量数字（count/
+      // bytes/离 capacity·maxBytes 上限多远）不是凭据，但是运营信息——
+      // /health 在 dashboard-auth.ts 的豁免名单里是刻意设计（容器/nginx
+      // 健康检查不能要求登录），生产经 nginx 对外暴露，等于匿名可读。这个
+      // 端点（`/admin/general-settings`）受 dashboardAuth 中间件保护，
+      // 和其它敏感配置项同等待遇，是这类"想让 Dashboard 看到、但不该让
+      // 匿名访问看到"的运营信息该在的地方。
+      opaque_compact_state_capacity: getOpaqueCompactStateCapacity(),
       allow_client_system_prompt_strategy: config.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: config.model.system_prompt_strategy,
       default_model: config.model.default,

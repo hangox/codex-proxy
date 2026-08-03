@@ -820,6 +820,18 @@ export class OpaqueCompactStateStore {
     return this.repository !== null ? this.repository.stats().count : this.states.size;
   }
 
+  /**
+   * ★ 8.20（生产事故复盘）：容量可观测性——这次排查"用户是不是被 LRU 挤掉
+   * 而不是 TTL 过期"完全靠翻客户端 transcript，服务端自己对"state 有没有
+   * 被挤掉、离上限还有多远"没有任何可观测性。暴露 count/bytes 现状 +
+   * capacity/maxBytes 配置上限，供 `/health` 展示，下次同类问题一眼就能
+   * 看出来，不用再翻日志/transcript 交叉验证。
+   */
+  stats(): { count: number; bytes: number; capacity: number; maxBytes: number } {
+    const live = this.repository !== null ? this.repository.stats() : { count: this.states.size, bytes: this.totalBytes };
+    return { count: live.count, bytes: live.bytes, capacity: this.capacity, maxBytes: this.maxBytes };
+  }
+
   clear(): void {
     this.states.clear();
     this.stateBytes.clear();
@@ -1165,6 +1177,21 @@ export function getOpaqueCompactStateReadiness(): {
 } {
   if (runtimeStore !== null) return { ready: true, reason: null };
   return { ready: false, reason: runtimeUnavailableReason ?? "store_unavailable", detail: runtimeUnavailableDetail };
+}
+
+/**
+ * ★ 8.20：容量可观测性——`null` 表示 store 未就绪（和 readiness 的语义
+ * 一致，不重复定义"没有 store"这件事）。只含聚合数值（当前条数/总字节/
+ * 配置上限），不含任何 session/account/内容相关信息，可以直接进
+ * `/health`。
+ */
+export function getOpaqueCompactStateCapacity(): {
+  count: number;
+  bytes: number;
+  capacity: number;
+  maxBytes: number;
+} | null {
+  return runtimeStore?.stats() ?? null;
 }
 
 /**

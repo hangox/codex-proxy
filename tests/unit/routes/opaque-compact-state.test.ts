@@ -4,6 +4,7 @@ import {
   OpaqueCompactStateError,
   OpaqueCompactStateStore,
   extractOpaqueCompactStateMarker,
+  getOpaqueCompactStateCapacity,
   hasOpaqueCompactStateReference,
   isOpaqueCompactMarkerBindingMismatch,
   isSelfHealableOpaqueCompactStateFailure,
@@ -11,6 +12,7 @@ import {
   mergeOpaquePreservedTails,
   removeOpaquePreservedTailReplay,
   restoreOpaqueCompactInput,
+  setOpaqueCompactStateStore,
   type OpaqueCompactStateFailure,
 } from "@src/routes/shared/opaque-compact-state.js";
 
@@ -199,6 +201,21 @@ describe("opaque compact state store", () => {
     expect(store.size()).toBe(1);
     expectReason(() => store.resolve({ marker: one.marker, sessionId: "s", model: "m" }), "missing");
     expect(store.resolve({ marker: two.marker, sessionId: "s", model: "m" }).output).toEqual([{ value: "b".repeat(600) }]);
+  });
+
+  // ★ 8.20（生产事故复盘）：容量可观测性——此前对"当前多少条 state、占了
+  // 多少字节、离 capacity/maxBytes 上限还有多远"完全没有暴露，排查"是 TTL
+  // 过期还是被 LRU 挤掉"只能翻客户端 transcript 交叉验证。
+  it("stats() 报告当前条数/字节数与配置上限（内存模式）", () => {
+    const store = new OpaqueCompactStateStore({ capacity: 10, maxBytes: 1_000_000, secret: Buffer.alloc(32, 11) });
+    expect(store.stats()).toEqual({ count: 0, bytes: 0, capacity: 10, maxBytes: 1_000_000 });
+
+    saveState(store, { output: [{ value: "x".repeat(100) }], sessionId: "s", model: "m", accountEntryId: "a" });
+    const stats = store.stats();
+    expect(stats.count).toBe(1);
+    expect(stats.bytes).toBeGreaterThan(0);
+    expect(stats.capacity).toBe(10);
+    expect(stats.maxBytes).toBe(1_000_000);
   });
 
   it("invalidates an older marker when the same session/model/variant is compacted again", () => {
@@ -460,6 +477,29 @@ describe("opaque compact failure reason classification (8.1/8.3 collapse point, 
         isOpaqueCompactMarkerBindingMismatch(reason),
       ].filter(Boolean).length;
       expect(hits).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+// ★ 8.20（生产事故复盘）：容量可观测性的模块级入口——`/health` 直接调用
+// 这个函数，不含任何 session/account/内容相关信息，store 未就绪时为
+// null（和 readiness 的"没有 store"语义一致，不重复定义）。
+describe("getOpaqueCompactStateCapacity（运行时 store 句柄，8.20 新增）", () => {
+  it("store 未安装时返回 null", () => {
+    setOpaqueCompactStateStore(null);
+    expect(getOpaqueCompactStateCapacity()).toBeNull();
+  });
+
+  it("store 安装后返回当前条数/字节数与配置上限，和 store.stats() 一致", () => {
+    const store = new OpaqueCompactStateStore({ capacity: 5, maxBytes: 500_000, secret: Buffer.alloc(32, 21) });
+    saveState(store, { output: [{ value: "y".repeat(50) }], sessionId: "s", model: "m", accountEntryId: "a" });
+    try {
+      setOpaqueCompactStateStore(store);
+      expect(getOpaqueCompactStateCapacity()).toEqual(store.stats());
+      expect(getOpaqueCompactStateCapacity()).toMatchObject({ count: 1, capacity: 5, maxBytes: 500_000 });
+    } finally {
+      // 不能泄漏给同一进程里其它测试文件——运行时 store 是模块级单例。
+      setOpaqueCompactStateStore(null);
     }
   });
 });

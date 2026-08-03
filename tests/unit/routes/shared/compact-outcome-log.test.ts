@@ -110,6 +110,56 @@ describe("recordCompactOutcome", () => {
     expect(entry.replayed).toBeUndefined();
   });
 
+  // ★ #88：耗时埋点——四种 outcome 都可能有 duration_ms，只有真正联系过
+  // 上游的才有 upstream_ms；缺省时必须是"没有这个键"（undefined），不能
+  // 补 0（0 会被误读成"真的是 0ms"）。
+  it("durationMs/upstreamMs 都传时原样落盘为 duration_ms/upstream_ms", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-duration",
+      clientConversationId: "s1",
+      model: "gpt-5.6-sol",
+      outcome: "success",
+      replayed: false,
+      durationMs: 812,
+      upstreamMs: 640,
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.duration_ms).toBe(812);
+    expect(entry.upstream_ms).toBe(640);
+  });
+
+  it("durationMs/upstreamMs 缺省时是省略键（undefined），不是 0", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-no-duration",
+      clientConversationId: "s1",
+      model: "gpt-5.6-sol",
+      outcome: "denied",
+      reason: "missing_session_context",
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.duration_ms).toBeUndefined();
+    expect(entry.upstream_ms).toBeUndefined();
+    expect("duration_ms" in entry).toBe(false);
+    expect("upstream_ms" in entry).toBe(false);
+  });
+
+  it("upstream_ms 可以在没有 duration_ms 时单独缺省（比如幂等回放只有总耗时）", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-replay",
+      clientConversationId: "s1",
+      model: "gpt-5.6-sol",
+      outcome: "success",
+      replayed: true,
+      durationMs: 4,
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.duration_ms).toBe(4);
+    expect(entry.upstream_ms).toBeUndefined();
+  });
+
   it("no-ops when observability.local_error_log is false", async () => {
     mockConfig.observability.local_error_log = false;
     const { recordCompactOutcome } = await importModule();

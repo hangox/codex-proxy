@@ -91,6 +91,15 @@ export interface OpaqueCompactFallbackInput {
     skippedUpstream?: boolean;
     estimatedTokens?: number;
     budgetTokens?: number;
+    /**
+     * ★ #88：`CompactServiceError.durationMs`——见
+     * `compact-outcome-log.ts` 的 `CompactOutcomeEvent.duration_ms` 文档。
+     * 非 `CompactServiceError` 的错误没有这个字段，传 `undefined` 即可，
+     * 不强凑。
+     */
+    durationMs?: number;
+    /** ★ #88：`CompactServiceError.upstreamMs`，见同名字段文档。 */
+    upstreamMs?: number;
   };
 }
 
@@ -138,5 +147,7 @@ export function recordOpaqueCompactFallback(input: OpaqueCompactFallbackInput): 
     estimatedTokens: input.classification?.estimatedTokens,
     budgetTokens: input.classification?.budgetTokens,
     reason: input.errorName,
+    durationMs: input.classification?.durationMs,
+    upstreamMs: input.classification?.upstreamMs,
   });
 }

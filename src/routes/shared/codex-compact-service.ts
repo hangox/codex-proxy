@@ -1009,6 +1009,27 @@ export interface CompactServiceErrorClassification {
    * 出来的信息透传出来，不是新加的维度，合并回一个值反而会丢信息。
    */
   cause?: RecompactFailureCause;
+  /**
+   * ★ #88：这次尝试从 `respondWithOpaqueCompactMarker` 入口到这次失败为止
+   * 的总耗时（毫秒）。不是在 `executeCompactOnly` 内部各个 throw site 现场
+   * 算的——那样起点会变成"进 executeCompactOnly 那一刻"，漏掉 bridge 层
+   * budget 预判/digest 计算/幂等回放查询的时间，跟 `success` outcome 的
+   * `duration_ms`（起点是 bridge 入口）语义就不一致，两种 outcome 的耗时
+   * 数字没法直接比较。做法见 `opaque-compact-bridge.ts` 里包一层
+   * try/catch，用同一个 `started` 补这个字段后再重新抛出。
+   */
+  durationMs?: number;
+  /**
+   * ★ #88：这次失败尝试真正花在等上游响应的时间——只在真的发出过一次
+   * `createCompactResponse` 调用、拿到失败响应/错误之后才有值（即
+   * `executeCompactOnly` 内部 catch 块里设置，`durationMs` 是 bridge 层
+   * 补的总耗时，`upstreamMs` 是这个总耗时里"确定花在上游"的那一段）。
+   * 耗尽重试放弃时，这个值是**最后一次**尝试的上游耗时，不是所有已尝试
+   * 账号的耗时总和（那个用 `retryCount` 看"换了几个账号"，是另一个维度）。
+   * 从未真正联系上游的失败（no_account/account_mismatch/budget_exceeded）
+   * 没有这个字段，不强凑 0。
+   */
+  upstreamMs?: number;
 }
 
 /**
@@ -1099,6 +1120,8 @@ export class CompactServiceError extends Error {
   readonly estimatedTokens?: number;
   readonly budgetTokens?: number;
   readonly cause?: RecompactFailureCause;
+  readonly durationMs?: number;
+  readonly upstreamMs?: number;
 
   constructor(
     message: string,
@@ -1120,6 +1143,8 @@ export class CompactServiceError extends Error {
     this.estimatedTokens = classification.estimatedTokens;
     this.budgetTokens = classification.budgetTokens;
     this.cause = classification.cause;
+    this.durationMs = classification.durationMs;
+    this.upstreamMs = classification.upstreamMs;
   }
 }
 
@@ -1178,9 +1203,12 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
   triedEntryIds.push(entryId);
 
   for (;;) {
+    // ★ #88：声明在 try 外面——catch 块也需要用它算这次失败尝试花了多久
+    // 联系上游（`upstreamMs`），而 try 块内部的 const 出了 try 就访问不到。
+    let compactStarted = Date.now();
     try {
       await staggerIfNeeded(acquired.prevSlotMs, {}, signal);
-      const compactStarted = Date.now();
+      compactStarted = Date.now();
       const inputSize = summarizeCompactInputBytes(compactRequest.input);
       console.log(
         `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_start acct=${auditAccountTag(entryId)}` +
@@ -1272,7 +1300,17 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
               // ★ #83：cause 用 upstreamCause（对原始 error 的独立分类），
               // 不是从 crossAccountBlocked 改写后的 message/status 反推——
               // 这正是本次要保留下来、此前被跨账号闸门抹掉的那部分信息。
-              { promptTooLong: isPromptTooLongFailure, cause: upstreamCause },
+              //
+              // ★ #88：upstreamMs 是这次失败尝试真正花在联系上游的时间——
+              // 即便它失败了，也确实发出去过一次请求、等回来了响应/错误，
+              // 这段等待时间是真实的"上游耗时"，不是 0。跟 durationMs
+              // （总耗时）不同——那个字段由 bridge 层在捕获这个错误时
+              // 统一补上，这里不设置。
+              {
+                promptTooLong: isPromptTooLongFailure,
+                cause: upstreamCause,
+                upstreamMs: Date.now() - compactStarted,
+              },
             );
           }
           // usage: undefined 是对的——这次账号的尝试失败了，即将换账号重试，没有响应体可记。
@@ -1286,7 +1324,10 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
         );
         throw new CompactServiceError(
           decision.message, decision.status, decision.useFormat429 === true, triedEntryIds.length,
-          { cause: upstreamCause },
+          // ★ #88：upstreamMs 是耗尽重试放弃前**最后这一次**尝试的上游耗时，
+          // 不是所有已尝试账号的耗时总和——跟 retryCount 的"总共换了几个
+          // 账号"是互补但不同的两个维度。
+          { cause: upstreamCause, upstreamMs: Date.now() - compactStarted },
         );
       }
       entryId = acquired.entryId;

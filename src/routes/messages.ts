@@ -389,6 +389,10 @@ export function createMessagesRoutes(
     // 开关已开但 store 未就绪）此前发生在原来的 requestId 声明之前，落不了
     // 结构化日志。这里只是把已有的"取 c.get 或生成"逻辑挪早，取值方式不变。
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+    // ★ #88：跟 requestId 一起提到最早——这个时刻到任意一次
+    // recordOpaqueCompactDenial 之间的耗时，就是这次 409/fail-closed 决策
+    // 花了多久。409 理应是毫秒级，耗时数字本身就是排查线索。
+    const requestStartedAt = Date.now();
 
     const routeMatch = upstreamRouter?.resolveMatch(req.model);
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
@@ -413,6 +417,7 @@ export function createMessagesRoutes(
         // displayModel 还没算出来（在模型解析之前）——用原始 req.model，
         // 只供 Dashboard 统计使用，不影响这里的 409 决策。
         model: req.model,
+        durationMs: Date.now() - requestStartedAt,
       });
       c.status(409);
       return c.json(makeError(
@@ -471,6 +476,7 @@ export function createMessagesRoutes(
           // getOpaqueCompactStateReadiness() 的文档注释。
           detail: readiness.detail,
           model: req.model,
+          durationMs: Date.now() - requestStartedAt,
         });
         c.status(409);
         return c.json(makeError(
@@ -643,6 +649,7 @@ export function createMessagesRoutes(
           marker: errorMarker,
           detail,
           model: displayModel,
+          durationMs: Date.now() - requestStartedAt,
         });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(reason)));
@@ -678,6 +685,7 @@ export function createMessagesRoutes(
           generation: opaqueRestore.generation,
           detail: readiness.detail,
           model: displayModel,
+          durationMs: Date.now() - requestStartedAt,
         });
         c.status(409);
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(readiness.reason ?? "store_unavailable")));
@@ -724,6 +732,7 @@ export function createMessagesRoutes(
             generation: opaqueRestore.generation,
             detail: faultDetail,
             model: displayModel,
+            durationMs: Date.now() - requestStartedAt,
           });
           c.status(409);
           return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(faultReason)));
@@ -773,6 +782,15 @@ export function createMessagesRoutes(
             // cause 是新增的子因，供事后区分"这次到底是哪一类失败"。
             cause: deriveRecompactFailureCause(error),
             model: displayModel,
+            // ★ #88：CompactServiceError 已经带着更精确的 durationMs（从
+            // respondWithOpaqueCompactMarker 入口算起，见该字段文档）——
+            // 优先用它；不是 CompactServiceError（比如 OpaqueCompactStateError
+            // 的 CAS 失败）时退化用整条请求的耗时，仍然是诚实的度量，只是
+            // 粒度粗一点（多算了一点前面 restore marker 的时间）。
+            durationMs: error instanceof CompactServiceError && error.durationMs !== undefined
+              ? error.durationMs
+              : Date.now() - requestStartedAt,
+            upstreamMs: error instanceof CompactServiceError ? error.upstreamMs : undefined,
           });
           c.status(409);
           return c.json(makeError(
@@ -812,6 +830,9 @@ export function createMessagesRoutes(
                   skippedUpstream: error.skippedUpstream,
                   estimatedTokens: error.estimatedTokens,
                   budgetTokens: error.budgetTokens,
+                  // ★ #88：耗时埋点，见 CompactServiceError 的字段文档。
+                  durationMs: error.durationMs,
+                  upstreamMs: error.upstreamMs,
                 },
               }
             : {}),

@@ -32,6 +32,32 @@ function formatK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
 }
 
+/**
+ * ★ #88：耗时格式化——1000ms 门槛之下按整数毫秒显示，之上按秒（一位小数）
+ * 显示。不用 `Intl.RelativeTimeFormat` 之类的相对时间格式化——这里显示的是
+ * "花了多久"（duration），不是"距现在多久"（相对时刻），语义不同。
+ */
+function formatDurationMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+/**
+ * 列表/详情共用的耗时摘要——`upstream_ms` 存在时括注上游耗时，方便一眼看出
+ * "慢在上游还是慢在我们自己"（restore/preservedTail 合并/预算裁剪/save），
+ * 不存在时只显示总耗时。两者都缺省（旧版本落盘的历史行，采集埋点上线前）
+ * 时返回 `undefined`，调用方渲染成"—"，不是"0ms"——缺失和"确实是 0" 是
+ * 两件不同的事。
+ */
+function formatDurationSummary(
+  e: CompactOutcomeEvent,
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+): string | undefined {
+  if (e.duration_ms === undefined) return undefined;
+  const total = formatDurationMs(e.duration_ms);
+  if (e.upstream_ms === undefined) return total;
+  return `${total}（${t("compactDetailUpstreamMs")} ${formatDurationMs(e.upstream_ms)}）`;
+}
+
 function formatFullTime(ts: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
@@ -185,7 +211,8 @@ export function CompactDetailPage() {
                         <div class="col-span-2">{t("compactColTime")}</div>
                         <div class="col-span-2">{t("compactColResult")}</div>
                         <div class="col-span-2">{t("compactColModel")}</div>
-                        <div class="col-span-6">{t("compactColKeyInfo")}</div>
+                        <div class="col-span-2">{t("compactColDuration")}</div>
+                        <div class="col-span-4">{t("compactColKeyInfo")}</div>
                       </div>
                       <div class="max-h-[480px] overflow-y-auto">
                         {eventsState.events.map((e) => {
@@ -205,7 +232,12 @@ export function CompactDetailPage() {
                                 </span>
                               </div>
                               <div class="col-span-2 truncate font-mono text-slate-600 dark:text-text-dim">{e.model}</div>
-                              <div class="col-span-6 truncate text-slate-600 dark:text-text-dim">{keyInfoLine(e, t)}</div>
+                              {/* 列表这一列只显示总耗时（简洁，跟其它列一样是单值截断展示）；
+                                  总耗时 vs 上游耗时的对比放在详情面板那一行，那里有更宽的空间。 */}
+                              <div class="col-span-2 truncate font-mono text-slate-600 dark:text-text-dim">
+                                {e.duration_ms !== undefined ? formatDurationMs(e.duration_ms) : "—"}
+                              </div>
+                              <div class="col-span-4 truncate text-slate-600 dark:text-text-dim">{keyInfoLine(e, t)}</div>
                             </button>
                           );
                         })}
@@ -311,6 +343,13 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
         </DetailRow>
         <DetailRow label={t("compactDetailModel")}>
           <span class="font-mono">{e.model}</span>
+        </DetailRow>
+        {/* ★ #88：耗时是所有 outcome 都可能有的字段（不只是 success/
+            upstream_failed 才有意义——denied/budget_exceeded 理应是毫秒级，
+            耗时数字本身就是排查线索），放进跟 outcome 无关的"Record"分组，
+            不放进下面按 outcome 分支渲染的"Why"分组。 */}
+        <DetailRow label={t("compactDetailDuration")}>
+          {formatDurationSummary(e, t) ?? "—"}
         </DetailRow>
       </DetailGroup>
 

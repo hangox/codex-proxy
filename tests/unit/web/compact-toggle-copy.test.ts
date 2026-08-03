@@ -1,5 +1,3 @@
-import { readFileSync } from "fs";
-import { resolve } from "path";
 import { describe, expect, it } from "vitest";
 
 import { translations } from "../../../shared/i18n/translations.js";
@@ -58,16 +56,27 @@ describe("compact toggle copy", () => {
   });
 });
 
-describe("compact toggle copy matches runtime behavior", () => {
-  it("an unready opaque store fails closed instead of silently continuing", () => {
-    const source = readFileSync(
-      resolve(__dirname, "..", "..", "..", "src", "routes", "messages.ts"),
-      "utf-8",
-    );
-    // 8.5 把所有 opaque 409 的文案收口进 describeOpaqueCompactUnavailable()，
-    // 不再是四处各写一遍字面量——这里改成断言"未就绪 store 走这个统一收口
-    // 函数并返回 409"，而不是绑死某一句具体措辞（措辞已经因为 8.5 改了）。
-    expect(source).toContain("describeOpaqueCompactUnavailable");
-    expect(source).toMatch(/readiness\.ready\)\s*\{[\s\S]{0,400}?c\.status\(409\)/);
-  });
-});
+// ★ #88 复审（team-lead）：这里原来有一条 `describe("compact toggle copy
+// matches runtime behavior")` 用"源码字符距离"当"两段逻辑相邻"的代理——
+// 断言 `readiness.ready) {` 到 `c.status(409)` 之间的字符数小于某个窗口
+// （400 → #88 加了 durationMs 埋点后涨到 637 → 一度放宽到 700）。这类断言
+// 本身就是脆弱的：它只能沿着"窗口不够就继续调大"这一条路径演化，直到
+// 数字大到不再守护任何东西——而它真正想守护的不变式（"未就绪的 opaque
+// store 必须 fail-closed 返回 409，不会静默放行/打上游"）其实已经有更强、
+// 更真实的行为测试覆盖，不需要靠猜字符距离：
+//
+// - `tests/e2e/opaque-compact-fault-blast-radius.test.ts` 的 `freshCompact`
+//   断言：store 处于 `store_unavailable` 致命故障时，一个全新会话发起全新
+//   compact 请求（真实触发 `!readiness.ready` 那个早退分支）必须 409，且
+//   `compactBodies` 计数不增长——即真的没有打过一次上游，不是只看状态码。
+// - `tests/e2e/opaque-compact-lifecycle.test.ts` 的
+//   "route-layer guard: a fatal store failure (store_locked) 409s even when
+//   the request looks exactly like a legitimate self-heal continuation" ——
+//   同样用真实机制（第二实例抢锁失败产生 store_locked）验证 fail-closed，
+//   并额外证明这条防线有三层独立防御（显式 readiness 早退 / store 访问的
+//   兜底 throw / 分类函数本身不会把致命 reason 判成可自愈）。
+//
+// 两条都是对真实 HTTP 响应 + 真实上游调用次数断言，而不是对 messages.ts
+// 源码文本做正则匹配——重构挪动这段逻辑的位置、改写变量名、插入新的埋点
+// 字段都不会误伤它们，也不会像字符距离断言那样需要跟着"手动调宽窗口"。
+// 因此这里不再需要一条平行的、脆弱的源码正则断言。

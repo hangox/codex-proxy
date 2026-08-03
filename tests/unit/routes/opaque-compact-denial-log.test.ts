@@ -302,4 +302,49 @@ describe("recordOpaqueCompactDenial", () => {
     const [entry] = readFileSync(path, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(entry.model).toBe("unknown");
   });
+
+  // ★ #88：durationMs/upstreamMs 只喂进 compact-outcomes.jsonl，不进
+  // error-log.jsonl 的白名单 context（那份字段集合这次没变，见上面
+  // "白名单八个字段" 那条测试）。
+  it("durationMs/upstreamMs 透传到 compact-outcomes.jsonl，但不出现在 error-log.jsonl 的 context 里", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-denial-timed",
+      reason: "recompact_failed_original_account",
+      clientConversationId: SESSION_ID,
+      marker: null,
+      cause: "rate_limited",
+      durationMs: 350,
+      upstreamMs: 210,
+    });
+
+    const outcomePath = resolve(tmpDataDir, "compact-outcomes.jsonl");
+    const [outcomeEntry] = readFileSync(outcomePath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(outcomeEntry.duration_ms).toBe(350);
+    expect(outcomeEntry.upstream_ms).toBe(210);
+
+    const errorLogLines = readErrorLogLines();
+    const ctx = errorLogLines[0]!.context as Record<string, unknown>;
+    expect("duration_ms" in ctx).toBe(false);
+    expect("upstream_ms" in ctx).toBe(false);
+  });
+
+  it("denial 缺省 durationMs/upstreamMs 时，compact-outcomes.jsonl 里省略键，不补 0", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-denial-untimed",
+      reason: "missing_session_context",
+      clientConversationId: null,
+      marker: null,
+    });
+
+    const outcomePath = resolve(tmpDataDir, "compact-outcomes.jsonl");
+    const [outcomeEntry] = readFileSync(outcomePath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect("duration_ms" in outcomeEntry).toBe(false);
+    expect("upstream_ms" in outcomeEntry).toBe(false);
+  });
 });

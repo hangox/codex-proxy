@@ -5,6 +5,13 @@ on:
     branches: [dev, master]
   push:
     branches: [dev, master]
+  # 触发不可靠是这个仓库的已知事实（见 CLAUDE.md「docker-publish.yml 的
+  # 历史坑」坑 3），docker-publish.yml/release.yml 都已经靠 workflow_dispatch
+  # 作为手动补跑的安全阀。2026-08-03 发 v2.0.95 后续修复时，这条门禁本身
+  # 撞到了同一个形状——一次纯文档 push 迟迟没有触发它，而它当时没有
+  # workflow_dispatch，补跑不了。任何被列为发布前必看的 workflow 都要有
+  # 这个安全阀，不是可选装饰。见 tests/unit/ci/release-workflows-have-manual-dispatch.test.ts。
+  workflow_dispatch:
 
 concurrency:
   group: ci-quality-${{ github.ref }}

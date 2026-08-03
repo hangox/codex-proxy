@@ -62,6 +62,8 @@
 
 **绕行方案（已验证可用）**：手动 `gh workflow run <workflow> --ref vX.Y.Z`（或 `release.yml` 的 `-f tag=vX.Y.Z`），数秒内正常创建 run。注意这条路**依赖坑 2 已修**——`fetch-depth: 0` 之前，手动对 tag ref dispatch 会撞 checkout 报错，那时这条绕行也是死的。
 
+**`workflow_dispatch` 不是可选装饰，是应对"GitHub 触发不可靠"这个已知事实的必需安全阀，任何被列为发布前必看的 workflow 都必须有它**：`ci-quality.yml`（`package-boundary` 门禁）2026-08-03 撞到过同一个形状——它当时没有 `workflow_dispatch`，一次纯文档 commit 的普通 master push（不是 tag，历史上这类 push 一直是秒级触发）迟迟没有触发它，而且**没有任何手段能手动补跑，只能干等或者带着一个没有远端 CI 确认的 commit 继续往前走**。已加上 `workflow_dispatch`，有 `tests/unit/ci/release-workflows-have-manual-dispatch.test.ts` 锁住 `docker-publish.yml`/`release.yml`/`ci-quality.yml` 三条都有这个安全阀——以后新增/修改发布相关 workflow 时别漏掉。
+
 **操作口径（已从「异常处理」提升为标准发布步骤）**：推完 tag **直接手动 dispatch**，不用先等、也不用先确认有没有触发。理由不是「它一定不触发」（`v2.0.95` 就自己触发了），而是**触发与否不可预测、而多触发一次零代价**——等待只是拿 2 分钟去赌一件赌不赢的事。
 
 ```bash

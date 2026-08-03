@@ -231,9 +231,11 @@ export const ConfigSchema = z.object({
      *  `opaque-compact-repository.ts` 的 `pruneWithinTransaction`，TTL 本身
      *  从不驱动批量删除，只在读取时做认证后的过期判定），TTL 因此不需要卡
      *  得很短。12 小时对"会话开着过夜、隔天接着干"这种正常使用场景必然
-     *  踩中：state 过期后，会话里**每一次普通对话**都会 409（`not_found`
-     *  分类只在"这次请求本身就是压缩请求"时才自愈，见 `messages.ts` 的
-     *  `treatAsNoMarker` 判定），不是压缩本身失败。默认改成 7 天
+     *  踩中：state 过期后，会话里**每一次普通对话**都会被拒绝（族 A 分类，
+     *  只在"这次请求本身就是压缩请求"时才自愈，见 `messages.ts` 的
+     *  `treatAsNoMarker` 判定，不是压缩本身失败——★ #96：这条路径 `#91`
+     *  之后是 400 而不是 409，客户端不会再静默重试，但语义没变：仍然是
+     *  "这次普通对话被拒绝，用户看到报错"）。默认改成 7 天
      *  （`10080` 分钟），上限相应放宽到 30 天，给需要更长留存的部署留出
      *  配置空间；不改变淘汰机制本身。 */
     ttl_minutes: z.number().int().min(1).max(30 * 24 * 60).default(10080),
@@ -254,15 +256,25 @@ export const ConfigSchema = z.object({
      * 实测过"每次 recompact 净增 1 条、顶到 capacity 后 LRU 优雅收敛、
      * 不会硬失败"这个**机制**，但没有也无法实测"一个真实团队每天到底
      * 产生多少条"——这需要真实生产流量，本次修复完全在本地环境完成。
-     * `/health` 的 `opaque_compact_state.capacity` 字段（同批新增）会
-     * 暴露真实 count，部署后观察几天即可拿到真实增速，届时可按实测数据
+     * ★ #96（reviewer 交叉审查发现的文档脱节）：暴露真实 count 的字段
+     * 已经不在 `/health` 了——`8837b07` 把它挪到了受鉴权保护的
+     * `GET /admin/general-settings`（字段名 `opaque_compact_state_capacity`），
+     * 理由是 `/health` 匿名可读，容量/用量规模属于运营信息，不该放在
+     * 免鉴权端点上。部署后观察几天即可拿到真实增速，届时可按实测数据
      * 再校准这个默认值，不用现在猜准。
      *
-     * 顶到这个上限的后果已经实测确认是**优雅降级**（LRU 静默淘汰最久未用
-     * 的记录，压缩请求本身不受影响，不是硬失败）——配小了的代价只是
-     * "实际保留期短于配置的 TTL"，不是压缩功能故障，这大幅降低了这次
-     * 改动本身的风险（真正的硬失败分支 `state_too_large` 只在 capacity
-     * 小于"受保护行数下限"2 时触发，生产这个量级永远不会撞上）。
+     * ★ #96：顶到这个上限的后果**不是**"纯 LRU 优雅收敛"——`#79` 把淘汰
+     * 分成了两层（见 `opaque-compact-repository.ts` 的
+     * `pruneWithinTransaction`）：优先淘汰结构上已确定是废代的记录（自己
+     * 已有 successor），这一层为空时才退化成原来的全局 LRU（淘汰最久未用
+     * 的记录）。多数情况下确实是优雅降级，压缩请求本身不受影响，但**不是
+     * 恒定不会硬失败**——如果受保护的行数（这次写入 + 它的 predecessor，
+     * 至少 2 行）本身就超过 `capacity` 或 `max_bytes` 预算，
+     * `pruneWithinTransaction` 找不到可淘汰的 victim，会抛
+     * `state_too_large` 让整个 save 事务回滚（见
+     * `tests/e2e/opaque-compact-state-capacity-growth.test.ts` 的硬上限
+     * 用例）。默认值 4096/`max_bytes` default 量级下这个分支基本不会撞上，
+     * 但"淘汰算法本身有硬失败出口"这件事不该被这条注释掩盖成"纯粹优雅"。
      */
     capacity: z.number().int().min(1).max(10_000).default(4096),
     /**

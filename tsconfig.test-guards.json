@@ -9,6 +9,7 @@
   },
   "include": [
     "tests/unit/routes/recompact-failure-cause-exhaustiveness.test.ts",
+    "tests/unit/routes/recompact-failure-message.test.ts",
     "src/hono-context.ts"
   ]
 }

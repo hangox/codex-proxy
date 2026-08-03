@@ -351,12 +351,12 @@ describe("E2E: POST /v1/messages", () => {
         ["tampered", (marker: string) => marker.replace(
           /:([A-Za-z0-9_-])([A-Za-z0-9_-]{42})<\/summary>$/,
           (_match, first: string, rest: string) => ":" + (first === "A" ? "B" : "A") + rest + "</summary>",
-        ), "tampered"],
+        ), "tampered", 409, false],
         ["missing", (marker: string) => {
           opaqueCompactStateStore.clear();
           return marker;
-        }, "no need to /clear"],
-      ])("opaque compact bridge: rejects %s marker state", async (_case, mutateMarker, expectedText) => {
+        }, "no need to /clear", 400, true],
+      ] as const)("opaque compact bridge: rejects %s marker state", async (_case, mutateMarker, expectedText, expectedStatus, expectShouldRetryFalse) => {
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
           ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
@@ -370,11 +370,18 @@ describe("E2E: POST /v1/messages", () => {
 
         // 这条回放不是 compact 请求（最后一条消息不是 compactPrompt），所以即使
         // "missing" 落在族 A（良性可自愈），8.1 的自愈条件（compactPrompt!==null）
-        // 也不成立，仍然 409——8.5：文案不再是裸 reason token，而是可执行指引。
+        // 也不成立，仍然被拒——8.5：文案不再是裸 reason token，而是可执行指引。
         // ★ 8.20（生产事故复盘）：not_found/missing 此前误导用户去 /clear，
         // 实测手动 /compact 就能救回来（同一个自愈族、和 expired 行为一致），
         // 文案改成和 expired 一样建议 /compact、明确"不需要 /clear"（tampered
         // 不在族 A/B 里，走通用兜底文案，仍然带 reason token）。
+        // ★ #91：两个 case 的状态码从这里开始分叉——"missing" 落在族 A
+        // （isSelfHealableOpaqueCompactStateFailure），这个失败是确定性的
+        // （store 已经被清空，重试不会有不同结果），改成 400 +
+        // x-should-retry: false，不再让客户端把它当 409 锁冲突静默重试；
+        // "tampered" 不在族 A 里（签名对不上是"这个 marker 有问题"，不等于
+        // "这个状态确定救不回来"——理论上换一个没被篡改的 marker 就能继续），
+        // 保持 409、不加这个头。
         const replay = await messagesRequest(defaultBody({
           stream: true,
           messages: [
@@ -382,7 +389,8 @@ describe("E2E: POST /v1/messages", () => {
             { role: "user", content: "continue" },
           ],
         }), { "x-claude-code-session-id": "session-marker-state" });
-        expect(replay.status).toBe(409);
+        expect(replay.status).toBe(expectedStatus);
+        expect(replay.headers.get("x-should-retry")).toBe(expectShouldRetryFalse ? "false" : null);
         expect(await replay.text()).toContain(expectedText);
         expect(getMockTransport().post).toHaveBeenCalledTimes(1);
       });
@@ -1048,7 +1056,7 @@ describe("E2E: POST /v1/messages", () => {
     expect(urls[1]).not.toContain("/compact");
   });
 
-  it("opaque compact bridge: an expired marker on an ordinary (non-compact) request still 409s with an actionable reason (matrix #2)", async () => {
+  it("opaque compact bridge: an expired marker on an ordinary (non-compact) request 400s (not 409) with a non-retryable, actionable reason (matrix #2)", async () => {
     let now = 1_000_000;
     opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore({ ttlMs: 30 * 60_000, now: () => now });
     setClaudeCodeOpaqueCompactExperimental(true);
@@ -1065,15 +1073,23 @@ describe("E2E: POST /v1/messages", () => {
     now += 31 * 60_000;
 
     // 8.1 的自愈只对"本次确实是 compact 请求"放行；普通对话轮次带着过期
-    // marker 时仍然 409——但 reason 现在是明确的 expired（8.5 拆分），不再
+    // marker 时仍然被拒——但 reason 现在是明确的 expired（8.5 拆分），不再
     // 与 not_found 混在一个 missing 里，文案可执行（提示去 /compact，而
     // /compact 请求本身现在真的能自愈了）。
+    // ★ #91：状态码从 409 改成 400 + x-should-retry: false——expired 落在
+    // 族 A，这个失败是确定性的（底层行已经过期删除，重试不会有不同结果），
+    // 旧的 409 会被 Anthropic SDK / Claude Code 自己的重试逻辑当"可重试的
+    // 锁冲突"无条件重试、静默等待（生产实测最多 134s、~10 次指数退避），
+    // 用户在此期间完全看不到下面这句本来就正确的"运行 /compact 即可恢复"
+    // 提示。body 本来就是 invalid_request_error（对应规范里的 400），
+    // 状态码只是终于跟 body 语义对齐。
     const replay = await messagesRequest(defaultBody({
       stream: true,
       messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
     }), { "x-claude-code-session-id": "session-ttl-ordinary-409" });
 
-    expect(replay.status).toBe(409);
+    expect(replay.status).toBe(400);
+    expect(replay.headers.get("x-should-retry")).toBe("false");
     expect(await replay.text()).toContain("expired");
   });
 

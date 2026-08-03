@@ -651,7 +651,39 @@ export function createMessagesRoutes(
           model: displayModel,
           durationMs: Date.now() - requestStartedAt,
         });
-        c.status(409);
+        // ★ #91：这个 else 分支不是族 A 专用出口——`treatAsNoMarker` 为
+        // false 时，族 A（not_found/expired/missing，且这次不是 compact
+        // 请求）和"既不可自愈也不是族 B"的一切（tampered/account_mismatch/
+        // comp_hash_mismatch/9 个 isFatalStoreFailure 致命 store 故障）都会
+        // 走到这里，`selfHealable` 是唯一能把两者分开的判据。
+        //
+        // 族 A 命中时这个失败是确定性的——底层行已经不存在，不会因为客户端
+        // 重试而改变。但状态码一直是 409，Anthropic SDK 和 Claude Code 自己
+        // 的重试逻辑都把 409 当"可重试的锁冲突"无条件重试（生产实测：单个
+        // 会话最多 134s 静默等待、~10 次指数退避重试，每次重传全部上下文，
+        // 用户在此期间完全看不到 describeOpaqueCompactUnavailable 已经给出
+        // 的、本来正确的"运行 /compact 就能恢复"提示）。这个分支的 body 本来
+        // 就是 `invalid_request_error`——对应 Anthropic 规范里的 400，不是
+        // 409，现状 status 和 body 语义早就不一致，改成 400 不是发明新码，
+        // 是把已经写在 body 里的语义和状态码对齐。
+        //
+        // ★ 红线：只有族 A 改 400。其余原因（tampered/account_mismatch/
+        // comp_hash_mismatch/致命 store 故障）语义是"服务端状态有问题"，
+        // 不是"你的请求有问题"——继续用 409 保留这层区分，且不加
+        // `x-should-retry`（这些确实救不回来，但不该被误读成客户端参数
+        // 错误）。
+        //
+        // `x-should-retry: false` 是 @anthropic-ai/sdk 自己的机制（
+        // client.ts 的 shouldRetry() 在状态码判断之前先读这个头，覆盖后续
+        // 判断）——跟状态码改动双保险：400 对所有遵循 Anthropic 规范的客户端
+        // 生效，这个头额外覆盖任何只按状态码硬编码判断、不看 body 语义的
+        // 边缘重试层。任一条失效，另一条依然生效。
+        if (selfHealable) {
+          c.header("x-should-retry", "false");
+          c.status(400);
+        } else {
+          c.status(409);
+        }
         return c.json(makeError("invalid_request_error", describeOpaqueCompactUnavailable(reason)));
       }
     }

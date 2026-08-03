@@ -150,15 +150,22 @@ describe("8.6: opaque compact denial log — real /v1/messages integration", () 
 
     now += 31 * 60_000; // 跨过 30 分钟 TTL
 
-    // 普通（非 compact）请求带着过期 marker：族 A 不自愈（compactPrompt===null），
-    // 仍然 409——这条路径应该落一条结构化日志。
+    // 普通（非 compact）请求带着过期 marker：族 A 不自愈（compactPrompt===null）
+    // ——★ #91：这条路径改成 400 + x-should-retry: false（不再是 409）。
+    // 这个失败是确定性的（底层行已经不存在，重试不会有不同结果），旧的 409
+    // 会被 Anthropic SDK / Claude Code 自己的重试逻辑当"可重试的锁冲突"
+    // 无条件重试、静默等待数十秒到数分钟；body 本来就是 invalid_request_error
+    // （对应规范里的 400），400 只是把状态码和已经写在 body 里的语义对齐。
+    // 这条路径仍然应该落一条结构化日志——状态码变了不代表 denial-log 的
+    // 记录职责跟着变。
     const replay = await messagesRequest({
       model: "codex",
       max_tokens: 1024,
       stream: true,
       messages: [{ role: "assistant", content: marker }, { role: "user", content: "continue" }],
     }, { "x-claude-code-session-id": "session-denial-log-e2e" });
-    expect(replay.status).toBe(409);
+    expect(replay.status).toBe(400);
+    expect(replay.headers.get("x-should-retry")).toBe("false");
     await replay.text();
 
     // recordOpaqueCompactDenial() 内部是纯同步的 appendFileSync，写入与

@@ -256,6 +256,11 @@ describe("opaque compact store fault — blast radius (production incident: 94x 
       messages: [{ role: "assistant", content: markerA }, { role: "user", content: "continue" }],
     }), { "x-claude-code-session-id": "session-blast-a" });
     expect(replayA.status).toBe(409);
+    // ★ #91：store_unavailable 是 isFatalStoreFailure 一族，不是族 A——状态码
+    // 和 x-should-retry 都保持不变（只有族 A 的自愈候选 not_found/expired/
+    // missing 改 400 + x-should-retry: false，见 messages.ts 里
+    // `if (selfHealable) { ... }` 那段注释）。
+    expect(replayA.headers.get("x-should-retry")).toBeNull();
     const replayABody = await replayA.text();
     // 安全边界：detail（原始异常文本）绝不能流入客户端可见的响应体，只有
     // 分类后的 reason 字符串可以出现在这里。

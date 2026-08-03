@@ -173,13 +173,17 @@ describe("8.6: opaque compact denial log — real /v1/messages integration", () 
     expect(err.message).toBe("expired");
 
     const ctxFields = entry.context as Record<string, unknown>;
+    // ★ #83：新增 cause 字段（这条路径的 recordOpaqueCompactDenial 调用没有
+    // 传 cause——不是 recompact_failed_original_account 聚合桶，"expired"
+    // 本身就是完整分类——所以理应是 null，跟 detail 一样）。
     expect(Object.keys(ctxFields).sort()).toEqual(
-      ["account_hash", "conv_hash", "detail", "generation", "marker_length", "reason", "rid"].sort(),
+      ["account_hash", "cause", "conv_hash", "detail", "generation", "marker_length", "reason", "rid"].sort(),
     );
     expect(ctxFields.reason).toBe("expired");
     // "expired" 是良性分类（族 A，自愈候选），不是 store 级致命故障——
     // detail 只在 toStateError() 的兜底分支才有内容，这里理应是 null。
     expect(ctxFields.detail).toBeNull();
+    expect(ctxFields.cause).toBeNull();
     expect(typeof ctxFields.rid).toBe("string");
     expect(typeof ctxFields.conv_hash).toBe("string");
     expect(ctxFields.conv_hash).toMatch(/^[0-9a-f]{8}$/);
@@ -193,5 +197,64 @@ describe("8.6: opaque compact denial log — real /v1/messages integration", () 
     expect(rawFile).not.toContain(compHash!);
     expect(rawFile).not.toContain(signature!);
     expect(rawFile).not.toContain("session-denial-log-e2e");
+  });
+
+  // ★ #83 集成验证：不满足于两处单元测试（executeCompactOnly 的 cause
+  // 分类、recordOpaqueCompactDenial 的字段透传）各自正确——路由层把两者
+  // 接起来这一步同样需要覆盖，跟本文件开头那条 8.6 的教训是同一类问题。
+  it("recompact 在原账号上撞上 429，denial log 的 reason 仍是聚合桶，但 cause 精确到 rate_limited", async () => {
+    installInMemoryOpaqueCompactStateStore();
+    setClaudeCodeOpaqueCompactExperimental(true);
+
+    let compactCallCount = 0;
+    setTransportPost(async (url) => {
+      if (url.endsWith("/codex/responses/compact")) {
+        compactCallCount += 1;
+        // 第一次（root）成功，第二次（recompact）撞 429——429 按
+        // handleCodexApiError 的分类本来是 action:"retry"，但这个账号池
+        // 只有一个账号、且 marker 已把这次 recompact 钉死在它上面，
+        // requiredEntryId 短路成立即放弃，走 crossAccountBlocked 分支。
+        if (compactCallCount === 1) {
+          return makeErrorTransportResponse(200, JSON.stringify({
+            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "summary" }] }],
+          }));
+        }
+        return makeErrorTransportResponse(429, JSON.stringify({ error: { message: "rate limited" } }));
+      }
+      return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+    });
+
+    const rootRes = await messagesRequest({
+      model: "codex", max_tokens: 1024, stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }, { "x-claude-code-session-id": "session-cause-e2e" });
+    expect(rootRes.status).toBe(200);
+    const markerMatch = /codex-opaque-state:v1:[A-Za-z0-9_-]{32}:[A-Za-z0-9_-]{43}:[A-Za-z0-9_-]{43}/.exec(
+      (await rootRes.text()).replace(/\\n/g, "\n"),
+    );
+    expect(markerMatch, "root compact response must contain a marker token").not.toBeNull();
+    const marker =
+      `<analysis>Opaque compact state retained locally.</analysis>\n<summary>${markerMatch![0]}</summary>`;
+
+    const recompactRes = await messagesRequest({
+      model: "codex", max_tokens: 1024, stream: true,
+      messages: [
+        { role: "assistant", content: marker },
+        { role: "user", content: "more history" },
+        { role: "user", content: compactPrompt },
+      ],
+    }, { "x-claude-code-session-id": "session-cause-e2e" });
+    expect(recompactRes.status).toBe(409);
+    await recompactRes.text();
+
+    const lines = readErrorLogLines();
+    const denialLines = lines.filter((l) => (l.error as Record<string, unknown> | undefined)?.name === "OpaqueCompactDenied");
+    expect(denialLines).toHaveLength(1);
+    const ctxFields = denialLines[0]!.context as Record<string, unknown>;
+    // reason 本身没变——既有 Dashboard/日志过滤口径依赖它，这条聚合桶
+    // 语义不动。cause 才是这次要验证的新信息：429 没有在跨账号闸门改写
+    // message/status 时被一起丢掉。
+    expect(ctxFields.reason).toBe("recompact_failed_original_account");
+    expect(ctxFields.cause).toBe("rate_limited");
   });
 });

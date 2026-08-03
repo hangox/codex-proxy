@@ -42,6 +42,8 @@ import { appendErrorLog } from "../../logs/error-log.js";
 import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { auditAccountTag, auditSessionTag } from "./opaque-compact-audit.js";
 import { recordCompactOutcome } from "./compact-outcome-log.js";
+import type { RecompactFailureCause } from "./codex-compact-service.js";
+import type { OpaqueCompactStateFailure } from "./opaque-compact-state.js";
 
 export interface OpaqueCompactDenialInput {
   requestId: string;
@@ -73,6 +75,17 @@ export interface OpaqueCompactDenialInput {
    * 才能记录（409 决策本身不能因为这个可选统计字段被推迟）。
    */
   model?: string;
+  /**
+   * ★ #83：`reason` 之外的失败子因，专门给 `recompact_failed_original_account`
+   * 这个聚合桶补细粒度（其它 reason 已经是完整分类，通常不需要再传这个）。
+   * 跟 `reason` 同一条纪律——**只能是结构化 enum 值**（`RecompactFailureCause`
+   * 或 `OpaqueCompactStateFailure` 的某个字面量），不是给 upstream message/
+   * body、raw status detail、marker/stateId/session/account 明文开的口子；
+   * 需要自由文本诊断信息用 `detail`，不要拿 `cause` 顶替。类型直接表达成
+   * 这个联合类型（而不是宽松的 `string`），让注释里说的封闭值域和类型系统
+   * 本身对得上，不用光靠注释自律。
+   */
+  cause?: RecompactFailureCause | OpaqueCompactStateFailure;
 }
 
 /** 记录一次 opaque compact 的 409 / fail-closed 决策。绝不抛出。 */
@@ -98,6 +111,10 @@ export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void
           : null,
         generation: input.generation ?? null,
         detail: input.detail != null ? sanitizeFreeTextForLog(input.detail) : null,
+        // ★ #83：结构化 enum 值，不过 sanitizeFreeTextForLog——那个函数是给
+        // detail 这类自由文本用的；cause 的值域封闭且已知，跟 reason 同等
+        // 待遇，原样落盘。
+        cause: input.cause ?? null,
       },
     });
   } catch {

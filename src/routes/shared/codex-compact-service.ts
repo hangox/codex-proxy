@@ -19,6 +19,13 @@ import { canonicalJson } from "./canonical-json.js";
 import { sanitizeFreeTextForLog } from "../../logs/redact.js";
 import { getModelInfo } from "../../models/model-store.js";
 import { isPromptTooLongLike } from "../../proxy/prompt-too-long-error.js";
+import {
+  isModelNotSupportedError,
+  isQuotaExhaustedError,
+  isBanError,
+  isTokenInvalidError,
+  isCfPathBlockError,
+} from "../../proxy/error-classification.js";
 import { tokenizeCompactContent } from "./compact-tokenizer.js";
 
 const COMPACT_PROMPT_PREFIX = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.";
@@ -985,6 +992,105 @@ export interface CompactServiceErrorClassification {
   estimatedTokens?: number;
   /** 仅 `skippedUpstream:true` 时有意义：当时对应型号的预算 token 数。 */
   budgetTokens?: number;
+  /**
+   * ★ #83：`recompact_failed_original_account` 聚合桶的失败子因。
+   *
+   * 命名经 team-lead 请 scout 仲裁过（scout 初稿建议了一套 `upstream_*`/
+   * `bound_account_*` 前缀风格，仲裁结论是这套无前缀命名在这个受限值域内
+   * 不含歧义，维持原样，"纯风格差异，不要求改"）。协议层（stale_generation
+   * 等）的取值直接复用 `OpaqueCompactStateFailure` 现成的值——见
+   * `messages.ts` 的 `deriveRecompactFailureCause`，理由同样是仲裁结论：
+   * 同一个 CAS 失败只应该有一个 machine-readable 名字，另造一套前缀等价名
+   * 是"一对多命名分裂"，跟这次要治的"多对一聚合丢分类"是同一个病的镜像。
+   *
+   * 401 拆成 `account_deactivated`/`token_expired` 两个值同样经仲裁确认
+   * 保留——依据是 `handleCodexApiError` 内部本来就有的 isDeactivated 判据
+   * （`pool.markStatus` 分别标 banned/expired），拆分只是把代码里已经区分
+   * 出来的信息透传出来，不是新加的维度，合并回一个值反而会丢信息。
+   */
+  cause?: RecompactFailureCause;
+}
+
+/**
+ * ★ #83：`executeCompactOnly` 内部失败原因的结构化分类，供 `messages.ts`
+ * 的 `recompact_failed_original_account` 聚合点拆分子因（此前所有走
+ * `requiredEntryId` 跨账号闸门的失败，无论上游真实原因是什么，都被改写成
+ * 同一句"账号失败、不重试"文案+409，具体分类在 `codex-compact-service.ts:
+ * 1109-1151` 这一步就已经丢了，不是后面哪个日志 sink 没接对）。
+ *
+ * `no_account_available`/`bound_account_unavailable` 是 `executeCompactOnly`
+ * 自己在联系上游之前就能确定的两种"根本没打成"，固定赋值，不需要分类器：
+ * 前者是账号池整体没有可用租约（含 root compact 场景），后者是池子返回了
+ * 账号、但不是这次 recompact 绑定的那一个（调度/affinity 不变量出问题，
+ * 从未真正发起过 compact 调用）——两者语义不同，命名刻意不合并，仲裁已
+ * 确认这个划分合理。其余的值来自 `classifyCompactUpstreamFailure`。
+ */
+export type RecompactFailureCause =
+  | "no_account_available"
+  | "bound_account_unavailable"
+  | "prompt_too_long"
+  | "model_not_supported"
+  | "rate_limited"
+  | "quota_exhausted"
+  | "account_banned"
+  | "account_deactivated"
+  | "token_expired"
+  | "cf_path_block"
+  /**
+   * ★ #83（scout 仲裁后补）：`err.status === 0` 的 transport 层失败——
+   * `CodexApiError(0, msg)` 在 `codex-api.ts:527-533` 的 HTTP transport
+   * throw 处产生，`proxy-error-handler.ts:78-86` 的注释把它解释为
+   * timeout/connection reset/TLS 失败。此前这类失败无条件落进
+   * `generic_upstream_error`，是"已经拥有但没透传的信息"，跟 #83 的目的
+   * 正好相反，必须单独一个值：已知是 transient/网络类，#80 做 cooldown
+   * allowlist 时必须明确排除，不能被 generic 的模糊语义连坐。
+   *
+   * 判据必须精确是 `err.status === 0`，不是某个范围——见下面
+   * `classifyCompactUpstreamFailure` 顶部关于"为什么不拆 5xx"的说明，
+   * 那条陷阱同样适用于任何试图按 status 范围猜测失败性质的写法。
+   */
+  | "transport_failure"
+  | "generic_upstream_error"
+  | "unexpected_error";
+
+/**
+ * 判据必须来自 `handleCodexApiError()` 命中的原始分支（对 `err` 的分类），
+ * 不能从 `decision.status`/`decision.message` 反推——多个分支可能落到同一个
+ * status（比如 model-not-supported 重试用尽后的 respond 分支与真正未分类的
+ * 通用 4xx/5xx 都可能走 `toErrorStatus(err.status)`），反推等于把已经丢失
+ * 的信息再猜一遍，猜错的成本比"暂时没有这个字段"更高。
+ *
+ * 因此这里直接复用 `handleCodexApiError` 自己用来分类的同一批 predicate
+ * 函数，按它内部完全相同的优先级顺序判断（见 `proxy-error-handler.ts:
+ * 92-205`）——两处判据必须保持同步，`handleCodexApiError` 加新分支时这里
+ * 也要加。不复制它的副作用（`pool.markStatus`/`cookieJar.clear` 等）：
+ * 那些已经由 `handleCodexApiError` 自己做过了，这里只是"再问一遍同样的
+ * 问题"来定性，不重复产生副作用。
+ *
+ * ★ 明确不拆的地方（scout 仲裁否掉过、别再加回来）：不按 `status >= 500`
+ * 分出一个 `upstream_server_error`/`upstream_transport_or_5xx`。原因是
+ * `codex-api.ts:555-570` 会把 JSON 解析失败之类的**本地检测**问题人为包成
+ * `CodexApiError(502, "Compact response is not valid JSON...")`——按状态码
+ * 范围分类会把"远端真的 5xx"和"本地判定 payload 无效"混成同一个新分类，
+ * 而且因为名字看起来更精确，这个混淆比笼统的 generic 更难被发现。真要拆，
+ * 必须在 `CodexApiError` 创建处带结构化 origin/kind（transport /
+ * upstream_http_5xx / invalid_compact_json / event_translation），不能从
+ * 最终 status 反推——这个方向已经建了 #90 待排期，这次不做。
+ */
+function classifyCompactUpstreamFailure(err: CodexApiError): RecompactFailureCause {
+  if (isPromptTooLongLike(err.body) || isPromptTooLongLike(err.message)) return "prompt_too_long";
+  if (isModelNotSupportedError(err)) return "model_not_supported";
+  if (err.status === 429) return "rate_limited";
+  if (isQuotaExhaustedError(err)) return "quota_exhausted";
+  if (isBanError(err)) return "account_banned";
+  if (isTokenInvalidError(err)) {
+    // 跟 handleCodexApiError 内部区分 banned/expired 的判据完全一致
+    // （proxy-error-handler.ts 的 isDeactivated 分支）。
+    return err.message.toLowerCase().includes("deactivated") ? "account_deactivated" : "token_expired";
+  }
+  if (isCfPathBlockError(err)) return "cf_path_block";
+  if (err.status === 0) return "transport_failure";
+  return "generic_upstream_error";
 }
 
 export class CompactServiceError extends Error {
@@ -992,6 +1098,7 @@ export class CompactServiceError extends Error {
   readonly promptTooLong: boolean;
   readonly estimatedTokens?: number;
   readonly budgetTokens?: number;
+  readonly cause?: RecompactFailureCause;
 
   constructor(
     message: string,
@@ -1012,6 +1119,7 @@ export class CompactServiceError extends Error {
     this.promptTooLong = classification.promptTooLong ?? false;
     this.estimatedTokens = classification.estimatedTokens;
     this.budgetTokens = classification.budgetTokens;
+    this.cause = classification.cause;
   }
 }
 
@@ -1045,7 +1153,11 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
     // account-acquisition.ts）；这里再补一行 rid 关联的 phase 标记，方便
     // 按 rid 在日志流里定位到"从一开始就没账号可用"这一类失败。
     console.warn(`[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_no_account model=${compactRequest.model}`);
-    throw new CompactServiceError("No available accounts. All accounts are expired or rate-limited.", 503, false, 0);
+    throw new CompactServiceError(
+      "No available accounts. All accounts are expired or rate-limited.",
+      503, false, 0,
+      { cause: "no_account_available" },
+    );
   }
   if (requiredEntryId !== undefined && acquired.entryId !== requiredEntryId) {
     console.warn(
@@ -1054,7 +1166,11 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
     );
     // usage: undefined 是对的——账号不匹配，从未发起过 compact 调用，没有响应体。
     releaseAccount(accountPool, acquired.entryId, undefined, released);
-    throw new CompactServiceError("The compact state account is unavailable.", 409, false, 1);
+    throw new CompactServiceError(
+      "The compact state account is unavailable.",
+      409, false, 1,
+      { cause: "bound_account_unavailable" },
+    );
   }
 
   let entryId = acquired.entryId;
@@ -1107,6 +1223,11 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
         throw error;
       }
       const decision = handleCodexApiError(error, accountPool, entryId, compactRequest.model, tag, modelRetried, cookieJar, true);
+      // ★ #83：在跨账号闸门改写 decision.message/status **之前**，先从原始
+      // `error`（CodexApiError）独立分类出这次失败的子因——见
+      // `classifyCompactUpstreamFailure` 的文档，判据必须来自
+      // `handleCodexApiError` 命中的原始分支，不能从改写后的 decision 反推。
+      const upstreamCause = classifyCompactUpstreamFailure(error);
       // ★ 8.7（task #25）修复：`requiredEntryId` 分支此前**无条件**把
       // decision.message/status 换成通用的"跨账号不重试"文案+409——recompact
       // （marker 已把记录钉死在一个账号上）永远走这条分支，所以哪怕
@@ -1147,7 +1268,11 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
               // 直接透传 isPromptTooLongFailure 本身——覆盖 crossAccountBlocked
               // 为 false 的两种情况：真实是 prompt-too-long（跨账号限制被
               // 绕过），或者是 root compact（requiredEntryId 本来就没设）。
-              { promptTooLong: isPromptTooLongFailure },
+              //
+              // ★ #83：cause 用 upstreamCause（对原始 error 的独立分类），
+              // 不是从 crossAccountBlocked 改写后的 message/status 反推——
+              // 这正是本次要保留下来、此前被跨账号闸门抹掉的那部分信息。
+              { promptTooLong: isPromptTooLongFailure, cause: upstreamCause },
             );
           }
           // usage: undefined 是对的——这次账号的尝试失败了，即将换账号重试，没有响应体可记。
@@ -1159,7 +1284,10 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
           `[${tag}] rid=${requestId?.slice(0, 8) ?? "-"} phase=compact_giveup` +
             ` tried=${triedEntryIds.length} last_status=${decision.status}`,
         );
-        throw new CompactServiceError(decision.message, decision.status, decision.useFormat429 === true, triedEntryIds.length);
+        throw new CompactServiceError(
+          decision.message, decision.status, decision.useFormat429 === true, triedEntryIds.length,
+          { cause: upstreamCause },
+        );
       }
       entryId = acquired.entryId;
       triedEntryIds.push(entryId);

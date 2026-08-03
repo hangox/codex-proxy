@@ -1,19 +1,9 @@
 import { useState } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useUsageSummary, useUsageHistory, type Granularity, type UsageHistoryRange } from "../../../shared/hooks/use-usage-stats";
-import { useCompactOutcomeStats, type CompactOutcomeBreakdown } from "../../../shared/hooks/use-compact-outcomes";
 import { UsageChart, formatNumber, formatHitRate, sumUsageWindow, sumWindow } from "../components/UsageChart";
+import { CompactOutcomesCard } from "../components/CompactOutcomesCard";
 import type { TranslationKey } from "../../../shared/i18n/translations";
-
-// 8.12：复用现有 usage 图表的时间窗口选项，不新发明一套（team-lead 要求）——
-// 只取一个子集，"快速压缩"卡片是聚合统计不是时间序列，不需要 1h/6h 这种
-// 过细的粒度，但选项本身和现有约定保持同一份来源，不重复定义数值。
-const compactHoursOptions: Array<{ hours: UsageHistoryRange; label: TranslationKey }> = [
-  { hours: 24, label: "last24h" },
-  { hours: 168, label: "last7d" },
-  { hours: 720, label: "last30d" },
-  { hours: "all", label: "allHistory" },
-];
 
 const granularityOptions: Array<{ value: Granularity; label: TranslationKey }> = [
   { value: "five_min", label: "granularityFiveMin" },
@@ -114,7 +104,11 @@ function UsageContent({ t, summary, summaryLoading, granularity, setGranularity,
         />
       </div>
 
-      <CompactOutcomesCard t={t} />
+      {/* ★ 8.17：简化成入口——固定最近 24h、不显示视图/时间窗口切换、不
+          显示四类明细，完整交互在新 tab「压缩明细」（#/compact-detail）。
+          理由和取舍见 CompactOutcomesCard 头部注释 / compact-detail-panel-
+          design.md 2.4 节：避免同一份统计口径在两处各自实现一遍。 */}
+      <CompactOutcomesCard t={t} variant="compact" hours={24} />
 
       {/* Controls */}
       <div class="flex flex-wrap gap-2 mb-4">
@@ -210,169 +204,6 @@ export function UsageStats({ embedded }: { embedded?: boolean } = {}) {
       <main class="flex-grow px-4 md:px-8 py-6 max-w-[1100px] mx-auto w-full">
         <UsageContent {...contentProps} />
       </main>
-    </div>
-  );
-}
-
-/**
- * ★ 8.12：快速压缩成功率卡片——数据来自 `compact-outcome-log.ts`（8.10
- * 落盘）经 `/admin/compact-outcomes/summary` 暴露。
- *
- * 设计要点（team-lead 规格，逐条对应）：
- * - 默认「按会话」口径（体验视角，"我的压缩好不好使"），可切「按请求」。
- * - 「预判降级」这一行是整张卡片最有价值的部分——terra 那次真实误判就是
- *   靠 `estimated_tokens`/`budget_tokens` 这两个数发现"降级不是真超了，
- *   是估算高估了"，所以这一行必须能展开看明细，不能只有一个数字。
- * - 按会话口径下，隐私限制说明（conv_hash 跨进程重启不稳定）必须在 UI
- *   上可见，不能只留在代码注释里——这是看这个数字的人需要知道的精度边界。
- * - 零数据时显示"暂无数据"，不要显示 0/0 算出来的 "0%"——那会被误读成
- *   "全部失败"，是最糟的误导。
- */
-function CompactOutcomesCard({ t }: { t: (key: TranslationKey) => string }) {
-  const [view, setView] = useState<"session" | "request">("session");
-  const [hours, setHours] = useState<UsageHistoryRange>(24);
-  const [budgetExceededExpanded, setBudgetExceededExpanded] = useState(false);
-  const { stats, loading } = useCompactOutcomeStats(hours);
-
-  const breakdown: CompactOutcomeBreakdown | null =
-    stats === null ? null : view === "session" ? stats.by_session : stats.by_request;
-  const hasData = breakdown !== null && breakdown.total > 0;
-
-  return (
-    <div class="bg-white dark:bg-card-dark rounded-xl border border-gray-200 dark:border-border-dark p-4 mb-6">
-      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <h3 class="text-sm font-semibold text-slate-800 dark:text-text-main">
-          {t("compactOutcomesTitle")}
-        </h3>
-        <div class="flex flex-wrap gap-2">
-          <PillToggle
-            options={[
-              { value: "session" as const, label: t("compactViewBySession") },
-              { value: "request" as const, label: t("compactViewByRequest") },
-            ]}
-            value={view}
-            onChange={setView}
-          />
-          <PillToggle
-            options={compactHoursOptions.map(({ hours: h, label }) => ({ value: h, label: t(label) }))}
-            value={hours}
-            onChange={setHours}
-          />
-        </div>
-      </div>
-
-      {loading ? (
-        <div class="text-center py-8 text-slate-400 dark:text-text-dim text-sm">Loading...</div>
-      ) : !hasData ? (
-        <div class="text-center py-8 text-slate-400 dark:text-text-dim text-sm">{t("compactNoData")}</div>
-      ) : (
-        <>
-          <div class="text-center mb-4">
-            <div class="text-3xl font-bold text-slate-800 dark:text-text-main">
-              {Math.round(breakdown.success_rate * 100)}%
-            </div>
-            <div class="text-xs text-slate-500 dark:text-text-dim mt-1">
-              {formatNumber(breakdown.success)} / {formatNumber(breakdown.total)}
-            </div>
-          </div>
-
-          <div class="space-y-0.5">
-            <CompactOutcomeRow icon="✅" label={t("compactOutcomeSuccess")} count={breakdown.success} />
-            <CompactOutcomeRow
-              icon="⚠️"
-              label={t("compactOutcomeBudgetExceeded")}
-              count={breakdown.budget_exceeded}
-              expandable={breakdown.budget_exceeded > 0}
-              expanded={budgetExceededExpanded}
-              onToggle={() => setBudgetExceededExpanded((v) => !v)}
-            />
-            {budgetExceededExpanded && stats && stats.recent_budget_exceeded.length > 0 && (
-              <div class="pl-7 pb-1 space-y-0.5">
-                {stats.recent_budget_exceeded.map((entry) => (
-                  <div key={entry.rid} class="text-[11px] text-slate-500 dark:text-text-dim">
-                    {entry.model} — {t("compactEstTokens")} {formatNumber(entry.estimated_tokens ?? 0)} / {t("compactBudgetTokens")}{" "}
-                    {formatNumber(entry.budget_tokens ?? 0)}
-                  </div>
-                ))}
-              </div>
-            )}
-            <CompactOutcomeRow icon="❌" label={t("compactOutcomeUpstreamFailed")} count={breakdown.upstream_failed} />
-            <CompactOutcomeRow icon="🛑" label={t("compactOutcomeDenied")} count={breakdown.denied} />
-          </div>
-
-          {view === "session" && (
-            <div class="mt-3 flex items-start gap-1 text-[11px] text-slate-400 dark:text-text-dim">
-              <span>ⓘ</span>
-              <span>{t("compactSessionHint")}</span>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-function CompactOutcomeRow({
-  icon,
-  label,
-  count,
-  expandable,
-  expanded,
-  onToggle,
-}: {
-  icon: string;
-  label: string;
-  count: number;
-  expandable?: boolean;
-  expanded?: boolean;
-  onToggle?: () => void;
-}) {
-  return (
-    <div
-      class={`flex items-center justify-between py-1.5 px-1 rounded-lg text-sm ${
-        expandable ? "cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5" : ""
-      }`}
-      onClick={expandable ? onToggle : undefined}
-    >
-      <span class="flex items-center gap-2 text-slate-600 dark:text-text-dim">
-        <span>{icon}</span>
-        <span>{label}</span>
-      </span>
-      <span class="flex items-center gap-1 text-slate-800 dark:text-text-main font-medium">
-        {formatNumber(count)}
-        {expandable && (
-          <span class="text-slate-400 dark:text-text-dim text-xs">{expanded ? "▴" : "›"}</span>
-        )}
-      </span>
-    </div>
-  );
-}
-
-/** 通用胶囊按钮组——和 UsageContent 里 granularity/range 现有的样式保持一致，不新发明一套视觉语言。 */
-function PillToggle<V extends string | number>({
-  options,
-  value,
-  onChange,
-}: {
-  options: Array<{ value: V; label: string }>;
-  value: V;
-  onChange: (v: V) => void;
-}) {
-  return (
-    <div class="flex gap-1">
-      {options.map(({ value: v, label }) => (
-        <button
-          key={String(v)}
-          onClick={() => onChange(v)}
-          class={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${
-            value === v
-              ? "bg-primary-action text-white border-primary-action"
-              : "bg-white dark:bg-card-dark border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:border-primary/50"
-          }`}
-        >
-          {label}
-        </button>
-      ))}
     </div>
   );
 }

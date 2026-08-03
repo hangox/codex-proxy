@@ -118,7 +118,12 @@ export class LogStore {
 
     if (search) {
       results = results.filter((r) => {
-        const hay = `${r.method} ${r.path} ${r.model ?? ""} ${r.provider ?? ""} ${r.status ?? ""}`.toLowerCase();
+        // ★ 8.17：加入 requestId——压缩明细面板的详情面板要能"按 rid 跳转
+        // 日志页查看关联请求"，压缩明细存的 `rid` 是 `requestId.slice(0,8)`
+        // 前缀，这里的 `includes` 子串匹配天然支持前缀查询，不需要额外的
+        // 精确匹配逻辑。此前这个搜索框搜不到 requestId，只能搜
+        // method/path/model/provider/status，是这次接入才发现的缺口。
+        const hay = `${r.method} ${r.path} ${r.model ?? ""} ${r.provider ?? ""} ${r.status ?? ""} ${r.requestId}`.toLowerCase();
         return hay.includes(search);
       });
     }

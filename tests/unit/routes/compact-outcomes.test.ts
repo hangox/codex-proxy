@@ -120,4 +120,177 @@ describe("GET /admin/compact-outcomes/summary", () => {
     const body = await res.json();
     expect(body.by_request.total).toBe(1);
   });
+
+  // ★ 8.17
+  it("接受 model 参数并按型号过滤统计结果", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "success" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const res = await app.request("/admin/compact-outcomes/summary?hours=all&model=gpt-5.6-sol");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.by_request.total).toBe(1);
+  });
+
+  it("不带 model 参数时行为不变（全部型号）", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "success" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const res = await app.request("/admin/compact-outcomes/summary?hours=all");
+    const body = await res.json();
+    expect(body.by_request.total).toBe(2);
+  });
+});
+
+// ★ 8.17：压缩明细面板的列表数据源。
+describe("GET /admin/compact-outcomes/events", () => {
+  it("默认窗口(hours=24)、无数据时返回空列表，total=0", async () => {
+    const { Hono } = await import("hono");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+
+    const res = await app.request("/admin/compact-outcomes/events");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.events).toEqual([]);
+    expect(body.total).toBe(0);
+    expect(body.limit).toBe(50);
+    expect(body.offset).toBe(0);
+  });
+
+  it("透传真实落盘的事件，newest-first", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "denied", reason: "store_unavailable" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const res = await app.request("/admin/compact-outcomes/events?hours=all");
+    const body = await res.json();
+    expect(body.events.map((e: { rid: string }) => e.rid)).toEqual(["r2", "r1"]);
+    expect(body.total).toBe(2);
+  });
+
+  it("支持 limit/offset 分页", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    for (let i = 0; i < 5; i++) {
+      recordCompactOutcome({ requestId: `r${i}`, clientConversationId: "s", model: "m", outcome: "success" });
+    }
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const res = await app.request("/admin/compact-outcomes/events?hours=all&limit=2&offset=2");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.events).toHaveLength(2);
+    expect(body.total).toBe(5);
+    expect(body.limit).toBe(2);
+    expect(body.offset).toBe(2);
+  });
+
+  it("按 outcome 过滤，非法 outcome 值返回 400", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "budget_exceeded" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "success" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+
+    const okRes = await app.request("/admin/compact-outcomes/events?hours=all&outcome=budget_exceeded");
+    expect(okRes.status).toBe(200);
+    const okBody = await okRes.json();
+    expect(okBody.total).toBe(1);
+
+    const badRes = await app.request("/admin/compact-outcomes/events?hours=all&outcome=not_a_real_outcome");
+    expect(badRes.status).toBe(400);
+  });
+
+  it("按 model 过滤", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "success" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const res = await app.request("/admin/compact-outcomes/events?hours=all&model=gpt-5.6-sol");
+    const body = await res.json();
+    expect(body.total).toBe(1);
+    expect(body.events[0].model).toBe("gpt-5.6-sol");
+  });
+
+  it("★ 8.18：端点透传 availableModels，且不因 model 筛选而塌缩——驱动前端型号下拉框", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "success" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const res = await app.request("/admin/compact-outcomes/events?hours=all&model=gpt-5.6-sol");
+    const body = await res.json();
+    expect(body.availableModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]); // 即便筛了 model，选项列表仍然完整
+  });
+
+  it("拒绝非法 hours 参数（和 /summary 共用同一套校验）", async () => {
+    const { Hono } = await import("hono");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+
+    const res = await app.request("/admin/compact-outcomes/events?hours=-5");
+    expect(res.status).toBe(400);
+  });
+
+  it("拒绝非法 limit（超过 200 上限、非正整数）", async () => {
+    const { Hono } = await import("hono");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+
+    for (const bad of ["0", "-1", "201", "not-a-number"]) {
+      const res = await app.request(`/admin/compact-outcomes/events?limit=${bad}`);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("★ 和 /summary 用同一组筛选条件时，events 的 total 应该等于 summary 的 by_request.total（设计文档 2.5 节的核心不变量）", async () => {
+    const { Hono } = await import("hono");
+    const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+    const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "budget_exceeded" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "gpt-5.6-terra", outcome: "success" });
+
+    const app = new Hono();
+    app.route("/", createCompactOutcomesRoutes());
+    const summaryRes = await app.request("/admin/compact-outcomes/summary?hours=all&model=gpt-5.6-sol");
+    const summaryBody = await summaryRes.json();
+    const eventsRes = await app.request("/admin/compact-outcomes/events?hours=all&model=gpt-5.6-sol");
+    const eventsBody = await eventsRes.json();
+
+    expect(eventsBody.total).toBe(summaryBody.by_request.total);
+  });
 });

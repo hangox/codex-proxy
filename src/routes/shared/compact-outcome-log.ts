@@ -212,16 +212,53 @@ function emptyBreakdown(): CompactOutcomeBreakdown {
 }
 
 /**
+ * ★ 8.19（reviewer2 P2）：`getCompactOutcomeStats`/`queryCompactOutcomeEvents`
+ * 此前各自独立调用 `Date.now()` 换算 cutoff，看起来是同一段逻辑抄了两遍——
+ * 真实风险有两层：(1) 未来只改一处（比如把 `3600_000` 改成别的换算方式）
+ * 忘了改另一处，两边窗口定义悄悄分叉；(2) `/summary` 和 `/events` 是两次
+ * 独立的 HTTP 请求，服务端各自处理时刻的 `Date.now()` 天然不可能完全相同。
+ *
+ * 这里把 cutoff 换算抽成单一实现，两个函数共用；同时把"现在是什么时刻"
+ * 变成显式可传入的 `nowMs` 参数（默认 `Date.now()`）——这样至少能保证
+ * "给两个函数传同一个 `nowMs`，一定算出逐位相同的 cutoff"，把"两次独立
+ * 实现"这个真正可以消除的风险类别（逻辑分叉）彻底关掉，并且让不变量
+ * 测试能用一个固定的 `nowMs` 精确构造"事件正好卡在窗口边界"的场景，不用
+ * 依赖真实墙钟时间去撞运气。
+ *
+ * ★ 已知未覆盖的部分（如实披露，不是没做完）：`/summary`（每 30s 轮询）
+ * 和 `/events`（每 15s 轮询）在前端是两个独立计时器各自发起的真实 HTTP
+ * 请求，轮询周期本身的 15s 落差远大于毫秒级时钟抖动——这不是这次改动能
+ * 解决的问题（要解决就得把两个面板的轮询合并成一个共享节拍器，是更大的
+ * 改动），也不是"数字对不上"这个用户可感知问题的主要来源。这里消除的是
+ * "同一个请求场景下两处 cutoff 计算逻辑本身就可能不一致"这个更根本的类别。
+ */
+function resolveWindowCutoffMs(windowHours: number | "all", nowMs: number): number | null {
+  return windowHours === "all" ? null : nowMs - windowHours * 3600_000;
+}
+
+/**
  * 计算窗口内的成功率统计。`windowHours` 为 `"all"` 时不做时间过滤。
  * `recentBudgetExceededLimit` 控制 `recent_budget_exceeded` 最多返回几条。
+ *
+ * ★ 8.17：`model` 可选参数——压缩明细面板（汇总区 + 明细列表同 tab）要求
+ * 两块区域"用同一套筛选参数"，否则用户按型号筛列表后，上面的汇总数字
+ * 还是全部型号的合计，会造成"看到 4 次降级、列表里却对不上"这类误判。
+ * 这里只是在窗口过滤之后再加一步按 `model` 精确匹配过滤，不改变任何既有
+ * 调用方的行为（不传就是原来的"全部型号"语义）。
+ *
+ * ★ 8.19：`nowMs` 可选参数，默认 `Date.now()`——见 {@link resolveWindowCutoffMs}
+ * 头部注释。不传时行为和之前完全一样。
  */
 export function getCompactOutcomeStats(
   windowHours: number | "all",
   recentBudgetExceededLimit = 10,
+  model?: string,
+  nowMs: number = Date.now(),
 ): CompactOutcomeStats {
   const all = readCompactOutcomeLog(); // newest first
-  const cutoff = windowHours === "all" ? null : Date.now() - windowHours * 3600_000;
-  const events = cutoff === null ? all : all.filter((e) => new Date(e.ts).getTime() >= cutoff);
+  const cutoff = resolveWindowCutoffMs(windowHours, nowMs);
+  const windowed = cutoff === null ? all : all.filter((e) => new Date(e.ts).getTime() >= cutoff);
+  const events = model !== undefined && model !== "" ? windowed.filter((e) => e.model === model) : windowed;
 
   const byRequest = emptyBreakdown();
   for (const e of events) {
@@ -262,4 +299,91 @@ export function getCompactOutcomeStats(
     }));
 
   return { by_request: byRequest, by_session: bySession, recent_budget_exceeded: recentBudgetExceeded };
+}
+
+// ── 明细列表（读侧）───────────────────────────────────────────────
+
+export interface CompactOutcomeEventQuery {
+  /** `"all"` 时不做时间过滤，语义和 `getCompactOutcomeStats` 一致。 */
+  windowHours: number | "all";
+  /** 精确匹配 `outcome`，不传表示不筛选（全部四类）。 */
+  outcome?: CompactOutcome;
+  /** 精确匹配 `model`，不传或空字符串表示不筛选。 */
+  model?: string;
+  /**
+   * `conv_hash` **前缀**匹配（不是模糊搜索）——`conv_hash` 本身是不可逆
+   * 哈希，没有"用户记得的会话名"这种东西可搜，只有"我已经看到过某条记录
+   * 的 conv_hash，想找同一个会话的其它记录"这个场景，前缀匹配够用。
+   * 大小写不敏感。不传或空字符串表示不筛选。
+   */
+  convHashPrefix?: string;
+  /** 默认 50，同 `/admin/logs` 的分页约定。 */
+  limit?: number;
+  /** 默认 0。 */
+  offset?: number;
+  /** ★ 8.19：默认 `Date.now()`，见 {@link resolveWindowCutoffMs} 头部注释。 */
+  nowMs?: number;
+}
+
+export interface CompactOutcomeEventPage {
+  events: CompactOutcomeEvent[];
+  /** 过滤（时间窗口 + outcome + model）之后、分页之前的总条数。 */
+  total: number;
+  limit: number;
+  offset: number;
+  /**
+   * ★ 8.18：这次时间窗口内出现过的型号，去重、按字母序排列——供前端型号
+   * 筛选下拉框动态生成选项用，不是写死的型号列表（型号会变，见调用点
+   * `CompactDetailPage.tsx` 的注释）。
+   *
+   * 只按**时间窗口**过滤，刻意不按当前请求的 `outcome`/`model` 再过滤
+   * ——如果按 `model` 过滤，选中某个型号之后下拉框就会"塌缩"成只剩这一个
+   * 选项，用户没法切换回别的型号；如果按 `outcome` 过滤，切换结果类型
+   * 筛选时下拉框选项会跟着变化，制造"型号突然消失了"的困惑。这份列表
+   * 因此代表"这个时间窗口里理论上还能筛出哪些型号"，是一个相对稳定的
+   * 全集，不随其它筛选维度变化。
+   */
+  availableModels: string[];
+}
+
+const DEFAULT_EVENTS_LIMIT = 50;
+
+/**
+ * ★ 8.17：压缩明细面板的列表数据源——`getCompactOutcomeStats` 只返回聚合
+ * 统计（外加最多 10 条 `recent_budget_exceeded`，且只有这一种 outcome），
+ * 从没有"给我全部原始事件、按时间倒序分页、可选按结果类型/型号筛"这个
+ * 读法。这里新增一个专门的查询函数，复用同一份 `readCompactOutcomeLog()`
+ * 数据源，不是新的采集/存储——纯读取逻辑，和 `getCompactOutcomeStats`
+ * 是同一批数据的两种不同视图（一个看汇总，一个看明细），过滤顺序
+ * （时间窗口 → outcome → model → 分页）和 `getCompactOutcomeStats` 的
+ * "先按窗口过滤、再按 model 过滤"保持一致，方便两者对同一组筛选条件
+ * 算出的 `total` 互相对得上。
+ */
+export function queryCompactOutcomeEvents(query: CompactOutcomeEventQuery): CompactOutcomeEventPage {
+  const all = readCompactOutcomeLog(); // newest first
+  const cutoff = resolveWindowCutoffMs(query.windowHours, query.nowMs ?? Date.now());
+  const windowed = cutoff === null ? all : all.filter((e) => new Date(e.ts).getTime() >= cutoff);
+  // 只按时间窗口算——不能用后面被 outcome/model 过滤过的 `events`，见
+  // `availableModels` 字段文档"为什么不按当前筛选再过滤"。
+  const availableModels = [...new Set(windowed.map((e) => e.model))].sort();
+
+  let events = windowed;
+  if (query.outcome !== undefined) events = events.filter((e) => e.outcome === query.outcome);
+  if (query.model !== undefined && query.model !== "") events = events.filter((e) => e.model === query.model);
+  if (query.convHashPrefix !== undefined && query.convHashPrefix !== "") {
+    const prefix = query.convHashPrefix.toLowerCase();
+    // ★ 8.19（reviewer2 P2，真崩溃 bug）：此前判断的是 `e.conv_hash !== null`，
+    // 但字段缺失（旧格式事件、写入中断截断的行）时它是 `undefined`，不是
+    // `null`，后面 `.toLowerCase()` 会直接抛 TypeError 把整个请求打崩——
+    // 会话搜索一旦命中一条这样的脏数据，`/admin/compact-outcomes/events`
+    // 就 500。改成 `typeof === "string"`，把 `null`/`undefined`/任何非
+    // 字符串值一并当作"没有 conv_hash，过滤不到"处理，不再假设字段一定
+    // 存在。
+    events = events.filter((e) => typeof e.conv_hash === "string" && e.conv_hash.toLowerCase().startsWith(prefix));
+  }
+
+  const total = events.length;
+  const limit = query.limit ?? DEFAULT_EVENTS_LIMIT;
+  const offset = query.offset ?? 0;
+  return { events: events.slice(offset, offset + limit), total, limit, offset, availableModels };
 }

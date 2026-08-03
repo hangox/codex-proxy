@@ -272,4 +272,274 @@ describe("getCompactOutcomeStats", () => {
     expect(stats.recent_budget_exceeded[0].estimated_tokens).toBe(400000);
     expect(stats.recent_budget_exceeded[0].budget_tokens).toBe(390000);
   });
+
+  // ★ 8.17：压缩明细面板要求汇总区和明细列表用同一套筛选参数（含型号），
+  // 否则用户按型号筛列表后，上面汇总的数字还是全部型号的合计，会造成
+  // "看到 4 次降级、列表里对不上"这种误判——见 compact-detail-panel-design.md
+  // 2.5 节。这里锁住 `model` 参数确实按精确匹配过滤，且不传时行为不变。
+  describe("★ 8.17 model 参数", () => {
+    it("传 model 时只统计该型号的事件", async () => {
+      const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "budget_exceeded" });
+      recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "gpt-5.6-terra", outcome: "success" });
+
+      const solStats = getCompactOutcomeStats("all", 10, "gpt-5.6-sol");
+      expect(solStats.by_request.total).toBe(2);
+      expect(solStats.by_request.success).toBe(1);
+      expect(solStats.by_request.budget_exceeded).toBe(1);
+
+      const terraStats = getCompactOutcomeStats("all", 10, "gpt-5.6-terra");
+      expect(terraStats.by_request.total).toBe(1);
+    });
+
+    it("不传 model（undefined）时行为和之前完全一样——不筛选", async () => {
+      const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "success" });
+
+      const stats = getCompactOutcomeStats("all");
+      expect(stats.by_request.total).toBe(2);
+    });
+
+    it("传空字符串 model 等同于不筛选（不是一个永远匹配不到的过滤条件）", async () => {
+      const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+
+      const stats = getCompactOutcomeStats("all", 10, "");
+      expect(stats.by_request.total).toBe(1);
+    });
+
+    it("model 筛选和时间窗口筛选组合生效", async () => {
+      const { recordCompactOutcome, readCompactOutcomeLog, getCompactOutcomeStats } = await importModule();
+      recordCompactOutcome({ requestId: "r-old", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+      const events = readCompactOutcomeLog();
+      const rewritten = events.map((e) => ({ ...e, ts: new Date(Date.now() - 48 * 3600_000).toISOString() }));
+      const { writeFileSync } = await import("fs");
+      writeFileSync(resolve(tmpDataDir, "compact-outcomes.jsonl"), rewritten.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+      recordCompactOutcome({ requestId: "r-new", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+      recordCompactOutcome({ requestId: "r-new-other-model", clientConversationId: "s3", model: "gpt-5.6-terra", outcome: "success" });
+
+      const stats = getCompactOutcomeStats(24, 10, "gpt-5.6-sol");
+      expect(stats.by_request.total).toBe(1); // 只有 r-new：窗口内 + 型号匹配
+    });
+  });
+});
+
+describe("queryCompactOutcomeEvents", () => {
+  it("newest-first，默认 limit=50、offset=0", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s", model: "m", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s", model: "m", outcome: "denied", reason: "store_unavailable" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s", model: "m", outcome: "budget_exceeded" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all" });
+    expect(page.events.map((e) => e.rid)).toEqual(["r3", "r2", "r1"]);
+    expect(page.total).toBe(3);
+    expect(page.limit).toBe(50);
+    expect(page.offset).toBe(0);
+  });
+
+  it("分页：limit/offset 生效，total 是过滤后、分页前的总数", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    for (let i = 0; i < 5; i++) {
+      recordCompactOutcome({ requestId: `r${i}`, clientConversationId: "s", model: "m", outcome: "success" });
+    }
+    const page1 = queryCompactOutcomeEvents({ windowHours: "all", limit: 2, offset: 0 });
+    expect(page1.events).toHaveLength(2);
+    expect(page1.total).toBe(5);
+    const page2 = queryCompactOutcomeEvents({ windowHours: "all", limit: 2, offset: 2 });
+    expect(page2.events).toHaveLength(2);
+    // 两页不重叠
+    expect(page1.events.map((e) => e.rid)).not.toEqual(page2.events.map((e) => e.rid));
+    const page3 = queryCompactOutcomeEvents({ windowHours: "all", limit: 2, offset: 4 });
+    expect(page3.events).toHaveLength(1); // 最后一页只剩 1 条
+  });
+
+  it("按 outcome 精确筛选", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "budget_exceeded" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "budget_exceeded" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all", outcome: "budget_exceeded" });
+    expect(page.total).toBe(2);
+    expect(page.events.every((e) => e.outcome === "budget_exceeded")).toBe(true);
+  });
+
+  it("按 model 精确筛选", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "success" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all", model: "gpt-5.6-sol" });
+    expect(page.total).toBe(1);
+    expect(page.events[0].model).toBe("gpt-5.6-sol");
+  });
+
+  it("outcome + model 同时筛选，AND 逻辑", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "budget_exceeded" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "gpt-5.6-terra", outcome: "budget_exceeded" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all", outcome: "budget_exceeded", model: "gpt-5.6-sol" });
+    expect(page.total).toBe(1);
+    expect(page.events[0].rid).toBe("r1");
+  });
+
+  it("窗口外的事件不计入 total", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r-old", clientConversationId: "s1", model: "m", outcome: "success" });
+    const events = readCompactOutcomeLog();
+    const rewritten = events.map((e) => ({ ...e, ts: new Date(Date.now() - 48 * 3600_000).toISOString() }));
+    const { writeFileSync } = await import("fs");
+    writeFileSync(resolve(tmpDataDir, "compact-outcomes.jsonl"), rewritten.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+    recordCompactOutcome({ requestId: "r-new", clientConversationId: "s2", model: "m", outcome: "success" });
+
+    const page24h = queryCompactOutcomeEvents({ windowHours: 24 });
+    expect(page24h.total).toBe(1);
+    const pageAll = queryCompactOutcomeEvents({ windowHours: "all" });
+    expect(pageAll.total).toBe(2);
+  });
+
+  it("★ 和 getCompactOutcomeStats 用同一套过滤顺序，同一组条件下 total 应该和聚合的 by_request.total 一致", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents, getCompactOutcomeStats } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "budget_exceeded" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "gpt-5.6-terra", outcome: "success" });
+
+    const stats = getCompactOutcomeStats("all", 10, "gpt-5.6-sol");
+    const page = queryCompactOutcomeEvents({ windowHours: "all", model: "gpt-5.6-sol" });
+    // 这正是设计文档 2.5 节要保证的那条不变量：汇总区的按请求总数和明细
+    // 列表在同一组筛选条件下的 total 必须相等，否则就是用户担心的"数字
+    // 对不上"。
+    expect(page.total).toBe(stats.by_request.total);
+  });
+
+  it("空数据：total=0，events 是空数组，不抛错", async () => {
+    const { queryCompactOutcomeEvents } = await importModule();
+    const page = queryCompactOutcomeEvents({ windowHours: "all" });
+    expect(page.total).toBe(0);
+    expect(page.events).toEqual([]);
+    expect(page.availableModels).toEqual([]);
+  });
+
+  // ★ 8.18：型号筛选下拉框的数据来源——不能硬编码，见字段头部注释。
+  describe("★ 8.18 availableModels", () => {
+    it("去重、按字母序返回时间窗口内出现过的型号", async () => {
+      const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-terra", outcome: "success" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+      recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "gpt-5.6-sol", outcome: "budget_exceeded" }); // 重复型号
+
+      const page = queryCompactOutcomeEvents({ windowHours: "all" });
+      expect(page.availableModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]); // 去重 + 字母序
+    });
+
+    it("★ 不因为当前 outcome 筛选而收窄——切换结果类型筛选时型号选项不应该消失", async () => {
+      const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-terra", outcome: "success" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "budget_exceeded" });
+
+      // 筛 outcome=success 时，availableModels 依然要包含 gpt-5.6-sol
+      // （它只有 budget_exceeded 记录，没有 success 记录）——否则用户切换
+      // 结果类型筛选时会看到型号选项莫名其妙地变化。
+      const page = queryCompactOutcomeEvents({ windowHours: "all", outcome: "success" });
+      expect(page.availableModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
+      expect(page.events).toHaveLength(1); // 但实际返回的记录仍然只有 success 那条
+    });
+
+    it("★ 不因为当前 model 筛选而塌缩成只剩一个——否则选中型号后下拉框就切不回别的型号了", async () => {
+      const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-terra", outcome: "success" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+
+      const page = queryCompactOutcomeEvents({ windowHours: "all", model: "gpt-5.6-sol" });
+      expect(page.availableModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
+      expect(page.events).toHaveLength(1); // 实际返回的记录仍然只有筛中的那个型号
+    });
+
+    it("只按时间窗口过滤——窗口外的型号不出现在列表里", async () => {
+      const { recordCompactOutcome, readCompactOutcomeLog, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r-old", clientConversationId: "s1", model: "gpt-5.6-old-model", outcome: "success" });
+      const events = readCompactOutcomeLog();
+      const rewritten = events.map((e) => ({ ...e, ts: new Date(Date.now() - 48 * 3600_000).toISOString() }));
+      const { writeFileSync } = await import("fs");
+      writeFileSync(resolve(tmpDataDir, "compact-outcomes.jsonl"), rewritten.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+      recordCompactOutcome({ requestId: "r-new", clientConversationId: "s2", model: "gpt-5.6-sol", outcome: "success" });
+
+      const page24h = queryCompactOutcomeEvents({ windowHours: 24 });
+      expect(page24h.availableModels).toEqual(["gpt-5.6-sol"]); // 窗口外的 gpt-5.6-old-model 不出现
+      const pageAll = queryCompactOutcomeEvents({ windowHours: "all" });
+      expect(pageAll.availableModels).toEqual(["gpt-5.6-old-model", "gpt-5.6-sol"]);
+    });
+  });
+
+  // ★ 8.19（reviewer2 P2，真崩溃 bug）：conv_hash 缺字段（不是 null，是
+  // undefined）时会话搜索不能让整个请求 500。
+  describe("★ 8.19 conv_hash 缺字段时会话前缀搜索不崩", () => {
+    it("conv_hash 字段完全缺失（旧格式/截断写入）的记录，按前缀搜索时被安全跳过，不抛错", async () => {
+      const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r-good", clientConversationId: "s1", model: "m", outcome: "success" });
+
+      // 直接往落盘文件里追加一条没有 conv_hash 字段的"脏"记录，模拟旧格式
+      // 事件或写入中途被截断的行——不能只在测试里用 recordCompactOutcome
+      // 构造，因为它总会写出合法的 conv_hash（null 或字符串），构造不出
+      // "字段整个不存在"这种真实生产可能出现的脏数据形状。
+      const { appendFileSync } = await import("fs");
+      const dirty = { ts: new Date().toISOString(), rid: "dirty001", model: "m", outcome: "success" }; // 没有 conv_hash 字段
+      appendFileSync(resolve(tmpDataDir, "compact-outcomes.jsonl"), JSON.stringify(dirty) + "\n", "utf-8");
+
+      expect(() => queryCompactOutcomeEvents({ windowHours: "all", convHashPrefix: "anything" })).not.toThrow();
+      const page = queryCompactOutcomeEvents({ windowHours: "all", convHashPrefix: "anything" });
+      expect(page.total).toBe(0); // 脏记录和正常记录都不匹配这个前缀，但不崩才是这条测试的重点
+    });
+
+    it("conv_hash 为 null（正常的'无会话'语义）时按前缀搜索依旧安全跳过，不抛错，行为和缺字段一致", async () => {
+      const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r-null-session", clientConversationId: null, model: "m", outcome: "denied", reason: "missing_session_context" });
+
+      expect(() => queryCompactOutcomeEvents({ windowHours: "all", convHashPrefix: "a3f9" })).not.toThrow();
+      expect(queryCompactOutcomeEvents({ windowHours: "all", convHashPrefix: "a3f9" }).total).toBe(0);
+    });
+  });
+
+  // ★ 8.19（reviewer2 P2）：cutoff 计算此前在两个函数里各自独立调用
+  // `Date.now()`，理论上可能导致同一组筛选条件在 `/summary` 和 `/events`
+  // 两次独立请求之间对窗口边界的事件判断不一致。这里验证"给两个函数传
+  // 同一个 `nowMs`，一定算出完全一致的窗口过滤结果"——这是这次改动实际
+  // 能消除、也能被单元测试覆盖到的那部分（两次独立 HTTP 请求本身的轮询
+  // 间隔落差不是这次改动的范围，见 `resolveWindowCutoffMs` 头部注释）。
+  describe("★ 8.19 nowMs 确定性：同一个 nowMs 传给两个函数，cutoff 判断必须一致", () => {
+    it("卡在窗口边界上的事件，给定同一个 nowMs 时 getCompactOutcomeStats 和 queryCompactOutcomeEvents 的判断完全一致", async () => {
+      const { recordCompactOutcome, readCompactOutcomeLog, getCompactOutcomeStats, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r-boundary", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "success" });
+
+      // 把这条事件的时间戳精确设成"nowMs 减 24 小时再加 1 毫秒"——刚好落在
+      // 24 小时窗口的边界内侧（含），是最容易因为两次独立 Date.now() 调用
+      // 而被错误地一边算进一边算不进的那种事件。
+      const nowMs = Date.now();
+      const boundaryTs = new Date(nowMs - 24 * 3600_000 + 1).toISOString();
+      const events = readCompactOutcomeLog().map((e) => ({ ...e, ts: boundaryTs }));
+      const { writeFileSync } = await import("fs");
+      writeFileSync(resolve(tmpDataDir, "compact-outcomes.jsonl"), events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+
+      const stats = getCompactOutcomeStats(24, 10, "gpt-5.6-sol", nowMs);
+      const page = queryCompactOutcomeEvents({ windowHours: 24, model: "gpt-5.6-sol", nowMs });
+      expect(stats.by_request.total).toBe(1);
+      expect(page.total).toBe(1);
+      expect(page.total).toBe(stats.by_request.total); // 同一个 nowMs 下，两边对这条边界事件的判断必须一致
+    });
+
+    it("不传 nowMs 时默认行为不变（仍然用真实 Date.now()）", async () => {
+      const { recordCompactOutcome, getCompactOutcomeStats, queryCompactOutcomeEvents } = await importModule();
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success" });
+
+      const stats = getCompactOutcomeStats("all");
+      const page = queryCompactOutcomeEvents({ windowHours: "all" });
+      expect(stats.by_request.total).toBe(1);
+      expect(page.total).toBe(1);
+    });
+  });
 });

@@ -32,9 +32,25 @@ on:
 # 已经是这个选择（`group: bump-version, cancel-in-progress: false`），
 # 不是本仓库第一次这么做。代价是第二个触发要多等第一个跑完，换来的是不
 # 会再有"半成品 release 对外可见"这个更危险的失败模式。
-# 锁定测试：tests/unit/ci/release-concurrency.test.ts
+#
+# ★ group key 用 `inputs.tag || github.ref_name`，不是 `github.ref`——
+# 2026-08-03 发 `v2.0.97` 时第一版写的是 `github.ref`，实测直接失效：
+# 这个仓库调用 `release.yml` 的标准方式是 `gh workflow run release.yml
+# -f tag=vX.Y.Z`（不带 `--ref`），workflow_dispatch 不带 `--ref` 时用的
+# 是默认分支触发，`github.ref` 解析出来是 `refs/heads/master`，和 tag
+# push 自触发那条算出来的 `refs/tags/vX.Y.Z` 完全不是同一个字符串——两条
+# run 的并发组对不上，等于没加过这个组，`v2.0.97` 发布时两条 run 真的在
+# 并发跑（是否复现最初那次 404，见 CLAUDE.md 对应记录）。
+# 正确的 key 必须和 job 自己认定"在发哪个版本"用同一个表达式——下面每个
+# `TAG=` 赋值都是 `"${{ inputs.tag || github.ref_name }}"`，并发组照抄
+# 这个表达式：tag push 自触发时 `inputs.tag` 为空，落到 `github.ref_name`
+# （纯 tag 名 `vX.Y.Z`，不是完整 ref 路径）；手动 dispatch 时直接是
+# `inputs.tag`——两条路径算出的字符串现在真的相同。
+# 锁定测试：tests/unit/ci/release-concurrency.test.ts（这条测试连带修过
+# 一次——第一版只断言 YAML 里出现某个字符串，不会验证这个表达式到底对
+# 不对，看下该文件头部注释）。
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:

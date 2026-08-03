@@ -309,6 +309,13 @@ export class OpaqueCompactRepository {
   private readonly stmtDeleteSuccessorExpired: StatementSync;
   private readonly stmtSuccessorTotals: StatementSync;
   private readonly stmtAllSuccessors: StatementSync;
+  /**
+   * 8.21 淘汰分层：先从"已经有 successor 的废代"里挑最旧的，
+   * 只有这一层挑不出候选（全库都是活跃 head）才退化到 stmtVictimAny。
+   * 见 pruneWithinTransaction 的文档。
+   */
+  private readonly stmtVictimStale: StatementSync;
+  private readonly stmtVictimAny: StatementSync;
 
   constructor(options: OpaqueCompactRepositoryOptions) {
     this.keyring = options.keyring;
@@ -345,6 +352,10 @@ export class OpaqueCompactRepository {
       this.db.exec("PRAGMA foreign_keys = ON");
       this.verifyDurabilityPragmas(options.databasePath);
       this.initSchema();
+      // 已经是 v5、既不需要首次建表也不需要迁移的库不会走
+      // createCurrentSchemaObjects()——8.21 新增的 idx_opaque_predecessor
+      // 因此必须在这里再幂等补一遍，否则老库永远不会得到这个索引。
+      this.ensureIndexes();
     } catch (error) {
       if (opened !== null) {
         try {
@@ -419,6 +430,85 @@ export class OpaqueCompactRepository {
       "SELECT COUNT(*) AS count, COALESCE(SUM(byte_size), 0) AS bytes FROM opaque_successors",
     );
     this.stmtAllSuccessors = this.db.prepare("SELECT * FROM opaque_successors");
+    // ★ P1（scout 审出，已修）：「有 child state」≠「安全淘汰」。COMMIT
+    // 成功到客户端真正带着 child 的 marker 回来（confirmSuccessorUsed）之间
+    // 存在窗口——child 行和 parent→child 的 edge 同时存在，此时 parent 仍
+    // 必须撑住"崩溃后旧输入重试→findSuccessorMarker 原样回放"这条契约。
+    // 只看"有没有 child"会在这个窗口把 parent 判成废代提前淘汰，
+    // `deleteStateWithinTransaction` 里的 `stmtDeleteSuccessorByPredecessor`
+    // 会连带删掉这条尚未消费的 edge——旧输入重试直接落空，且分叉时会
+    // 连带打掉同一 predecessor 上其它尚未送达分叉的 edge（不删 sibling
+    // state，但删了 sibling 赖以回放的 edge，等价于破坏了它的幂等契约）。
+    // 正确判据额外要求「没有任何未消费、未过期的 live outgoing edge」——
+    // `opaque_successors` 的 `predecessor_lookup = os.lookup_digest` 且
+    // `expires_at > 传入的 now`（跟 openEdgeMapping 对"过期即视为不存在"
+    // 的口径一致）。两个条件都成立才说明这一行的所有分叉都已经真正交付或
+    // 自然过期，删它不会打掉任何还在等待崩溃重试回放的凭据。
+    //
+    // ★ 这条 guard 只保证 pending predecessor **不会被优先当 stale
+    // victim**——不是"pending edge 永不被逐出"的绝对保证。如果没有任何
+    // 安全的 stale 候选（stmtVictimStale 查不到任何行）、容量仍然超限，
+    // `stmtVictimAny`（下面的全局 LRU 退化路径）照样可能选中它——这是有限
+    // 容量下不可避免的退化，不是这条 guard 的失效。下面 P1 相关的两条回归
+    // 测试（`opaque-compact-state-prune-edge-safety.test.ts`）验证的是
+    // "pending edge 不会被优先错删"，场景里刻意留了其它更该删的候选，不是
+    // "pending edge 有无限容量保证"。
+    //
+    // ★ 已评估的残余风险（判定：当前不做，不是漏做）——`predecessor_lookup`
+    // 和 `edge.expires_at` **这两个字段**都没有独立 MAC（不同于下面
+    // last_used_mac 那种"淘汰前重新认证"）：这个 EXISTS/NOT EXISTS 子查询
+    // 直接读明文列，从不打开候选行或候选 edge 做 AEAD 认证。
+    // - `predecessor_lookup`：只在该行自身被完整 AEAD 打开时才被认证。
+    // - `edge.expires_at`：进了 `buildSuccessorAad()` 的 AEAD（认证的是"这一
+    //   行自己被打开时看到的这个值"），冷启动 `recover()` 也先验证再按它
+    //   清理——但同样只在这两个场景下被认证，运行期的 prune 循环里同样是
+    //   直接读明文列，不打开 edge 做 AEAD。
+    // 裸磁盘写权限的攻击者理论上可以：把某行的 predecessor_lookup 改成
+    // 目标的 lookup_digest（让目标被误判成废代提前淘汰），或者把某条
+    // edge 的 expires_at 改早（让它被误判成"已过期不再阻塞"，方向上直接
+    // 复现 P1——parent 重新被判定可以优先淘汰）。**这两条都没有补 MAC**，
+    // 理由同构：同一威胁模型下攻击者直接 DELETE 目标行就能达到完全相同或
+    // 更直接的效果（目标 → not_found → /compact 自愈）——伪造这两个字段
+    // 不比直接删行多给攻击者任何新能力。用 scout 的说法更准确：这类攻击
+    // 把"本可检测的 state_corrupt/quarantine"降级成"静默的、定向的可用性
+    // 破坏"——但降级到的落点，和攻击者本来就能直接达到的效果（裸删行）
+    // 是同一个，没有净增益。对比 `expires_at_mac`（8.4 sliding TTL 那个，
+    // 保护的是 state 行自己的过期时间）防的是"无限延长自己 TTL"（删除做
+    // 不到的真实增益），这里两条都换不来对等收益，不值得为此做 schema
+    // v5→v6 迁移。
+    // 触发重新评估的条件（任一成立，两个字段共用）：① 这两个字段中任一个
+    // 变成运行期可改（当前都是写入后不再变）；② 出现"删除做不到但伪造
+    // 做得到"的新场景；③ 威胁模型扩大到"能写盘但不能删行"这类受限写权限
+    // （比如只有 UPDATE 权限没有 DELETE 权限）。届时做法：分别加
+    // `predecessor_lookup_mac`/`edge_expires_at_mac`，与 last_used_mac
+    // 同构——且比它更好防，因为这两个字段本身都不再变，不存在"重放历史
+    // 合法值"的口子。
+    //
+    // 索引现状：`idx_opaque_successor_predecessor(predecessor_lookup)`
+    // 覆盖了等值定位，但不覆盖 `expires_at > ?` 这个范围筛选——某个
+    // predecessor 有很多已过期分叉时，这条 NOT EXISTS 会扫这个 predecessor
+    // 名下的全部 edge 行。当前规模下可接受，**现在不要为了猜测扩 DDL**；
+    // 只有将来真的出现高 fork fan-out，或 benchmark 显示这里是 prune 热点，
+    // 才值得升级成 `(predecessor_lookup, expires_at)` 复合索引。
+    this.stmtVictimStale = this.db.prepare(
+      `SELECT lookup_digest, last_used_at, last_used_mac FROM opaque_states AS os
+       WHERE os.lookup_digest <> ?
+         AND (? IS NULL OR os.lookup_digest <> ?)
+         AND EXISTS (
+           SELECT 1 FROM opaque_states AS child WHERE child.predecessor_lookup = os.lookup_digest
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM opaque_successors AS edge
+           WHERE edge.predecessor_lookup = os.lookup_digest AND edge.expires_at > ?
+         )
+       ORDER BY os.last_used_at ASC, os.created_at ASC LIMIT 1`,
+    );
+    this.stmtVictimAny = this.db.prepare(
+      `SELECT lookup_digest, last_used_at, last_used_mac FROM opaque_states
+       WHERE lookup_digest <> ?
+         AND (? IS NULL OR lookup_digest <> ?)
+       ORDER BY last_used_at ASC, created_at ASC LIMIT 1`,
+    );
   }
 
   /** PRAGMA 设置必须读回验证：设置成功不等于生效（只读介质、旧版本等）。 */
@@ -562,8 +652,27 @@ export class OpaqueCompactRepository {
          ciphertext         BLOB NOT NULL
        )`,
     );
+    this.ensureIndexes();
+  }
+
+  /**
+   * 索引定义单独抽出，供首次建表/迁移重建与"已有 v5 库直接打开"两条路径
+   * 共用（见构造函数里 `initSchema()` 之后的调用）。`CREATE INDEX IF NOT
+   * EXISTS` 本身幂等，两条路径都跑一遍没有代价，但字面 SQL 只能有一处，
+   * 否则两处迟早漂移（新增索引时只改了一个地方却忘了另一个）。
+   *
+   * `idx_opaque_predecessor`（8.21 淘汰分层）：`pruneWithinTransaction`
+   * 现在要按"这一行是否已经有 successor"把候选分成"废代"/"活跃 head"
+   * 两层，其判定是 `EXISTS (SELECT 1 FROM opaque_states WHERE
+   * predecessor_lookup = ?)`——没有这个索引，淘汰循环里每次候选检查都是
+   * 一次全表扫描，容量压力大、prune 循环次数多时会明显变慢。
+   */
+  private ensureIndexes(): void {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_opaque_binding ON opaque_states (binding)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_opaque_expires ON opaque_states (expires_at)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_opaque_predecessor ON opaque_states (predecessor_lookup)",
+    );
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_opaque_successor_target ON opaque_successors (successor_lookup)",
     );
@@ -1685,6 +1794,44 @@ export class OpaqueCompactRepository {
    * 前置条件：启动时 `recover()` 已对全库完成 AEAD 验证且没有发现损坏记录
    * （否则 runtime 会进入 quarantine 而根本不会走到写入路径）。因此这里按
    * byte_size / last_used_at 做淘汰是安全的——这些列都已被认证过。
+   *
+   * ★ 8.21 淘汰分层（team-lead 派发，`opaque-compact-state-lru-fairness
+   * .test.ts` 实测过的根因）：8.4 sliding TTL 让 `load()`/`resolve()` 每次
+   * 成功都顺延 `last_used_at`——忙碌会话的每一代旧记录在被超越的那一刻都
+   * 被顺延到"当时的现在"，此后不再被摸；闲置但仍在 TTL 内的会话只在自己
+   * 唯一那一代上被顺延过一次，随后同样不再被摸。单纯按 `last_used_at ASC`
+   * 全局排序，会让"闲置 3 天的唯一一条记录"看起来比"忙碌会话 1 小时前刚
+   * 产生的历史废代"更旧，从而被优先淘汰——症状与 TTL 过期完全相同
+   * （`not_found`），但会话本身还在 TTL 有效期内、用户也没做错任何事。
+   *
+   * 修复：淘汰前先问"这一行是否已经有 successor，且没有任何未消费、未过期
+   * 的 outgoing edge"——都满足才是结构上确定、可以安全删除的废代；否则
+   * 保留（宁可落到全局 LRU，也不猜）。
+   *
+   * ★ P1（scout 审出，已修，别再退回"只看有没有 child"这个版本）：「有
+   * child state」≠「安全淘汰」。COMMIT 成功到客户端真正带着 child 的
+   * marker 回来（`confirmSuccessorUsed`）之间存在窗口——child 行和
+   * parent→child 的 edge 同时存在，这段时间 parent 仍必须撑住"崩溃后
+   * 旧输入重试→`findSuccessorMarker` 原样回放"这条契约。只看"有没有
+   * child"会在这个窗口把 parent 判成废代提前淘汰，
+   * `deleteStateWithinTransaction` 里的 `stmtDeleteSuccessorByPredecessor`
+   * 会连带删掉这条尚未消费的 edge——旧输入重试直接落空。分叉场景更隐蔽：
+   * 同一个 predecessor 有两条分叉，一条已送达（edge 已被
+   * `confirmSuccessorUsed` 回收）、另一条还在等——旧算法会因为"有 child"
+   * 就把 predecessor 整个删掉，连带清空 STILL PENDING 那条分叉的 edge。
+   * 没有删 sibling state，但删了 sibling 唯一赖以幂等回放的凭据，效果等价，
+   * 这就是"fork 兼容"最初不成立的地方。
+   *
+   * 现在的判据（`stmtVictimStale`）：`EXISTS child` **且**
+   * `NOT EXISTS (opaque_successors 里 predecessor_lookup=自己 且未过期的行)`。
+   * 后一条覆盖了"delivered stale"（两个条件都满足，可以删）与
+   * "pending-replay predecessor"（还有未过期 outgoing edge，判定为不满足，
+   * 落到 stmtVictimAny 的全局 LRU 里，不会被这一层优先动）的区分。
+   *
+   * 因此优先在这个"确定安全"的废代集合里按 last_used_at 淘汰，只有集合为空
+   * （剩下的全是活跃 head 或还有未消费 edge 的 pending predecessor）才退化
+   * 到原来的全局 LRU——这时容量压力必须落在某个仍可能被使用的记录上，没有
+   * 更好的选择，行为与修复前一致。
    */
   private pruneWithinTransaction(
     now: number,
@@ -1694,23 +1841,31 @@ export class OpaqueCompactRepository {
     // 刻意**不**在这里按 expires_at 批量 DELETE：那会信任运行期可能已被
     // 篡改的列，攻击者改短 TTL 即可静默删除任意记录。过期清理只在启动
     // recover 的逐行认证之后进行；这里仅按已认证的 LRU 顺序做容量淘汰。
+    //
+    // ★ 交叉引用：下面 stmtVictimStale 的 EXISTS/NOT EXISTS 子查询引入了一个
+    // 跟这条原则**强度不同**的新依赖——`predecessor_lookup`/`edge.expires_at`
+    // 同样是运行期读取、这里同样不重新认证，但两者都判定为可接受的残余
+    // 风险（理由、边界、触发重新评估的条件见 stmtVictimStale 声明处的完整
+    // 注释，不在这里重复）。两段注释不矛盾：上面这条防的是"直接批量删除"，
+    // 下面这条防的是"淘汰顺序被间接操纵"，是两类不同强度的信任边界，刻意
+    // 分开写清楚，别让读者以为这个函数里所有列都同等不可信、或都同等可信。
     for (let guard = 0; guard < 10_000; guard += 1) {
       const { count, bytes } = this.stats();
       if (count <= this.capacity && bytes <= this.maxBytes) return;
 
-      // 只在受保护记录之外挑最旧的一条淘汰。刚写入的行和它的 predecessor
-      // 都不能动：predecessor 还要支撑崩溃重试的幂等回放。
-      // 只保护当前事务刚写入的行及其 predecessor。其他 victim 若有关联 edge，
+      // 只在受保护记录之外挑候选。刚写入的行和它的 predecessor 都不能动：
+      // predecessor 还要支撑崩溃重试的幂等回放。其他 victim 若有关联 edge，
       // 统一删除 helper 会在同一事务中先清 incoming/outgoing edge 再删 state，
       // 因而既能收敛容量，也不会留下指向不存在 state 的幂等凭据。
-      const victim = this.db
-        .prepare(
-          `SELECT lookup_digest, last_used_at, last_used_mac FROM opaque_states
-           WHERE lookup_digest <> ?
-             AND (? IS NULL OR lookup_digest <> ?)
-           ORDER BY last_used_at ASC, created_at ASC LIMIT 1`,
-        )
-        .get(protectedLookup, predecessorLookup, predecessorLookup ?? "") as
+      //
+      // 第一层：结构上已确定是废代的候选（自己已经有 successor）。
+      // 第二层（stmtVictimAny）：第一层为空时，退化为原来的全局 LRU——
+      // 这时说明剩下的全是活跃 head，容量压力必须落在某个真正的会话头上，
+      // 没有更好的选择，行为与修复前一致。
+      const victim = (
+        this.stmtVictimStale.get(protectedLookup, predecessorLookup, predecessorLookup ?? "", now) ??
+        this.stmtVictimAny.get(protectedLookup, predecessorLookup, predecessorLookup ?? "")
+      ) as
         | { lookup_digest: string; last_used_at: number; last_used_mac: string }
         | undefined;
 

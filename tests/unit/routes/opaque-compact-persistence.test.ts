@@ -746,6 +746,37 @@ describe("repository — 存储语义", () => {
     expect(journal.journal_mode.toLowerCase()).toBe("wal");
     expect(sync.synchronous).toBeGreaterThanOrEqual(2);
   });
+
+  // ★ 8.21（#79 P1 复审补测）：`idx_opaque_predecessor` 是随这次淘汰分层
+  // 改动新增的索引，`ensureIndexes()` 在"已经是 v5、不需要首次建表也不需要
+  // 迁移"这条路径上单独补了一次调用（见构造函数 initSchema() 之后），
+  // 就是专门为了覆盖这个场景——不测的话，这条路径写没写完全靠读代码猜。
+  it("8.21：已存在的 v5 库缺这个新索引时，重新打开必须补出来（不需要 schema 迁移）", () => {
+    const first = makeStore();
+    first.repository.close();
+
+    // 模拟"这次改动上线之前就已经在跑"的 v5 库：手动去掉这条索引，
+    // 制造出一个真实的历史落后状态，而不是假设它从来不存在。
+    const db = new DatabaseSync(resolve(dir, "state.db"));
+    db.exec("DROP INDEX IF EXISTS idx_opaque_predecessor");
+    const beforeReopen = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_opaque_predecessor'")
+      .get();
+    db.close();
+    expect(beforeReopen).toBeUndefined();
+
+    // 重新打开：版本号仍是当前 OPAQUE_REPOSITORY_SCHEMA_VERSION，不触发
+    // migrateSchema()，只会走 initSchema() 之后那条无条件 ensureIndexes()。
+    const reopened = makeStore();
+    reopened.repository.close();
+
+    const verifyDb = new DatabaseSync(resolve(dir, "state.db"), { readOnly: true });
+    const afterReopen = verifyDb
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_opaque_predecessor'")
+      .get();
+    verifyDb.close();
+    expect(afterReopen).toBeDefined();
+  });
 });
 
 describe("交付语义 — predecessor 不在 COMMIT 时立即销毁", () => {

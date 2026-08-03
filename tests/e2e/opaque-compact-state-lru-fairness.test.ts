@@ -1,16 +1,11 @@
 /**
- * ★ 8.20（team-lead 派发，比 capacity 数值本身更重要的那条假设）：
+ * ★ 8.20/8.21（team-lead 派发）：先实测复现根因，再验证修复。
  *
- * `pruneWithinTransaction` 按 `last_used_at ASC` **全局**排序淘汰，不区分
- * "结构上已经死掉的废弃历史代"（没有任何 incoming edge，纯粹是 recompact
- * 链条上被超越的旧记录）和"某个会话当前仍然有效、只是用户没碰"的活跃
- * state。
- *
- * ★★ 读代码发现的关键机制（比假设本身更实锤）：`OpaqueCompactRepository
- * .load()` 实现了 8.4 sliding TTL——**任何一次成功 resolve（含 recompact
- * 时读取 predecessor 来合并 preservedTail）都会把该行的 `last_used_at`
- * 和 `expires_at` 一起顺延到 `now() + slideTtlMs`**（见该文件 1341-1352
- * 行注释）。这意味着：
+ * 根因（8.20 实测确认，比假设本身更实锤）：`OpaqueCompactRepository.load()`
+ * 实现了 8.4 sliding TTL——**任何一次成功 resolve（含 recompact 时读取
+ * predecessor 来合并 preservedTail）都会把该行的 `last_used_at` 和
+ * `expires_at` 一起顺延到 `now() + slideTtlMs`**（见该文件 load() 的注释）。
+ * 这意味着：
  *
  * - 一个**忙碌**会话，只要还在收发消息/反复 recompact，它自己的
  *   `last_used_at` 会被不断刷新到"现在"，从 LRU 的角度看永远不会变旧。
@@ -18,14 +13,18 @@
  *   最后一次被摸到的时刻，会随着时间流逝稳定变成全局最旧的那一批——
  *   跟它内容有没有价值、TTL 到没到期完全无关。
  *
- * **结论如果成立**：仅仅调大 `capacity`/`max_bytes` 只是推迟问题——只要
- * 团队总体活跃量相对 capacity 足够高，闲置几天但仍在 TTL 有效期内的会话
- * 依然会被更"新鲜"的忙碌会话的历史废代挤出去，症状和 TTL 过期一模一样
- * （`not_found` 409），只是死因换了。
+ * 8.20 版本的这个文件曾经实测证明：`pruneWithinTransaction` 按
+ * `last_used_at ASC` **全局**排序淘汰，不区分"结构上已经死掉的废弃历史代"
+ * （已经有 successor，纯粹是 recompact 链条上被超越的旧记录）和"某个会话
+ * 当前仍然有效、只是用户没碰"的活跃 state——闲置会话的唯一一条记录会先于
+ * 忙碌会话新产生的历史废代被逐出，仅仅调大 capacity/max_bytes 只是推迟
+ * 问题，不解决它。
  *
- * 这个文件本地实测这个具体场景（不碰生产）：一个刻意"闲置 3 天但仍在 7
- * 天 TTL 内"的会话，会不会先于"3 天里持续产生废代"的忙碌会话的历史记录
- * 被逐出。
+ * ★ 8.21 修复：`pruneWithinTransaction` 现在优先淘汰"已经有 successor"的
+ * 废代（见该方法文档），只有这一层耗尽才退化到原来的全局 LRU。这个文件
+ * 现在验证的是**修复后的行为**：一个刻意"闲置 3 天但仍在 7 天 TTL 内"的
+ * 会话，即使旁边有另一个会话持续产生"更新鲜"的历史废代，也不会被优先
+ * 淘汰——废代会先被挤掉。
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -147,8 +146,8 @@ beforeEach(() => {
   setClaudeCodeOpaqueCompactExperimental(true);
 });
 
-describe("opaque compact state — LRU fairness: idle-but-alive vs. busy churn (team-lead's sliding-TTL hypothesis)", () => {
-  it("一个闲置 3 天、但仍在 7 天 TTL 内的会话，会先于其它会话更新鲜的废弃历史代被逐出——症状和 TTL 过期一样是 not_found", async () => {
+describe("opaque compact state — LRU fairness: idle-but-alive vs. busy churn (8.21 淘汰分层修复)", () => {
+  it("一个闲置 3 天、但仍在 7 天 TTL 内的会话，不会被其它会话更新鲜的废弃历史代提前淘汰——废代会先被挤掉", async () => {
     let clock = 1_700_000_000_000; // 固定基准时刻，不用真实 Date.now()，全程手动推进。
     const now = () => clock;
 
@@ -190,11 +189,12 @@ describe("opaque compact state — LRU fairness: idle-but-alive vs. busy churn (
     // ② 推进 3 天——闲置会话此时仍然完全在 7 天 TTL 有效期内（还剩 4 天）。
     clock += 3 * 24 * 3600_000;
 
-    // ③ 忙碌会话：root + 连续 6 次 recompact，每次间隔 1 小时（模拟同一
-    // 团队里另一个人手上真的在持续工作），每次 recompact 都会读取
-    // predecessor（sliding TTL 顺延它的 last_used_at），旧的那一代随后
-    // 变成结构上的废代（不再有 incoming edge），但它最后一次被摸到的
-        // 时间点仍然比"闲置会话"新得多。capacity=5，这轮churn 会持续触发淘汰。
+    // ③ 忙碌会话：root + 连续 5 次 recompact，每次间隔 1 小时（模拟同一
+    // 团队里另一个人手上真的在持续工作）。每次 recompact 都会先读取
+    // predecessor（sliding TTL 顺延它的 last_used_at），随后这一代就有了
+    // 自己的 successor——变成 8.21 意义上结构确定的"废代"，理应先于闲置
+    // 会话的唯一一条记录被淘汰，即使它最后一次被摸到的时间点比闲置会话
+    // 新得多。capacity=5，这轮 churn 会持续触发淘汰。
     let busyMarker: string | null = null;
     for (let i = 0; i < 6; i += 1) {
       const messages = busyMarker
@@ -216,9 +216,9 @@ describe("opaque compact state — LRU fairness: idle-but-alive vs. busy churn (
 
     // ④ 决定性验证：闲置会话的用户此刻回来了（仍在自己 7 天 TTL 窗口内，
     // 只过去了 3 天），带着 idleMarker 发一条**普通消息**（不是 compact
-    // 请求——这正是真实事故复现的形状：treatAsNoMarker 的自愈只在
-    // "这次请求本身就是压缩请求"时放行，普通续接消息撞上死掉的 state
-    // 直接 409，见 messages.ts 的 `compactPrompt !== null` 判断）。
+    // 请求——这正是真实事故复现的形状：治愈前，普通续接消息撞上被误逐出
+    // 的 state 会直接 409，见 messages.ts 的 `compactPrompt !== null`
+    // 判断；治愈后这里应该正常 200 地恢复出原来那一条 root 记录）。
     const idleReturnRes = await request(ctx, {
       model: "codex", max_tokens: 1024, stream: true,
       messages: [{ role: "assistant", content: idleMarker }, { role: "user", content: "I'm back, continue where we left off" }],
@@ -226,15 +226,15 @@ describe("opaque compact state — LRU fairness: idle-but-alive vs. busy churn (
     const idleReturnBody = await idleReturnRes.text();
     console.log(`[lru-fairness] idle session return: status=${idleReturnRes.status} body=${idleReturnBody.slice(0, 300)}`);
 
-    // 核心断言：闲置会话在自己 TTL 窗口内回来，却已经被挤掉——409，
-    // 不是 200。这就是"仅仅调大 capacity 只是推迟问题"的实锤：只要总体
-    // churn 速度相对 capacity 足够高，任何 idle-但仍在 TTL 内的会话迟早
-    // 会被更"新鲜"的废代挤掉，和 capacity 具体设多大无关，只是时间早晚。
-    // ★ 文案用的是 8.20 那次已经修过的新版本（not_found/expired 统一建议
-    // /compact，不再是旧的"could not be found and cannot be recovered"
-    // + 建议 /clear）——这里断言的是"确实 409 了"这个事实，不重复断言
-    // 文案内容本身（那条已经有专门的 e2e 测试锁住）。
-    expect(idleReturnRes.status).toBe(409);
-    expect(idleReturnBody).toContain("Run /compact to continue this session");
+    // 核心断言（8.21 修复生效）：闲置会话在自己 TTL 窗口内回来，能正常
+    // 200 恢复——即使旁边的忙碌会话在这 3 天里持续产生了"更新鲜"的历史
+    // 记录，容量压力也应该先落在忙碌会话自己的废代上，而不是这条唯一、
+    // 从未被超越过的 root 记录。`generation=1` 的日志（见上面 stdout）
+    // 同时证明这确实是同一条原始记录被 resolve，不是某种巧合的重建。
+    expect(idleReturnRes.status).toBe(200);
+    expect(idleReturnBody).not.toContain("error");
+
+    // 容量上限本身仍然守住：修复只改变淘汰顺序，不改变淘汰是否发生。
+    expect(countRows(dir)).toBeLessThanOrEqual(5);
   }, 30_000);
 });

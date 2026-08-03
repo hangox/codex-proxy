@@ -61,7 +61,7 @@ const SESSION_ID = "claude-session-canary-6f10ab";
 const ACCOUNT_ENTRY_ID = "entry-account-canary-9f31cd";
 
 describe("recordOpaqueCompactDenial", () => {
-  it("落盘的 context 只含白名单七个字段，rid/reason/detail 原样保留（detail 已脱敏）", async () => {
+  it("落盘的 context 只含白名单八个字段，rid/reason/detail/cause 原样保留（detail 已脱敏）", async () => {
     const { recordOpaqueCompactDenial } = await import(
       "@src/routes/shared/opaque-compact-denial-log.js"
     );
@@ -73,6 +73,10 @@ describe("recordOpaqueCompactDenial", () => {
       accountEntryId: ACCOUNT_ENTRY_ID,
       generation: 3,
       detail: "OpaqueCompactRepositoryError: SQLITE_CORRUPT: database disk image is malformed",
+      // ★ #83：cause 是新增字段，只在 recompact_failed_original_account
+      // 这类聚合 reason 上才会传，这里用真实枚举值验证它原样落盘、不受
+      // sanitizeFreeTextForLog 影响（不是自由文本，不需要脱敏）。
+      cause: "rate_limited",
     });
 
     const lines = readErrorLogLines();
@@ -85,10 +89,11 @@ describe("recordOpaqueCompactDenial", () => {
 
     const ctx = entry.context as Record<string, unknown>;
     expect(Object.keys(ctx).sort()).toEqual(
-      ["account_hash", "detail", "generation", "marker_length", "reason", "rid", "conv_hash"].sort(),
+      ["account_hash", "cause", "detail", "generation", "marker_length", "reason", "rid", "conv_hash"].sort(),
     );
     expect(ctx.rid).toBe("rid-abcdef12");
     expect(ctx.reason).toBe("expired");
+    expect(ctx.cause).toBe("rate_limited");
     expect(ctx.marker_length).toBe(MARKER_TOKEN.length);
     expect(ctx.generation).toBe(3);
     expect(typeof ctx.conv_hash).toBe("string");
@@ -96,6 +101,22 @@ describe("recordOpaqueCompactDenial", () => {
     expect(typeof ctx.account_hash).toBe("string");
     expect((ctx.account_hash as string)).toMatch(/^[0-9a-f]{8}$/);
     expect(ctx.detail).toBe("OpaqueCompactRepositoryError: SQLITE_CORRUPT: database disk image is malformed");
+  });
+
+  it("cause 缺省时是 null，不是省略键也不是空字符串", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-no-cause",
+      reason: "session_mismatch",
+      clientConversationId: null,
+      marker: null,
+    });
+
+    const lines = readErrorLogLines();
+    const ctx = lines[0]!.context as Record<string, unknown>;
+    expect(ctx.cause).toBeNull();
   });
 
   it("detail 缺省时是 null，不是省略键也不是空字符串", async () => {

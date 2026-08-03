@@ -32,7 +32,11 @@ import {
   isPromptTooLongLike,
   normalizePromptTooLongMessage,
 } from "../proxy/prompt-too-long-error.js";
-import { CompactServiceError, extractClaudeCodeCompactPrompt } from "./shared/codex-compact-service.js";
+import {
+  CompactServiceError,
+  extractClaudeCodeCompactPrompt,
+  type RecompactFailureCause,
+} from "./shared/codex-compact-service.js";
 import {
   respondWithOpaqueCompactMarker,
   restoreOpaqueCompactRequest,
@@ -50,6 +54,8 @@ import {
   isUnparseableOpaqueCompactMarker,
   replaceIgnoredOpaqueCompactMarker,
   reportOpaqueCompactStoreFault,
+  OpaqueCompactStateError,
+  type OpaqueCompactStateFailure,
 } from "./shared/opaque-compact-state.js";
 
 /**
@@ -102,6 +108,38 @@ function describeOpaqueCompactUnavailable(reason: string): string {
       "next /compact. Run /compact to continue this session — no need to /clear.";
   }
   return `Opaque compact state is unavailable (${reason}). If this persists, run /clear and start a new session.`;
+}
+
+/**
+ * ★ #83：`recompact_failed_original_account` 聚合桶的失败子因派生。
+ *
+ * 这个 reason 值本身**不改**（Dashboard/日志既有的过滤和统计口径依赖它），
+ * 这里只是给它配一个更细的 `cause`，供事后排查区分"这次到底是哪一类失败"
+ * ——之前不管上游真实原因是什么，落进这个分支就只留下同一句聚合文案，
+ * 2026-08-03 那次 409 排查绕了大圈，根因正是"不同死因共用同一个标签、
+ * 事后无法反推"。
+ *
+ * 两条信息源本来就已经结构化，这里不是重新分类，是把已经存在但被忽略的
+ * 字段读出来：
+ * - `CompactServiceError.cause`：`executeCompactOnly` 内部对上游/账号失败
+ *   的分类（见 `codex-compact-service.ts` 的 `classifyCompactUpstreamFailure`）。
+ * - `OpaqueCompactStateError.reason`：repository/CAS 层的协议失败（
+ *   `stale_generation`/`preserved_tail_conflict`/`state_too_large` 等）本来
+ *   就带着完整分类，只是这个聚合点此前没有读它。
+ *
+ * ★ 经 team-lead 请 scout 仲裁确认：这里**直接原样透传 `error.reason`**，
+ * 不另造一套 `state_save_*` 前缀等价名——同一个 CAS 失败只应该有一个
+ * machine-readable 名字，另造前缀版是"一对多命名分裂"，跟 #83 本身要治的
+ * "多对一聚合丢分类"是同一个病的镜像，只是方向反过来，一样会导致以后
+ * 漂移（两套名字总有一套先被改、另一套被忘）。
+ *
+ * 两者都没有（比如非 CodexApiError 的意外异常被原样 rethrow）才落到
+ * `unexpected_error`——不强凑一个更精确但没有依据的值。
+ */
+function deriveRecompactFailureCause(error: unknown): RecompactFailureCause | OpaqueCompactStateFailure {
+  if (error instanceof OpaqueCompactStateError) return error.reason;
+  if (error instanceof CompactServiceError) return error.cause ?? "generic_upstream_error";
+  return "unexpected_error";
 }
 
 function checkProxyApiKey(c: Context, accountPool: AccountPool): Response | null {
@@ -728,6 +766,9 @@ export function createMessagesRoutes(
             marker: opaqueRestore.marker,
             accountEntryId: opaqueRestore.requiredEntryId,
             generation: opaqueRestore.generation,
+            // ★ #83：reason 本身不变（既有 Dashboard/日志过滤口径依赖它），
+            // cause 是新增的子因，供事后区分"这次到底是哪一类失败"。
+            cause: deriveRecompactFailureCause(error),
             model: displayModel,
           });
           c.status(409);

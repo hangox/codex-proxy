@@ -88,7 +88,9 @@ describe("executeCompactOnly diagnostics", () => {
         signal: new AbortController().signal,
         requestId: "rid-no-account-1234",
       }),
-    ).rejects.toMatchObject({ status: 503, retryCount: 0 });
+      // ★ #83：cause 固定值，不经过 classifyCompactUpstreamFailure——从未
+      // 联系上游，没有 CodexApiError 可分类。
+    ).rejects.toMatchObject({ status: 503, retryCount: 0, cause: "no_account_available" });
 
     const warnLines = warnSpy.mock.calls.map((c) => String(c[0]));
     expect(warnLines.some((l) => l.includes("phase=compact_no_account") && l.includes("rid=rid-no-a"))).toBe(true);
@@ -104,7 +106,9 @@ describe("executeCompactOnly diagnostics", () => {
         requestId: "rid-mismatch-1234",
         requiredEntryId: "required-entry",
       }),
-    ).rejects.toMatchObject({ status: 409, retryCount: 1 });
+      // ★ #83：同样是固定值——池子选中的账号根本不是要求的那个，压根没打
+      // 上游，没有上游错误可分类。
+    ).rejects.toMatchObject({ status: 409, retryCount: 1, cause: "bound_account_unavailable" });
 
     const warnLines = warnSpy.mock.calls.map((c) => String(c[0]));
     const line = warnLines.find((l) => l.includes("phase=compact_account_mismatch"));
@@ -177,7 +181,11 @@ describe("executeCompactOnly diagnostics", () => {
         requestId: "rid-cross-1234",
         requiredEntryId: "e1",
       }),
-    ).rejects.toMatchObject({ status: 409, retryCount: 1 });
+      // ★ #83（本次要保留下来的信息）：跨账号闸门把 message/status 都改写
+      // 成通用文案+409 了，但 cause 必须仍然是从原始 429 独立分类出来的
+      // "rate_limited"，不是被闸门吞掉之后再猜一个"account_failed"之类的
+      // 笼统值——这正是 P1 场景本身要解决的问题。
+    ).rejects.toMatchObject({ status: 409, retryCount: 1, cause: "rate_limited" });
 
     const warnLines = warnSpy.mock.calls.map((c) => String(c[0]));
     const line = warnLines.find((l) => l.includes("phase=compact_abort"));
@@ -199,7 +207,9 @@ describe("executeCompactOnly diagnostics", () => {
         signal: new AbortController().signal,
         requestId: "rid-giveup-1234",
       }),
-    ).rejects.toMatchObject({ retryCount: 2 });
+      // ★ #83：耗尽重试放弃时同样带上最后一次失败的 cause，供事后区分
+      // "账号池太小一次就放弃" vs "轮了好几个账号，都是同一类上游故障"。
+    ).rejects.toMatchObject({ retryCount: 2, cause: "rate_limited" });
 
     const warnLines = warnSpy.mock.calls.map((c) => String(c[0]));
     const line = warnLines.find((l) => l.includes("phase=compact_giveup"));
@@ -227,5 +237,42 @@ describe("executeCompactOnly diagnostics", () => {
     expect(line).toBeDefined();
     expect(line).toContain("prev_status=429");
     expect(line).toContain("tried=2");
+  });
+
+  // ★ #83：classifyCompactUpstreamFailure 覆盖 handleCodexApiError 的其余
+  // 分支——都走 requiredEntryId 短路（跟上面 429 的用例同一个分支），单独
+  // 验证 cause 而不是重复断言 crossAccountBlocked 本身的行为（那部分已经
+  // 在上面测过）。避开 500-599（会被 withRetry 自己的重试逻辑吃掉，引入
+  // 真实 backoff 延迟）。
+  describe("cause 分类覆盖 handleCodexApiError 的其余分支（#83）", () => {
+    const cases: Array<{ label: string; status: number; body: string; cause: string }> = [
+      { label: "402 quota exhausted", status: 402, body: "quota exceeded", cause: "quota_exhausted" },
+      { label: "403 non-CF ban", status: 403, body: "account banned", cause: "account_banned" },
+      { label: "401 deactivated", status: 401, body: "account deactivated", cause: "account_deactivated" },
+      { label: "401 token invalid（非 deactivated）", status: 401, body: "token invalid", cause: "token_expired" },
+      { label: "404 empty body（CF path-block）", status: 404, body: "", cause: "cf_path_block" },
+      { label: "status=0 transport failure", status: 0, body: "connection reset", cause: "transport_failure" },
+      { label: "400 model not supported", status: 400, body: "model not supported", cause: "model_not_supported" },
+      { label: "422 未分类通用错误", status: 422, body: "some unclassified upstream error", cause: "generic_upstream_error" },
+    ];
+
+    for (const { label, status, body, cause } of cases) {
+      it(`${label} → cause=${cause}`, async () => {
+        const pool = makePool([account("e1")]);
+        buildCodexApiMock.mockReturnValue({
+          createCompactResponse: vi.fn().mockRejectedValue(new CodexApiError(status, body)),
+        } as never);
+
+        await expect(
+          executeCompactOnly({
+            accountPool: pool,
+            compactRequest: compactRequest(),
+            signal: new AbortController().signal,
+            requestId: "rid-cause-classify",
+            requiredEntryId: "e1",
+          }),
+        ).rejects.toMatchObject({ cause });
+      });
+    }
   });
 });

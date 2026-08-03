@@ -9,9 +9,22 @@ import { getTransportInfo } from "../../tls/transport.js";
 import { getProxyUrl } from "../../tls/proxy.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
 import { getOpaqueCompactStateReadiness } from "../shared/opaque-compact-state.js";
+import { getProxyInfo } from "../../self-update.js";
 
 export function createHealthRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
+
+  // ★ 部署时观察到：`/health` 不带版本号，运维只能看到"服务正常"，判断不了
+  // 生产实际跑的是哪个版本——2026-08-03 发 v2.0.96 时真实撞到，team-lead
+  // 从 `/health` 完全看不出跑的是 v2.0.95 还是 v2.0.96，只能等部署方口头
+  // 报告。版本号不是新暴露面：Dashboard 页脚（登录后）和 GitHub release
+  // 本来就公开显示同一个值，这里只是让匿名可读的健康检查端点也能直接
+  // 确认，不需要登录 Dashboard 或询问部署方。
+  // 只读一次（进程启动时），不是每次请求都读——`getProxyInfo()` 内部会
+  // 跑 `git describe`/`git rev-parse` 两个子进程，版本号在进程生命周期内
+  // 不会变化，`/health` 又是 Docker/nginx 高频轮询的端点，每次请求都 fork
+  // 子进程是不必要的开销。
+  const proxyInfo = getProxyInfo();
 
   app.get("/health", async (c) => {
     const authenticated = accountPool.isAuthenticated();
@@ -19,6 +32,7 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
     const config = getConfig();
     return c.json({
       status: "ok",
+      version: proxyInfo.version,
       authenticated,
       pool: { total: poolSummary.total, active: poolSummary.active },
       // opaque state readiness。reason 与 Admin、路由 409 三处同名同义，
@@ -31,6 +45,8 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
       // 放在免鉴权端点上。挪到了 `GET /admin/compact-outcomes/capacity`
       // （受 `dashboardAuth` 中间件保护，和其它 Dashboard 数据端点同等
       // 待遇），`/health` 只保留原有的 readiness 布尔值。
+      // ★ version 字段是这条注释写下之后唯一新增的字段——刻意只加这一个，
+      // 不要顺手塞别的运营信息进来，见上面这条注释的教训。
       opaque_compact_state: {
         enabled: config.model.claude_code_opaque_compact_experimental,
         ...getOpaqueCompactStateReadiness(),

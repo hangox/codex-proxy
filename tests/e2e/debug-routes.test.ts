@@ -88,6 +88,13 @@ vi.mock("@src/models/model-store.js", () => ({
   isPlanFetched: vi.fn(() => true),
 }));
 
+// getProxyInfo() shells out to `git describe`/`git rev-parse` — mock it so
+// this test doesn't depend on the real repo's tag/commit state (which
+// changes over time and isn't hermetic for a unit test).
+vi.mock("@src/self-update.js", () => ({
+  getProxyInfo: vi.fn(() => ({ version: "9.9.9-test", commit: "abcdef1" })),
+}));
+
 // ── Imports ──────────────────────────────────────────────────────
 
 import { Hono } from "hono";
@@ -146,6 +153,27 @@ describe("GET /health", () => {
     expect(body.opaque_compact_state).not.toHaveProperty("bytes");
     expect(body.opaque_compact_state).not.toHaveProperty("maxBytes");
     expect(Object.keys(body.opaque_compact_state).sort()).toEqual(["enabled", "ready", "reason"].sort());
+  });
+
+  // ★ 2026-08-03 发 v2.0.96 时真实撞到：`/health` 不带版本号，team-lead
+  // 从匿名可读的健康检查端点完全看不出生产跑的是 v2.0.95 还是 v2.0.96，
+  // 只能等部署方口头报告。版本号不是新暴露面——Dashboard 页脚（登录后）
+  // 和 GitHub release 本来就公开显示同一个值。加回来时刻意只加这一个
+  // 字段，不趁机塞别的运营信息——这条测试和上面那条"不返回容量明细"配
+  // 对锁住："该有的字段有，不该有的字段没有"两头都要断言，不是只锁一头。
+  it("返回 version 字段（进程启动时读一次，不是每次请求都读——见 health.ts 里 getProxyInfo() 调用点的注释）", async () => {
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { version: string | null };
+    expect(body.version).toBe("9.9.9-test");
+  });
+
+  it("响应体顶层字段是一个已知的穷尽集合，不多不少——防止以后有人往这个匿名端点顺手加运营信息", async () => {
+    const res = await app.request("/health");
+    const body = await res.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(
+      ["status", "version", "authenticated", "pool", "opaque_compact_state", "timestamp"].sort(),
+    );
   });
 });
 

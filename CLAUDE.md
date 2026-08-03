@@ -20,8 +20,11 @@
 - **部署失败立即回滚**到上一个已知健康的 digest，保留失败镜像、key、state 作为取证，不要先清理再排查。
 - 发布前确认唯一真正的 compact 开关（`claude_code_opaque_compact_experimental`）产品默认仍是 `false`；`claude_code_compact_bridge` 是已废弃的死配置键（classic bridge 已移除，不接任何行为，设成 `true` 只会打一条一次性弃用警告），不是需要单独核对的第二个开关。
 - **门禁必须在部署之前完成，且不能靠默认。** 门禁方（qa）和部署方（developer）分离时，**派发部署任务时必须显式写明"门禁全绿才放行部署"**——不能假设对方会自己去确认门禁状态，也不能假设"没人喊停就是可以部署"。2026-08-03 发 `v2.0.95` 时真实漏过一次：任务派发时没把部署设成依赖门禁完成，部署在门禁跑完之前就执行了；发现后 qa 对已上线的生产补跑了门禁。**这是流程缺口，不是代码能锁住的东西**——发部署任务的人要对这条负责。
+- **验证前端改动时"看到旧界面"不能直接判定部署失败——先排除浏览器缓存。** 2026-08-03 发 `v2.0.96` 时真实撞到：部署完打开 Dashboard 点开要验证的那个链接，文案还是旧的，一度以为前端资源没跟着镜像更新；`cmd+shift+r` 硬刷新后确认是浏览器缓存了旧的 `index.html`，镜像里的资源其实是对的。**后端 API 报的运行时版本号和"你当前这次页面加载用的静态资源是不是最新"是两件完全独立的事**——页脚版本号对了不代表同一次加载里其它资源没有被缓存命中，反过来"看到旧文案"也不代表部署没生效。**验证前端改动（不只是看页脚数字，是真正点开某个具体功能）之前，必须硬刷新或用无痕窗口**，避免把一次成功的部署误判成前端没生效、进而触发不必要的回滚。
 
 前 3 项已固化成代码守卫，不要绕过：Dockerfile 内的 build-time 断言、`.github/workflows/ci-docker.yml` 的 smoke step、`tests/unit/ci/docker-node-runtime.test.ts`。新增任何"只在新版本 Node 存在"的内建模块依赖时，同步更新 `tests/unit/ci/docker-node-runtime.test.ts` 里的 `BUILTIN_MIN_NODE`。
+
+**已知但未查明的观测：`docker-publish.yml` 构建耗时偶尔会比基准慢一个数量级。** 2026-08-03 发 `v2.0.96` 时，tag-ref 构建和同批代码的 master-ref 构建分别耗时约 13 分钟和 9 分钟，而历史基准（`v2.0.95` 等历次发布）通常在 1 分钟左右完成；两次构建最终都成功，产物验证也都通过，不是构建卡死或失败。**排查时曾怀疑是这次多构建了 arm64 架构，经核实站不住脚**——`v2.0.95`/`v2.0.96` 两版的 `platforms` 配置一直都是 `linux/amd64,linux/arm64`，双架构不是这次才有的变化。**真实原因没有查出来，如实记为未查明，不写任何未经验证的归因**——下次如果构建速度又出现异常波动，这条不构成"已知原因，不用管"的依据，需要重新排查。
 
 ## 版本号 bump：真实路径是手动的，不是 `bump-electron.yml`
 
@@ -72,7 +75,7 @@ gh workflow run docker-publish.yml --ref vX.Y.Z
 gh workflow run release.yml -f tag=vX.Y.Z
 ```
 
-若哪天 tag push 自己触发了，会出现两组重复 run，`docker-publish.yml` 有 concurrency 组会自动取消先起的那个，`release.yml` 重复跑一次只是浪费 CI 时间，**都不会产出错误结果**——所以无脑手动触发是安全的。
+若哪天 tag push 自己触发了，会出现两组重复 run：`docker-publish.yml`/`release.yml` 现在都有按 ref 隔离的 concurrency 组，会自动处理掉重复的那个——但两者的处理方式不同，**不要用"都不会出错"这种笼统说法**。`docker-publish.yml` 是 `cancel-in-progress: true`，直接取消先起的那个，安全（被取消的是镜像构建，没构建完 = 没有镜像，天然幂等）。`release.yml` 是 `cancel-in-progress: false`（排队，不抢占），第二个触发要等第一个跑完才开始——这条**在加 concurrency 组之前**，2026-08-03 发 `v2.0.96` 时真实出过错：tag push 自己触发的一条和手动 dispatch 的一条并发跑（没有任何并发控制），两条抢同一个 `gh release create`，其中一条的 macOS arm64 job 在上传资产时报 `HTTP 404`（脚本自己的注释写了这个竞态，但没有真正兜住）。**不影响最终产物**——真正 checkout 了 tag ref 的那条完整上传了所有平台资产，用户看到的 release 没有缺东西，只是多了一条失败的 run 记录。加了 concurrency 组之后这类竞态不会再发生：两条会排队而不是并发抢同一个 release 对象。有 `tests/unit/ci/release-concurrency.test.ts` 锁住这个组必须按 ref 隔离、且 `cancel-in-progress` 必须是 `false` 不是 `true`（原因见该测试文件头部注释：这条 workflow 中途被取消会留下一个资产不全的公开 release，比"两条都跑完、其中一条竞态失败"更危险，不能照抄 `docker-publish.yml` 的配置）。
 
 **不要删 tag 重推**（`v2.0.85` 那次的教训是 tag 拓扑一旦搞乱，收拾起来比原问题麻烦得多）。
 

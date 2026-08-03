@@ -355,7 +355,7 @@ describe("E2E: POST /v1/messages", () => {
         ["missing", (marker: string) => {
           opaqueCompactStateStore.clear();
           return marker;
-        }, "could not be found and cannot be recovered"],
+        }, "no need to /clear"],
       ])("opaque compact bridge: rejects %s marker state", async (_case, mutateMarker, expectedText) => {
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
@@ -370,8 +370,11 @@ describe("E2E: POST /v1/messages", () => {
 
         // 这条回放不是 compact 请求（最后一条消息不是 compactPrompt），所以即使
         // "missing" 落在族 A（良性可自愈），8.1 的自愈条件（compactPrompt!==null）
-        // 也不成立，仍然 409——8.5：文案不再是裸 reason token，而是可执行指引
-        // （tampered 不在族 A/B 里，走通用兜底文案，仍然带 reason token）。
+        // 也不成立，仍然 409——8.5：文案不再是裸 reason token，而是可执行指引。
+        // ★ 8.20（生产事故复盘）：not_found/missing 此前误导用户去 /clear，
+        // 实测手动 /compact 就能救回来（同一个自愈族、和 expired 行为一致），
+        // 文案改成和 expired 一样建议 /compact、明确"不需要 /clear"（tampered
+        // 不在族 A/B 里，走通用兜底文案，仍然带 reason token）。
         const replay = await messagesRequest(defaultBody({
           stream: true,
           messages: [

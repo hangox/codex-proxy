@@ -66,6 +66,13 @@ describe("ConfigSchema", () => {
       request_timeout_ms: 30000,
       auth: { type: "none" },
     });
+    // ★ 8.20（生产事故复盘）：默认从 720（12h）改成 10080（7 天）——12h
+    // 对"会话开着过夜、隔天接着干"这种正常使用场景必然踩中 TTL 过期，
+    // 见 `config-schema.ts` 里 `ttl_minutes` 字段的完整注释。
+    expect(result.opaque_compact_state.ttl_minutes).toBe(10080);
+    expect(result.opaque_compact_state.capacity).toBe(1024);
+    expect(result.opaque_compact_state.max_bytes).toBe(64 * 1024 * 1024);
+    expect(result.opaque_compact_state.keyring_file).toBeNull();
   });
 
   it("respects overridden values", () => {
@@ -257,6 +264,43 @@ describe("ConfigSchema", () => {
     expect(result.quota.concurrency).toBe(10);
     expect(result.update.auto_update).toBe(true);
     expect(result.update.show_update_dialog).toBe(false);
+  });
+
+  // ★ 8.20（生产事故复盘）：opaque_compact_state.ttl_minutes 默认从 12h
+  // 改成 7 天，max 上限相应从 24h 放宽到 30 天——否则新默认值本身就会
+  // 超出 schema 自己声明的 max，是这次改动里最容易漏掉的一步（改
+  // default 忘了同步改 max）。
+  describe("opaque_compact_state.ttl_minutes", () => {
+    it("默认值是 10080（7 天），不是旧的 720（12h）", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+      });
+      expect(result.opaque_compact_state.ttl_minutes).toBe(10080);
+    });
+
+    it("接受最长 30 天（43200 分钟）的显式配置", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+        opaque_compact_state: { ttl_minutes: 30 * 24 * 60 },
+      });
+      expect(result.opaque_compact_state.ttl_minutes).toBe(43200);
+    });
+
+    it("拒绝超过 30 天的配置——上限不是无限放开", () => {
+      const result = ConfigSchema.safeParse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+        opaque_compact_state: { ttl_minutes: 30 * 24 * 60 + 1 },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("仍然接受比新默认值短的显式配置（比如旧的 720）——只是不再是默认值", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+        opaque_compact_state: { ttl_minutes: 720 },
+      });
+      expect(result.opaque_compact_state.ttl_minutes).toBe(720);
+    });
   });
 });
 

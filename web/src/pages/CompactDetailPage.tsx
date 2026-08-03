@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState, useEffect, useRef } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useCompactOutcomeEvents } from "../../../shared/hooks/use-compact-outcome-events";
 import type { CompactOutcomeEvent, CompactOutcomeFilter } from "../../../shared/hooks/use-compact-outcome-events";
@@ -168,10 +168,109 @@ function formatTimeOnly(ts: string): string {
  * 但用户这次只点了型号筛选，见 team-lead 转达）——跟随实际拍板范围，
  * 以后要加只是纯前端工作。
  */
+// ★ #97 part 2（用户原话："这个为什么是降级？上面能不能加个 id？不然我
+// 不好告诉你具体的问题是那个？或者 url 可以体现也可以"）：url 反映当前
+// 选中记录 + 时间范围/结果筛选/型号筛选，刷新/分享链接后能定位回同一个
+// 视图——排查问题时用户不用再口头描述"我筛了 xx 型号、点了第 3 条"，
+// 一个链接就够。
+//
+// 只跟 `location.search`（`?` 后面那段）打交道，不碰 `location.hash`——
+// `App.tsx` 的 tab 路由是对 `hash` 做**精确字符串匹配**
+// （`TABS.find((t) => t.hash === hash)`），如果把这些参数塞进 hash 里
+// （比如 `#/compact-detail?rid=xxx`），这个精确匹配会失配，整个 tab 都
+// 渲染不出来——两套状态天生就该分层：hash 管"在哪个 tab"，search 管
+// "这个 tab 内部的视图状态"，互不干扰。
+const HOURS_URL_VALUES: readonly UsageHistoryRange[] = [24, 168, 720, "all"];
+
+function parseHoursFromUrl(raw: string | null): UsageHistoryRange | null {
+  if (raw === null) return null;
+  if (raw === "all") return "all";
+  const n = Number(raw);
+  return HOURS_URL_VALUES.includes(n) ? n : null;
+}
+
+function parseOutcomeFromUrl(raw: string | null): CompactOutcomeFilter | null {
+  if (raw === "all" || raw === "success" || raw === "budget_exceeded" || raw === "upstream_failed" || raw === "denied") {
+    return raw;
+  }
+  return null;
+}
+
+/** 读一次当前 `location.search`，用于组件挂载时的初始状态——之后的读写都走 `useEffect`。 */
+function readInitialParamsFromUrl(): { hours: UsageHistoryRange | null; outcome: CompactOutcomeFilter | null; model: string | null; rid: string | null } {
+  if (typeof location === "undefined") return { hours: null, outcome: null, model: null, rid: null };
+  const params = new URLSearchParams(location.search);
+  return {
+    hours: parseHoursFromUrl(params.get("hours")),
+    outcome: parseOutcomeFromUrl(params.get("outcome")),
+    model: params.get("model"),
+    rid: params.get("rid"),
+  };
+}
+
 export function CompactDetailPage() {
   const t = useT();
-  const [hours, setHours] = useState<UsageHistoryRange>(24);
+  // 初始值只在组件第一次挂载时读一次 URL（惰性初始化，不是每次渲染都读）——
+  // 之后的每一次变化由下面的 useEffect 写回 URL，形成"URL 是当前视图状态
+  // 的镜像"这个单向数据流，不需要每次渲染都重新解析。
+  const initialParams = useRef(readInitialParamsFromUrl()).current;
+  const [hours, setHours] = useState<UsageHistoryRange>(initialParams.hours ?? 24);
   const eventsState = useCompactOutcomeEvents(hours);
+
+  // ★ outcome/model 的初始值不能靠 useState 的惰性初始化直接塞给
+  // useCompactOutcomeEvents 内部状态（那个 hook 没有暴露"初始 outcome/model"
+  // 这两个入参，改它的签名会影响到其它潜在调用方）——改用 setOutcome/setModel
+  // 在挂载后立刻应用一次。这两个 setter 本来就会顺带清页码/选中项，这里是
+  // 组件刚挂载的第一次调用，page/selected 本来就是初始值，没有副作用上的
+  // 落差。只在挂载时跑一次（依赖数组为空），不是每次 URL 变化都重新读——
+  // 之后 outcome/model 的变化只应该来自用户操作，不是 URL 被动触发。
+  useEffect(() => {
+    if (initialParams.outcome !== null && initialParams.outcome !== "all") {
+      eventsState.setOutcome(initialParams.outcome);
+    }
+    if (initialParams.model !== null && initialParams.model !== "") {
+      eventsState.setModel(initialParams.model);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ★ rid 选中：只在当前已加载的 events 里真的能找到这个 rid 时才调用
+  // selectEvent——不是"events 一加载完就无条件尝试一次"：`selectEvent` 找
+  // 不到会把 `selected` 设成 `null`，挂载阶段这本来就是初始值、无害，但
+  // 语义上"我确认过这条记录在，才去选中它"比"随手扔一个可能查无此人的
+  // rid 过去，指望内部 find 帮我兜底"更清楚。用一个 ref 标记"已经选中
+  // 过一次"，避免用户手动切换筛选、清空选中项之后，这个 effect 又把 URL
+  // 里那个陈旧的 rid 重新选回来（那样用户永远清不掉选中状态）——分页/
+  // 时间窗口刷新导致 `events` 变化时，只要还没成功选中过，就会用最新一批
+  // `events` 再试一次（目标 rid 可能不在第一页/当时还没加载出来）。
+  const triedInitialRidSelect = useRef(false);
+  useEffect(() => {
+    if (triedInitialRidSelect.current) return;
+    if (!initialParams.rid) return;
+    if (!eventsState.events.some((e) => e.rid === initialParams.rid)) return;
+    triedInitialRidSelect.current = true;
+    eventsState.selectEvent(initialParams.rid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventsState.events]);
+
+  // 状态 → URL 的单向同步：hours/outcome/model/选中记录 任一变化都重写
+  // `location.search`。用 `replaceState` 不是 `pushState`——每次切筛选/翻页
+  // 选记录都会触发，用 `pushState` 会把浏览器"后退"按钮变成没用的筛选
+  // 历史重放，不是用户想要的导航语义；分享/刷新要的是"当前状态可还原"，
+  // 不是"每一步操作都能后退"。
+  useEffect(() => {
+    if (typeof location === "undefined" || typeof history === "undefined") return;
+    const params = new URLSearchParams(location.search);
+    if (hours !== 24) params.set("hours", String(hours)); else params.delete("hours");
+    if (eventsState.outcome !== "all") params.set("outcome", eventsState.outcome); else params.delete("outcome");
+    if (eventsState.model !== "") params.set("model", eventsState.model); else params.delete("model");
+    if (eventsState.selected) params.set("rid", eventsState.selected.rid); else params.delete("rid");
+    const query = params.toString();
+    const newUrl = `${location.pathname}${query ? `?${query}` : ""}${location.hash}`;
+    if (newUrl !== `${location.pathname}${location.search}${location.hash}`) {
+      history.replaceState(null, "", newUrl);
+    }
+  }, [hours, eventsState.outcome, eventsState.model, eventsState.selected]);
 
   const pageStart = eventsState.total === 0 ? 0 : eventsState.page * eventsState.pageSize + 1;
   const pageEnd = eventsState.total === 0 ? 0 : Math.min(eventsState.total, (eventsState.page + 1) * eventsState.pageSize);
@@ -390,6 +489,45 @@ function DetailGroup({ title, children }: { title: string; children: preact.Comp
  * 详情面板——按 outcome 类型渲染不同的"为什么"/"怎么回退的"内容，不是
  * 固定模板套所有类型（原型确认过的形态，见文件头注释）。
  */
+/**
+ * ★ #97 part 2（用户原话："上面能不能加个 id？不然我不好告诉你具体的问题
+ * 是那个？"）：请求 ID 一直显示在面板上，但用户没有办法把它交给排查的人
+ * ——只能手动框选文本再复制，容易漏字符/带上多余空白。加一个点击复制
+ * 按钮，复制成功后给 2 秒的可见反馈（不是复制了但用户不知道复制了没有）。
+ */
+function CopyableRid({ rid, t }: { rid: string; t: (key: TranslationKey, vars?: Record<string, string | number>) => string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(rid).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      // 剪贴板权限被拒绝/不支持时静默失败——rid 本来就以纯文本显示在旁边，
+      // 用户仍然可以手动框选复制，不是唯一入口，不需要额外报错 UI。
+    });
+  };
+  return (
+    <span class="inline-flex items-center gap-1.5">
+      <span class="font-mono">{rid}</span>
+      <button
+        type="button"
+        onClick={handleCopy}
+        class="text-slate-400 dark:text-text-dim hover:text-slate-600 dark:hover:text-text-main transition-colors"
+        title={t("compactDetailCopyRid")}
+      >
+        {copied ? (
+          <span class="text-[10px] text-success">{t("compactDetailCopied")}</span>
+        ) : (
+          <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" />
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+          </svg>
+        )}
+      </button>
+    </span>
+  );
+}
+
 function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: TranslationKey, vars?: Record<string, string | number>) => string }) {
   const meta = OUTCOME_META[e.outcome];
 
@@ -398,7 +536,7 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
       <DetailGroup title={t("compactDetailGroupRecord")}>
         <DetailRow label={t("compactDetailTime")}>{formatFullTime(e.ts)}</DetailRow>
         <DetailRow label={t("compactDetailRid")}>
-          <span class="font-mono">{e.rid}</span>
+          <CopyableRid rid={e.rid} t={t} />
         </DetailRow>
         <DetailRow label={t("compactDetailResult")}>
           <span class={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold ${meta.pillClass}`}>

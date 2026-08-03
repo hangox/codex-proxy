@@ -6,8 +6,16 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# 按 ref 隔离并发组，不能用全局单一 group：2026-08-03 发 v2.0.95 时真实
+# 撞过——group 是全局的会导致任意 master push（哪怕纯文档提交）取消掉
+# 正在跑的 tag 构建，即便两者的触发 ref 完全不同也照样互相顶掉。危害不是
+# "要重跑"，是没人注意到时版本 tag 的镜像压根没产出，而被取消的构建
+# 恰好换成同一次 master push 触发的另一个 run 正常产出 sha-<commit>
+# 镜像——容易被误当成这个版本部署上去（比 v2.0.88 那次更隐蔽，那次至少
+# 有一个镜像，只是指错了对象）。详见 CLAUDE.md「docker-publish.yml 的
+# 历史坑」第四条。锁定测试：tests/unit/ci/docker-publish-concurrency.test.ts
 concurrency:
-  group: docker-publish
+  group: docker-publish-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

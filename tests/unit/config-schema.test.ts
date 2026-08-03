@@ -70,8 +70,11 @@ describe("ConfigSchema", () => {
     // 对"会话开着过夜、隔天接着干"这种正常使用场景必然踩中 TTL 过期，
     // 见 `config-schema.ts` 里 `ttl_minutes` 字段的完整注释。
     expect(result.opaque_compact_state.ttl_minutes).toBe(10080);
-    expect(result.opaque_compact_state.capacity).toBe(1024);
-    expect(result.opaque_compact_state.max_bytes).toBe(64 * 1024 * 1024);
+    // ★ 8.20 续：TTL 放长到 7 天之后的连带修正，capacity 1024→4096、
+    // max_bytes 64MiB→256MiB（配平——单独提高 capacity 不提高 max_bytes，
+    // 一旦均值字节数超过 max_bytes/capacity 就变成字节先触顶）。
+    expect(result.opaque_compact_state.capacity).toBe(4096);
+    expect(result.opaque_compact_state.max_bytes).toBe(256 * 1024 * 1024);
     expect(result.opaque_compact_state.keyring_file).toBeNull();
   });
 
@@ -300,6 +303,44 @@ describe("ConfigSchema", () => {
         opaque_compact_state: { ttl_minutes: 720 },
       });
       expect(result.opaque_compact_state.ttl_minutes).toBe(720);
+    });
+  });
+
+  // ★ 8.20 续：TTL 放长到 7 天后 predecessor state 存量累积量级变大
+  // （~14 倍），capacity/max_bytes 跟着一起改——"配平"是这两个字段的
+  // 核心不变量：capacity × 平均 byte_size 不能超过 max_bytes，否则字节
+  // 预算会先于条数触顶，capacity 那次改动就白改了。
+  describe("opaque_compact_state.capacity / max_bytes（8.20 续，配平）", () => {
+    it("默认值是 capacity=4096、max_bytes=256MiB，不是旧的 1024/64MiB", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+      });
+      expect(result.opaque_compact_state.capacity).toBe(4096);
+      expect(result.opaque_compact_state.max_bytes).toBe(268_435_456);
+    });
+
+    it("配平不变量：新默认值组合下，capacity × 实测均值 byte_size(48785) 不超过 max_bytes——否则 bytes 会先于 capacity 触顶", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+      });
+      const measuredAvgByteSize = 48_785; // tests/e2e/opaque-compact-state-byte-size.test.ts 的实测值。
+      expect(result.opaque_compact_state.capacity * measuredAvgByteSize).toBeLessThanOrEqual(result.opaque_compact_state.max_bytes);
+    });
+
+    it("capacity 仍然接受旧的 1024（只是不再是默认值），上限 10_000 不变", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+        opaque_compact_state: { capacity: 1024 },
+      });
+      expect(result.opaque_compact_state.capacity).toBe(1024);
+    });
+
+    it("max_bytes 仍然接受旧的 64MiB（只是不再是默认值），下限 64KB 不变", () => {
+      const result = ConfigSchema.parse({
+        api: {}, client: {}, model: {}, auth: {}, server: {}, session: {},
+        opaque_compact_state: { max_bytes: 64 * 1024 * 1024 },
+      });
+      expect(result.opaque_compact_state.max_bytes).toBe(67_108_864);
     });
   });
 });

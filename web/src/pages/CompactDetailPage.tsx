@@ -636,13 +636,39 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
         </DetailGroup>
       )}
 
-      {/* ★ 日志页的路由是精确字符串匹配 `location.hash`（见 App.tsx 的
-          `activeTab`），不支持 `#/logs?search=...` 这种带查询串的深链接
-          （会直接不匹配任何 tab、退回到概览页）——这里只跳转到日志页本身，
-          不假装能带查询参数自动预填搜索框，避免一个看起来能用、实际上
-          静默失效的链接。rid 就显示在这个详情面板最上面，用户手动复制过去
-          搜一下即可。 */}
-      <a href="#/logs" class="block text-xs font-medium text-primary hover:underline">
+      {/* ★ team-lead 复核用户反馈："一个链接需要配一句'然后你手动做这三步'，
+          说明它没做完"——原来的文案是"去日志页——把上面的请求 ID 粘贴到
+          搜索框里查 →"，配的是纯 `<a href="#/logs">`，不带任何上下文，
+          用户得自己复制 rid、切页、粘进搜索框。这条链接是面板刚做时写的，
+          当时请求 ID 不能复制、日志页也不支持从 URL 接收搜索词，只能让
+          用户手抄；#97 已经把"请求 ID 可复制"和"URL 反映视图状态"这两块
+          拼图都补上了，但这条链接当时没跟着更新。
+          日志页的路由是精确字符串匹配 `location.hash`（见 App.tsx 的
+          `activeTab`），不支持 `#/logs?search=...` 这种把参数塞进 hash 的
+          深链接（会直接不匹配任何 tab、退回到概览页）——和这个面板自己的
+          URL 状态同步用的是同一套分层："search"（`location.search`）
+          管视图状态、hash 管在哪个 tab，互不干扰。所以这里先把
+          `search=<rid>` 写进 `location.search`（用 replaceState，不产生
+          导航历史），再改 `location.hash` 触发 tab 切换——日志页那边读到
+          的 `location.search` 已经带着这个参数。
+          rid 是否需要精确匹配：日志存储的 `search` 用 `includes()` 子串
+          匹配（`src/logs/store.ts`「★ 8.17」），面板显示的 rid 就是
+          `requestId.slice(0,8)`，日志记录里存的 `requestId` 在没有客户端
+          自定义 `x-request-id` 头的正常路径下本身就是 8 位（见
+          `src/middleware/request-id.ts`），两边字符串相同——不是"恰好能
+          搜到"的前缀匹配侥幸，是同一个值。 */}
+      <a
+        href="#/logs"
+        class="block text-xs font-medium text-primary hover:underline"
+        onClick={(event) => {
+          event.preventDefault();
+          if (typeof location === "undefined" || typeof history === "undefined") return;
+          const params = new URLSearchParams();
+          params.set("search", e.rid);
+          history.replaceState(null, "", `${location.pathname}?${params.toString()}${location.hash}`);
+          location.hash = "#/logs";
+        }}
+      >
         {t("compactDetailJumpToLogs")}
       </a>
     </div>

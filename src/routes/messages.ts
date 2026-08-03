@@ -111,6 +111,57 @@ function describeOpaqueCompactUnavailable(reason: string): string {
 }
 
 /**
+ * ★ #81：`recompact_failed_original_account` 聚合桶的用户可见文案分拆。
+ *
+ * #83 之前，这个 409 分支不管上游真实原因是什么，一律吐同一句
+ * "could not be compacted on its original account. Run /clear..."——
+ * `state_too_large`（容量耗尽，save 阶段就超限）跟真正的账号失败
+ * （rate_limited/banned/token_expired/...）长得一模一样，用户报告没法从
+ * 这句话反推死因，这跟当时那次 409 排查绕大圈是同一个病：不同根因共用
+ * 同一句文案，事后无法反推。#83 已经把 `cause` 字段做出来了，这里只是
+ * "用已有的 cause 分文案"，不是重新做分类。
+ *
+ * 三个桶，按"用户到底能做什么"划分——不是按 cause 值本身的技术含义划分，
+ * 那样会拆出一堆文案完全相同、纯粹为了"不同"而不同的分支，参考
+ * `deriveRecompactFailureCause` 文档里"一对多命名分裂"同一条教训：
+ *
+ * 1. `state_too_large`：内容太大，save 阶段就超限——诚实的建议是"这次
+ *    session 太大了"，唯一的自助手段仍然是 /clear 开一个更小的新会话。
+ * 2. `stale_generation` / `preserved_tail_conflict`：并发/协议类冲突，
+ *    不是"这个状态救不回来"——`stale_generation` 是这次 recompact 在跟
+ *    同一会话上的另一次 compact 抢跑，输了；`preserved_tail_conflict` 是
+ *    压缩期间会话历史（预期原样保留的那部分）发生了变化。两者共同点是
+ *    "这一次操作跟另一件事撞车了"，不是数据/账号层面真的坏掉了——继续
+ *    对话应该会自动恢复。这条 409 本身仍然保留 SDK/客户端的自动重试（
+ *    #91 没有改这两个 cause 对应的状态码）——这里跟 #91 的判断是一致的：
+ *    族 A 是确定性失败，必须打断自动重试；这两个是真的可以靠重试自愈，
+ *    409 的默认重试语义对它们本来就是对的，不需要跟着 #91 一起动。
+ * 3. 其余一切（`account_mismatch` 及所有 `RecompactFailureCause` 的上游/
+ *    账号失败值——`rate_limited`/`account_banned`/`token_expired`/...）：
+ *    这次 recompact 在原账号上失败了，且没有"换个方式重试就会不同"的
+ *    理由（8.5 的原始论证仍然成立，见下面 `if (opaqueRestore.restored &&
+ *    !isRecompactContextOverflow)` 分支的注释）——诚实的建议就是 /clear
+ *    开一个新会话，跟改动前的行为一致。`account_mismatch`（记录被判定
+ *    属于别的账号，是 CAS/save 边界发现的数据一致性问题，不是常规的上游
+ *    账号故障）没有单独拆出来——它的自助手段和这个桶完全一样，拆出来只会
+ *    多一句文案相同的判断分支，不产生任何用户可感知的差异。
+ */
+// ★ #81：导出——仅供测试直接断言三个桶的文案（见
+// tests/unit/routes/recompact-failure-message.test.ts）。跟 #83 的
+// deriveRecompactFailureCause 同一个道理：不是给其它模块复用的公共 API，
+// messages.ts 内部仍然只在本文件内调用它。
+export function describeRecompactFailure(cause: RecompactFailureCause | OpaqueCompactStateFailure): string {
+  if (cause === "state_too_large") {
+    return "This session's compacted context is too large to save. Run /clear and start a new session with a smaller working set.";
+  }
+  if (cause === "stale_generation" || cause === "preserved_tail_conflict") {
+    return "This request conflicted with another compact operation on the same session. Continuing the " +
+      "conversation should resolve it automatically — no action needed.";
+  }
+  return "Opaque compact state could not be compacted on its original account. Run /clear and start a new session.";
+}
+
+/**
  * ★ #83：`recompact_failed_original_account` 聚合桶的失败子因派生。
  *
  * 这个 reason 值本身**不改**（Dashboard/日志既有的过滤和统计口径依赖它），
@@ -802,7 +853,11 @@ export function createMessagesRoutes(
           error instanceof CompactServiceError && error.promptTooLong;
         if (opaqueRestore.restored && !isRecompactContextOverflow) {
           // 8.5：不建议"再试一次同一个 compact"——刚才这次已经在原账号上失败了，
-          // 没有理由认为立即重放会不同。给一个必然可行的退出路径。
+          // 没有理由认为立即重放会不同。给一个必然可行的退出路径（除了 #81
+          // 拆出来的 stale_generation/preserved_tail_conflict 两个并发/协议类
+          // 例外——那两个的正确建议是"继续对话，重试应该自愈"，见
+          // describeRecompactFailure 文档）。
+          const cause = deriveRecompactFailureCause(error);
           recordOpaqueCompactDenial({
             requestId,
             reason: "recompact_failed_original_account",
@@ -812,7 +867,7 @@ export function createMessagesRoutes(
             generation: opaqueRestore.generation,
             // ★ #83：reason 本身不变（既有 Dashboard/日志过滤口径依赖它），
             // cause 是新增的子因，供事后区分"这次到底是哪一类失败"。
-            cause: deriveRecompactFailureCause(error),
+            cause,
             model: displayModel,
             // ★ #88：CompactServiceError 已经带着更精确的 durationMs（从
             // respondWithOpaqueCompactMarker 入口算起，见该字段文档）——
@@ -825,11 +880,10 @@ export function createMessagesRoutes(
             upstreamMs: error instanceof CompactServiceError ? error.upstreamMs : undefined,
           });
           c.status(409);
-          return c.json(makeError(
-            "invalid_request_error",
-            "Opaque compact state could not be compacted on its original account. " +
-              "Run /clear and start a new session.",
-          ));
+          // ★ #81：按 cause 分文案，不再是不管死因都吐同一句话——见
+          // describeRecompactFailure 的三桶划分文档。状态码不变（仍然
+          // 409，#91 没有动这条聚合桶），这次只动文案本身。
+          return c.json(makeError("invalid_request_error", describeRecompactFailure(cause)));
         }
         // 走到这里有两种情况，处理方式相同：
         // 1. root compact（未曾 restored 过）——这里不是 store 级故障、也不是

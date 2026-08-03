@@ -244,10 +244,19 @@ describe("opaque compact state — capacity growth under repeated recompact (tas
     // 决定性断言：不是静默丢数据（行数没变，事务确实回滚了，root 记录完好），
     // 也不是进程崩溃/500——是一个结构化的 409（走 messages.ts 里
     // `opaqueRestore.restored && !isRecompactContextOverflow` 这条既有分支，
-    // 和"recompact_failed_original_account"归到同一个客户端可见文案，
-    // 这一点本身值得报给 team-lead：容量耗尽和账号失败目前共用同一句
-    // 用户文案，用户分不出是哪一种）。
+    // reason 仍然是 `recompact_failed_original_account`）。
+    // ★ #81：`pruneWithinTransaction` 找不到可淘汰 victim 时抛的正是
+    // `state_too_large`（见 opaque-compact-repository.ts 该分支的注释——
+    // "capacity or byte budget cannot be satisfied without evicting
+    // protected records"，跟单条记录本身超过 maxBytes 是同一个用户可感知
+    // 情况："这次要保存的东西放不下"），`deriveRecompactFailureCause` 会把
+    // `OpaqueCompactStateError.reason` 原样透传成 `cause`，因此这条请求
+    // 拿到的文案是 #81 新拆出来的"容量耗尽"桶，不再是账号失败那句——这正是
+    // 当初报给 team-lead 的那个问题（容量耗尽和账号失败共用同一句用户
+    // 文案，用户分不出是哪一种），现在已经修了。
     expect(recompactRes.status).toBe(409);
+    expect(body).toContain("too large to save");
+    expect(body).not.toContain("could not be compacted on its original account");
     expect(countRows()).toBe(1); // 事务回滚——root 记录原封不动，没有半写状态。
   }, 30_000);
 });

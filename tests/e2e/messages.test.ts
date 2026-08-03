@@ -1386,7 +1386,13 @@ describe("E2E: POST /v1/messages", () => {
         }), { "x-claude-code-session-id": "session-repeat-conflict" });
 
         expect(conflicting.status).toBe(409);
-        expect(await conflicting.text()).toContain("could not be compacted on its original account");
+        // ★ #81：这是 preserved_tail_conflict（预期原样保留的 tool_result
+        // 内容在两次请求之间变了），不再共用"账号失败"那句文案——按
+        // describeRecompactFailure 的第二个桶，状态码不变（仍然 409），
+        // 但文案改成"并发/协议冲突，继续对话应该会自愈"。
+        const conflictingBody = await conflicting.text();
+        expect(conflictingBody).toContain("conflicted with another compact operation");
+        expect(conflictingBody).not.toContain("could not be compacted on its original account");
         expect(urls).toHaveLength(1);
         expect(urls[0]).toContain("/codex/responses/compact");
       });
@@ -1423,7 +1429,10 @@ describe("E2E: POST /v1/messages", () => {
         }), { "x-claude-code-session-id": "session-repeat-partial" });
 
         expect(partial.status).toBe(409);
-        expect(await partial.text()).toContain("could not be compacted on its original account");
+        // ★ #81：同上——preserved_tail_conflict 桶，文案改了，状态码不变。
+        const partialBody = await partial.text();
+        expect(partialBody).toContain("conflicted with another compact operation");
+        expect(partialBody).not.toContain("could not be compacted on its original account");
         expect(urls).toHaveLength(1);
         expect(urls[0]).toContain("/codex/responses/compact");
       });

@@ -79,6 +79,10 @@ afterEach(() => {
   cleanup();
   mockEvents.useCompactOutcomeEvents.mockReset();
   mockStats.useCompactOutcomeStats.mockReset();
+  // ★ #97 part 2：URL 同步测试会真的调用 history.replaceState/pushState，
+  // 不清理会让 location.search 泄漏到下一条测试，产生"上一条测试的筛选
+  // 状态污染了这一条"的假阳性/假阴性。
+  history.replaceState(null, "", "/");
 });
 
 describe("CompactDetailPage — 列表", () => {
@@ -600,5 +604,158 @@ describe("CompactDetailPage — 数据保留提示", () => {
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState());
     renderPage();
     expect(screen.getByText(/Not a complete audit log/)).toBeTruthy();
+  });
+});
+
+// ★ #97 part 2（用户原话："这个为什么是降级？上面能不能加个 id？不然我
+// 不好告诉你具体的问题是那个？或者 url 可以体现也可以"）：URL 反映当前
+// 选中记录 + 筛选状态，请求 ID 可复制。
+describe("CompactDetailPage — URL 状态同步", () => {
+  it("挂载时从 URL 读取 hours/outcome/model，应用到对应的状态/setter 上", () => {
+    history.replaceState(null, "", "/?hours=168&outcome=denied&model=gpt-5.6-terra");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const setOutcome = vi.fn();
+    const setModel = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setOutcome, setModel }));
+    renderPage();
+
+    // hours 是页面内部 useState，不经过 mock 的 hook——通过
+    // useCompactOutcomeEvents 被调用时传入的第一个参数间接验证。
+    expect(mockEvents.useCompactOutcomeEvents).toHaveBeenCalledWith(168);
+    expect(setOutcome).toHaveBeenCalledWith("denied");
+    expect(setModel).toHaveBeenCalledWith("gpt-5.6-terra");
+  });
+
+  it("URL 没有对应参数时，hours 用默认值 24，不调用 setOutcome/setModel（避免用空字符串/'all' 覆盖初始状态）", () => {
+    history.replaceState(null, "", "/");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const setOutcome = vi.fn();
+    const setModel = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setOutcome, setModel }));
+    renderPage();
+
+    expect(mockEvents.useCompactOutcomeEvents).toHaveBeenCalledWith(24);
+    expect(setOutcome).not.toHaveBeenCalled();
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it("URL 带非法/不认识的 hours 值时忽略，退回默认值 24（不会把一个从没在 UI 上出现过的窗口值传给后端）", () => {
+    history.replaceState(null, "", "/?hours=999");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState());
+    renderPage();
+
+    expect(mockEvents.useCompactOutcomeEvents).toHaveBeenCalledWith(24);
+  });
+
+  it("挂载时 URL 带 rid 且 events 里有匹配记录，调用 selectEvent", () => {
+    history.replaceState(null, "", "/?rid=target-rid");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selectEvent = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ rid: "target-rid" })],
+      selectEvent,
+    }));
+    renderPage();
+
+    expect(selectEvent).toHaveBeenCalledWith("target-rid");
+  });
+
+  it("URL 带 rid 但当前已加载的 events 里没有这一条时，不调用 selectEvent（避免用一个查不到的 rid 反复尝试）", () => {
+    history.replaceState(null, "", "/?rid=not-loaded-yet");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selectEvent = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ rid: "some-other-rid" })],
+      selectEvent,
+    }));
+    renderPage();
+
+    expect(selectEvent).not.toHaveBeenCalled();
+  });
+
+  it("选中记录/筛选条件变化后，写回 location.search（分享/刷新后能还原同一个视图）", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      outcome: "budget_exceeded",
+      model: "gpt-5.6-sol",
+      selected: makeEvent({ rid: "current-rid" }),
+    }));
+    renderPage();
+
+    const params = new URLSearchParams(location.search);
+    expect(params.get("outcome")).toBe("budget_exceeded");
+    expect(params.get("model")).toBe("gpt-5.6-sol");
+    expect(params.get("rid")).toBe("current-rid");
+  });
+
+  it("回到默认状态（outcome=all、model=''、无选中）时，URL 参数被清掉，不留一堆 '默认值' 噪声", () => {
+    history.replaceState(null, "", "/?hours=168&outcome=denied&model=gpt-5.6-sol&rid=old");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      outcome: "all", model: "", selected: null,
+    }));
+    renderPage();
+
+    const params = new URLSearchParams(location.search);
+    expect(params.has("outcome")).toBe(false);
+    expect(params.has("model")).toBe(false);
+    expect(params.has("rid")).toBe(false);
+    // hours 这次改动前后没变（挂载时读到 168，写回时同一个值原样写回，
+    // 这里只确认没有被误清空）。
+    expect(params.get("hours")).toBe("168");
+  });
+
+  it("写回 URL 不触碰 location.hash（tab 路由靠 hash 精确匹配，写 search 时必须原样保留 hash）", () => {
+    history.replaceState(null, "", "/#/compact-detail");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ outcome: "denied" }));
+    renderPage();
+
+    expect(location.hash).toBe("#/compact-detail");
+    expect(new URLSearchParams(location.search).get("outcome")).toBe("denied");
+  });
+});
+
+describe("CompactDetailPage — 复制请求 ID", () => {
+  it("点击复制按钮调用 navigator.clipboard.writeText，并短暂显示'已复制'反馈", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ rid: "copy-me-rid" });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    const copyButton = screen.getByTitle("Copy request ID");
+    fireEvent.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith("copy-me-rid");
+    // writeText 是 async，等它 resolve 后 UI 才会切到"已复制"状态。
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(await screen.findByText("Copied")).toBeTruthy();
+  });
+
+  it("剪贴板写入失败时静默失败，不抛错、不崩渲染（rid 本身仍然以纯文本显示，不是唯一复制入口）", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ rid: "fail-to-copy-rid" });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    const copyButton = screen.getByTitle("Copy request ID");
+    expect(() => fireEvent.click(copyButton)).not.toThrow();
+    await Promise.resolve();
+    // rid 文本本身仍然可见——复制失败不影响这条记录原有的可读性。
+    expect(screen.getByText("fail-to-copy-rid")).toBeTruthy();
   });
 });

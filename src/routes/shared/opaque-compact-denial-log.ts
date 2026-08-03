@@ -6,6 +6,10 @@
  * 具体是怎么触发的（截断 vs 前缀污染）永久无法定论。这里把每一次 opaque
  * 409/fail-closed 都记一条，让下一次事故至少有取证起点。
  *
+ * ★ #96：8.6 那会儿这里恒为 409——`#91` 之后族 A（自愈候选撞在非 compact
+ * 请求上）改成了 400，这个函数现在记录的是"fail-closed 决策"，不再是单纯
+ * "409 决策"，调用方必须传 `httpStatus`（见下方字段文档）。
+ *
  * 字段白名单靠**函数签名本身**强制，不接受"调用方传什么就落什么"的通用
  * context——那正是让完整 body 落盘的通道。允许的字段只有：
  *   rid、reason、session hash、marker 长度、account hash、generation、
@@ -70,9 +74,9 @@ export interface OpaqueCompactDenialInput {
   /**
    * ★ 8.10：请求声明的原始 model（`req.model`，未必已解析成
    * `displayModel`——两处最早的调用点发生在模型解析之前）。仅供 Dashboard
-   * 快速压缩成功率统计的 `denied` 分类使用，不影响这个函数原有的 409
+   * 快速压缩成功率统计的 `denied` 分类使用，不影响这个函数原有的 fail-closed
    * 决策/日志行为。缺省时用 `"unknown"`，不强行等调用方拿到 displayModel
-   * 才能记录（409 决策本身不能因为这个可选统计字段被推迟）。
+   * 才能记录（fail-closed 决策本身不能因为这个可选统计字段被推迟）。
    */
   model?: string;
   /**
@@ -87,10 +91,21 @@ export interface OpaqueCompactDenialInput {
    */
   cause?: RecompactFailureCause | OpaqueCompactStateFailure;
   /**
-   * ★ #88：这次请求从进入 `/v1/messages` 处理到这次 409/fail-closed 决策
+   * ★ #96（reviewer 交叉审查发现）：这次决策真正返回给客户端的 HTTP 状态码。
+   * `#91` 之前这里恒为 409，不需要单独记；`#91` 之后族 A（自愈候选撞在
+   * 非 compact 请求上）改成了 400，同一个 `recordOpaqueCompactDenial` 调用
+   * 现在可能对应 400 或 409——Dashboard 如果继续假设"denied = 409"就会给
+   * 用户错误的指引（比如对一个 400/族 A 的记录说"用 /clear"，正确动作其实
+   * 是"下次 /compact 自动恢复"）。调用方（`messages.ts`）负责传真实值，这个
+   * 函数不重新推导——推导逻辑（`isSelfHealableOpaqueCompactStateFailure`）
+   * 只应该有一份，在 `messages.ts` 决定状态码的地方，不在这里抄一份。
+   */
+  httpStatus?: number;
+  /**
+   * ★ #88：这次请求从进入 `/v1/messages` 处理到这次 fail-closed 决策
    * 为止的耗时（毫秒）。只喂进 `compact-outcomes.jsonl`（供 Dashboard 压缩
    * 明细面板显示），不进 `error-log.jsonl` 的白名单 context——那份是独立的
-   * 取证日志（8.6），字段白名单变更影响更大，这次不动它。409/fail-closed
+   * 取证日志（8.6），字段白名单变更影响更大，这次不动它。fail-closed
    * 理应是毫秒级；如果哪次耗时到了秒级，耗时数字本身就是排查线索（锁竞争/
    * store 慢查询），不是只有真正打了上游的失败才值得记耗时。
    */
@@ -104,7 +119,7 @@ export interface OpaqueCompactDenialInput {
   upstreamMs?: number;
 }
 
-/** 记录一次 opaque compact 的 409 / fail-closed 决策。绝不抛出。 */
+/** 记录一次 opaque compact 的 fail-closed 决策（400 或 409，见 `httpStatus`）。绝不抛出。 */
 export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void {
   try {
     appendErrorLog({
@@ -138,15 +153,21 @@ export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void
     // 纯粹是防御性的，避免未来有人在 context 构造里引入会抛错的逻辑。
   }
 
-  // ★ 8.10：Dashboard 快速压缩成功率统计——409/fail-closed 语义和"悄悄降级
+  // ★ 8.10：Dashboard 快速压缩成功率统计——fail-closed 语义和"悄悄降级
   // 但仍然成功"完全不同（客户端拿到硬错误，会话可能直接死），刻意单独
   // 一类，不并入 upstream_failed，见 compact-outcome-log.ts 头部注释。
+  // ★ #96：httpStatus/cause 原样透传——Dashboard 需要这两个字段才能对
+  // 每条 denied 记录给出正确指引（族 A/400 该建议下次 /compact，其余
+  // 400/409 该建议 /clear，`stale_generation`/`preserved_tail_conflict`
+  // 该建议继续对话），不能继续假设"denied = 409 = 统一建议 /clear"。
   recordCompactOutcome({
     requestId: input.requestId,
     clientConversationId: input.clientConversationId,
     model: input.model ?? "unknown",
     outcome: "denied",
     reason: input.reason,
+    httpStatus: input.httpStatus,
+    cause: input.cause,
     durationMs: input.durationMs,
     upstreamMs: input.upstreamMs,
   });

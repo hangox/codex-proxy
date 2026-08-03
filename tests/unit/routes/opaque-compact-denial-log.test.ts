@@ -44,6 +44,16 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+function readCompactOutcomeLines(): Array<Record<string, unknown>> {
+  const path = resolve(tmpDataDir, "compact-outcomes.jsonl");
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf-8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
 function readErrorLogLines(): Array<Record<string, unknown>> {
   const path = resolve(tmpDataDir, "error-log.jsonl");
   if (!existsSync(path)) return [];
@@ -346,5 +356,61 @@ describe("recordOpaqueCompactDenial", () => {
     const [outcomeEntry] = readFileSync(outcomePath, "utf-8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
     expect("duration_ms" in outcomeEntry).toBe(false);
     expect("upstream_ms" in outcomeEntry).toBe(false);
+  });
+
+  // ★ #96（reviewer 交叉审查发现的用户可见误导）：`#91` 之前 compact-outcomes.jsonl
+  // 从没记过 http_status（denied 恒为 409，不需要记）；`#91` 之后族 A
+  // 撞在非 compact 请求上改成了 400，Dashboard 前端要靠 http_status + cause
+  // 才能对每条记录给出正确指引，不能继续假设"denied = 409"——这里锁住
+  // messages.ts → recordOpaqueCompactDenial → recordCompactOutcome 这条
+  // 完整链路，两个字段都原样透传，且缺省时不补默认值。
+  it("httpStatus/cause 透传到 compact-outcomes.jsonl（族 A：400）", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-denial-selfheal",
+      reason: "expired",
+      clientConversationId: SESSION_ID,
+      marker: null,
+      httpStatus: 400,
+    });
+
+    const outcomeEntry = readCompactOutcomeLines()[0]!;
+    expect(outcomeEntry.http_status).toBe(400);
+    expect("cause" in outcomeEntry).toBe(false);
+  });
+
+  it("httpStatus/cause 透传到 compact-outcomes.jsonl（recompact 聚合桶：409 + cause）", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-denial-recompact",
+      reason: "recompact_failed_original_account",
+      clientConversationId: SESSION_ID,
+      marker: null,
+      cause: "state_too_large",
+      httpStatus: 409,
+    });
+
+    const outcomeEntry = readCompactOutcomeLines()[0]!;
+    expect(outcomeEntry.http_status).toBe(409);
+    expect(outcomeEntry.cause).toBe("state_too_large");
+  });
+
+  it("httpStatus 缺省时，compact-outcomes.jsonl 里省略键，不默认成 409", async () => {
+    const { recordOpaqueCompactDenial } = await import(
+      "@src/routes/shared/opaque-compact-denial-log.js"
+    );
+    recordOpaqueCompactDenial({
+      requestId: "rid-denial-nohttpstatus",
+      reason: "tampered",
+      clientConversationId: null,
+      marker: null,
+    });
+
+    const outcomeEntry = readCompactOutcomeLines()[0]!;
+    expect("http_status" in outcomeEntry).toBe(false);
   });
 });

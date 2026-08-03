@@ -65,6 +65,51 @@ gh workflow run release.yml -f tag=vX.Y.Z
 
 **不要删 tag 重推**（`v2.0.85` 那次的教训是 tag 拓扑一旦搞乱，收拾起来比原问题麻烦得多）。
 
+## 部署顺序：镜像和 config 谁先谁后，搞反会停机
+
+生产 `local.yaml` 里那些键**是显式写死的**，不吃代码里的默认值——所以「改了默认值就发版」这件事本身对生产零效果，必须同时改 yaml。但**两者的先后顺序不能随便**：
+
+**新值可能超出旧镜像的 schema 上限。** `v2.0.94` 就是真例：新默认 `ttl_minutes: 10080`，而当时线上 `v2.0.93` 的 schema 是 `.max(24 * 60)` = 1440。先改 yaml 的话，**旧镜像启动时 schema 校验直接失败 → 容器起不来 → 被 `restart: unless-stopped` 拧成崩溃循环**（`v2.0.80` 那次的形状）。
+
+```
+部署： 1. 先换新镜像（新镜像能读旧值，正常起，只是没改善）
+       2. 再改 yaml
+       3. 重启
+
+回滚： 1. 先把 yaml 改回旧镜像能接受的值
+       2. 再回滚镜像
+```
+
+**判据是「新旧两个镜像的 schema 谁的约束更松」**，不是死记顺序：改配置前先确认目标值在**当前运行的那个镜像**的 schema 里合法，不合法就必须先换镜像。
+
+**部署后必须验「配置真的生效」，不是「容器起来了」。** 这两件事在这种双写场景下经常不一致——容器可能带着旧配置健康运行。`v2.0.94` 用的硬证据是受鉴权的 `/admin/general-settings` 里的 `opaque_compact_state_capacity`（`capacity` / `maxBytes` 两个数），对不上就说明 yaml 没写对或没重启到位。**没有可读回配置的端点时，先加一个，别靠"应该生效了"。**
+
+## 镜像内容核对：`.Id` 不能跨机直接比
+
+`RepoDigests` 在 `docker load` 进来的镜像上是空的（那个字段只记录"从哪个 registry 引用拉的"），tencent1 因为 ghcr.io 被墙必须走 skopeo→tar→`docker load`，所以**按 tag 部署时那条「核对 `RepoDigests`」的老办法在这台机器上失效**。
+
+替代方案是核对 **config digest**，但 `2026-08-03` 发 `v2.0.94` 时连续踩了三个**同一家族**的坑——都是「表面数字对不上，内容其实一致」：
+
+1. **arm64 vs amd64**：本机 Mac 直接 `docker pull` 拿到的是 arm64 变体，跟生产 amd64 天然不同。
+2. **index digest ≠ 平台 manifest digest**：CI 产出和到处传的 `sha256:cca5d028…` 是**多架构 index** 的 digest，不是某个平台的。要比对必须先 `docker buildx imagetools inspect <index> --raw` 取出目标平台的 manifest digest。
+3. **`.Id` 在不同存储后端语义不同**：containerd snapshotter 模式下 `.Id` 显示的是拉取用的 manifest digest；经典 overlay2 模式下 `.Id` 是镜像 **config JSON blob 自己的 sha256**。两者是完全不同的哈希，跨机直接比必然不等。
+
+**可靠做法**——用 registry 侧的 config digest 作中立基准，不依赖任何一端的本地 docker：
+
+```bash
+# 1. 从 index 取目标平台的 manifest digest
+docker buildx imagetools inspect ghcr.io/hangox/codex-proxy@<index-digest> --raw
+
+# 2. 从该 manifest 取 config.digest（这是中立基准）
+docker buildx imagetools inspect ghcr.io/hangox/codex-proxy@<amd64-manifest-digest> --raw
+
+# 3. 生产上（overlay2）读 .Id，应与上一步的 config.digest 逐字符相同
+ssh -p 10086 root@tencent.hangox.com \
+  'docker inspect --format "{{.Id}}" ghcr.io/hangox/codex-proxy:sha-<commit>'
+```
+
+config JSON 里含 `rootfs.diff_ids`（全部层的 diff ID），**config digest 相同 = 层内容完全相同**，是内容寻址一路到底——**比 `RepoDigests` 更硬，不是降级替代**。
+
 ## 合成测试内容不得污染真实持久化状态
 
 2026-08-02 跑「多代 compact 保真度测试」时真实发生：测试需要先埋几条**编造的**项目事实（内部代号、数据库端口、值班负责人、事故编号……），用 "Please remember these facts" 起手。**Claude Code 的项目记忆子系统把这些虚构数据当成真实项目事实写进了 `~/.claude/projects/<项目>/memory/`**，还更新了 `MEMORY.md` 索引——那是所有在本仓库工作的 agent 都会读的持久化记忆。

@@ -23,7 +23,15 @@
 
 前 3 项已固化成代码守卫，不要绕过：Dockerfile 内的 build-time 断言、`.github/workflows/ci-docker.yml` 的 smoke step、`tests/unit/ci/docker-node-runtime.test.ts`。新增任何"只在新版本 Node 存在"的内建模块依赖时，同步更新 `tests/unit/ci/docker-node-runtime.test.ts` 里的 `BUILTIN_MIN_NODE`。
 
-## 发布链路的单点：只有 tag push 能产出「tag 真正指向的那个 commit」的镜像
+## 版本号 bump：真实路径是手动的，不是 `bump-electron.yml`
+
+仓库里有一条**看起来是官方发布机制、实际上已经被绕开一年多**的自动化：`.github/workflows/bump-electron.yml`——手动 dispatch 后会自动算出下一个 patch 版本号、同步 bump `package.json`/`packages/electron/package.json`/`package-lock.json`（含 `lock.version`、`lock.packages[''].version`、`lock.packages['packages/electron'].version` 三处）、commit、打 tag、push，还会自动 dispatch `release.yml` 和 `docker-publish.yml`。**它最后一次真正跑是 2026-06-30**（`gh run list --workflow=bump-electron.yml` 可查），而 `v2.0.81` 到 `v2.0.95` 这 15 次发布的 commit 全部是手写的 `chore: release X.Y.Z ...`，不是它会生成的 `chore: bump version to X.Y.Z [skip ci]`——**说明这条自动化早就名存实亡，不是这次才绕开的**。
+
+**不建议现在恢复用它**：它不知道这个仓库后来加上的任何门禁要求（五步 Docker 验证链、digest 核对、opaque compact 持久化验证），只会盲目 bump+tag+push+dispatch，重新启用等于把 `v2.0.80` 那次事故的门禁又拆掉。**记录它的存在只是为了防止以后有人以为"发版应该走它"而误用**——真实路径就是手动改 `package.json`（见下）+ 手写 CHANGELOG + 手动 tag + 手动 dispatch，`CLAUDE.md` 前面几节记的所有坑都是针对这条手动路径的。
+
+**手动 bump 版本号时，用 `npm version <x> --no-git-tag-version`，不要用编辑器手改 `package.json` 的 `version` 字段**：`v2.0.95` 发布时手改了 `package.json` 但没同步 `package-lock.json`，导致 `tests/unit/ci/package-boundary.test.ts`「keeps package.json and package-lock.json root metadata in sync」这条断言在 CI 里**真的红了**（`ci-quality.yml` 的 `package-boundary` job，commit `46c3c8e`，2026-08-03）——**这条检查本来就存在、本来就在 CI 里跑、也真的拦住了**，问题不是"没有检查"，是**打 tag 和部署时没人去看 `ci-quality.yml` 的状态，只看了 `docker-publish.yml`/`release.yml`**。已实测验证：npm 10.9.7 下 `npm version <x> --no-git-tag-version` 会**自动**把 `package-lock.json` 的 `version` 和 `packages[''].version` 一起改掉，不需要额外再跑 `npm install --package-lock-only`——用这条命令代替手改，从源头上让这类不同步不可能发生，比事后指望 CI 拦截更可靠。
+
+**发 tag 前必须确认 `ci-quality.yml` 在这次要发布的 commit 上是绿的**——和「门禁必须在部署前完成」是同一类问题（CI 的 quality gate 和部署的 Docker gate 是两条独立的检查，都要看，不能只看其中一条）：`gh run list --workflow=ci-quality.yml --json headSha,conclusion` 核对 `headSha` 等于要发的 commit、`conclusion` 是 `success`。：只有 tag push 能产出「tag 真正指向的那个 commit」的镜像
 
 这条**不是配置问题、无法用代码守卫**，只能靠发布时核对。2026-08-01 发 `v2.0.88` 时第一次暴露：
 

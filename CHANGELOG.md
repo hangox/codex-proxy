@@ -10,6 +10,13 @@
 
 ### Fixed
 
+- **压缩明细面板"查看完整日志"链接现在真的直达，不需要手动复制/粘贴/切页。** 原来点击只把用户送到日志页本身，不带任何上下文，配的文案是"把上面的请求 ID 粘贴到搜索框里查"——一个链接需要配一句操作说明本身就说明它没做完。这条链接是面板刚做时写的，当时请求 ID 不能复制、日志页也不支持从 URL 接收搜索词，只能让用户手抄；后来两块拼图都补上了，但链接没跟着更新。现在点击会把 `rid` 写进 URL 并直接切到日志页，日志页读到这个参数后自动预填、筛好搜索框。
+
+### Changed
+
+- **CI 发布链路两处韧性修复**：`docker-publish.yml` 的并发组从全局单一字符串改成按触发 ref 隔离——此前任意一次 master push（哪怕纯文档提交）都会取消掉正在跑的版本 tag 构建，而顶掉它的构建会正常产出一个不相关的 `sha-<commit>` 镜像，容易被误当成要发布的版本部署；`ci-quality.yml`（`package.json`/`package-lock.json` 版本同步等质量门禁）补上 `workflow_dispatch` 手动补跑入口，和 `docker-publish.yml`/`release.yml` 已有的安全阀保持一致——GitHub Actions 的 push 触发本身不可靠是这个项目已知的平台限制，任何发布前必须核对状态的 workflow 都需要能手动补跑。
+- 补齐两个此前从未被任何 `npm test`/CI 执行过的测试文件（`LogStore` 的分页/请求体脱敏/容量淘汰、`summarizeRequestForLog` 的 Authorization/API key 落盘前脱敏）——根 `vitest.config.ts` 的 include 范围一直不包含裸的 `src/**`，两个文件静默零覆盖，其中一个在搬移时才发现因为 schema 加了必填字段已经会实际报错。已移到正确位置并新增一条锁定测试防止同类文件再次静默失效。
+
 - **★ 族 A（`not_found`/`expired`，撞在普通续聊请求上）不再是 409——改成 400 + `x-should-retry: false`。** 根因：Anthropic SDK 和 Claude Code 自己的重试逻辑都把 409 当"可重试的锁冲突"无条件重试，而这类失败是确定性的（底层 state 行已经不存在，重试不会有不同结果）——生产实测单个会话最多 134s 静默等待、~10 次指数退避重试，每次重传全部上下文，用户在此期间完全看不到早就正确的"运行 /compact 即可恢复"提示。响应 body 本来就是 `invalid_request_error`（对应 Anthropic 规范里的 400），400 不是发明新码，是把已经写在 body 里的语义和状态码对齐；`x-should-retry: false` 是 `@anthropic-ai/sdk` 自己的机制（在状态码判断之前先读这个头），双保险覆盖只按状态码硬编码判断的边缘重试层。**只对族 A 生效**——`tampered`/`account_mismatch`/9 个致命 store 故障等其余原因语义是"服务端状态有问题"不是"你的请求有问题"，保持 409、不加这个头，避免被误读成客户端参数错误。
 - **`recompact_failed_original_account` 这个 409 聚合桶不再对所有死因吐同一句"账号失败，请 /clear"。** 之前不管上游真实原因是什么，落进这个分支只留下同一句聚合文案，事后无法从用户报告反推死因。现在按已有的失败子因（`cause`）分成三桶：容量耗尽（`state_too_large`）建议 /clear 换更小的上下文；并发/协议冲突（`stale_generation`/`preserved_tail_conflict`）说明会自动恢复、不需要 /clear；其余账号/上游失败维持原有的 /clear 建议——不是重新分类，是把已经存在但一直被忽略的字段读出来用。
 - **opaque compact 淘汰算法优先逐出结构性废代（已有 successor 的旧记录），不再无差别 LRU。** 修一个 P1 级回归风险：纯 LRU 在 COMMIT 到客户端收到响应之间的窗口可能删掉刚提交、还没被回放确认的 successor edge，破坏崩溃恢复的幂等回放保证。找不到"确定安全可删"的候选时才退化回原来的全局 LRU，行为与修复前一致。

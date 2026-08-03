@@ -441,8 +441,9 @@ export function createMessagesRoutes(
     // 结构化日志。这里只是把已有的"取 c.get 或生成"逻辑挪早，取值方式不变。
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     // ★ #88：跟 requestId 一起提到最早——这个时刻到任意一次
-    // recordOpaqueCompactDenial 之间的耗时，就是这次 409/fail-closed 决策
-    // 花了多久。409 理应是毫秒级，耗时数字本身就是排查线索。
+    // recordOpaqueCompactDenial 之间的耗时，就是这次 fail-closed 决策
+    // 花了多久（族 A 撞在非 compact 请求上是 400，其余是 409，见 #91——
+    // 不管哪个状态码，理应都是毫秒级，耗时数字本身就是排查线索）。
     const requestStartedAt = Date.now();
 
     const routeMatch = upstreamRouter?.resolveMatch(req.model);
@@ -468,6 +469,7 @@ export function createMessagesRoutes(
         // displayModel 还没算出来（在模型解析之前）——用原始 req.model，
         // 只供 Dashboard 统计使用，不影响这里的 409 决策。
         model: req.model,
+        httpStatus: 409,
         durationMs: Date.now() - requestStartedAt,
       });
       c.status(409);
@@ -527,6 +529,7 @@ export function createMessagesRoutes(
           // getOpaqueCompactStateReadiness() 的文档注释。
           detail: readiness.detail,
           model: req.model,
+          httpStatus: 409,
           durationMs: Date.now() - requestStartedAt,
         });
         c.status(409);
@@ -700,6 +703,10 @@ export function createMessagesRoutes(
           marker: errorMarker,
           detail,
           model: displayModel,
+          // ★ #91/#96：状态码跟下面 if (selfHealable) 分支保持同一个判据，
+          // 不在这里重新推导——一旦两处判据分叉，Dashboard 记录的 http_status
+          // 就会跟客户端实际收到的不一致，比完全不记录更糟。
+          httpStatus: selfHealable ? 400 : 409,
           durationMs: Date.now() - requestStartedAt,
         });
         // ★ #91：这个 else 分支不是族 A 专用出口——`treatAsNoMarker` 为
@@ -768,6 +775,7 @@ export function createMessagesRoutes(
           generation: opaqueRestore.generation,
           detail: readiness.detail,
           model: displayModel,
+          httpStatus: 409,
           durationMs: Date.now() - requestStartedAt,
         });
         c.status(409);
@@ -815,6 +823,7 @@ export function createMessagesRoutes(
             generation: opaqueRestore.generation,
             detail: faultDetail,
             model: displayModel,
+            httpStatus: 409,
             durationMs: Date.now() - requestStartedAt,
           });
           c.status(409);
@@ -869,6 +878,9 @@ export function createMessagesRoutes(
             // cause 是新增的子因，供事后区分"这次到底是哪一类失败"。
             cause,
             model: displayModel,
+            // ★ #96：这个聚合桶的状态码从不随 cause 变——#81 只拆了文案，
+            // #91 没有动这个分支，恒为 409（跟下面 c.status(409) 保持一致）。
+            httpStatus: 409,
             // ★ #88：CompactServiceError 已经带着更精确的 durationMs（从
             // respondWithOpaqueCompactMarker 入口算起，见该字段文档）——
             // 优先用它；不是 CompactServiceError（比如 OpaqueCompactStateError

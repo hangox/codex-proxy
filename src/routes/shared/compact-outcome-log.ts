@@ -27,10 +27,13 @@
  * - `upstream_failed`：真的打了上游 compact 端点，被上游拒绝（多数是
  *   `Prompt is too long`，也可能是其它 4xx/5xx）——不是我们的判断，是
  *   上游的判断。
- * - `denied`：409 / fail-closed（store 不可用、跨账号不重试等），客户端
- *   拿到的是硬错误，会话可能直接死——语义和"悄悄降级但仍然成功"完全不同，
- *   刻意不并入 `upstream_failed`，且必须在 Dashboard 上可见（team-lead
- *   原话："恰恰是最该被看见的一类"）。
+ * - `denied`：客户端拿到的是硬错误（fail-closed），会话可能直接死——语义
+ *   和"悄悄降级但仍然成功"完全不同，刻意不并入 `upstream_failed`，且必须
+ *   在 Dashboard 上可见（team-lead 原话："恰恰是最该被看见的一类"）。
+ *   ★ #96：这里**不再固定说"409"**——`#91` 之后族 A（自愈候选撞在非
+ *   compact 请求上）改成了 400，`denied` 集合里现在混着 400 和 409，
+ *   具体是哪个见每条记录自己的 `http_status` 字段（下方 `CompactOutcomeEvent`
+ *   文档）。
  *
  * `budget_exceeded` 与 `upstream_failed` 曾经只能靠对 `error.message` 做
  * 字符串匹配区分（"skipping upstream compact call" 这句文本）——8.10 起
@@ -53,6 +56,8 @@ import { getConfig } from "../../config.js";
 import { getDataDir } from "../../paths.js";
 import { rotateJsonlIfNeeded } from "../../logs/jsonl-rotation.js";
 import { auditSessionTag } from "./opaque-compact-audit.js";
+import type { RecompactFailureCause } from "./codex-compact-service.js";
+import type { OpaqueCompactStateFailure } from "./opaque-compact-state.js";
 
 export type CompactOutcome = "success" | "budget_exceeded" | "upstream_failed" | "denied";
 
@@ -71,9 +76,35 @@ export interface CompactOutcomeEvent {
   /** `upstream_failed` 的 error name / `denied` 的结构化 reason。 */
   reason?: string;
   /**
+   * ★ #96（reviewer 交叉审查发现的用户可见误导）：`denied` 的真实 HTTP
+   * 状态码。#91 之前这个字段没有存在的必要——`denied` 恒等于 409；#91 之后
+   * 族 A（`isSelfHealableOpaqueCompactStateFailure` 命中的 reason，撞在非
+   * compact 请求上）改成了 400，同一个 `outcome: "denied"` 集合里现在混着
+   * 400 和 409，前端如果继续假设"denied = 409"就会给用户错误的指引（比如
+   * 对一个 400/族 A 的记录说"用 /clear"，而正确动作是"下次 /compact 自动
+   * 恢复，不需要 /clear"）。只对 `denied` 有意义——其它三种 outcome 的
+   * 状态码是隐式已知的常量（`success`/`budget_exceeded`/`upstream_failed`
+   * 都不改变对外状态码，见各自的 catch 块），不需要重复记录。
+   * 可选字段：这次改动之前落盘的历史行没有它，读侧必须当"未知"处理，
+   * 不能默认成 409（那正是要修的那个假设）。
+   */
+  http_status?: number;
+  /**
+   * ★ #96：`denied` 的失败子因（`#83` 已经产出，这里只是把它接进这条记录）。
+   * 只有 `reason === "recompact_failed_original_account"` 这个聚合桶的记录
+   * 会有值——其它 `denied` reason 本身已经是完整分类，不需要再细分。跟
+   * `opaque-compact-denial-log.ts` 里 `OpaqueCompactDenialInput.cause` 同一个
+   * 值域、同一条纪律（结构化 enum，不是自由文本）。前端靠这个字段 + 上面的
+   * `http_status`（对 `recompact_failed_original_account` 恒为 409）在
+   * `stale_generation`/`preserved_tail_conflict`/`state_too_large` 和其余
+   * 账号失败之间给出不同的用户指引，见 `describeRecompactFailure`（后端）
+   * 与 `CompactDetailPage.tsx` 里镜像的前端版本。
+   */
+  cause?: RecompactFailureCause | OpaqueCompactStateFailure;
+  /**
    * ★ #88：这次尝试从进入 compact 相关代码路径到落盘/拒绝/降级为止的总耗时
-   * （毫秒）。**四种 outcome 都记**——不仅是 `success`：`denied`（409/
-   * fail-closed）本该是毫秒级，`budget_exceeded`（预算预判提前拦截，从未
+   * （毫秒）。**四种 outcome 都记**——不仅是 `success`：`denied`（400/409
+   * fail-closed，见上面 `http_status` 的注释）本该是毫秒级，`budget_exceeded`（预算预判提前拦截，从未
    * 打上游）同样该是毫秒级；如果哪次这类"本该快"的 outcome 耗时到了秒级，
    * 耗时数字本身就是排查线索（比如锁竞争、store 慢查询），不是只有
    * `upstream_failed`/`success` 才有耗时值得看。
@@ -103,6 +134,10 @@ export interface RecordCompactOutcomeInput {
   estimatedTokens?: number;
   budgetTokens?: number;
   reason?: string;
+  /** 见 {@link CompactOutcomeEvent.http_status}。 */
+  httpStatus?: number;
+  /** 见 {@link CompactOutcomeEvent.cause}。 */
+  cause?: RecompactFailureCause | OpaqueCompactStateFailure;
   /** 见 {@link CompactOutcomeEvent.duration_ms}。 */
   durationMs?: number;
   /** 见 {@link CompactOutcomeEvent.upstream_ms}。 */
@@ -155,6 +190,8 @@ export function recordCompactOutcome(input: RecordCompactOutcomeInput): void {
       ...(input.estimatedTokens !== undefined ? { estimated_tokens: input.estimatedTokens } : {}),
       ...(input.budgetTokens !== undefined ? { budget_tokens: input.budgetTokens } : {}),
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.httpStatus !== undefined ? { http_status: input.httpStatus } : {}),
+      ...(input.cause !== undefined ? { cause: input.cause } : {}),
       ...(input.durationMs !== undefined ? { duration_ms: input.durationMs } : {}),
       ...(input.upstreamMs !== undefined ? { upstream_ms: input.upstreamMs } : {}),
     };

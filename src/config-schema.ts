@@ -224,8 +224,19 @@ export const ConfigSchema = z.object({
    *  功能关闭时不会创建数据库、密钥环或锁文件。 */
   opaque_compact_state: z.object({
     /** state 存活时长。previous 密钥的保留窗口至少覆盖它，
-     *  这样密钥轮换不会让仍在有效期内的 marker 失效。 */
-    ttl_minutes: z.number().int().min(1).max(24 * 60).default(720),
+     *  这样密钥轮换不会让仍在有效期内的 marker 失效。
+     *
+     *  ★ 8.20（生产事故复盘）：默认值曾经是 12 小时（`24 * 60` 分钟）——
+     *  真实容量上限由 `capacity`/`max_bytes` 的 LRU 淘汰兜底（见
+     *  `opaque-compact-repository.ts` 的 `pruneWithinTransaction`，TTL 本身
+     *  从不驱动批量删除，只在读取时做认证后的过期判定），TTL 因此不需要卡
+     *  得很短。12 小时对"会话开着过夜、隔天接着干"这种正常使用场景必然
+     *  踩中：state 过期后，会话里**每一次普通对话**都会 409（`not_found`
+     *  分类只在"这次请求本身就是压缩请求"时才自愈，见 `messages.ts` 的
+     *  `treatAsNoMarker` 判定），不是压缩本身失败。默认改成 7 天
+     *  （`10080` 分钟），上限相应放宽到 30 天，给需要更长留存的部署留出
+     *  配置空间；不改变淘汰机制本身。 */
+    ttl_minutes: z.number().int().min(1).max(30 * 24 * 60).default(10080),
     /** LRU 淘汰前保留的最大条目数。 */
     capacity: z.number().int().min(1).max(10_000).default(1024),
     /** 所有 state 密文的总字节预算。 */

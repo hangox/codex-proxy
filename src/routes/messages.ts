@@ -75,24 +75,31 @@ function makeError(
  * 动作会重放同一个必然复现的失败，提示语就是一个自指陷阱。这里的原则是
  * "只建议一个真的会有不同结果的动作"：
  *
- * - `expired`：8.1 已经让 /compact 真正自愈，这里建议 /compact 是诚实的——
- *   下一次 /compact 会拿到全新 state，不会重放同一个 409。
- * - `not_found`（含内存模式的 `missing`）：没有"过期状态"可以刷新，/compact
- *   在语义上更接近凭空新建；给用户更明确的"这段历史已经不可恢复"信号，
- *   引导 `/clear` 而不是暗示还有东西能救回来。
+ * - `expired`/`not_found`（含内存模式的 `missing`）：都是族 A，
+ *   `isSelfHealableOpaqueCompactStateFailure()` 判定为可自愈——下一次
+ *   `/compact` 会走全新 root compact、拿到全新 state，不会重放同一个 409。
+ *   两者文案统一建议 `/compact`，**不建议 `/clear`**。
+ *
+ *   ★ 8.20（生产事故复盘，真实误导过用户）：这里此前对 `not_found` 单独
+ *   写了一套"没有过期状态可以刷新，语义更接近凭空新建，应该引导 /clear"
+ *   的理由——**这个理由和实际代码行为不符**。`isSelfHealableOpaqueCompactStateFailure`
+ *   从一开始就把 `not_found`/`expired` 分到同一个自愈族（族 A），下一次
+ *   `/compact` 对两者的处理完全一样，都是全新 root compact，没有本质区别。
+ *   `/clear` 建议是**错的、且代价更大**——它会清空整个会话，而用户只需要
+ *   `/compact` 就能救回来（真实事故：TTL 到期后普通对话轮次撞上
+ *   `not_found` 409，用户听从代码给的建议大可以直接 `/compact` 而不必
+ *   `/clear`；mac-mini 会话记录证实手动 `/compact` 确实一次就成功了，
+ *   没有清空历史）。
  * - 其余（store 级致命故障 + tampered/account_mismatch/comp_hash_mismatch/
  *   preserved_tail_conflict/state_too_large/stale_generation）：不承诺重试
  *   会成功（store 可能仍未恢复，或本来就是需要人工介入的异常），只给一个
- *   保底、必然可行的退出路径。
+ *   保底、必然可行的退出路径——这些是真的救不回来，`/clear` 措辞必须保留，
+ *   不能跟着族 A 一起改。
  */
 function describeOpaqueCompactUnavailable(reason: string): string {
-  if (reason === "expired") {
-    return "Opaque compact state has expired and will be automatically refreshed on your next /compact. " +
-      "Run /compact to continue this session.";
-  }
-  if (reason === "not_found" || reason === "missing") {
-    return "The compact state for this session could not be found and cannot be recovered. " +
-      "Run /clear and start a new session.";
+  if (reason === "expired" || reason === "not_found" || reason === "missing") {
+    return "Opaque compact state for this session has expired and will be automatically refreshed on your " +
+      "next /compact. Run /compact to continue this session — no need to /clear.";
   }
   return `Opaque compact state is unavailable (${reason}). If this persists, run /clear and start a new session.`;
 }

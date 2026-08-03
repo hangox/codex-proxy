@@ -514,9 +514,15 @@ export function forgetOpaqueCompactRuntimeForTesting(): void {
   current = null;
 }
 
-/** 与 config-schema 保持一致的默认值。 */
+/**
+ * 与 config-schema 保持一致的默认值。
+ *
+ * ★ 8.20：`ttlMinutes` 从 720（12h）改成 10080（7 天）——见
+ * `config-schema.ts` 里 `ttl_minutes` 字段的完整事故复盘注释，两处必须
+ * 同步改，否则 schema 声明的默认值和 runtime 实际生效的默认值不一致。
+ */
 const RUNTIME_DEFAULTS = {
-  ttlMinutes: 720,
+  ttlMinutes: 10080,
   capacity: 1024,
   maxBytes: 64 * 1024 * 1024,
 } as const;

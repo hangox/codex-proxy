@@ -588,13 +588,50 @@ describe("CompactDetailPage — 详情面板", () => {
     expect(screen.getByText(/Unstable across process restarts/)).toBeTruthy();
   });
 
-  it("跳转日志页的链接指向 #/logs（不是带查询串的深链接，那种链接会被路由忽略）", () => {
+  it("跳转日志页的链接 href 兜底指向 #/logs（不是带查询串的深链接，那种链接会被路由忽略；真正携带搜索词靠 onClick）", () => {
     mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected: makeEvent() }));
     renderPage();
 
-    const link = screen.getByText(/paste the request ID/).closest("a");
+    const link = screen.getByText(/View full logs/).closest("a");
     expect(link?.getAttribute("href")).toBe("#/logs");
+  });
+
+  // ★ team-lead 复核用户反馈后要求：原来这条链接只把用户送到日志页，不带
+  // 任何上下文，用户得自己复制 rid、切页、粘进搜索框。这条测试锁住修复后
+  // 的真实行为——点击后 location.search 带上 `search=<rid>`、location.hash
+  // 变成 #/logs，用户到日志页时搜索框已经是筛好的状态，不需要再手动做
+  // 任何一步。
+  it("点击跳转日志页链接：location.search 带上 search=<rid>，location.hash 切到 #/logs，不需要用户手动复制粘贴", () => {
+    history.replaceState(null, "", "/?outcome=budget_exceeded&rid=39587bd5#/compact-detail");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ rid: "39587bd5" });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected, events: [selected] }));
+    renderPage();
+
+    const link = screen.getByText(/View full logs/).closest("a");
+    expect(link).toBeTruthy();
+    fireEvent.click(link!);
+
+    expect(new URLSearchParams(location.search).get("search")).toBe("39587bd5");
+    expect(location.hash).toBe("#/logs");
+  });
+
+  it("跳转日志页时不残留压缩明细面板自己的筛选参数（hours/outcome/model/rid）——那些参数对日志页没有意义", () => {
+    history.replaceState(null, "", "/?hours=168&outcome=budget_exceeded&model=gpt-5.6-sol&rid=39587bd5#/compact-detail");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ rid: "39587bd5" });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected, events: [selected], outcome: "budget_exceeded", model: "gpt-5.6-sol" }));
+    renderPage();
+
+    fireEvent.click(screen.getByText(/View full logs/));
+
+    const params = new URLSearchParams(location.search);
+    expect(params.get("search")).toBe("39587bd5");
+    expect(params.has("hours")).toBe(false);
+    expect(params.has("outcome")).toBe(false);
+    expect(params.has("model")).toBe(false);
+    expect(params.has("rid")).toBe(false);
   });
 });
 

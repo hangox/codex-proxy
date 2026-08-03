@@ -91,6 +91,10 @@ function hasAncestorClass(element: Element, className: string): boolean {
 
 afterEach(() => {
   cleanup();
+  // URL 同步测试会真的调用 history.replaceState/location.hash——不清理会
+  // 让上一条测试的 search 参数泄漏到下一条，产生假阳性/假阴性（同款
+  // CompactDetailPage 测试文件里的既有做法，见那边 afterEach 的注释）。
+  history.replaceState(null, "", "/");
 });
 
 describe("LogsPage", () => {
@@ -171,5 +175,54 @@ describe("LogsPage", () => {
     const detailsPanel = screen.getByText("Details").parentElement?.parentElement;
     expect(detailsPanel?.className).toContain("w-full");
     expect(detailsPanel?.className).toContain("lg:w-[360px]");
+  });
+});
+
+// ★ 压缩明细面板的"跳转日志页"链接原来只是一个裸链接，用户得自己复制
+// 请求 ID、切页、手动粘进搜索框——这个页面此前完全不读 location.search，
+// 是那个跳转补不齐的另一半。这里锁住"进入这个 tab 时如果 URL 带着
+// ?search=xxx，搜索框直接是筛好的状态"，不需要用户再做任何一步。
+describe("LogsPage — URL 状态同步", () => {
+  it("挂载时如果 URL 带 ?search=xxx，调用 logs.setSearch 用这个值预填搜索框", () => {
+    history.replaceState(null, "", "/?search=39587bd5#/logs");
+    const setSearch = vi.fn();
+    mockLogs.useLogs.mockReturnValue(makeLogsState({ setSearch }));
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(setSearch).toHaveBeenCalledWith("39587bd5");
+  });
+
+  it("URL 没有 search 参数时不调用 setSearch（不覆盖用户已经在输的搜索词）", () => {
+    history.replaceState(null, "", "/#/logs");
+    const setSearch = vi.fn();
+    mockLogs.useLogs.mockReturnValue(makeLogsState({ setSearch }));
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(setSearch).not.toHaveBeenCalled();
+  });
+
+  it("logs.search 变化时写回 location.search 的 search 参数，不碰 location.hash", () => {
+    history.replaceState(null, "", "/#/logs");
+    mockLogs.useLogs.mockReturnValue(makeLogsState({ search: "target-rid" }));
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(new URLSearchParams(location.search).get("search")).toBe("target-rid");
+    expect(location.hash).toBe("#/logs");
+  });
+
+  it("logs.search 清空时从 URL 里删掉 search 参数，不留下空值", () => {
+    history.replaceState(null, "", "/?search=old#/logs");
+    mockLogs.useLogs.mockReturnValue(makeLogsState({ search: "" }));
+    mockGeneralSettings.useGeneralSettings.mockReturnValue(makeGeneralSettings());
+
+    renderLogsPage();
+
+    expect(new URLSearchParams(location.search).has("search")).toBe(false);
   });
 });

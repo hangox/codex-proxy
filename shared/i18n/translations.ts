@@ -383,7 +383,7 @@ export const translations = {
       "output_items / generation / marker_chars — these values exist in the console log but haven't been wired into structured storage yet. (Duration is now tracked above.)",
     compactDetailMissingFailure:
       "The original (redacted) error text only made it into error-log.jsonl, not this record.",
-    compactDetailJumpToLogs: "Open the Logs page — paste the request ID above into its search box →",
+    compactDetailJumpToLogs: "View full logs for this request →",
     compactRetentionHint:
       "Only recent records are kept (bounded by local storage limits) — older records are automatically rotated out. Not a complete audit log.",
     granularityFiveMin: "5 min",
@@ -897,7 +897,7 @@ export const translations = {
     compactDetailConvHashHint: "跨进程重启时同一会话可能显示为不同的 conv_hash——这是刻意的隐私设计，不是 bug。",
     compactDetailMissingSuccess: "output_items / generation / marker_chars —— 这些值日志里有，但还没进结构化存储，需要新增采集（耗时已经在上面采集了）",
     compactDetailMissingFailure: "脱敏后的错误原文只进了 error-log.jsonl，没有进这条记录",
-    compactDetailJumpToLogs: "去日志页——把上面的请求 ID 粘贴到搜索框里查 →",
+    compactDetailJumpToLogs: "查看这条请求的完整日志 →",
     compactRetentionHint: "只保留最近的压缩记录（受本地存储空间限制），更早的记录已被自动清理，不是完整审计日志",
     granularityFiveMin: "5 分钟",
     granularityHourly: "按小时",

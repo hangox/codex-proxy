@@ -19,6 +19,7 @@
 - **禁止复用失败版本的构建产物**当候选，重新在干净上下文构建。
 - **部署失败立即回滚**到上一个已知健康的 digest，保留失败镜像、key、state 作为取证，不要先清理再排查。
 - 发布前确认唯一真正的 compact 开关（`claude_code_opaque_compact_experimental`）产品默认仍是 `false`；`claude_code_compact_bridge` 是已废弃的死配置键（classic bridge 已移除，不接任何行为，设成 `true` 只会打一条一次性弃用警告），不是需要单独核对的第二个开关。
+- **门禁必须在部署之前完成，且不能靠默认。** 门禁方（qa）和部署方（developer）分离时，**派发部署任务时必须显式写明"门禁全绿才放行部署"**——不能假设对方会自己去确认门禁状态，也不能假设"没人喊停就是可以部署"。2026-08-03 发 `v2.0.95` 时真实漏过一次：任务派发时没把部署设成依赖门禁完成，部署在门禁跑完之前就执行了；发现后 qa 对已上线的生产补跑了门禁。**这是流程缺口，不是代码能锁住的东西**——发部署任务的人要对这条负责。
 
 前 3 项已固化成代码守卫，不要绕过：Dockerfile 内的 build-time 断言、`.github/workflows/ci-docker.yml` 的 smoke step、`tests/unit/ci/docker-node-runtime.test.ts`。新增任何"只在新版本 Node 存在"的内建模块依赖时，同步更新 `tests/unit/ci/docker-node-runtime.test.ts` 里的 `BUILTIN_MIN_NODE`。
 
@@ -39,7 +40,7 @@
 
 **硬性要求：部署前必须核对构建 run 的 `head_sha` 等于 tag 指向的 commit**，不能只看 run 是否 success、镜像是否存在。
 
-## `docker-publish.yml` 的三个历史坑
+## `docker-publish.yml` 的四个历史坑
 
 **坑 1 —— 版本 tag 曾经无条件覆盖**：`type=raw,value=vX.Y.Z` 这条 tag 规则此前没有 `enable=` 守卫，任何一次 `push master`（不只是发版）都会把当前最高版本号 tag 重新指向这次构建产物，真实事故过（`v2.0.82` 的 digest 被静默改指）。已修（`enable=${{ startsWith(github.ref, 'refs/tags/v') }}`），有 `tests/unit/ci/docker-publish-tag-guard.test.ts` 锁住。
 
@@ -65,6 +66,14 @@ gh workflow run release.yml -f tag=vX.Y.Z
 
 **不要删 tag 重推**（`v2.0.85` 那次的教训是 tag 拓扑一旦搞乱，收拾起来比原问题麻烦得多）。
 
+**坑 4 —— `concurrency.group` 曾经是全局单一字符串，不同 ref 会互相打断**：`group: docker-publish`（不带任何 `github.ref` 插值）在 `cancel-in-progress: true` 下意味着**任意 master push（哪怕纯文档提交）都会取消掉正在跑的 tag 构建，反过来也一样**——group 不区分触发它的 ref，GitHub 眼里它们是"同一组"。2026-08-03 发 `v2.0.95` 时真实撞到：`gh workflow run docker-publish.yml --ref v2.0.95` 手动 dispatch 后，一次纯 CLAUDE.md 文档订正的 master push 触发了另一个 run，把正在跑的 v2.0.95 tag 构建 cancel 掉了——两次触发的 ref 完全不同（`refs/tags/v2.0.95` vs `refs/heads/master`），本不该互相排斥。
+
+这条容易被误判为"只是要重跑一次"，但**真正的危害是没人注意到时版本 tag 的镜像压根没产出**：cancel 掉的是 tag 构建，顶掉它的那个 master-push run 会正常跑完，产出一个 `sha-<commit>` 镜像——如果没人去核对 tag 构建的最终状态，很容易把这个不相关的 `sha-<commit>` 镜像误当成要发布的版本部署上去，比 `v2.0.88` 那次（tag 被错误地重新指向了另一个 commit，但好歹还指向了*一个*镜像）更隐蔽，因为这次版本 tag 对应的镜像**完全不存在**。
+
+已修（`group: docker-publish` 换成 `group: docker-publish-${{ github.ref }}`——不同 ref 各自隔离，同一 ref 重复触发仍然互相 cancel，这是期望行为），有 `tests/unit/ci/docker-publish-concurrency.test.ts` 锁住。
+
+**这条和坑 3 是两个独立问题，容易混为一谈**：坑 3 说的是"tag push 事件本身触发不触发 workflow"，不可靠、时有时无、无法用代码守卫防；坑 4 说的是"一旦有两个 run 同时在跑（不管各自怎么触发的），它们会不会互相顶掉"，这条**能**用代码守卫防，已经修了。上面坑 3 那句"`v2.0.95` 时它又自己触发了（两条 push 触发的 run 被 concurrency 组自动取消）"记的就是这次坑 4 事故的前半段——tag push 确实触发了，只是触发之后被一个不相关的 master push 顶掉了。
+
 ## 部署顺序：镜像和 config 谁先谁后，搞反会停机
 
 生产 `local.yaml` 里那些键**是显式写死的**，不吃代码里的默认值——所以「改了默认值就发版」这件事本身对生产零效果，必须同时改 yaml。但**两者的先后顺序不能随便**：
@@ -86,9 +95,14 @@ gh workflow run release.yml -f tag=vX.Y.Z
 
 ## 镜像内容核对：`.Id` 不能跨机直接比
 
-`RepoDigests` 在 `docker load` 进来的镜像上是空的（那个字段只记录"从哪个 registry 引用拉的"），tencent1 因为 ghcr.io 被墙必须走 skopeo→tar→`docker load`，所以**按 tag 部署时那条「核对 `RepoDigests`」的老办法在这台机器上失效**。
+`RepoDigests` 在 `docker load` 进来的镜像上是空的（那个字段只记录"从哪个 registry 引用拉的"）——**只在走 skopeo→tar→`docker load` 这条路径时才会遇到**，走 `docker pull` 拉的镜像 `RepoDigests` 是正常有值的。所以「按 tag 部署时核对 `RepoDigests`」这条老办法**是否失效取决于拉镜像走的哪条路径**，不是在这台机器上必然失效。
 
-替代方案是核对 **config digest**，但 `2026-08-03` 发 `v2.0.94` 时连续踩了三个**同一家族**的坑——都是「表面数字对不上，内容其实一致」：
+**拉 ghcr.io 镜像走哪条路径，判据是"当前能不能连上"，不是写死哪一条**：tencent1 的 ghcr.io 访问此前记录为必须代理，但**代理链路会变**——2026-08-03 发 `v2.0.95` 时实测 `docker pull` 直接走通了（docker daemon 级配置了 `HTTP_PROXY=http://127.0.0.1:7890`，这次这条链路是通的），没有走 skopeo。**这不代表 skopeo 那条路径过时了**，只代表当时环境是通的——两条路径都要留着，各自标清楚触发条件：
+
+1. **优先尝试 `docker pull`（或 `docker pull --platform linux/amd64 <tag>`）**：如果直接成功，`RepoDigests` 会正常有值，用它核对即可，不需要走下面的 config digest 中立基准流程。
+2. **若 `docker pull` 失败**（历史记录的失败模式是 TLS 握手失败/EOF，daemon 级代理当时不通）：回退到 skopeo 经 ai_xray 拉 tar → `docker load` → Portainer `pullImage=false`。这条路径下 `RepoDigests` 是空的，必须走下面的 config digest 中立基准流程核对。
+
+走 skopeo 路径时的替代方案是核对 **config digest**，但 `2026-08-03` 发 `v2.0.94` 时连续踩了三个**同一家族**的坑——都是「表面数字对不上，内容其实一致」：
 
 1. **arm64 vs amd64**：本机 Mac 直接 `docker pull` 拿到的是 arm64 变体，跟生产 amd64 天然不同。
 2. **index digest ≠ 平台 manifest digest**：CI 产出和到处传的 `sha256:cca5d028…` 是**多架构 index** 的 digest，不是某个平台的。要比对必须先 `docker buildx imagetools inspect <index> --raw` 取出目标平台的 manifest digest。

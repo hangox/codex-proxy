@@ -792,33 +792,53 @@ function extractCompactContentForTokenizing(
  *
  * 返回 `null` 时（分词器加载失败——理论上不该发生，防御性处理）调用方
  * 必须回退到粗筛估算，不能让整条 compact 链路因为分词器不可用而报错。
+ *
+ * ★ #97：`extrapolated`/`processedFraction` 原样透传自
+ * `tokenizeCompactContent`——安全边际/每 item 开销只影响 `tokens` 这个
+ * 数值本身，不影响"这个数是不是外推出来的"这个判断，两件事独立。
  */
 async function estimateCompactInputTokensPrecise(
   compactRequest: CodexCompactRequest,
-): Promise<number | null> {
+): Promise<{ tokens: number; extrapolated: boolean; processedFraction?: number } | null> {
   const { contentText, itemCount } = extractCompactContentForTokenizing(compactRequest);
-  const contentTokens = await tokenizeCompactContent(contentText);
-  if (contentTokens === null) return null;
-  const raw = contentTokens + itemCount * PER_ITEM_TOKEN_OVERHEAD;
-  return Math.ceil(raw * TOKENIZER_ESTIMATE_SAFETY_MARGIN);
+  const contentResult = await tokenizeCompactContent(contentText);
+  if (contentResult === null) return null;
+  const raw = contentResult.tokens + itemCount * PER_ITEM_TOKEN_OVERHEAD;
+  return {
+    tokens: Math.ceil(raw * TOKENIZER_ESTIMATE_SAFETY_MARGIN),
+    extrapolated: contentResult.extrapolated,
+    processedFraction: contentResult.processedFraction,
+  };
 }
 
 /**
  * 给一次预算判定选一种估算方法：含图片时强制粗筛（见
  * `compactRequestHasImageContent` 文档）；否则尝试精确估算，精确估算不可用
- * （分词器加载失败）时回退粗筛。返回的 `method` 供调用方打日志/落盘诊断用，
- * 不参与判定本身。
+ * （分词器加载失败）时回退粗筛。返回的 `source`/`processedFraction` 供
+ * 调用方打日志/落盘诊断用，不参与判定本身。
+ *
+ * ★ #97（team-lead 派发，reviewer 交叉审查 #96 时发现的观测缺口）：`source`
+ * 从两值（`"cheap" | "tokenizer"`）扩成三值——半截版本（只加
+ * `"cheap"`/`"tokenizer"` 两值、不区分外推）会把"精确算完的 417K"和
+ * "熔断后从 20% 外推的 417K"标成同一个 `"tokenizer"`，两者可信度天差
+ * 地别，共用一个标签比完全不记录更糟（"tokenizer"会被误读成"这个数
+ * 很准"）——这正是这整轮改动一直在治的"不同根因共用同一个标签"，不能
+ * 在这里自己重新制造一次。
  */
 async function estimateTokensForBudgetCheck(
   compactRequest: CodexCompactRequest,
   toolsBytes: number,
-): Promise<{ tokens: number; method: "cheap" | "tokenizer" }> {
+): Promise<{ tokens: number; source: "cheap" | "precise" | "precise_extrapolated"; processedFraction?: number }> {
   if (!compactRequestHasImageContent(compactRequest)) {
     const precise = await estimateCompactInputTokensPrecise(compactRequest);
-    if (precise !== null) return { tokens: precise, method: "tokenizer" };
+    if (precise !== null) {
+      return precise.extrapolated
+        ? { tokens: precise.tokens, source: "precise_extrapolated", processedFraction: precise.processedFraction }
+        : { tokens: precise.tokens, source: "precise" };
+    }
   }
   const { totalBytes } = summarizeCompactInputBytes(compactRequest.input);
-  return { tokens: estimateCompactInputTokens(totalBytes + toolsBytes), method: "cheap" };
+  return { tokens: estimateCompactInputTokens(totalBytes + toolsBytes), source: "cheap" };
 }
 
 /**
@@ -866,13 +886,28 @@ export interface CompactBudgetPlan {
   withinBudget: boolean;
   trimmedCount: number;
   /**
-   * ★ 8.11：这次 `estimatedTokens` 是用哪种方法算出来的——`"cheap"`（字节
-   * 比例粗筛，粗筛本身就在预算内，没必要为了确认再付分词器加载成本）或
-   * `"tokenizer"`（粗筛怀疑超限后触发的精确估算）。纯诊断字段，不参与
-   * `withinBudget` 判定本身，供日志/Dashboard 排查"这次降级是不是分词器
-   * 也判超限，还是只有粗筛这么认为"。
+   * ★ 8.11 起有这个字段，★ #97（team-lead 派发）扩成三值：这次
+   * `estimatedTokens` 是用哪种方法算出来的——`"cheap"`（字节比例粗筛，粗筛
+   * 本身就在预算内，没必要为了确认再付分词器加载成本）、`"precise"`（粗筛
+   * 怀疑超限后触发的精确估算，完整跑完没有熔断）、`"precise_extrapolated"`
+   * （精确估算触发了 2000ms 熔断，是按已处理比例外推出来的，可信度明显
+   * 低于 `"precise"`——半截版本把这个值也标成 `"precise"` 会比完全不记录
+   * 更糟，见 `estimateTokensForBudgetCheck` 文档）。纯诊断字段，不参与
+   * `withinBudget` 判定本身，供日志/Dashboard 排查"这次降级的估算值到底
+   * 有多可信"。
    */
-  estimateMethod: "cheap" | "tokenizer";
+  estimateSource: "cheap" | "precise" | "precise_extrapolated";
+  /** 仅 `estimateSource === "precise_extrapolated"` 时有值，见同名字段在 `tokenizeCompactContent` 的文档。 */
+  processedFraction?: number;
+  /**
+   * ★ #97：`planCompactRequestForBudget` 一进来就会算一次粗筛值（下面的
+   * `cheapEstimate`）用于短路判断——不管最终 `estimateSource` 是不是
+   * `"cheap"`，这个值都已经算出来了，白白丢掉可惜。带上它，每一条
+   * `budget_exceeded` 记录就变成一个"粗筛 vs 精确"的真实标定样本，以后
+   * 校准 `COMPACT_BYTES_PER_TOKEN_ESTIMATE` 这类比例常数可以直接从生产
+   * 数据读，不用再像 8.9 那次靠 qa 专门跑真实会话切片人工标定。
+   */
+  cheapEstimateTokens: number;
 }
 
 /**
@@ -921,7 +956,8 @@ export async function planCompactRequestForBudget(
       budgetTokens,
       withinBudget: true,
       trimmedCount: 0,
-      estimateMethod: "cheap",
+      estimateSource: "cheap",
+      cheapEstimateTokens: cheapEstimate,
     };
   }
 
@@ -933,7 +969,9 @@ export async function planCompactRequestForBudget(
       budgetTokens,
       withinBudget: true,
       trimmedCount: 0,
-      estimateMethod: refined.method,
+      estimateSource: refined.source,
+      processedFraction: refined.processedFraction,
+      cheapEstimateTokens: cheapEstimate,
     };
   }
 
@@ -949,7 +987,17 @@ export async function planCompactRequestForBudget(
     budgetTokens,
     withinBudget: final.tokens <= budgetTokens,
     trimmedCount,
-    estimateMethod: final.method,
+    estimateSource: final.source,
+    processedFraction: final.processedFraction,
+    // ★ #97：这个字段永远是"这次判断一开始、对原始（裁剪前）内容算出的
+    // 粗筛值"，不重新对 `trimmedRequest` 算一次。★ 标定时的注意事项：
+    // 走到这条分支说明发生过裁剪，`estimatedTokens`（= `final.tokens`）
+    // 是对**裁剪后**内容算的精确值，跟这里的 `cheapEstimateTokens`（对
+    // **裁剪前**内容算的）内容范围不完全一致，不是严格意义上的同一份
+    // 内容的两种估算——拿这一对做比例标定前，先看 `trimmedCount` 是否为
+    // 0；`trimmedCount === 0` 时（多数情况，`trimCompactInputForBudget`
+    // 文档记录过"中位数只省 3.2%"）两者内容范围一致，是干净的标定样本。
+    cheapEstimateTokens: cheapEstimate,
   };
 }
 
@@ -992,6 +1040,24 @@ export interface CompactServiceErrorClassification {
   estimatedTokens?: number;
   /** 仅 `skippedUpstream:true` 时有意义：当时对应型号的预算 token 数。 */
   budgetTokens?: number;
+  /**
+   * ★ #97（team-lead 派发，reviewer 交叉审查 #96 时发现的观测缺口）：
+   * `estimatedTokens` 是用哪种方法算出来的，见 `CompactBudgetPlan.estimateSource`
+   * 同名字段的完整文档——这里只是把 `planCompactRequestForBudget` 已经
+   * 算出的值原样透传到 `budget_exceeded` 这条 outcome 记录上。仅
+   * `skippedUpstream:true` 时有意义。
+   */
+  estimateSource?: "cheap" | "precise" | "precise_extrapolated";
+  /** 仅 `estimateSource === "precise_extrapolated"` 时有值，见同名字段在 `tokenizeCompactContent` 的文档。 */
+  processedFraction?: number;
+  /**
+   * ★ #97：`planCompactRequestForBudget` 判断一开始就会算的粗筛值，跟
+   * `estimatedTokens`（可能是精确值）并存——每一条 `budget_exceeded`
+   * 记录因此变成一个"粗筛 vs 精确"的真实标定样本，见
+   * `CompactBudgetPlan.cheapEstimateTokens` 的完整文档（含"裁剪发生时两者
+   * 内容范围不完全一致"的注意事项）。仅 `skippedUpstream:true` 时有意义。
+   */
+  cheapEstimateTokens?: number;
   /**
    * ★ #83：`recompact_failed_original_account` 聚合桶的失败子因。
    *
@@ -1120,6 +1186,12 @@ export class CompactServiceError extends Error {
   readonly estimatedTokens?: number;
   readonly budgetTokens?: number;
   readonly cause?: RecompactFailureCause;
+  /** ★ #97：见 CompactServiceErrorClassification 同名字段文档。 */
+  readonly estimateSource?: "cheap" | "precise" | "precise_extrapolated";
+  /** ★ #97：见 CompactServiceErrorClassification 同名字段文档。 */
+  readonly processedFraction?: number;
+  /** ★ #97：见 CompactServiceErrorClassification 同名字段文档。 */
+  readonly cheapEstimateTokens?: number;
   readonly durationMs?: number;
   readonly upstreamMs?: number;
 
@@ -1143,6 +1215,9 @@ export class CompactServiceError extends Error {
     this.estimatedTokens = classification.estimatedTokens;
     this.budgetTokens = classification.budgetTokens;
     this.cause = classification.cause;
+    this.estimateSource = classification.estimateSource;
+    this.processedFraction = classification.processedFraction;
+    this.cheapEstimateTokens = classification.cheapEstimateTokens;
     this.durationMs = classification.durationMs;
     this.upstreamMs = classification.upstreamMs;
   }

@@ -30,8 +30,11 @@ import type { CodexCompactRequest, CodexInputItem } from "@src/proxy/codex-types
 // 简单重复字符串（"a".repeat(N)）构造，不用担心真实分词器对高度重复内容的
 // 压缩率失真（真实 BPE 对 "aaaa...a" 这种内容的压缩率极高，用真分词器测会让
 // 这些特意构造的"应该超预算"的测试用例得出错误结论）。
-const mockTokenizeCompactContent = vi.fn(async (text: string): Promise<number | null> => {
-  return Math.ceil(text.length / 4);
+// ★ #97：返回值改成结构化 {tokens, extrapolated}——这个文件不测外推行为
+// 本身（那是 compact-tokenizer.test.ts 的职责），mock 恒为
+// extrapolated:false，模拟"正常完整分词，没有触发熔断"这个最常见的情况。
+const mockTokenizeCompactContent = vi.fn(async (text: string): Promise<{ tokens: number; extrapolated: boolean } | null> => {
+  return { tokens: Math.ceil(text.length / 4), extrapolated: false };
 });
 vi.mock("@src/routes/shared/compact-tokenizer.js", () => ({
   tokenizeCompactContent: (text: string) => mockTokenizeCompactContent(text),
@@ -209,13 +212,13 @@ describe("planCompactRequestForBudget", () => {
     expect(plan.trimmedCount).toBe(0);
     expect(plan.budgetTokens).toBe(260_000);
     expect(plan.compactRequest).toBe(request); // 预算内不重新构造对象
-    expect(plan.estimateMethod).toBe("cheap");
+    expect(plan.estimateSource).toBe("cheap");
     // ★ 懒加载的核心断言：粗筛已经在预算内，不该为了"确认"再付分词器
     // 加载/调用的成本。
     expect(mockTokenizeCompactContent).not.toHaveBeenCalled();
   });
 
-  it("超预算但裁剪能救回来：trimmedCount>0 且最终 withinBudget:true，走了精确估算（estimateMethod=tokenizer）", async () => {
+  it("超预算但裁剪能救回来：trimmedCount>0 且最终 withinBudget:true，走了精确估算（estimateSource=precise）", async () => {
     // mock 比例 4 chars/token：预算 260000 token → 阈值约 1,040,000 字符。
     // 用 1,200,000 字节确保裁剪前 cheap 和精确估算都判超限，裁到默认
     // 10000 字节（测试环境没有加载模型目录，getModelInfo 返回 undefined，
@@ -228,7 +231,7 @@ describe("planCompactRequestForBudget", () => {
     expect(plan.trimmedCount).toBe(1);
     expect(plan.withinBudget).toBe(true);
     expect(plan.estimatedTokens).toBeLessThan(plan.budgetTokens);
-    expect(plan.estimateMethod).toBe("tokenizer");
+    expect(plan.estimateSource).toBe("precise");
     // 粗筛怀疑超限后才应该触发分词器——确实被调用了。
     expect(mockTokenizeCompactContent).toHaveBeenCalled();
     // 裁剪确实发生了：返回的是新对象，且 input 内容比原始的短得多。
@@ -251,7 +254,7 @@ describe("planCompactRequestForBudget", () => {
     expect(plan.trimmedCount).toBe(0); // 裁剪确实"裁不动"这种形状
     expect(plan.withinBudget).toBe(false);
     expect(plan.estimatedTokens).toBeGreaterThan(plan.budgetTokens);
-    expect(plan.estimateMethod).toBe("tokenizer");
+    expect(plan.estimateSource).toBe("precise");
   });
 
   it("tools 计入预算估算，不能只统计 input——否则会系统性低估真实发送体积", async () => {
@@ -281,7 +284,46 @@ describe("planCompactRequestForBudget", () => {
     });
     const plan = await planCompactRequestForBudget(request);
 
-    expect(plan.estimateMethod).toBe("cheap");
+    expect(plan.estimateSource).toBe("cheap");
     expect(mockTokenizeCompactContent).not.toHaveBeenCalled();
+  });
+
+  it("cheapEstimateTokens 在所有分支都有值（每条 budget_exceeded 记录都能变成粗筛 vs 精确的标定样本）", async () => {
+    // ★ #97（team-lead 派发，用户原话"这个为什么是降级？"排查时发现的
+    // 观测缺口）：不管最终 estimateSource 是不是 "cheap"，
+    // planCompactRequestForBudget 一进来就会算的那个粗筛值都应该被带出来。
+    const withinCheapBudget = await planCompactRequestForBudget(
+      buildRequest({ input: [{ role: "user", content: "hello" }] }),
+    );
+    expect(withinCheapBudget.estimateSource).toBe("cheap");
+    expect(withinCheapBudget.cheapEstimateTokens).toBe(withinCheapBudget.estimatedTokens);
+
+    const wentToPrecise = await planCompactRequestForBudget(
+      buildRequest({ input: [{ role: "user", content: "x".repeat(1_200_000) }] }),
+    );
+    expect(wentToPrecise.estimateSource).toBe("precise");
+    // 精确值和粗筛值应该是两个不同的数字（不是巧合相等），且都是正数——
+    // 这一对才是真正有标定价值的"粗筛 vs 精确"样本。
+    expect(wentToPrecise.cheapEstimateTokens).toBeGreaterThan(0);
+    expect(wentToPrecise.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  it("estimateSource=precise_extrapolated 时 processedFraction 原样透传（熔断外推场景，可信度判断依据）", async () => {
+    // mock tokenizeCompactContent 这次返回 extrapolated:true，模拟精确
+    // 估算内部真的触发了 2000ms 熔断、按已处理比例外推的情况——这个文件
+    // 平时的默认 mock 恒为 extrapolated:false（见文件头注释），这条测试
+    // 专门覆盖另一条分支。★ tokens 故意给一个远小于预算的值（50000，不是
+    // 更"真实"的数字）：只是为了让第一次（也是唯一一次）精确估算就落在
+    // 预算内，不会触发裁剪→第二次估算这条路径——第二次调用会命中默认 mock
+    // （extrapolated:false），把这条测试真正要锁的信号覆盖掉。
+    mockTokenizeCompactContent.mockResolvedValueOnce({ tokens: 50_000, extrapolated: true, processedFraction: 0.42 });
+    const request = buildRequest({
+      input: [functionCallOutput("c1", "a".repeat(1_200_000))],
+    });
+    const plan = await planCompactRequestForBudget(request);
+
+    expect(plan.trimmedCount).toBe(0); // 确认真的只走了一次精确估算，没有触发裁剪
+    expect(plan.estimateSource).toBe("precise_extrapolated");
+    expect(plan.processedFraction).toBe(0.42);
   });
 });

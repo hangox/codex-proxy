@@ -338,6 +338,18 @@ export const translations = {
     compactDetailEstTokensFull: "Estimated tokens",
     compactDetailBudgetTokensFull: "Budget tokens",
     compactDetailExceedPct: "Over budget by",
+    // ★ #97（user's own words: "why is this a downgrade?" — the observability
+    // gap team-lead found while investigating that specific report):
+    // whether estimated_tokens is trustworthy. A half-measure that only adds
+    // cheap/precise (merging precise and precise_extrapolated into one label)
+    // would be worse than not recording it at all — it would make an
+    // extrapolated-after-circuit-break value look as trustworthy as a clean
+    // full tokenize.
+    compactDetailEstimateSource: "Estimate source",
+    compactDetailEstimateSourceCheap: "Byte-ratio (cheap)",
+    compactDetailEstimateSourcePrecise: "Tokenizer (precise)",
+    compactDetailEstimateSourcePreciseExtrapolated: "Tokenizer (extrapolated, {pct} processed)",
+    compactDetailCheapEstimateTokens: "Byte-ratio estimate",
     compactDetailReplayed: "Idempotent replay",
     compactDetailReplayedYes: "Yes (reused an existing edge)",
     compactDetailReplayedNo: "No",
@@ -367,8 +379,6 @@ export const translations = {
       "Unstable across process restarts — the same session may show a different conv_hash. This is a deliberate privacy design, not a bug.",
     compactDetailMissingSuccess:
       "output_items / generation / marker_chars — these values exist in the console log but haven't been wired into structured storage yet. (Duration is now tracked above.)",
-    compactDetailMissingBudgetExceeded:
-      "Estimation method (tokenizer vs. cheap) is only in the console log right now — not yet wired into this record.",
     compactDetailMissingFailure:
       "The original (redacted) error text only made it into error-log.jsonl, not this record.",
     compactDetailJumpToLogs: "Open the Logs page — paste the request ID above into its search box →",
@@ -857,6 +867,15 @@ export const translations = {
     compactDetailEstTokensFull: "估算 token",
     compactDetailBudgetTokensFull: "预算 token",
     compactDetailExceedPct: "超出比例",
+    // ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体记录
+    // 时发现的观测缺口）：这次 estimated_tokens 可不可信。半截版本（只加
+    // cheap/precise 两值、把精确算完的和熔断后外推的合并成同一个标签）
+    // 会比完全不记录更糟——会让外推值看起来和干净的完整分词一样可信。
+    compactDetailEstimateSource: "估算方式",
+    compactDetailEstimateSourceCheap: "字节比例（粗筛）",
+    compactDetailEstimateSourcePrecise: "分词器（精确）",
+    compactDetailEstimateSourcePreciseExtrapolated: "分词器（外推，已处理 {pct}）",
+    compactDetailCheapEstimateTokens: "字节比例估算值",
     compactDetailReplayed: "幂等重放",
     compactDetailReplayedYes: "是（命中已有 edge）",
     compactDetailReplayedNo: "否",
@@ -873,7 +892,6 @@ export const translations = {
     compactDetailConvHash: "conv_hash",
     compactDetailConvHashHint: "跨进程重启时同一会话可能显示为不同的 conv_hash——这是刻意的隐私设计，不是 bug。",
     compactDetailMissingSuccess: "output_items / generation / marker_chars —— 这些值日志里有，但还没进结构化存储，需要新增采集（耗时已经在上面采集了）",
-    compactDetailMissingBudgetExceeded: "估算方式（tokenizer/cheap）目前只在 console 日志里，还没接进这条记录",
     compactDetailMissingFailure: "脱敏后的错误原文只进了 error-log.jsonl，没有进这条记录",
     compactDetailJumpToLogs: "去日志页——把上面的请求 ID 粘贴到搜索框里查 →",
     compactRetentionHint: "只保留最近的压缩记录（受本地存储空间限制），更早的记录已被自动清理，不是完整审计日志",

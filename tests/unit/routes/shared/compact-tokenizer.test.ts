@@ -25,41 +25,64 @@ beforeEach(() => {
   _resetCompactTokenizerCacheForTest();
 });
 
+/**
+ * ★ #97：`tokenizeCompactContent` 的返回值从裸 `number | null` 改成
+ * `{tokens, extrapolated, processedFraction?} | null`（team-lead 派发，
+ * reviewer 交叉审查 #96 时发现"外推信息从源头就没有承载通道"这个观测
+ * 缺口）。这个文件里绝大多数测试只关心"tokenize 得对不对"，不关心外推
+ * 元数据——这个小 helper 把两件事分开，避免在几十处断言上重复写
+ * `.tokens`，同时保留下面"外推准确度"那组测试对完整结果对象的直接断言
+ * （那组测试的重点恰恰就是 `extrapolated`/`processedFraction` 这两个
+ * 字段本身）。
+ */
+async function tokenCount(text: string): Promise<number | null> {
+  const result = await tokenizeCompactContent(text);
+  return result === null ? null : result.tokens;
+}
+
 describe("tokenizeCompactContent（真实 o200k_base，不 mock）", () => {
-  it("空字符串 → 0 token", async () => {
-    expect(await tokenizeCompactContent("")).toBe(0);
+  it("空字符串 → 0 token，非熔断", async () => {
+    const result = await tokenizeCompactContent("");
+    expect(result).toEqual({ tokens: 0, extrapolated: false });
   });
 
   it("英文段落", async () => {
     const text = "The quick brown fox jumps over the lazy dog while the sun sets behind the mountains.";
-    expect(await tokenizeCompactContent(text)).toBe(17);
+    expect(await tokenCount(text)).toBe(17);
   });
 
   it("中文段落", async () => {
     const text = "今天天气很好，我们去公园散步，看到了很多美丽的花朵和树木。";
-    expect(await tokenizeCompactContent(text)).toBe(23);
+    expect(await tokenCount(text)).toBe(23);
   });
 
   it("纯代码", async () => {
     const text = "function add(a, b) {\n  return a + b;\n}\nconst result = add(1, 2);\nconsole.log(result);";
-    expect(await tokenizeCompactContent(text)).toBe(28);
+    expect(await tokenCount(text)).toBe(28);
   });
 
   it("emoji", async () => {
     const text = "Great job! 🎉🚀 Let's ship it 🔥💯";
-    expect(await tokenizeCompactContent(text)).toBe(14);
+    expect(await tokenCount(text)).toBe(14);
   });
 
   it("tool_result 里典型的 JSON 转义字符串", async () => {
     const text = JSON.stringify({
       anthropic_tool_result: { type: "tool_result", tool_use_id: "abc123", content: "file contents here" },
     });
-    expect(await tokenizeCompactContent(text)).toBe(24);
+    expect(await tokenCount(text)).toBe(24);
   });
 
   it("中英文+代码+emoji 混排", async () => {
     const text = "混合内容 mixed content 123 🎉 function() { return true; }";
-    expect(await tokenizeCompactContent(text)).toBe(16);
+    expect(await tokenCount(text)).toBe(16);
+  });
+
+  it("正常（非熔断）路径的 extrapolated 恒为 false", async () => {
+    const text = "The quick brown fox jumps over the lazy dog while the sun sets behind the mountains.";
+    const result = await tokenizeCompactContent(text);
+    expect(result?.extrapolated).toBe(false);
+    expect(result?.processedFraction).toBeUndefined();
   });
 
   it("同样的输入永远得到同样的输出（确定性——这是这一层测试不需要真实 usage 的前提）", async () => {
@@ -67,8 +90,8 @@ describe("tokenizeCompactContent（真实 o200k_base，不 mock）", () => {
     const a = await tokenizeCompactContent(text);
     const b = await tokenizeCompactContent(text);
     const c = await tokenizeCompactContent(text);
-    expect(a).toBe(b);
-    expect(b).toBe(c);
+    expect(a).toEqual(b);
+    expect(b).toEqual(c);
   });
 
   // ★★ 8.13：8.11 最初的防护是"枚举周期 1~4 的重复模式"，reviewer 复审用
@@ -205,20 +228,30 @@ describe("tokenizeCompactContent（真实 o200k_base，不 mock）", () => {
       // 够高时必须外推出一个数字，不能像 8.13 那样把已经算出来的大部分
       // 结果整个丢弃。
       expect(result).not.toBeNull();
-      expect(result as number).toBeGreaterThan(0);
+      expect(result!.tokens).toBeGreaterThan(0);
       // 外推值应该落在"用同样均匀重复内容按比例放大"的合理区间内——不要求
       // 精确匹配（均匀重复内容本身的外推误差趋近于 0，但不同机器/负载下
       // 触发熔断的具体处理比例会浮动，用宽松区间避免此断言本身变成新的
       // flaky 来源）：token 数应该显著小于按最小字节/token 比例（业内已知
       // 下限约 1 字节/token）估出的上界，且显著大于 0。
-      expect(result as number).toBeLessThan(bigText.length);
+      expect(result!.tokens).toBeLessThan(bigText.length);
+      // ★ #97：这条测试的场景专门构造成"触发熔断、且处理比例够高值得外推"
+      // ——决定性断言是 extrapolated 必须为 true（不是普通完整分词），
+      // processedFraction 必须是一个落在 [0.2, 1) 区间的数字（20% 是外推
+      // 下限，1 是"根本没触发熔断"的边界，都不该出现在这里）。
+      expect(result!.extrapolated).toBe(true);
+      expect(result!.processedFraction).toBeGreaterThanOrEqual(0.2);
+      expect(result!.processedFraction).toBeLessThan(1);
     });
 
     it("正常但重复度较高的真实文本（例如同一句子出现很多次）不会被误判——熔断只在真正病态、单块耗时持续偏高时触发", async () => {
       const text = "The quick brown fox jumps over the lazy dog. ".repeat(20_000); // 90万字符
       const result = await tokenizeCompactContent(text);
       expect(result).not.toBeNull();
-      expect(result).toBeGreaterThan(0);
+      expect(result!.tokens).toBeGreaterThan(0);
+      // ★ #97：这条内容量级不足以触发熔断（90 万字符 << 触发外推那条测试
+      // 用的 4080 万字符），应该是干净的完整分词，不是外推。
+      expect(result!.extrapolated).toBe(false);
     });
 
     it("分块边界效应很小：把同一段正常文本连续拼接两次，token 数应该接近两倍（不是因为分块被腰斩或重复计数）", async () => {
@@ -231,17 +264,17 @@ describe("tokenizeCompactContent（真实 o200k_base，不 mock）", () => {
       // 不会让总数偏离"约两倍"太远——用 5% 容差而不是精确相等，因为这条
       // 测的是"边界效应没有失控"而不是"分块 100% 无损"（无损本来就不是
       // 分块设计的目标，见 compact-tokenizer.ts 头部注释）。
-      expect(twice as number).toBeGreaterThan((once as number) * 1.8);
-      expect(twice as number).toBeLessThan((once as number) * 2.2);
+      expect(twice!.tokens).toBeGreaterThan(once!.tokens * 1.8);
+      expect(twice!.tokens).toBeLessThan(once!.tokens * 2.2);
     });
   });
 
   it("更长的文本 token 数不会少于更短的子串（单调性，基本合理性检查）", async () => {
     const short = "hello world";
     const long = "hello world, this is a much longer piece of text that should tokenize to more tokens";
-    const shortTokens = await tokenizeCompactContent(short);
-    const longTokens = await tokenizeCompactContent(long);
-    expect(longTokens).toBeGreaterThan(shortTokens);
+    const shortTokens = await tokenCount(short);
+    const longTokens = await tokenCount(long);
+    expect(longTokens).toBeGreaterThan(shortTokens!);
   });
 });
 

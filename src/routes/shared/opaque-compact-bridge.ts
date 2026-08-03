@@ -244,7 +244,7 @@ export async function respondWithOpaqueCompactMarker(options: {
       `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=compact_trim` +
         ` trimmed=${budgetPlan.trimmedCount} estimated_tokens=${budgetPlan.estimatedTokens}` +
         ` budget_tokens=${budgetPlan.budgetTokens} within_budget=${budgetPlan.withinBudget}` +
-        ` estimate_method=${budgetPlan.estimateMethod}`,
+        ` estimate_source=${budgetPlan.estimateSource} cheap_estimate_tokens=${budgetPlan.cheapEstimateTokens}`,
     );
   }
   if (!budgetPlan.withinBudget) {
@@ -252,7 +252,8 @@ export async function respondWithOpaqueCompactMarker(options: {
       `[ClaudeOpaqueCompact] rid=${requestId.slice(0, 8)} phase=compact_budget_exceeded` +
         ` model=${translated.model} estimated_tokens=${budgetPlan.estimatedTokens}` +
         ` budget_tokens=${budgetPlan.budgetTokens} trimmed=${budgetPlan.trimmedCount}` +
-        ` estimate_method=${budgetPlan.estimateMethod}`,
+        ` estimate_source=${budgetPlan.estimateSource} cheap_estimate_tokens=${budgetPlan.cheapEstimateTokens}` +
+        (budgetPlan.processedFraction !== undefined ? ` processed_fraction=${budgetPlan.processedFraction.toFixed(3)}` : ""),
     );
     // 消息里仍然保留 "exceeds the context window"——旧调用方/日志里靠这句
     // 文本识别的路径继续有效，不做破坏性变更。★ 8.10：`messages.ts` 判断
@@ -271,6 +272,13 @@ export async function respondWithOpaqueCompactMarker(options: {
         promptTooLong: true,
         estimatedTokens: budgetPlan.estimatedTokens,
         budgetTokens: budgetPlan.budgetTokens,
+        // ★ #97：见 CompactServiceErrorClassification 里这三个字段各自的
+        // 文档——半截版本（只传 estimateSource 不传 processedFraction，
+        // 或者不传 cheapEstimateTokens）会让这条记录失去"判断可信度"的
+        // 能力，team-lead 明确要求整条链路一起接，不留半截。
+        estimateSource: budgetPlan.estimateSource,
+        processedFraction: budgetPlan.processedFraction,
+        cheapEstimateTokens: budgetPlan.cheapEstimateTokens,
         // ★ #88：从未联系上游，这个耗时纯粹是 restore/preservedTail 合并/
         // 预算预判本身的开销——理应是毫秒级，如果这里也慢了说明瓶颈根本
         // 不在上游。

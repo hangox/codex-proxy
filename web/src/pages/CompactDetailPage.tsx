@@ -77,6 +77,27 @@ function formatK(n: number): string {
 }
 
 /**
+ * ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体问题时
+ * 发现的观测缺口）：`budget_exceeded` 记录的估算方式，用来判断这次
+ * `estimated_tokens` 可不可信。`precise_extrapolated` 时把 `processed_fraction`
+ * 括注在后面——外推自 20% 和外推自 90% 的可信度不是一个量级，只显示
+ * "外推的"这三个字不够，必须把这个数字亮出来。缺省（旧数据，这次改动
+ * 之前落盘的行）显示占位符，不猜是哪一种。
+ */
+function estimateSourceText(
+  e: CompactOutcomeEvent,
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+): string {
+  if (e.estimate_source === "cheap") return t("compactDetailEstimateSourceCheap");
+  if (e.estimate_source === "precise") return t("compactDetailEstimateSourcePrecise");
+  if (e.estimate_source === "precise_extrapolated") {
+    const pct = e.processed_fraction !== undefined ? `${(e.processed_fraction * 100).toFixed(0)}%` : "?";
+    return t("compactDetailEstimateSourcePreciseExtrapolated", { pct });
+  }
+  return "—";
+}
+
+/**
  * ★ #88：耗时格式化——1000ms 门槛之下按整数毫秒显示，之上按秒（一位小数）
  * 显示。不用 `Intl.RelativeTimeFormat` 之类的相对时间格式化——这里显示的是
  * "花了多久"（duration），不是"距现在多久"（相对时刻），语义不同。
@@ -406,6 +427,21 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
               +{(((e.estimated_tokens - e.budget_tokens) / e.budget_tokens) * 100).toFixed(1)}%
             </DetailRow>
           )}
+          {/* ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体
+              问题时发现的观测缺口）：这次 estimated_tokens 到底可不可信——
+              精确算完的和熔断后从 20% 外推的可信度天差地别，缺了这一行
+              用户没法判断这次降级是不是误判。 */}
+          <DetailRow label={t("compactDetailEstimateSource")}>
+            {estimateSourceText(e, t)}
+          </DetailRow>
+          {/* ★ #97：粗筛值跟精确值并存，让每一条记录都是一个"粗筛 vs 精确"
+              的标定样本——不只在 estimate_source 是 cheap 时才有意义，
+              precise/precise_extrapolated 场景下这一行才是真正的对照组。 */}
+          {e.cheap_estimate_tokens !== undefined && (
+            <DetailRow label={t("compactDetailCheapEstimateTokens")}>
+              {e.cheap_estimate_tokens.toLocaleString()}
+            </DetailRow>
+          )}
         </DetailGroup>
       )}
       {e.outcome === "success" && (
@@ -447,14 +483,20 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
 
       {/* ★ 需新增采集——按 outcome 类型给出对应的黄色提示块，让用户看得见
           "还能更详细"，不是悄悄不显示。见 compact-detail-panel-design.md
-          第 3 节字段清单"需新增采集"那些条目。 */}
-      <DetailGroup title={t("compactDetailGroupMissing")}>
-        <div class="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700/40 rounded-lg p-2 leading-relaxed">
-          {e.outcome === "success" && t("compactDetailMissingSuccess")}
-          {e.outcome === "budget_exceeded" && t("compactDetailMissingBudgetExceeded")}
-          {(e.outcome === "upstream_failed" || e.outcome === "denied") && t("compactDetailMissingFailure")}
-        </div>
-      </DetailGroup>
+          第 3 节字段清单"需新增采集"那些条目。
+          ★ #97：budget_exceeded 原来这里的提示是"估算方式还没接进这条
+          记录"——这次改动把 estimate_source/processed_fraction/
+          cheap_estimate_tokens 全部接进来了，那条提示已经不成立，整块
+          跟着删掉（不是留一个空字符串占位），不是"顺手清理"，是它描述的
+          缺口这次真的补上了。 */}
+      {(e.outcome === "success" || e.outcome === "upstream_failed" || e.outcome === "denied") && (
+        <DetailGroup title={t("compactDetailGroupMissing")}>
+          <div class="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700/40 rounded-lg p-2 leading-relaxed">
+            {e.outcome === "success" && t("compactDetailMissingSuccess")}
+            {(e.outcome === "upstream_failed" || e.outcome === "denied") && t("compactDetailMissingFailure")}
+          </div>
+        </DetailGroup>
+      )}
 
       {/* ★ 日志页的路由是精确字符串匹配 `location.hash`（见 App.tsx 的
           `activeTab`），不支持 `#/logs?search=...` 这种带查询串的深链接

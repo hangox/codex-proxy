@@ -69,10 +69,46 @@ export interface CompactOutcomeEvent {
   outcome: CompactOutcome;
   /** 仅 `success`：true 表示这次是幂等重放命中缓存 marker，不是新压缩。 */
   replayed?: boolean;
-  /** 仅 `budget_exceeded`：预算预判阶段算出的估算 token 数。 */
+  /** 仅 `budget_exceeded`：预算预判阶段算出的估算 token 数（`estimate_source` 对应的那种方法算出的最终值）。 */
   estimated_tokens?: number;
   /** 仅 `budget_exceeded`：当时对应型号的预算 token 数。 */
   budget_tokens?: number;
+  /**
+   * ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这个具体问题时
+   * 发现的观测缺口）：`estimated_tokens` 是用哪种方法算出来的。
+   *
+   * - `"cheap"`：字节比例粗筛，粗筛本身就在预算内，没必要为了确认再付
+   *   分词器懒加载成本。
+   * - `"precise"`：粗筛怀疑超限后触发的精确估算，真分词器完整跑完，没有
+   *   触发 2000ms 熔断。
+   * - `"precise_extrapolated"`：精确估算触发了熔断，是按已处理比例外推
+   *   出来的——**可信度明显低于 `"precise"`**，外推自 20%（刚过下限）和
+   *   外推自 90% 的可信度不是一个量级，具体看 `processed_fraction`。
+   *
+   * ★ 判据是"这个数可不可信"：只做两值版本（合并 precise/precise_extrapolated
+   * 成同一个 "tokenizer" 标签）会把可信度天差地别的两种情况标成同一个
+   * 值——这比完全不记录更糟（"tokenizer" 会被误读成"这个数很准"），是
+   * 这轮改动本身要治的"不同根因共用同一个标签"，不能在这里自己重新制造
+   * 一次。仅 `budget_exceeded` 有值。
+   */
+  estimate_source?: "cheap" | "precise" | "precise_extrapolated";
+  /**
+   * ★ #97：仅 `estimate_source === "precise_extrapolated"` 时有值——已处理
+   * 内容占总长度的比例（0~1）。这是判断外推可信度**最关键**的字段：没有
+   * 它，`"precise_extrapolated"` 这个标签本身说明不了什么（20% 和 90% 差
+   * 太远）。
+   */
+  processed_fraction?: number;
+  /**
+   * ★ #97：`planCompactRequestForBudget` 判断一开始就会算的粗筛值，跟
+   * `estimated_tokens`（可能是精确值）并存，与 `estimate_source` 无关地
+   * 一律记录（哪怕最终 `estimate_source` 就是 `"cheap"`，此时这个字段跟
+   * `estimated_tokens` 数值相同，仍然记录，不特殊剔除）——每一条
+   * `budget_exceeded` 记录因此变成一个"粗筛 vs 精确"的真实标定样本，供
+   * 以后校准字节→token 比例常数直接从生产数据读，不用再像 8.9 那次靠 qa
+   * 专门跑真实会话切片人工标定。仅 `budget_exceeded` 有值。
+   */
+  cheap_estimate_tokens?: number;
   /** `upstream_failed` 的 error name / `denied` 的结构化 reason。 */
   reason?: string;
   /**
@@ -133,6 +169,12 @@ export interface RecordCompactOutcomeInput {
   replayed?: boolean;
   estimatedTokens?: number;
   budgetTokens?: number;
+  /** 见 {@link CompactOutcomeEvent.estimate_source}。 */
+  estimateSource?: "cheap" | "precise" | "precise_extrapolated";
+  /** 见 {@link CompactOutcomeEvent.processed_fraction}。 */
+  processedFraction?: number;
+  /** 见 {@link CompactOutcomeEvent.cheap_estimate_tokens}。 */
+  cheapEstimateTokens?: number;
   reason?: string;
   /** 见 {@link CompactOutcomeEvent.http_status}。 */
   httpStatus?: number;
@@ -189,6 +231,9 @@ export function recordCompactOutcome(input: RecordCompactOutcomeInput): void {
       ...(input.replayed !== undefined ? { replayed: input.replayed } : {}),
       ...(input.estimatedTokens !== undefined ? { estimated_tokens: input.estimatedTokens } : {}),
       ...(input.budgetTokens !== undefined ? { budget_tokens: input.budgetTokens } : {}),
+      ...(input.estimateSource !== undefined ? { estimate_source: input.estimateSource } : {}),
+      ...(input.processedFraction !== undefined ? { processed_fraction: input.processedFraction } : {}),
+      ...(input.cheapEstimateTokens !== undefined ? { cheap_estimate_tokens: input.cheapEstimateTokens } : {}),
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
       ...(input.httpStatus !== undefined ? { http_status: input.httpStatus } : {}),
       ...(input.cause !== undefined ? { cause: input.cause } : {}),

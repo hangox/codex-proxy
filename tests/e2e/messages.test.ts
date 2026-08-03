@@ -1576,6 +1576,20 @@ describe("E2E: POST /v1/messages", () => {
         }), { "x-claude-code-session-id": "session-preflight-skip" });
         const marker = extractMarkerFromResponse(await compactRes.text());
 
+        // ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体
+        // 问题时发现的观测缺口）：这条测试原本只锁"确实跳过了上游调用"这个
+        // 行为，这里顺带锁住 estimate_source/cheapEstimateTokens 真的从
+        // planCompactRequestForBudget 一路传到了 recordOpaqueCompactFallback
+        // ——不是只在各层各自的单测里正确，路由层真的在正确的时刻传了
+        // 正确的值是另一件事（同 opaque-compact-fallback-log.ts 头部注释
+        // 引用的 8.6/8.10 那条教训）。"x" 重复内容是真实分词器已知的病态
+        // 输入（见 compact-tokenizer.test.ts），2000ms 熔断后已处理比例远
+        // 低于 20% 外推下限，精确估算会两次都退回 null，`estimate_source`
+        // 因此确定性地落在 "cheap"（不是 "precise"/"precise_extrapolated"
+        // ——那两个分支已经用受控 mock 在 codex-compact-budget.test.ts 里
+        // 直接覆盖过，比在这里靠真实熔断计时凑出来更稳）。
+        const fallbackLogSpy = vi.spyOn(opaqueCompactFallbackLog, "recordOpaqueCompactFallback");
+
         // ~3MB 纯文本（不是 tool_result），远超默认预算（260K token），且
         // trimCompactInputForBudget 只裁 function_call_output，救不了这种
         // 形状——预算预判应该判定"裁不动"，直接跳过上游 compact 调用。
@@ -1589,12 +1603,22 @@ describe("E2E: POST /v1/messages", () => {
           ],
         }), { "x-claude-code-session-id": "session-preflight-skip" });
 
-        expect(recompactRes.status).toBe(200);
-        expect(JSON.stringify(parseAnthropicSSE(await recompactRes.text()))).toContain("preflight fallback worked");
-        expect(recompactRes.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
-        // 决定性断言：第二次请求从未打过 /codex/responses/compact——预算
-        // 预判在发上游之前就拦下来了，日志里总共只有第一次成功的那次。
-        expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(1);
+        try {
+          expect(recompactRes.status).toBe(200);
+          expect(JSON.stringify(parseAnthropicSSE(await recompactRes.text()))).toContain("preflight fallback worked");
+          expect(recompactRes.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
+          // 决定性断言：第二次请求从未打过 /codex/responses/compact——预算
+          // 预判在发上游之前就拦下来了，日志里总共只有第一次成功的那次。
+          expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(1);
+
+          expect(fallbackLogSpy).toHaveBeenCalledTimes(1);
+          const classification = fallbackLogSpy.mock.calls[0]![0].classification;
+          expect(classification?.skippedUpstream).toBe(true);
+          expect(classification?.estimateSource).toBe("cheap");
+          expect(classification?.cheapEstimateTokens).toBe(classification?.estimatedTokens);
+        } finally {
+          fallbackLogSpy.mockRestore();
+        }
       });
 
       it("opaque compact bridge: client abort cancels compact without saving state or falling back", async () => {

@@ -928,6 +928,13 @@ export function createMessagesRoutes(
                   skippedUpstream: error.skippedUpstream,
                   estimatedTokens: error.estimatedTokens,
                   budgetTokens: error.budgetTokens,
+                  // ★ #97：估算可信度三件套，见 CompactServiceErrorClassification
+                  // 各自的字段文档——只传 estimateSource 不传 processedFraction
+                  // 会让"精确算完的"和"熔断后外推的"共用同一个标签，是这轮
+                  // 改动本身要治的病，不能在这里漏传。
+                  estimateSource: error.estimateSource,
+                  processedFraction: error.processedFraction,
+                  cheapEstimateTokens: error.cheapEstimateTokens,
                   // ★ #88：耗时埋点，见 CompactServiceError 的字段文档。
                   durationMs: error.durationMs,
                   upstreamMs: error.upstreamMs,

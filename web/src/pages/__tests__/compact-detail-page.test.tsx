@@ -342,7 +342,7 @@ describe("CompactDetailPage — 详情面板", () => {
     expect(screen.getByText("Select a record to view details")).toBeTruthy();
   });
 
-  it("budget_exceeded：显示估算/预算 token、超出比例、'怎么回退的'文案、'需新增采集'提示", () => {
+  it("budget_exceeded：显示估算/预算 token、超出比例、'怎么回退的'文案；#97 之后不再显示'需新增采集'提示（那个缺口已经补上）", () => {
     mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
     const selected = makeEvent({ outcome: "budget_exceeded", estimated_tokens: 479024, budget_tokens: 390000 });
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
@@ -352,7 +352,72 @@ describe("CompactDetailPage — 详情面板", () => {
     expect(screen.getByText("390,000")).toBeTruthy();
     expect(screen.getByText("+22.8%")).toBeTruthy();
     expect(screen.getByText(/Skipped the upstream call/)).toBeTruthy();
-    expect(screen.getByText(/Estimation method/)).toBeTruthy();
+    // ★ #97：这条提示描述的缺口（"估算方式还没接进这条记录"）这次改动
+    // 已经补上了，整块"需新增采集"提示不应该再出现在 budget_exceeded 上。
+    expect(screen.queryByText("Needs more collection")).toBeNull();
+  });
+
+  // ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体问题时
+  // 发现的观测缺口）：estimate_source 三值 + processed_fraction +
+  // cheap_estimate_tokens 逐一断言，防止以后半截实现（比如漏传
+  // processedFraction）又把可信度天差地别的两种情况标成同一个值。
+  it("budget_exceeded + estimate_source=cheap：显示'字节比例（粗筛）'", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "budget_exceeded", estimated_tokens: 300000, budget_tokens: 260000,
+      estimate_source: "cheap",
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("Byte-ratio (cheap)")).toBeTruthy();
+  });
+
+  it("budget_exceeded + estimate_source=precise：显示'分词器（精确）'，不显示已处理比例", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "budget_exceeded", estimated_tokens: 300000, budget_tokens: 260000,
+      estimate_source: "precise",
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("Tokenizer (precise)")).toBeTruthy();
+  });
+
+  it("budget_exceeded + estimate_source=precise_extrapolated：显示已处理比例——这是判断这次降级是否误判的关键信息", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "budget_exceeded", estimated_tokens: 417000, budget_tokens: 390000,
+      estimate_source: "precise_extrapolated", processed_fraction: 0.42,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("Tokenizer (extrapolated, 42% processed)")).toBeTruthy();
+  });
+
+  it("budget_exceeded + cheap_estimate_tokens：显示粗筛值，跟精确值并存（标定用的对照组）", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "budget_exceeded", estimated_tokens: 417000, budget_tokens: 390000,
+      estimate_source: "precise", cheap_estimate_tokens: 620000,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("Byte-ratio estimate")).toBeTruthy();
+    expect(screen.getByText("620,000")).toBeTruthy();
+  });
+
+  it("budget_exceeded 缺省 estimate_source（旧数据）：显示占位符，不猜是哪一种，也不显示粗筛值行", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ outcome: "budget_exceeded", estimated_tokens: 300000, budget_tokens: 260000 });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("Estimate source")).toBeTruthy();
+    expect(screen.queryByText("Byte-ratio estimate")).toBeNull();
   });
 
   it("success（非幂等重放）：显示'完成、marker 已签发'文案", () => {

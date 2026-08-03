@@ -287,11 +287,31 @@ export function loadCompactTokenizer(): Promise<Tiktoken | null> {
  * 返回 `null` 还有一种情况：编码器加载失败（理论上不该发生）。两种
  * `null` 来源对调用方而言处理方式完全一样——回退到粗筛比例估算（见文件
  * 头注释），复用同一个出口，不需要调用方多分支处理。
+ *
+ * ★ #97（team-lead 派发，reviewer 交叉审查 #96 时发现的观测缺口续）：
+ * 返回值从裸 `number | null` 改成 {@link TokenizeCompactContentResult}——
+ * 外推发生时 `extrapolated`/`processedFraction` 此前只进了下面的
+ * `console.warn`，调用方从类型层面就拿不到，"这次 417K 是精确算的还是
+ * 熔断后外推的"这个问题因此**从源头就没有承载信息的通道**，不是"某一层
+ * 忘了透传"。外推自 20%（刚过 `MIN_PROCESSED_FRACTION_FOR_EXTRAPOLATION`
+ * 下限）和外推自 90% 的可信度天差地别，`processedFraction` 是这次新增
+ * 字段里最关键的一个——没有它，"是不是外推的"这个布尔值本身也说明不了
+ * 什么。两种 `null` 来源（编码器加载失败 / 已处理比例太低不可信）依然
+ * 不做区分——调用方对两者的处理方式完全一样（回退粗筛），区分它们不会
+ * 改变任何决策，只会给调用方多一个不需要处理的分支。
  */
-export async function tokenizeCompactContent(text: string): Promise<number | null> {
+export interface TokenizeCompactContentResult {
+  tokens: number;
+  /** true 表示这个 `tokens` 是熔断后按已处理比例外推的，不是完整分词的结果。 */
+  extrapolated: boolean;
+  /** 仅 `extrapolated === true` 时有值——已处理内容占总长度的比例，用来判断外推可信度。 */
+  processedFraction?: number;
+}
+
+export async function tokenizeCompactContent(text: string): Promise<TokenizeCompactContentResult | null> {
   const encoder = await loadCompactTokenizer();
   if (encoder === null) return null;
-  if (text.length === 0) return 0;
+  if (text.length === 0) return { tokens: 0, extrapolated: false };
 
   let totalTokens = 0;
   let processedChars = 0;
@@ -310,7 +330,7 @@ export async function tokenizeCompactContent(text: string): Promise<number | nul
             `extrapolating from partial result: ${totalTokens} tokens over processed chars → ` +
             `${extrapolated} tokens estimated total`,
         );
-        return extrapolated;
+        return { tokens: extrapolated, extrapolated: true, processedFraction };
       }
       console.warn(
         `[CompactTokenizer] chunked encode exceeded ${CUMULATIVE_TIME_BUDGET_MS}ms cumulative budget ` +
@@ -321,7 +341,7 @@ export async function tokenizeCompactContent(text: string): Promise<number | nul
       return null;
     }
   }
-  return totalTokens;
+  return { tokens: totalTokens, extrapolated: false };
 }
 
 /** 测试专用：重置缓存的编码器单例，让下一次调用重新触发加载。 */

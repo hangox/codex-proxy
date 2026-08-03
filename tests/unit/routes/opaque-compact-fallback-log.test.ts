@@ -282,6 +282,56 @@ describe("recordOpaqueCompactFallback", () => {
       expect(entry.budget_tokens).toBe(390000);
     });
 
+    // ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体记录
+    // 时发现的观测缺口）：estimateSource/processedFraction/cheapEstimateTokens
+    // 三件套原样透传到 compact-outcomes.jsonl，锁住 recordOpaqueCompactFallback
+    // 这一段链路，不重复 compact-outcome-log.test.ts 已经覆盖的字段级细节。
+    it("classification 带 estimateSource/processedFraction/cheapEstimateTokens 时原样透传（precise_extrapolated 场景）", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-budget-extrapolated",
+        model: "gpt-5.6-sol",
+        inputItems: 500,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Estimated compact input (~417000 tokens) exceeds the context window budget (~390000 tokens)",
+        classification: {
+          skippedUpstream: true,
+          estimatedTokens: 417000,
+          budgetTokens: 390000,
+          estimateSource: "precise_extrapolated",
+          processedFraction: 0.42,
+          cheapEstimateTokens: 620000,
+        },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect(entry.outcome).toBe("budget_exceeded");
+      expect(entry.estimate_source).toBe("precise_extrapolated");
+      expect(entry.processed_fraction).toBe(0.42);
+      expect(entry.cheap_estimate_tokens).toBe(620000);
+    });
+
+    it("classification 不带 estimateSource 等三个新字段时，compact-outcomes.jsonl 里省略键，不补默认值", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-budget-legacy",
+        model: "gpt-5.6-sol",
+        inputItems: 500,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Estimated compact input (~300000 tokens) exceeds the context window budget (~260000 tokens)",
+        classification: { skippedUpstream: true, estimatedTokens: 300000, budgetTokens: 260000 },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect("estimate_source" in entry).toBe(false);
+      expect("processed_fraction" in entry).toBe(false);
+      expect("cheap_estimate_tokens" in entry).toBe(false);
+    });
+
     it("classification.skippedUpstream=false → outcome=upstream_failed", async () => {
       const { recordOpaqueCompactFallback } = await import(
         "@src/routes/shared/opaque-compact-fallback-log.js"

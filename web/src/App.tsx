@@ -17,6 +17,7 @@ import { AccountManagement } from "./pages/AccountManagement";
 import { UsageStats } from "./pages/UsageStats";
 import { LogsPage } from "./pages/LogsPage";
 import { ErrorsPage } from "./pages/ErrorsPage";
+import { CompactDetailPage } from "./pages/CompactDetailPage";
 import { useAccounts } from "../../shared/hooks/use-accounts";
 import { useErrorLogsCount } from "../../shared/hooks/use-error-logs";
 import { useProxies } from "../../shared/hooks/use-proxies";
@@ -68,6 +69,7 @@ const TABS: Array<{ hash: string; label: TranslationKey }> = [
   { hash: "#/api-keys", label: "apiKeys" },
   { hash: "#/proxies", label: "proxySettings" },
   { hash: "#/usage-stats", label: "usageStats" },
+  { hash: "#/compact-detail", label: "compactDetail" },
   { hash: "#/logs", label: "logs" },
   { hash: "#/errors", label: "errorsTab" },
   { hash: "#/settings", label: "settings" },
@@ -204,6 +206,10 @@ function Dashboard() {
 
           {activeTab === "#/usage-stats" && (
             <UsageStats embedded />
+          )}
+
+          {activeTab === "#/compact-detail" && (
+            <CompactDetailPage />
           )}
 
           {activeTab === "#/logs" && (

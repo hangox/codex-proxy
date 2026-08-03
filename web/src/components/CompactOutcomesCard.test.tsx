@@ -139,7 +139,7 @@ describe("CompactOutcomesCard — variant=full（默认，压缩明细面板顶�
     expect(screen.getByText("Success")).toBeTruthy();
     expect(screen.getByText("Predicted downgrade")).toBeTruthy();
     expect(screen.getByText("Upstream failed")).toBeTruthy();
-    expect(screen.getByText("Denied (409)")).toBeTruthy();
+    expect(screen.getByText("Denied")).toBeTruthy();
   });
 
   it("★★★ 8.19 P1 修复：full 变体固定使用 by_request 口径，即便 by_session 算出不同的数字——这是汇总数字必须和下方原始事件列表对得上的核心保证", () => {
@@ -187,7 +187,7 @@ describe("CompactOutcomesCard — variant=full（默认，压缩明细面板顶�
     fireEvent.click(screen.getByText("Predicted downgrade"));
     expect(onSelectOutcome).toHaveBeenCalledWith("budget_exceeded");
 
-    fireEvent.click(screen.getByText("Denied (409)"));
+    fireEvent.click(screen.getByText("Denied"));
     expect(onSelectOutcome).toHaveBeenCalledWith("denied");
   });
 
@@ -225,7 +225,7 @@ describe("CompactOutcomesCard — variant=full（默认，压缩明细面板顶�
   it("activeOutcome='all'（或不传）时没有任何一行处于选中态", () => {
     mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({ stats: makeStats(), loading: false });
     renderCard({ activeOutcome: "all" });
-    const rows = ["Success", "Predicted downgrade", "Upstream failed", "Denied (409)"];
+    const rows = ["Success", "Predicted downgrade", "Upstream failed", "Denied"];
     for (const label of rows) {
       const row = screen.getByText(label).closest("div")!;
       expect(row.className).not.toContain("border-primary/40");

@@ -96,6 +96,28 @@ describe("CompactDetailPage — 列表", () => {
     expect(screen.getByText(/390\.0K/)).toBeTruthy();
   });
 
+  // ★ #96：denied 记录的列表"关键信息"列把真实状态码摆在最前面
+  // （"400 · expired"）——之前隐含假设 denied 全是 409，现在不用点进详情
+  // 就能一眼看出这条是族 A（400）还是别的（409）。
+  it("列表关键信息列：denied 记录带 http_status 时显示 '{status} · {reason}'", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ outcome: "denied", reason: "expired", http_status: 400 })],
+    }));
+    renderPage();
+    expect(screen.getByText("400 · expired")).toBeTruthy();
+  });
+
+  it("列表关键信息列：denied 记录缺省 http_status（旧数据）时只显示 reason，不猜状态码", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ outcome: "denied", reason: "store_unavailable" })],
+    }));
+    renderPage();
+    expect(screen.getByText("store_unavailable")).toBeTruthy();
+    expect(screen.queryByText(/^\d+ · /)).toBeNull();
+  });
+
   it("★ 空数据（真的没有记录）显示'暂无压缩记录'——不是筛选文案", () => {
     mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ events: [], total: 0, outcome: "all" }));
@@ -153,10 +175,10 @@ describe("CompactDetailPage — 列表", () => {
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setOutcome }));
     renderPage();
 
-    // "Denied (409)" 同时出现在汇总区（一行）和列表筛选栏（一个 pill 按钮）
+    // "Denied" 同时出现在汇总区（一行）和列表筛选栏（一个 pill 按钮）
     // 里——这里只测列表筛选栏的 pill，用"是不是 <button>"精确定位，汇总区
     // 那次点击单独有一条测试覆盖（见下面"汇总区点击结果行也调用 setOutcome"）。
-    const candidates = screen.getAllByText("Denied (409)");
+    const candidates = screen.getAllByText("Denied");
     const pillButton = candidates.find((el) => el.closest("button") !== null);
     expect(pillButton).toBeTruthy();
     fireEvent.click(pillButton!);
@@ -253,10 +275,10 @@ describe("CompactDetailPage — ★ 8.19 结果类型筛选的可见性（不是
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ outcome: "denied" }));
     renderPage();
 
-    // 汇总区（CompactOutcomesCard）里的 "Denied (409)" 行应该带高亮 class；
+    // 汇总区（CompactOutcomesCard）里的 "Denied" 行应该带高亮 class；
     // 列表筛选栏那个同名 pill 不会有这个 class（它是 PillToggle 自己的
     // active 样式），所以只断言"存在至少一个带高亮 class 的匹配元素"。
-    const candidates = screen.getAllByText("Denied (409)");
+    const candidates = screen.getAllByText("Denied");
     const highlighted = candidates.some((el) => el.closest("div")?.className.includes("border-primary/40"));
     expect(highlighted).toBe(true);
   });
@@ -361,6 +383,86 @@ describe("CompactDetailPage — 详情面板", () => {
 
     expect(screen.getByText("store_unavailable")).toBeTruthy();
     expect(screen.getByText(/Returned 409/)).toBeTruthy();
+  });
+
+  // ★ #96（reviewer 交叉审查发现的用户可见误导）：#91 之前 denied 恒等于
+  // 409，面板一直硬编码"用 /clear"这个建议。#91 之后族 A（自愈候选撞在非
+  // compact 请求上）改成了 400，同一个 denied 集合里现在混着三种性质不同
+  // 的记录——这四条测试逐一钉死"按 reason/cause 给出不同指引"这个行为，
+  // 不再是一句固定文案，防止以后有人把这个分支简化回单一文案。
+  it("denied + 族 A reason（expired）：显示 400、自愈指引，不出现 /clear", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "denied", reason: "expired", http_status: 400,
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText(/Returned 400/)).toBeTruthy();
+    expect(screen.getByText(/refreshed automatically on your next \/compact/)).toBeTruthy();
+    expect(screen.queryByText(/Run \/clear/)).toBeNull();
+  });
+
+  it("denied + cause=state_too_large：显示 409、容量耗尽指引，建议 /clear", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "denied", reason: "recompact_failed_original_account",
+      cause: "state_too_large", http_status: 409,
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText(/too large to save/)).toBeTruthy();
+    expect(screen.getByText(/Run \/clear/)).toBeTruthy();
+  });
+
+  it.each(["stale_generation", "preserved_tail_conflict"])(
+    "denied + cause=%s：显示 409、并发冲突指引，不出现 /clear",
+    (cause) => {
+      mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+      const selected = makeEvent({
+        outcome: "denied", reason: "recompact_failed_original_account",
+        cause, http_status: 409,
+        estimated_tokens: undefined, budget_tokens: undefined,
+      });
+      mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+      renderPage();
+
+      expect(screen.getByText(/conflicted with another compact operation/)).toBeTruthy();
+      expect(screen.queryByText(/Run \/clear/)).toBeNull();
+    },
+  );
+
+  it("denied：详情面板显示 HTTP Status 行，缺省（旧数据）显示占位符不是默认 409", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "denied", reason: "tampered",
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    // Duration 行等其它字段缺省时也显示 "—"——用 DetailRow 的兄弟节点结构
+    // 精确定位到 "HTTP Status" 那一行自己的值，不跟其它 "—" 撞在一起。
+    const label = screen.getByText("HTTP Status");
+    const row = label.closest("div");
+    expect(row?.textContent).toBe("HTTP Status—");
+  });
+
+  it("denied + http_status=400：详情面板 HTTP Status 行显示真实数字", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      outcome: "denied", reason: "expired", http_status: 400,
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    const label = screen.getByText("HTTP Status");
+    const row = label.closest("div");
+    expect(row?.textContent).toBe("HTTP Status400");
   });
 
   it("upstream_failed：显示原因(reason)、降级文案", () => {

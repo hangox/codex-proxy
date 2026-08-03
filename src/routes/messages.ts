@@ -136,7 +136,10 @@ function describeOpaqueCompactUnavailable(reason: string): string {
  * 两者都没有（比如非 CodexApiError 的意外异常被原样 rethrow）才落到
  * `unexpected_error`——不强凑一个更精确但没有依据的值。
  */
-function deriveRecompactFailureCause(error: unknown): RecompactFailureCause | OpaqueCompactStateFailure {
+// ★ #83：导出——仅供测试用穷尽性守卫锁住 OpaqueCompactStateFailure 的分类
+// （见 tests/unit/routes/recompact-failure-cause-exhaustiveness.test.ts）。
+// 不是给其它路由/模块复用的公共 API，messages.ts 内部仍然只在本文件内调用它。
+export function deriveRecompactFailureCause(error: unknown): RecompactFailureCause | OpaqueCompactStateFailure {
   if (error instanceof OpaqueCompactStateError) return error.reason;
   if (error instanceof CompactServiceError) return error.cause ?? "generic_upstream_error";
   return "unexpected_error";

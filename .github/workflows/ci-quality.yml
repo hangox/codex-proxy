@@ -30,3 +30,12 @@ jobs:
 
       - name: Type-check public update scripts
         run: npm run typecheck:scripts
+
+      # ★ #83：tests/ 目录不在根 tsconfig.json 的 include 范围内，vitest 用
+      # esbuild 转译时也只剥类型不做类型检查——如果没有这一步，
+      # recompact-failure-cause-exhaustiveness.test.ts 里穷尽性 switch 的
+      # `default: { const x: never = ... }` 只是摆设，新增
+      # OpaqueCompactStateFailure 字面量却漏改分类不会让任何现有 CI 步骤变红。
+      # 见 tsconfig.test-guards.json 顶部注释。
+      - name: Type-check exhaustiveness guard tests
+        run: npm run typecheck:test-guards

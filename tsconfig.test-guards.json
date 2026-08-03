@@ -1,0 +1,14 @@
+{
+  "$comment": "★ #83：让『测试内的穷尽性 switch』真的具备编译时约束力。根 tsconfig.json 的 include 只有 src/**/*.ts——tests/ 目录从来不在任何现有 tsc 调用（build、typecheck:scripts）的检查范围内，vitest 用 esbuild 转译时只是剥掉类型、不做类型检查。这意味着如果只靠 `default: { const x: never = value }` 这个写法而不额外接一个真的会跑起来的 tsc 调用，『新增枚举值不同步改测试就编译失败』这个承诺是假的——esbuild 不会报错，`npm run build`/CI 现有步骤也扫不到这个文件。这个专用 tsconfig 只窄窄地覆盖需要这层保证的穷尽性守卫测试文件（不是整个 tests/ 目录——那样会把从未被类型检查过的其余测试文件一次性全部拉进 strict 检查，炸出一大片和这次改动无关的历史类型问题），配套 package.json 的 typecheck:test-guards 脚本 + CI 里的对应 step，一起构成『新增字面量不同步更新分类就 tsc 报错』的真实闭环。",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": [
+    "tests/unit/routes/recompact-failure-cause-exhaustiveness.test.ts",
+    "src/hono-context.ts"
+  ]
+}

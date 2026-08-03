@@ -237,10 +237,48 @@ export const ConfigSchema = z.object({
      *  （`10080` 分钟），上限相应放宽到 30 天，给需要更长留存的部署留出
      *  配置空间；不改变淘汰机制本身。 */
     ttl_minutes: z.number().int().min(1).max(30 * 24 * 60).default(10080),
-    /** LRU 淘汰前保留的最大条目数。 */
-    capacity: z.number().int().min(1).max(10_000).default(1024),
-    /** 所有 state 密文的总字节预算。 */
-    max_bytes: z.number().int().min(64 * 1024).default(64 * 1024 * 1024),
+    /**
+     * LRU 淘汰前保留的最大条目数。
+     *
+     * ★ 8.20（TTL 放长到 7 天之后的连带修正）：默认值曾经是 1024。
+     * predecessor state 从不显式删除，只靠 LRU/TTL 自然回收（见
+     * `opaque-compact-repository.ts` 文件头注释）——TTL 从 12h 放到 7 天
+     * 意味着存量条数理论累积量差不多是原来的 14 倍，1024 在忙碌的多
+     * teammate 团队场景下可能在 TTL 窗口内就被填满。
+     *
+     * 改成 4096，依据是团队给出的使用节奏**估算**（35~50 个并发会话 ×
+     * 每天 compact 2~5 次 × 7 天 ≈ 700~1750 条/7天，取其上界 1750 的
+     * 2.34 倍留余量）——★ 这个估算本身**没有实测依据**，是按团队描述的
+     * 使用模式推算出来的上限，不是真实生产埋点量出来的数字。真实增长
+     * 速率已经用 `tests/e2e/opaque-compact-state-capacity-growth.test.ts`
+     * 实测过"每次 recompact 净增 1 条、顶到 capacity 后 LRU 优雅收敛、
+     * 不会硬失败"这个**机制**，但没有也无法实测"一个真实团队每天到底
+     * 产生多少条"——这需要真实生产流量，本次修复完全在本地环境完成。
+     * `/health` 的 `opaque_compact_state.capacity` 字段（同批新增）会
+     * 暴露真实 count，部署后观察几天即可拿到真实增速，届时可按实测数据
+     * 再校准这个默认值，不用现在猜准。
+     *
+     * 顶到这个上限的后果已经实测确认是**优雅降级**（LRU 静默淘汰最久未用
+     * 的记录，压缩请求本身不受影响，不是硬失败）——配小了的代价只是
+     * "实际保留期短于配置的 TTL"，不是压缩功能故障，这大幅降低了这次
+     * 改动本身的风险（真正的硬失败分支 `state_too_large` 只在 capacity
+     * 小于"受保护行数下限"2 时触发，生产这个量级永远不会撞上）。
+     */
+    capacity: z.number().int().min(1).max(10_000).default(4096),
+    /**
+     * 所有 state 密文的总字节预算。
+     *
+     * ★ 8.20：默认值曾经是 64MiB。和 `capacity` 一起改，理由是"配平"——
+     * 单独提高 capacity 而不提高 max_bytes，一旦平均记录字节数超过
+     * `max_bytes / capacity`，会变成字节预算先于条数触顶，capacity 那次
+     * 改动就白改了。本地实测真实规模（贴近生产观测 postTokens 上限
+     * 20646 的摘要文本）单条 `byte_size ≈ 48785` 字节（见
+     * `tests/e2e/opaque-compact-state-byte-size.test.ts`）——`4096 ×
+     * 48785 ≈ 190.6MB` 是配平要求的下限，真实记录大小会围绕这个均值
+     * 波动，不是严格均匀分布，因此再加约 30% 余量 → 248MB，取整到
+     * 256MiB（与旧默认值 64MiB 同为 2 的幂，风格一致）。
+     */
+    max_bytes: z.number().int().min(64 * 1024).default(256 * 1024 * 1024),
     /** 外部密钥环文件的绝对路径。
      *
      *  必须位于 data 目录之外：master key 与 state DB 同卷存放时，拿到数据卷

@@ -520,11 +520,16 @@ export function forgetOpaqueCompactRuntimeForTesting(): void {
  * ★ 8.20：`ttlMinutes` 从 720（12h）改成 10080（7 天）——见
  * `config-schema.ts` 里 `ttl_minutes` 字段的完整事故复盘注释，两处必须
  * 同步改，否则 schema 声明的默认值和 runtime 实际生效的默认值不一致。
+ *
+ * ★ 8.20 续：`capacity` 从 1024 改成 4096、`maxBytes` 从 64MiB 改成
+ * 256MiB——TTL 放长之后的连带修正（存量条数理论累积量约 14 倍），依据
+ * 和"配平"算法见 `config-schema.ts` 里 `capacity`/`max_bytes` 字段的
+ * 完整注释（含明确标注"团队使用节奏是估算不是实测"这条限制）。
  */
 const RUNTIME_DEFAULTS = {
   ttlMinutes: 10080,
-  capacity: 1024,
-  maxBytes: 64 * 1024 * 1024,
+  capacity: 4096,
+  maxBytes: 256 * 1024 * 1024,
 } as const;
 
 /**

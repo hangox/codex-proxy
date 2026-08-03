@@ -370,6 +370,12 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
     }), { "x-claude-code-session-id": "session-lockguard" });
 
     expect(replay.status).toBe(409);
+    // ★ #91：致命 store 故障（isFatalStoreFailure 一族）不在族 A 里，状态码
+    // 和 x-should-retry 都保持不变——语义是"服务端状态有问题"，不是"这个
+    // 请求本身有问题"，不该被误读成客户端参数错误（400），也不该被打上
+    // x-should-retry: false（那个头是"这个具体失败确定性地不会因重试而
+    // 改变"，只对族 A 成立，不对致命 store 故障做这个断言）。
+    expect(replay.headers.get("x-should-retry")).toBeNull();
     expect(await replay.text()).toContain("store_locked");
     // fail-closed：从未打过一次上游请求去"顺便"完成自愈或新 compact，
     // 且没有产生第二条 compact 请求——自愈分支根本没有被进入。

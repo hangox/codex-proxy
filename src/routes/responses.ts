@@ -552,14 +552,10 @@ export async function collectPassthrough(
 const PASSTHROUGH_FORMAT: FormatAdapter = {
   tag: "Responses",
   noAccountStatus: 503,
-  formatNoAccount: () => ({
-    type: "error",
-    error: {
-      type: "server_error",
-      code: "no_available_accounts",
-      message: "No available accounts. All accounts are expired or rate-limited.",
-    },
-  }),
+  // ★ #81: same OpenAI SDK, same rationale as chat.ts — 403 is on neither
+  // the x-should-retry-honoring path nor the 408/409/429/>=500 status list
+  // (openai@7.4.0 src/client.ts:1040).
+  needsHumanStatus: 403,
   format429: (msg) => ({
     type: "error",
     error: {

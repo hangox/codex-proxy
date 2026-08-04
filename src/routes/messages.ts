@@ -272,7 +272,21 @@ function makeAnthropicProtocolError(status: number, message: string): AnthropicE
   if (isPromptTooLongLike(message)) {
     return makeError("invalid_request_error", normalizePromptTooLongMessage(message));
   }
-  return makeError(status === 429 ? "rate_limit_error" : "api_error", message);
+  // ★ #81: 529 → overloaded_error is not cosmetic. respondWithNoAccount's
+  // self-heal buckets (concurrency saturated / quota window) deliberately
+  // use status 529 specifically to mirror Anthropic's own real overloaded
+  // response, and this repo's own binary-extracted retry logic (see #81
+  // investigation notes) treats `type: "overloaded_error"` as a signal
+  // distinct from generic `api_error` in at least one code path. Losing
+  // this mapping when respondWithNoAccount switched from a dedicated
+  // formatNoAccount() to the shared formatError() would have silently
+  // reverted the self-heal buckets' retry-friendly semantics to generic
+  // errors. 403 (the needs_human bucket's status) is deliberately NOT
+  // added here — it must fall through to "api_error", not
+  // "overloaded_error", which is the whole point of that bucket existing.
+  if (status === 429) return makeError("rate_limit_error", message);
+  if (status === 529) return makeError("overloaded_error", message);
+  return makeError("api_error", message);
 }
 
 function extractMessageText(content: AnthropicMessagesRequest["messages"][number]["content"]): string {
@@ -353,12 +367,25 @@ function makeSilentInitializationResponse(req: AnthropicMessagesRequest, model: 
 function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
   return {
     tag: "Messages",
+    // ★ #81: this format uses 529 for the self-heal buckets where
+    // responses.ts/chat.ts/gemini.ts all use 503 — that split predates #81
+    // (present since the original multi-protocol commit d0eb8b9, never
+    // explained in a commit message or comment there). Current understanding
+    // is that 529 mirrors Anthropic's own real `overloaded_error` response
+    // exactly (same code, same body `type`, see makeAnthropicProtocolError
+    // below), which the other three formats have no equivalent "overloaded"
+    // code for in their real upstream APIs — but this is inferred from the
+    // pattern, not confirmed from any commit/comment/design doc. Do not
+    // treat it as settled design intent; if it's ever disproven, correct
+    // this comment rather than leaving it stale.
     noAccountStatus: 529 as StatusCode,
-    formatNoAccount: () =>
-      makeError(
-        "overloaded_error",
-        "No available accounts. All accounts are expired or rate-limited.",
-      ),
+    // ★ #81: 403 — not on Claude Code 2.1.220's retry whitelist except one
+    // narrow case tied to a specific OAuth-revocation error phrase our
+    // needs_human message never produces — see FormatAdapter
+    // .needsHumanStatus's doc comment for the exact trigger string (kept
+    // out of this file on purpose so a raw source-text safety-net test can
+    // assert no needs_human-bucket file ever contains it verbatim).
+    needsHumanStatus: 403 as StatusCode,
     format429: (msg) => makeError("rate_limit_error", msg),
     formatError: (status, msg) => makeAnthropicProtocolError(status, msg),
     formatStreamError: (status, msg) => formatAnthropicStreamError(status, msg),

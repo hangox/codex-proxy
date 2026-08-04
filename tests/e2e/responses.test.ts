@@ -248,19 +248,23 @@ describe("E2E: POST /v1/responses", () => {
       }));
       app.accountPool.applyRateLimit429(id, { retryAfterSec: 3600 });
 
-      // Non-streaming: the no-account error goes through the JSON response
-      // path (c.status + c.json). For stream:true requests, respondWithNoAccount
-      // instead emits an SSE "response.failed" event over a 200 response —
-      // that path is covered by the existing stream-error-format tests, not here.
+      // ★ #81: respondWithNoAccount always goes through the real JSON
+      // response path (c.status + c.json), for both streaming and
+      // non-streaming requests — it never emits an SSE-embedded error over
+      // a 200 response the way respondWithProxyError still does after a
+      // stream has already started. See respondWithNoAccount's doc comment
+      // for why (a 200 status is, from the client SDK's transport-level
+      // retry-eligibility check, indistinguishable from success).
       const res = await app.app.request("/v1/responses", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(defaultBody({ stream: false })),
       });
       expect(res.status).toBe(503);
+      expect(res.headers.get("Retry-After")).toBeTruthy();
 
-      const body = await res.json() as { error: { code: string } };
-      expect(body.error.code).toBe("no_available_accounts");
+      const body = await res.json() as { error: { message: string } };
+      expect(body.error.message).toContain("quota window");
     } finally {
       app.cookieJar.destroy();
       app.proxyPool.destroy();

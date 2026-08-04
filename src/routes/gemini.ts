@@ -61,12 +61,15 @@ function parseModelAction(param: string): {
 const GEMINI_FORMAT: FormatAdapter = {
   tag: "Gemini",
   noAccountStatus: 503,
-  formatNoAccount: () =>
-    makeError(
-      503,
-      "No available accounts. All accounts are expired or rate-limited.",
-      "UNAVAILABLE",
-    ),
+  // ★ #81: 403 — confirmed via real published source (`@google/genai`
+  // v2.15.0, `dist/index.cjs`, `DEFAULT_RETRY_HTTP_STATUS_CODES`) that this
+  // SDK's retry mechanism is a purely static status-code whitelist:
+  // [408, 429, 500, 502, 503, 504]. 403 is not in it, and — unlike
+  // Anthropic/OpenAI — there is no `x-should-retry` header override at all
+  // for this SDK, so status code choice is the ONLY lever here. `makeError`
+  // maps 403 to Gemini's own "PERMISSION_DENIED" status string via
+  // GEMINI_STATUS_MAP, which is semantically accurate for this bucket.
+  needsHumanStatus: 403,
   format429: (msg) => makeError(429, msg, "RESOURCE_EXHAUSTED"),
   formatError: (status, msg) => makeError(status, msg),
   streamTranslator: ({ api, response, model, onUsage, onResponseId, onResponseCompleted, tupleSchema }) =>

@@ -56,6 +56,14 @@ function makePool(acquireResults: Array<AcquiredAccount | null>): AccountPool {
     getPoolSummary: vi.fn(() => ({
       total: 2, active: 0, expired: 0, quota_exhausted: 0, rate_limited: 2, refreshing: 0, disabled: 0, banned: 0,
     })),
+    // ★ #81：同一个诊断分支还会调这个补并发槽位维度，mock 需要提供实现。
+    diagnoseAcquireFailure: vi.fn(() => ({
+      reason: "quota_window",
+      concurrencySaturatedCount: 0,
+      quotaWindowCount: 2,
+      needsHumanCount: 0,
+      earliestQuotaResetAt: null,
+    })),
     getEntry: vi.fn(() => ({ email: "test@example.com" })),
     // handleCodexApiError 的 429 分支会调用它——不是这个文件要测的行为，
     // 只是让 429 场景能跑通到我们真正关心的那一行日志。

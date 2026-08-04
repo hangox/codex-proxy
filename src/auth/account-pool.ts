@@ -12,6 +12,7 @@ import { AccountRegistry } from "./account-registry.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import type { AccountPersistence, PersistenceLoadHealth } from "./account-persistence.js";
 import type { RotationStrategyName } from "./rotation-strategy.js";
+import type { AcquireFailureDiagnosis } from "./account-lifecycle.js";
 import type {
   AccountEntry,
   AccountInfo,
@@ -88,6 +89,12 @@ export class AccountPool {
 
   acquire(options?: { model?: string; excludeIds?: string[]; preferredEntryId?: string }): AcquiredAccount | null {
     return this.lifecycle.acquire(options);
+  }
+
+  /** ★ #81: cold-path diagnosis of why `acquire()` failed — see
+   *  `AccountLifecycle.diagnoseAcquireFailure` for the full rationale. */
+  diagnoseAcquireFailure(options?: { excludeIds?: string[]; model?: string }): AcquireFailureDiagnosis {
+    return this.lifecycle.diagnoseAcquireFailure(options);
   }
 
   release(

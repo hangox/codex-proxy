@@ -26,12 +26,20 @@ export function acquireAccount(
     // （retry 循环里 excludeIds 就是"已经试过的账号"）。这些都是聚合计数，
     // 不含任何账号标识，可以直接打。
     const summary = pool.getPoolSummary();
+    // ★ #81：getPoolSummary() 从不知道并发槽位状态（那是 AccountLifecycle
+    // 的私有状态，registry 拿不到）——这行日志本身在这次事故里就是被排查者
+    // 反复对着看、却看不出"active=1 其实是槽位打满"的那份原始证据。
+    // diagnoseAcquireFailure() 是同一份状态的第二次遍历（只在这个失败冷
+    // 路径调用，不影响 acquire() 热路径），补上日志缺的这一维。
+    const diag = pool.diagnoseAcquireFailure({ excludeIds, model });
     console.warn(
       `[${tag}] No available account for model "${model}"` +
         ` (excluded ${excludeIds?.length ?? 0} already-tried;` +
         ` pool: total=${summary.total} active=${summary.active} expired=${summary.expired}` +
         ` quota_exhausted=${summary.quota_exhausted} rate_limited=${summary.rate_limited}` +
-        ` refreshing=${summary.refreshing} disabled=${summary.disabled} banned=${summary.banned})`,
+        ` refreshing=${summary.refreshing} disabled=${summary.disabled} banned=${summary.banned};` +
+        ` diagnosis: reason=${diag.reason} concurrency_saturated=${diag.concurrencySaturatedCount}` +
+        ` quota_window=${diag.quotaWindowCount} needs_human=${diag.needsHumanCount})`,
     );
   }
   return acquired;

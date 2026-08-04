@@ -143,6 +143,14 @@ function createMockAccountPool(overrides: Record<string, unknown> = {}) {
       total: 1, active: 0, expired: 0, quota_exhausted: 0,
       rate_limited: 0, refreshing: 0, disabled: 0, banned: 0,
     })),
+    // ★ #81：acquireAccount 的"没有可用账号"诊断分支还会调这个，mock 需要提供实现。
+    diagnoseAcquireFailure: vi.fn(() => ({
+      reason: "needs_human",
+      concurrencySaturatedCount: 0,
+      quotaWindowCount: 0,
+      needsHumanCount: 1,
+      earliestQuotaResetAt: null,
+    })),
     ...overrides,
   };
 }
@@ -203,20 +211,57 @@ describe("proxy-handler integration", () => {
     vi.clearAllMocks();
   });
 
-  // 1. No account available
-  it("returns noAccountStatus (503) when no account is available", async () => {
+  // 1. No account available — self-heal bucket (★ #81: concurrency
+  // saturated / quota window both use noAccountStatus + Retry-After;
+  // needs_human is a separate test below since it uses a different status).
+  it("returns noAccountStatus (503) + Retry-After when acquisition fails for a self-heal reason", async () => {
     const accountPool = createMockAccountPool({
       acquire: vi.fn(() => null),
+      diagnoseAcquireFailure: vi.fn(() => ({
+        reason: "concurrency_saturated",
+        concurrencySaturatedCount: 1,
+        quotaWindowCount: 0,
+        needsHumanCount: 0,
+        earliestQuotaResetAt: null,
+      })),
     });
     const fmt = createMockFormatAdapter();
     const { app } = buildTestApp({ accountPool, fmt });
 
     const res = await app.request("/test", { method: "POST" });
     expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBeTruthy();
 
     const body = await res.json();
-    expect(body).toEqual({ error: "no_account" });
-    expect(fmt.formatNoAccount).toHaveBeenCalled();
+    expect(body).toEqual({ error: "api_error", status: 503, message: expect.stringContaining("concurrency limit") });
+    expect(fmt.formatError).toHaveBeenCalledWith(503, expect.any(String));
+    expect(accountPool.release).not.toHaveBeenCalled();
+  });
+
+  // 1b. No account available — needs_human bucket (★ #81: distinct status,
+  // x-should-retry:false, must NOT reuse the self-heal formatting).
+  it("returns needsHumanStatus (403) + x-should-retry:false when acquisition fails because accounts genuinely need attention", async () => {
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn(() => null),
+      diagnoseAcquireFailure: vi.fn(() => ({
+        reason: "needs_human",
+        concurrencySaturatedCount: 0,
+        quotaWindowCount: 0,
+        needsHumanCount: 1,
+        earliestQuotaResetAt: null,
+      })),
+    });
+    const fmt = createMockFormatAdapter();
+    const { app } = buildTestApp({ accountPool, fmt });
+
+    const res = await app.request("/test", { method: "POST" });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("x-should-retry")).toBe("false");
+    expect(res.headers.get("Retry-After")).toBeNull();
+
+    const body = await res.json();
+    expect(body).toEqual({ error: "api_error", status: 403, message: expect.any(String) });
+    expect(fmt.formatError).toHaveBeenCalledWith(403, expect.any(String));
     expect(accountPool.release).not.toHaveBeenCalled();
   });
 

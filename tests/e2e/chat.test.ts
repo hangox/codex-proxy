@@ -389,9 +389,13 @@ describe("E2E: POST /v1/chat/completions", () => {
       });
       expect(res.status).toBe(503);
 
+      // ★ #81: this is the quota_window self-heal bucket — real accounts,
+      // genuinely rate-limited, but that resolves on its own when the
+      // window resets, so status stays retry-eligible (503) with a
+      // Retry-After hint, not the needs_human bucket's 403.
+      expect(res.headers.get("Retry-After")).toBeTruthy();
       const body = await res.json() as { error: { code: string; message: string } };
-      expect(body.error.code).toBe("no_available_accounts");
-      expect(body.error.message).toContain("rate-limited");
+      expect(body.error.message).toContain("quota window");
     } finally {
       app.cookieJar.destroy();
       app.proxyPool.destroy();
@@ -424,9 +428,12 @@ describe("E2E: POST /v1/chat/completions", () => {
         body: JSON.stringify(defaultBody()),
       });
       expect(res.status).toBe(503);
-
-      const body = await res.json() as { error: { code: string } };
-      expect(body.error.code).toBe("no_available_accounts");
+      // ★ #81: quota_exhausted status → also the quota_window self-heal
+      // bucket (same status code as the soft-rate-limit case above). No
+      // Retry-After assertion here — this test only mutates entry.status
+      // directly (markStatus), it never populates cachedQuota, so there's
+      // genuinely no reset_at to derive one from; that's the correct,
+      // honest behavior (no header) rather than a fabricated guess.
     } finally {
       app.cookieJar.destroy();
       app.proxyPool.destroy();

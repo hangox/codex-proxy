@@ -76,8 +76,28 @@ export interface FormatCollectTranslatorResult {
 /** Format-specific adapter provided by each route. */
 export interface FormatAdapter {
   tag: string;
+  /** ★ #81: status for the two self-heal buckets (concurrency saturated /
+   *  quota window) — a request-eligible client SDK is expected to
+   *  auto-retry this. Must stay on the client's retry whitelist (529 for
+   *  Anthropic mirrors its real overloaded_error; 503 elsewhere). Body is
+   *  built via `formatError` (see below), same as every other bucket —
+   *  there used to be a dedicated `formatNoAccount` formatter here, removed
+   *  because after #81 nothing calls it with a fixed argument-less message
+   *  anymore; every bucket's message now depends on the diagnosis. */
   noAccountStatus: StatusCode;
-  formatNoAccount: () => unknown;
+  /** ★ #81: status for the "needs human" bucket (expired/banned/disabled,
+   *  or no accounts at all) — retrying will not help, so this MUST NOT be
+   *  on the client SDK's retry whitelist. See respondWithNoAccount's doc
+   *  comment for the full rationale and the one narrow exception (Claude
+   *  Code 2.1.220 retries 403 when the message contains the literal string
+   *  "OAuth token has been revoked" — irrelevant here since our message
+   *  never uses that phrase, but worth knowing if this status is ever
+   *  reused for something else). Body is built via `formatError`, not a
+   *  dedicated formatter — deliberately reuses the same function real
+   *  ordinary errors use, so it does NOT get `formatNoAccount`'s
+   *  retry-friendly body type (e.g. Anthropic's `overloaded_error`).
+   */
+  needsHumanStatus: StatusCode;
   format429: (message: string) => unknown;
   formatError: (status: number, message: string) => unknown;
   formatStreamError?: (status: number, message: string) => string;

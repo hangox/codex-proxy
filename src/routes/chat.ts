@@ -30,15 +30,13 @@ function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
     tag: "Chat",
     noAccountStatus: 503,
-    formatNoAccount: () => ({
-      error: {
-        message:
-          "No available accounts. All accounts are expired or rate-limited.",
-        type: "server_error",
-        param: null,
-        code: "no_available_accounts",
-      },
-    }),
+    // ★ #81: confirmed via real published source (`openai` npm package
+    // v7.4.0, `src/client.ts:1040`) that this SDK's shouldRetry() is
+    // line-for-line equivalent to @anthropic-ai/sdk's — it honors
+    // `x-should-retry` unconditionally and otherwise retries on
+    // 408/409/429/>=500. 403 is on neither list, so this bucket is
+    // non-retryable the same way it is for Anthropic.
+    needsHumanStatus: 403,
     format429: (msg) => ({
       error: {
         message: msg,

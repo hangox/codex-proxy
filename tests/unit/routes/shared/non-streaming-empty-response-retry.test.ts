@@ -59,6 +59,14 @@ function makePool(acquireResult: AcquiredAccount | null = acquired()): AccountPo
       disabled: 0,
       banned: 0,
     })),
+    // ★ #81：同一个诊断分支还会调这个补并发槽位维度，mock 需要提供实现。
+    diagnoseAcquireFailure: vi.fn(() => ({
+      reason: "quota_window",
+      concurrencySaturatedCount: 0,
+      quotaWindowCount: 1,
+      needsHumanCount: 0,
+      earliestQuotaResetAt: null,
+    })),
   } as unknown as AccountPool;
 }
 

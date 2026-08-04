@@ -125,12 +125,7 @@ function createTestFormat(): FormatAdapter {
   return {
     tag: "Test",
     noAccountStatus: 503 as StatusCode,
-    formatNoAccount: () => ({
-      error: {
-        message: "No account available for this model",
-        type: "server_error",
-      },
-    }),
+    needsHumanStatus: 403 as StatusCode,
     format429: (msg: string) => ({
       error: { message: msg, type: "rate_limit_error" },
     }),

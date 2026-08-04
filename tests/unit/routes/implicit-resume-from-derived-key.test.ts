@@ -153,7 +153,7 @@ function getCapturedCodexRequests(): CodexResponsesRequest[] {
 const directProxyFormat: FormatAdapter = {
   tag: "DirectProxyTest",
   noAccountStatus: 503,
-  formatNoAccount: () => ({ error: "no_account" }),
+  needsHumanStatus: 403,
   format429: (message) => ({ error: message }),
   formatError: (_status, message) => ({ error: message }),
   streamTranslator: async function* () {

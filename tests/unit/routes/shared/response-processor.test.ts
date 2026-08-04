@@ -42,7 +42,7 @@ function createMockAdapter(options?: {
   return {
     tag: "Test",
     noAccountStatus: 503,
-    formatNoAccount: vi.fn(() => ({ error: "no_account" })),
+    needsHumanStatus: 403,
     format429: vi.fn((message: string) => ({ error: "rate_limited", message })),
     formatError: vi.fn((status: number, message: string) => ({ error: "api_error", status, message })),
     streamTranslator: vi.fn(async function* (_options: FormatStreamTranslatorOptions) {
@@ -187,7 +187,7 @@ describe("streamResponse", () => {
     const adapter = {
       tag: "Test",
       noAccountStatus: 503,
-      formatNoAccount: vi.fn(() => ({ error: "no_account" })),
+      needsHumanStatus: 403,
       format429: vi.fn((message: string) => ({ error: "rate_limited", message })),
       formatError: vi.fn((status: number, message: string) => ({ error: "api_error", status, message })),
       streamTranslator: vi.fn(async function* (options: FormatStreamTranslatorOptions) {

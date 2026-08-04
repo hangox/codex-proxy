@@ -53,6 +53,14 @@ function mockPool(options: {
     hasAvailableAccounts: vi.fn(() => options.available),
     getPoolSummary: vi.fn(() => options.summary ?? summary()),
     acquire: vi.fn(() => options.acquiredAccount ?? null),
+    // ★ #81：acquireAccount 的"没有可用账号"诊断分支还会调这个，mock 需要提供实现。
+    diagnoseAcquireFailure: vi.fn(() => ({
+      reason: "needs_human",
+      concurrencySaturatedCount: 0,
+      quotaWindowCount: 0,
+      needsHumanCount: 1,
+      earliestQuotaResetAt: null,
+    })),
   } as unknown as AccountPool;
 }
 

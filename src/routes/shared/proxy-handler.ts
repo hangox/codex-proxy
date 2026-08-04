@@ -83,7 +83,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   const preferredEntryId = req.requiredAccountEntryId ?? sessionContext.preferredEntryId ?? undefined;
   const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, preferredEntryId);
   if (!acquired) {
-    return respondWithNoAccount({ c, req, fmt });
+    return respondWithNoAccount({ c, req, fmt, pool: accountPool });
   }
   if (req.requiredAccountEntryId !== undefined && acquired.entryId !== req.requiredAccountEntryId) {
     releaseAccount(accountPool, acquired.entryId);

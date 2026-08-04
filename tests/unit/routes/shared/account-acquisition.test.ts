@@ -7,6 +7,7 @@ interface MockPool {
   release: ReturnType<typeof vi.fn>;
   getEntry: ReturnType<typeof vi.fn>;
   getPoolSummary: ReturnType<typeof vi.fn>;
+  diagnoseAcquireFailure: ReturnType<typeof vi.fn>;
 }
 
 const DEFAULT_POOL_SUMMARY = {
@@ -20,6 +21,14 @@ const DEFAULT_POOL_SUMMARY = {
   banned: 0,
 };
 
+const DEFAULT_DIAGNOSIS = {
+  reason: "needs_human" as const,
+  concurrencySaturatedCount: 0,
+  quotaWindowCount: 0,
+  needsHumanCount: 1,
+  earliestQuotaResetAt: null,
+};
+
 function createMockPool(): MockPool {
   return {
     acquire: vi.fn(),
@@ -28,6 +37,9 @@ function createMockPool(): MockPool {
     // 排查 19% root compact 静默降级新加的诊断分支——"没有可用账号"时
     // acquireAccount 会调用它拼一行池状态构成的 warn，mock 需要提供实现。
     getPoolSummary: vi.fn().mockReturnValue(DEFAULT_POOL_SUMMARY),
+    // ★ #81：并发槽位打满会让 active=1 这类聚合计数看起来"健康"却拿不到
+    // 账号——diagnoseAcquireFailure 补上这一维，同样只在失败冷路径调用。
+    diagnoseAcquireFailure: vi.fn().mockReturnValue(DEFAULT_DIAGNOSIS),
   };
 }
 
@@ -81,7 +93,31 @@ describe("acquireAccount", () => {
     }
   });
 
-  it("no-account warn is silent (no getPoolSummary call, no throw) when tag is omitted", () => {
+  it("★ #81: no-account warn includes the diagnosis breakdown (reason + per-bucket counts), not just the status-blind pool summary", () => {
+    pool.acquire.mockReturnValue(null);
+    pool.diagnoseAcquireFailure.mockReturnValue({
+      reason: "concurrency_saturated",
+      concurrencySaturatedCount: 1,
+      quotaWindowCount: 0,
+      needsHumanCount: 0,
+      earliestQuotaResetAt: null,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      acquireAccount(pool as never, "gpt-5.4", ["e1"], "OpenAI");
+
+      expect(pool.diagnoseAcquireFailure).toHaveBeenCalledWith({ excludeIds: ["e1"], model: "gpt-5.4" });
+      const line = String(warnSpy.mock.calls[0]![0]);
+      expect(line).toContain("diagnosis: reason=concurrency_saturated");
+      expect(line).toContain("concurrency_saturated=1");
+      expect(line).toContain("quota_window=0");
+      expect(line).toContain("needs_human=0");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("no-account warn is silent (no getPoolSummary/diagnoseAcquireFailure call, no throw) when tag is omitted", () => {
     pool.acquire.mockReturnValue(null);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -89,6 +125,7 @@ describe("acquireAccount", () => {
       expect(result).toBeNull();
       expect(warnSpy).not.toHaveBeenCalled();
       expect(pool.getPoolSummary).not.toHaveBeenCalled();
+      expect(pool.diagnoseAcquireFailure).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }

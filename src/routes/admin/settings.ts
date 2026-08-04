@@ -79,7 +79,7 @@ export function createSettingsRoutes(): Hono {
       return c.json({ error: `rotation_strategy must be one of: ${ROTATION_STRATEGIES.join(", ")}` });
     }
 
-    mutateYaml(getLocalConfigPath(), (data) => {
+    await mutateYaml(getLocalConfigPath(), (data) => {
       if (!data.auth) data.auth = {};
       (data.auth as Record<string, unknown>).rotation_strategy = body.rotation_strategy;
     });
@@ -124,7 +124,7 @@ export function createSettingsRoutes(): Hono {
       }
     }
 
-    mutateYaml(getLocalConfigPath(), (data) => {
+    await mutateYaml(getLocalConfigPath(), (data) => {
       if (!data.server) data.server = {};
       (data.server as Record<string, unknown>).proxy_api_key = newKey;
     });
@@ -322,7 +322,7 @@ export function createSettingsRoutes(): Hono {
     const oldPort = config.server.port;
     const oldDefaultModel = config.model.default;
 
-    mutateYaml(getLocalConfigPath(), (data) => {
+    await mutateYaml(getLocalConfigPath(), (data) => {
       if (body.port !== undefined) {
         if (!data.server) data.server = {};
         (data.server as Record<string, unknown>).port = body.port;
@@ -548,7 +548,7 @@ export function createSettingsRoutes(): Hono {
       }
     }
 
-    mutateYaml(getLocalConfigPath(), (data) => {
+    await mutateYaml(getLocalConfigPath(), (data) => {
       if (!data.quota) data.quota = {};
       const quota = data.quota as Record<string, unknown>;
       if (body.refresh_interval_minutes !== undefined) {

@@ -48,7 +48,7 @@ export function createLogRoutes(): Hono {
     const paused = typeof body.paused === "boolean" ? body.paused : undefined;
 
     if (enabled !== undefined) {
-      mutateYaml(getLocalConfigPath(), (data) => {
+      await mutateYaml(getLocalConfigPath(), (data) => {
         if (!data.logs) data.logs = {};
         (data.logs as Record<string, unknown>).enabled = enabled;
       });

@@ -97,7 +97,7 @@ export function createOllamaAdminRoutes(): Hono {
       return c.json({ error: validationError });
     }
 
-    mutateYaml(getLocalConfigPath(), (data) => {
+    await mutateYaml(getLocalConfigPath(), (data) => {
       if (!data.ollama) data.ollama = {};
       const ollama = data.ollama as Record<string, unknown>;
       if (body.enabled !== undefined) ollama.enabled = body.enabled;

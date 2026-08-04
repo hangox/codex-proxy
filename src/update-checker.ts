@@ -97,8 +97,8 @@ function readMatchingExtractedChromiumVersion(version: string, build: string): s
   }
 }
 
-function syncDefaultConfigVersion(version: string, build: string, chromiumVersion?: string): void {
-  mutateYaml(getConfigPath(), (data) => {
+async function syncDefaultConfigVersion(version: string, build: string, chromiumVersion?: string): Promise<void> {
+  await mutateYaml(getConfigPath(), (data) => {
     const existingClient = data.client;
     const client: Record<string, unknown> = isRecord(existingClient) ? existingClient : {};
     data.client = client;
@@ -133,7 +133,7 @@ function parseAppcast(xml: string): {
   };
 }
 
-function applyVersionUpdate(version: string, build: string): void {
+async function applyVersionUpdate(version: string, build: string): Promise<void> {
   const chromiumVersion = readMatchingExtractedChromiumVersion(version, build);
   const versionState = {
     app_version: version,
@@ -156,7 +156,7 @@ function applyVersionUpdate(version: string, build: string): void {
   // Keep the YAML baseline current so the configured fingerprint does not drift
   // back to stale Desktop UA/build values after cleanup or deployment.
   try {
-    syncDefaultConfigVersion(version, build, chromiumVersion);
+    await syncDefaultConfigVersion(version, build, chromiumVersion);
   } catch {
     // best-effort persistence; runtime override above still keeps this process current
   }
@@ -288,7 +288,7 @@ export async function checkForUpdate(): Promise<UpdateState> {
     console.log(
       `[UpdateChecker] *** UPDATE AVAILABLE: v${version} (build ${build}) — current: v${current.app_version} (build ${current.build_number})`,
     );
-    applyVersionUpdate(version!, build!);
+    await applyVersionUpdate(version!, build!);
     state.current_version = version!;
     state.current_build = build!;
     state.update_available = false;

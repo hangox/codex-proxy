@@ -126,6 +126,70 @@ opaque compact 开关、日志设置等所有本地覆盖）→ 容器仍能用 
 - **`docker logs --since <T>` 是按 docker 收到日志行的时间过滤，不是按消息体里应用自己打的 `ts` 字段**——排查时如果不确认这一点，容易把上一次启动的残留日志行当成本次启动的证据，产生错误的排查方向。
 - **恢复后必须验证`/admin/general-settings`（或同类受鉴权端点）的实际加载值，不能只看容器起来、`/health` 200 就收工**——这次真实发生过"配置文件内容正确、容器健康、但某个开关因为 YAML 嵌套层级写错（该在 `model:` 下的键被误写在顶层）而没有生效"，详见下一节。
 
+### ★ 恢复本身是不完整的，而且不完整了大半天没人发现（2026-08-04）
+
+**上面那份"恢复完成"的记录本身就是错的。** 恢复内容是凭一份 `sed -n '10,25p'` 的**局部切片**口述重建的，当成了全文，结果**漏了 4 个键**，生产就这么带着 schema 默认值跑了大半天：
+
+| 键 | 事故前 | 恢复后（静默走默认） | 后果 |
+|---|---|---|---|
+| `auth.max_concurrent_per_account` | 30 | 3 | 单账号并发上限骤降，第 4 个并发请求直接 529 |
+| `model.default` | `gpt-5.5` | `gpt-5.4`（实际生效 `gpt-5.2-codex`，见下节） | 不指定模型的请求打到一个**实测必然 400** 的模型 |
+| `model.default_reasoning_effort` | `high` | `null` | 推理档位静默改变 |
+| `model.system_prompt_strategy` | `developer_inline` | `instructions` | **改变发给上游的请求构造方式** |
+
+**4 个里只有 1 个会报错**（529），另外 3 个完全静默。**是用户主动问"是不是你把配置弄丢了"才查出来的**，不是任何检查发现的。
+
+**而事故前的完整备份从头到尾就在盘上，没人去看**：`/var/lib/docker/volumes/codex-proxy_codex_proxy_data/_data/local.yaml.bak-pre-2081`（560 字节，重建出来的只有 470 字节）。
+
+硬性要求：
+
+- **任何配置重建之后，必须拿一份已知良好的来源做「键结构逐条 diff」，不是「服务起来了就算好」。** 先在数据目录里找 `local.yaml.bak-*`（该目录历史上就有多份带时间戳的备份），没有备份再谈重建。
+- **口述/转述配置内容时，必须先确认手上那份是全文还是切片。** 切片当全文是这次的直接原因。
+- 读备份时注意 `local.yaml` 含 `proxy_api_key`（mode 600）——**只打印键名和缩进结构**（`sed -E "s/^([[:space:]]*[A-Za-z0-9_]+:).*/\1/"`），需要具体值时只 grep 目标那几行，不要整份 cat。
+
+### ★ 配置有三个来源，不是一个；其中一份在持久卷里长期 shadow 镜像默认值
+
+排查"配置为什么不是我以为的值"时，**先确认在看哪一份文件**：
+
+```
+/app/config/default.yaml   ← base（具名卷 codex_proxy_config，不是镜像里那份！）
+        ↓ deepMerge(raw, loaded)      config-loader.ts:143-163，local 赢
+/app/data/local.yaml       ← 覆盖层
+```
+
+容器里有**两份** `default.yaml`：`/defaults/default.yaml`（镜像自带，等于仓库 `config/default.yaml`，`Dockerfile:110` 的 `cp -r` 存的）和 `/app/config/default.yaml`（持久卷里的历史快照，**这份才被读**）。
+
+**后果：仓库 `config/default.yaml` 里改的任何 schema 默认值，只要这台机器的卷不清空就永远不生效。** 2026-08-04 实测该卷里 `model.default` 还是 `gpt-5.2-codex`（仓库当时是 `gpt-5.4`），而这个模型在生产账号上**实测返回 400** `not supported when using Codex with a ChatGPT account`——一直被 `local.yaml` 的显式值压着才没暴露，事故把 `local.yaml` 抹了它才浮上来。
+
+**不能简单删卷重建**：`update-checker.ts:100-111` 的 `syncDefaultConfigVersion` 会往这份文件里写 `client.app_version`/`build_number`/`chromium_version`。连带推论——**这个文件的 mtime 不能当作"有人手改过某个业务键"的证据**，很可能只是自动更新写版本号留下的（排查时差点因此把一个陈值误判成"比备份更晚的正确状态"）。
+
+全量 diff 这个卷、确认还有多少字段卡在历史时间点，是未完成的待办。
+
+### `mutateYaml` 无跨进程锁（潜在缺陷，单进程下不触发）
+
+`src/utils/yaml-mutate.ts` 全文 29 行，读-改-写-rename **无任何锁**，且 `.tmp` 用固定名（`local.yaml.tmp`）所有调用方共用（7 个调用点：`settings.ts` 4 处、`ollama.ts`、`logs.ts`、`update-checker.ts`）。
+
+单进程内是安全的（Node 同步 fs 不交错，实测复现不出丢数据），**跨进程/多副本才会出问题**。已知还有一个**绕过者**：compose 启动脚本用 js-yaml 直接重写 `proxy_api_key`/`trust_proxy`，它不会去拿任何锁。
+
+**实测的失败模式和预期不一样，记实测的那个**：原本预期是"两份 tmp 互相覆盖 → 内容被搅拌成混合体"（静默损坏）。用 `child_process.fork` 起两个真进程跑红测，**第一轮就崩**，报的是 `ENOENT: rename '.../local.yaml.tmp' -> '.../local.yaml'`——一个进程 rename 走了共享的 tmp，另一个 rename 时目标已不存在。**是响亮的崩溃，不是静默损坏**，而且跨进程下极易复现。内容混合在理论上仍可能，但不是实际观测到的形态。
+
+**这条修复的动机是代码审查发现的潜在缺陷，不是已确认复现的生产事故——不要在文档或 commit message 里把它写成"修复了配置丢失"。**
+
+### 附：一次自造的假故障，以及戳破它的判据（2026-08-04）
+
+排查上面那个锁问题的起因，是一次**被误报的"配置键自己消失了"**：PATCH 返回 `success:true`、复核显示 `developer_inline`，稍后却观察到该键从 `local.yaml` 里没了，容器 `RestartCount=0`。据此推断出"并发写入互相覆盖"，还写成了任务描述里的既定结论。
+
+**三条独立证据把这个机制推翻了**：生产是单进程（`ps`/`/proc` 确认无 cluster worker）；`mutateYaml` 函数体内没有任何 `await`，Node run-to-completion 保证同进程两次调用不会交错（**写脚本真跑了一遍，复现不出来**）；访问日志显示事故窗口内只有一次写请求，其余 5 个写路径 90 分钟内零调用。
+
+**真正戳破它的是一个物理矛盾**：报告同时声称「mtime 停在 00:47:04 没再变过」和「该键后来消失了」，而 00:47:04 那次写**正是把这个键加进去的那次**——同文件、同 mtime、内容不可能不同。顺着这个矛盾排查（`md5sum` + `docker inspect` 确认 `/app/data` 只有一个卷挂载、不存在第二条路径），结论是**这次压根没发生过键消失**，是把 PATCH 自己的响应体误当成了一次独立的复核、又把两次检查的先后顺序拼错了。
+
+**留下来的判据，比这个假故障本身有用：**
+
+- **PATCH 的响应体不是复核证据**——它是同一次请求的产物。要复核就另发一次 GET，或者直接读磁盘。
+- **GET `/admin/*` 读的是内存 config，不是磁盘。** 想确认"真的落盘了"只能 `cat` 文件。
+- **每次 Bash 调用是独立会话、SSH 远端也不留命令历史**，靠回忆重建"我当时按什么顺序跑了什么"极不可靠。**排查中的关键观测要当场记下命令和输出**，不要事后凭印象拼时间线。
+- **遇到自相矛盾的证据链，先怀疑观测口径，不要先编机制。** 这次的教训是双向的：报告方拼错了时间线，而收到报告的一方（team-lead）没有核对矛盾就把推测写成了任务描述里的既定结论。
+
 ## 未知配置键被 Zod 静默丢弃
 
 2026-08-03 磁盘事故恢复 `local.yaml` 时，`claude_code_opaque_compact_experimental`（及另外两个应属于 `model:` 的键）被误写在 YAML 顶层。`ConfigSchema`（`src/config-schema.ts`）对未知顶层键是**非 strict、静默丢弃**——后果是：

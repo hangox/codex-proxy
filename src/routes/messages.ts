@@ -68,6 +68,31 @@ import {
  */
 const COMPACT_FALLBACK_HEADER = "x-codex-proxy-compact-fallback";
 
+/**
+ * 诊断 header 只在真的走了 root/recompact fallback 时才打——不改响应本身
+ * 的 status/body/流式行为，纯附加，用户在会话内看不到，纯排查用途。两个
+ * 响应分支（api-key/adapter 走 `handleDirectRequest`，其余走
+ * `handleProxyRequest`）共用，避免各写一遍 `res.headers.set(...)`。
+ *
+ * ★ #108/#111：这里以前还顺带调用 `recordCompactOutcome` 记一条语义残缺
+ * 的 `"render_started"`（"这次重试已经发出，但不知道上游接没接受、更不
+ * 知道摘要有没有生成成功"）——那是 `messages.ts` 这一层的已知局限：这次
+ * fallback 请求恒为流式，`proxy-error-response.ts` 对流式请求的所有同步
+ * 失败分支统一返回 HTTP 200（真实状态码编码进 SSE body），`res.status`
+ * 因此不管成败都一样，在这里已经无法辨别真相。
+ *
+ * 但"这一层看不到"不等于"整条调用链都看不到"——真正可信的完成信号在更
+ * 深的调用栈里（`proxy-handler.ts` 几个从未进入流式阶段就终止的分支、
+ * `streaming-handler.ts` 的 `finally` 块），那几个地方现在会各自直接调用
+ * `compact-outcome-log.ts` 的 `recordCompactFallbackRenderOutcome`，用
+ * 真实成败（`render_completed`/`upstream_failed`）替代这里曾经的猜测，
+ * 见该函数完整文档。这个函数因此不再需要做任何记录，只剩 header。
+ */
+function finalizeCompactFallbackResponse(res: Response): Response {
+  res.headers.set(COMPACT_FALLBACK_HEADER, "1");
+  return res;
+}
+
 function makeError(
   type: AnthropicErrorType,
   message: string,
@@ -786,6 +811,10 @@ export function createMessagesRoutes(
 
     // 见 COMPACT_FALLBACK_HEADER 的文档注释。
     let compactFallbackOccurred = false;
+    // ★ #108/#111：render 的 duration_ms 起点——只在 compactFallbackOccurred
+    // 置真的同一行赋值，见下面赋值处的完整理由（不能跟 opaque 尝试自己的
+    // 耗时重叠计算）。
+    let fallbackDecidedAt: number | undefined;
     if (compactPrompt && clientConversationId !== null && req.stream === true && !allowUnauthenticated && opaqueCompactEnabled) {
       // store 不可用时必须在打上游之前 fail-closed：否则会白花一次 compact 调用，
       // 拿到 output 后却无处保存，最终仍要报错。
@@ -962,6 +991,11 @@ export function createMessagesRoutes(
                   estimateSource: error.estimateSource,
                   processedFraction: error.processedFraction,
                   cheapEstimateTokens: error.cheapEstimateTokens,
+                  // ★ #115：内容画像三件套，同样整条链路一起接，不留半截
+                  // ——见 CompactServiceError 的字段文档。
+                  hasImage: error.hasImage,
+                  imageBytes: error.imageBytes,
+                  textBytes: error.textBytes,
                   // ★ #88：耗时埋点，见 CompactServiceError 的字段文档。
                   durationMs: error.durationMs,
                   upstreamMs: error.upstreamMs,
@@ -970,25 +1004,53 @@ export function createMessagesRoutes(
             : {}),
         });
         compactFallbackOccurred = true;
+        // ★ team-lead 复核指出的问题：如果这里仍然用 requestStartedAt
+        // （整个请求进来那一刻，opaque 尝试**之前**）当 render 的耗时起点，
+        // opaque 尝试自己花的时间会被重复计入 render 的 duration_ms——多数
+        // 情况下 opaque 失败很快（几十毫秒）可以忽略，但如果 opaque 是被
+        // 上游拖到超时才失败（数十秒量级），render 的耗时会严重失真，而
+        // 那恰恰是最需要看清"降级之后到底花了多久"的场景。用户会把 opaque
+        // 那条和 render 那条并排对比，两条不能重叠计时。这里改成"降级决定
+        // 这一刻"——`recordOpaqueCompactFallback` 落盘之后立刻捕获，是 render
+        // 真正开始（跌出 if、准备调用 handleProxyRequest/handleDirectRequest）
+        // 之前最后一个时间点，跟 opaque 尝试自己的耗时不再重叠。
+        fallbackDecidedAt = Date.now();
       }
     }
+
+    // ★ #108/#111：只在真的降级时才挂上这个上下文——`proxy-handler.ts`/
+    // `streaming-handler.ts` 靠它判断"这次请求要不要在终止点记一条
+    // fallback_render 结果"，见 `ProxyRequest.compactFallbackRender` 和
+    // `recordCompactFallbackRenderOutcome` 的文档。`proxyReq` 在
+    // `compactFallbackOccurred` 判定之前就已经构建好（对象字面量类型不含
+    // 这个可选字段），这里用一次浅拷贝补上，不改 `proxyReq` 本身。
+    // `startedAt` 用 `fallbackDecidedAt`（降级决定那一刻），不是
+    // `requestStartedAt`（整个请求进来那一刻）——不能让 opaque 尝试自己的
+    // 耗时重叠计进 render 的 duration_ms，见上面赋值处的注释。
+    const proxyReqWithFallbackContext = compactFallbackOccurred
+      ? { ...proxyReq, compactFallbackRender: { requestId, startedAt: fallbackDecidedAt ?? requestStartedAt } }
+      : proxyReq;
 
     // 诊断 header 只在真的走了上面这条 root compact fallback 时才打——
     // 不改响应本身的 status/body/流式行为，纯附加。
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directModel = routeMatch.resolvedModel ?? req.model;
       const directReq = {
-        ...proxyReq,
+        ...proxyReqWithFallbackContext,
         model: directModel,
         codexRequest: { ...codexRequest, model: directModel },
       };
       const res = await handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
-      if (compactFallbackOccurred) res.headers.set(COMPACT_FALLBACK_HEADER, "1");
+      if (compactFallbackOccurred) {
+        return finalizeCompactFallbackResponse(res);
+      }
       return res;
     }
 
-    const res = await handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
-    if (compactFallbackOccurred) res.headers.set(COMPACT_FALLBACK_HEADER, "1");
+    const res = await handleProxyRequest({ c, accountPool, cookieJar, req: proxyReqWithFallbackContext, fmt, proxyPool });
+    if (compactFallbackOccurred) {
+      return finalizeCompactFallbackResponse(res);
+    }
     return res;
   });
 

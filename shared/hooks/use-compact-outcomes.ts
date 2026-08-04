@@ -15,7 +15,24 @@ export interface CompactOutcomeBreakdown {
   budget_exceeded: number;
   upstream_failed: number;
   denied: number;
+  /**
+   * ★ task #109（backend-dev 追加落地）：这个 outcome 只会来自
+   * `compact_path === "fallback_render"` 的记录。在顶层 `by_request`/
+   * `by_session`（"opaque 压缩成功率"这张卡片一直用的口径）里恒为 0——
+   * 那两个字段默认排除 fallback_render，是刻意保住既有指标定义不被稀释，
+   * 不是这个字段没接上。真正有意义的地方是 `CompactOutcomeStats.render`
+   * 那组并列数据。
+   */
+  render_completed: number;
   total: number;
+  /**
+   * ★★ task #109：`CompactOutcomeStats.render` 那组里，这个字段名字虽然
+   * 叫 `success_rate`，算的却恒是 `success / total`——而 render 组永远没有
+   * `success`（只有 `render_completed`），所以这个字段对 render 组**没有
+   * 意义**，前端不能直接展示它。render 组的"完成率"要自己拿
+   * `render_completed / total` 现算（见 `CompactOutcomesCard.tsx`），
+   * backend-dev 原话："请不要直接展示它"。
+   */
   success_rate: number;
 }
 
@@ -29,6 +46,24 @@ export interface CompactOutcomeStats {
     estimated_tokens?: number;
     budget_tokens?: number;
   }>;
+  /**
+   * ★ task #109（backend-dev 追加落地，team-lead 批准"summary 默认排除
+   * fallback_render"时的附加条件）：跟顶层 `by_request`/`by_session` 并列
+   * 的第二组数据——"降级之后那次重试，救回来多少"。跟顶层用同一次请求、
+   * 同一套 `hours`/`model` 筛选返回，不需要前端再单独发一次
+   * `compact_path=fallback_render` 的请求。
+   *
+   * `render.by_request.success`/`budget_exceeded`/`denied` 恒为 0
+   * （fallback_render 路径不会产生这几种 outcome，只有 `render_completed`/
+   * `upstream_failed` 有意义）。没有 `recent_budget_exceeded`——不适用。
+   *
+   * 可选字段：旧版本后端（这次改动之前）的响应体没有这个键，前端必须
+   * 当"这个功能还没上线"处理（不显示 render 分组），不能假设它总是存在。
+   */
+  render?: {
+    by_request: CompactOutcomeBreakdown;
+    by_session: CompactOutcomeBreakdown;
+  };
 }
 
 const FETCH_TIMEOUT_MS = 15_000;

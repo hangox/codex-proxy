@@ -31,6 +31,29 @@ export interface ProxyRequest {
    *  Used to attribute success/failure to the image_generation request counters
    *  even when the upstream call fails before the first SSE event arrives. */
   expectsImageGen?: boolean;
+  /**
+   * ★ #108/#111：只在 opaque compact 失败降级、正在用普通生成端点重试
+   * 同一个 compact 请求时才会被设置（`messages.ts` 的
+   * `compactFallbackOccurred` 分支）。存在时，`proxy-handler.ts`/
+   * `streaming-handler.ts` 里这次请求的每一个终止点都会调用一次
+   * `compact-outcome-log.ts` 的 `recordCompactFallbackRenderOutcome`，
+   * 把降级后这次压缩自己的真实成败（不是"提交了"）记进
+   * `compact-outcome-log.jsonl`（`compact_path: "fallback_render"`）——
+   * 见该函数的完整文档，那里解释了为什么"流式响应 `res.status` 不可靠"
+   * 不等于"这条调用链拿不到真实结果"。
+   *
+   * `requestId` 对应 `compact-outcome-log.ts` 里同一个 `rid`（跟同一次
+   * 请求的 `fallback_decision` 那一行共享，方便按 rid 关联查询）；
+   * `startedAt` 是耗时计算的起点——**是"降级决定那一刻"**
+   * （`messages.ts` 的 `fallbackDecidedAt`，紧跟在 `compactFallbackOccurred = true`
+   * 后面捕获），**不是**整个 HTTP 请求进来的那一刻（`requestStartedAt`）。
+   * 两者刻意分开：如果用 `requestStartedAt`，opaque 尝试自己失败花的时间
+   * 会被重复计进 render 的 `duration_ms`——多数时候 opaque 失败很快可以
+   * 忽略，但如果 opaque 是被上游拖到超时才失败（数十秒量级），render 的
+   * 耗时会严重失真，而这正是最需要看清"降级之后到底花了多久"的场景
+   * （用户会把 opaque 那条和 render 那条并排对比，两条不能重叠计时）。
+   */
+  compactFallbackRender?: { requestId: string; startedAt: number };
 }
 
 export interface UsageHint {

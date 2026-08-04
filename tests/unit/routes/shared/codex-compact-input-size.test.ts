@@ -129,7 +129,9 @@ describe("summarizeCompactInputBytes", () => {
   });
 
   it("空输入不炸，返回 0 字节和空拆分", () => {
-    expect(summarizeCompactInputBytes([])).toEqual({ totalBytes: 0, breakdown: "" });
+    // ★ #115：多了 imageBytes/textBytes 两个字段（见该函数头部注释），
+    // 空输入下两者都应该是 0，跟 totalBytes/breakdown 保持同一条纪律。
+    expect(summarizeCompactInputBytes([])).toEqual({ totalBytes: 0, breakdown: "", imageBytes: 0, textBytes: 0 });
   });
 });
 

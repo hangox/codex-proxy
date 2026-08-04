@@ -40,6 +40,7 @@ import {
   respondWithProxyError,
 } from "./proxy-error-response.js";
 import { applyProxyErrorRetryTransition } from "./proxy-error-retry-transition.js";
+import { recordCompactFallbackRenderOutcome } from "./compact-outcome-log.js";
 import { createImplicitResumeLifecycle } from "./proxy-implicit-resume-lifecycle.js";
 import { captureImplicitResumeRequestState } from "./proxy-implicit-resume-request.js";
 import {
@@ -83,10 +84,15 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   const preferredEntryId = req.requiredAccountEntryId ?? sessionContext.preferredEntryId ?? undefined;
   const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, preferredEntryId);
   if (!acquired) {
+    // ★ #108/#111：这次请求从未拿到账号、更谈不上进入流式阶段——
+    // `streaming-handler.ts` 的 finally 钩子看不到这一类终止点，必须在这里
+    // 单独补一次。见 recordCompactFallbackRenderOutcome 文档"覆盖的终止点"。
+    recordCompactFallbackRenderOutcome(req, false, { failureStage: "pre_stream" });
     return respondWithNoAccount({ c, req, fmt, pool: accountPool });
   }
   if (req.requiredAccountEntryId !== undefined && acquired.entryId !== req.requiredAccountEntryId) {
     releaseAccount(accountPool, acquired.entryId);
+    recordCompactFallbackRenderOutcome(req, false, { httpStatus: 409, failureStage: "pre_stream" });
     return respondWithProxyError({
       c,
       req,
@@ -169,6 +175,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
         `Client should compact the conversation.`,
       );
       releaseAccount(accountPool, entryId, undefined, released);
+      recordCompactFallbackRenderOutcome(req, false, { httpStatus: 413, failureStage: "pre_stream" });
       return respondWithProxyError({
         c, req, fmt,
         status: 413,
@@ -273,6 +280,10 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
         releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+        // ★ #108/#111：这里没有产出 HTTP 响应（异常继续往上抛，由更外层的
+        // error handler 处理），但对这次 render 尝试而言依然是一次确定性
+        // 失败——不记的话这次尝试会在 compact-outcome-log 里彻底消失。
+        recordCompactFallbackRenderOutcome(req, false, { failureStage: "pre_stream" });
         throw err;
       }
 
@@ -308,6 +319,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       );
       if (req.requiredAccountEntryId !== undefined && decision.action === "retry") {
         releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+        recordCompactFallbackRenderOutcome(req, false, { httpStatus: decision.status, failureStage: "pre_stream" });
         return respondWithProxyError({
           c,
           req,
@@ -333,6 +345,9 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
         proxyPool,
       });
       if (errorRetryTransition.action === "respond") {
+        // ★ #108/#111：多账号重试全部耗尽、最终放弃的终止点——这是最常见
+        // 的"换端点之后依然被拒"（比如 prompt 还是太长）落点。
+        recordCompactFallbackRenderOutcome(req, false, { httpStatus: errorRetryTransition.status, failureStage: "pre_stream" });
         return respondWithProxyError({
           c,
           req,

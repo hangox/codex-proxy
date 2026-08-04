@@ -21,6 +21,10 @@ function breakdown(overrides: Partial<CompactOutcomeStats["by_session"]> = {}) {
     budget_exceeded: 0,
     upstream_failed: 0,
     denied: 0,
+    // ★ task #109：顶层 by_request/by_session 恒为 0（那两个口径默认排除
+    // fallback_render）——测试默认值反映这条不变量，需要非零值的测试
+    // （render 组）会自己 override。
+    render_completed: 0,
     total: 10,
     success_rate: 1,
     ...overrides,
@@ -236,5 +240,181 @@ describe("CompactOutcomesCard — variant=full（默认，压缩明细面板顶�
     mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({ stats: makeStats(), loading: false });
     renderCard({ model: "gpt-5.6-sol" });
     expect(mockCompactOutcomes.useCompactOutcomeStats).toHaveBeenCalledWith(24, "gpt-5.6-sol");
+  });
+});
+
+/**
+ * ★ task #109（backend-dev 追加落地 /summary 的 render 并列组，team-lead
+ * 批准"顶层排除 fallback_render"时明确设成的附加条件）：跟顶层 opaque
+ * 分组并列展示的"降级重试"分组——同屏可见，不用切换视图，分母写清楚。
+ */
+describe("CompactOutcomesCard — variant=full 的 render 并列组", () => {
+  function renderBreakdown(overrides: Partial<CompactOutcomeStats["by_session"]> = {}) {
+    // fallback_render 路径不会产生 success/budget_exceeded/denied，这三个
+    // 恒为 0——跟后端契约保持一致，不是随手写的占位值。
+    return {
+      success: 0,
+      budget_exceeded: 0,
+      upstream_failed: 0,
+      denied: 0,
+      render_completed: 0,
+      total: 0,
+      // ★★ 这个字段对 render 组没有意义（backend-dev 原话），故意给一个
+      // 明显错误的值（1，即 100%）——如果组件不小心直接读了这个字段而不是
+      // 自己算 render_completed/total，测试就能抓到。
+      success_rate: 1,
+      ...overrides,
+    };
+  }
+
+  it("stats.render 缺省（旧后端还没部署这次改动）时整块不渲染，不是显示成'没数据'", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({ stats: makeStats(), loading: false });
+    renderCard();
+    expect(screen.queryByText("Fallback Retries")).toBeNull();
+  });
+
+  it("stats.render 存在但 total=0 时显示'没数据'", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({ render: { by_request: renderBreakdown(), by_session: renderBreakdown() } }),
+      loading: false,
+    });
+    renderCard();
+    expect(screen.getByText("Fallback Retries")).toBeTruthy();
+    // "No data yet" 这个文案在 opaque 分组也可能出现（取决于 opaque 是否
+    // 有数据）——这里用 getAllByText 容忍两处都可能出现同一段文案。
+    expect(screen.getAllByText("No data yet").length).toBeGreaterThan(0);
+  });
+
+  it("★ 完成率自己算 render_completed/total，不直接读 success_rate 字段（那个字段对 render 组没有意义）", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        // opaque 分组这次故意也给一个跟"骗人的 render success_rate（1）"
+        // 不一样的数字（62%），避免 opaque 分组自己合法产出的百分比数字
+        // 跟这条测试想抓的 render 组 bug（直接显示了错误的 success_rate=1
+        // 即 100%）撞在一起，看不出到底是哪个数字。
+        by_request: breakdown({ success: 5, total: 8, success_rate: 5 / 8 }),
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    renderCard();
+
+    // 3/4 = 75%，不是 render.by_request.success_rate 字段里骗人的 100%
+    // （renderBreakdown() 默认给的 success_rate: 1 就是这个陷阱值）。
+    expect(screen.getByText("75%")).toBeTruthy();
+    expect(screen.queryByText("100%")).toBeNull();
+  });
+
+  it("★ 分母在句子里写清楚（不是只有一个孤立的百分比）", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    renderCard();
+    expect(screen.getByText("3 of 4 completed")).toBeTruthy();
+    // 分母提示：明确点破这组的分母跟上面 opaque 那组不是一回事。
+    expect(screen.getByText(/different denominator/)).toBeTruthy();
+  });
+
+  it("点击 render 分组的行调用 onSelectRenderOutcome，携带正确的 outcome 值", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    const onSelectRenderOutcome = vi.fn();
+    renderCard({ onSelectRenderOutcome });
+
+    fireEvent.click(screen.getByText("Completed"));
+    expect(onSelectRenderOutcome).toHaveBeenCalledWith("render_completed");
+
+    // "Upstream failed" 同时出现在 opaque 分组和 render 分组——用"点击后
+    // 调用了哪个回调"反推点的是哪一行，而不是假设文本唯一。
+    const upstreamFailedCandidates = screen.getAllByText("Upstream failed");
+    fireEvent.click(upstreamFailedCandidates[upstreamFailedCandidates.length - 1]);
+    expect(onSelectRenderOutcome).toHaveBeenCalledWith("upstream_failed");
+  });
+
+  it("★★ 消歧义：activeOutcome='upstream_failed' 但 activeCompactPath 不是 'fallback_render' 时，只高亮 opaque 分组那一行，不误伤 render 分组", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        by_request: breakdown({ upstream_failed: 2, total: 12 }),
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    renderCard({ activeOutcome: "upstream_failed", activeCompactPath: "opaque" });
+
+    const upstreamFailedCandidates = screen.getAllByText("Upstream failed");
+    expect(upstreamFailedCandidates).toHaveLength(2);
+    const opaqueRow = upstreamFailedCandidates[0].closest("div")!;
+    const renderRow = upstreamFailedCandidates[1].closest("div")!;
+    expect(opaqueRow.className).toContain("border-primary/40");
+    expect(renderRow.className).not.toContain("border-primary/40");
+  });
+
+  it("★★ 消歧义反过来：activeCompactPath='fallback_render' 时只高亮 render 分组那一行，不误伤 opaque 分组", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        by_request: breakdown({ upstream_failed: 2, total: 12 }),
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    renderCard({ activeOutcome: "upstream_failed", activeCompactPath: "fallback_render" });
+
+    const upstreamFailedCandidates = screen.getAllByText("Upstream failed");
+    const opaqueRow = upstreamFailedCandidates[0].closest("div")!;
+    const renderRow = upstreamFailedCandidates[1].closest("div")!;
+    expect(opaqueRow.className).not.toContain("border-primary/40");
+    expect(renderRow.className).toContain("border-primary/40");
+  });
+
+  it("activeOutcome='render_completed' 时 render 分组的'Completed'行高亮", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    renderCard({ activeOutcome: "render_completed", activeCompactPath: "fallback_render" });
+
+    const row = screen.getByText("Completed").closest("div")!;
+    expect(row.className).toContain("border-primary/40");
+  });
+
+  it("不传 onSelectRenderOutcome 时 render 分组的行不可点击（不报错）", () => {
+    mockCompactOutcomes.useCompactOutcomeStats.mockReturnValue({
+      stats: makeStats({
+        render: {
+          by_request: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+          by_session: renderBreakdown({ render_completed: 3, upstream_failed: 1, total: 4 }),
+        },
+      }),
+      loading: false,
+    });
+    renderCard();
+    expect(() => fireEvent.click(screen.getByText("Completed"))).not.toThrow();
   });
 });

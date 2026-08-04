@@ -1,19 +1,163 @@
 import { useState, useEffect, useRef } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useCompactOutcomeEvents } from "../../../shared/hooks/use-compact-outcome-events";
-import type { CompactOutcomeEvent, CompactOutcomeFilter } from "../../../shared/hooks/use-compact-outcome-events";
-import type { CompactOutcome } from "../../../shared/hooks/use-compact-outcomes";
+import type {
+  CompactOutcomeEvent,
+  CompactOutcomeFilter,
+  CompactOutcomeEventOutcome,
+  CompactPathFilter,
+} from "../../../shared/hooks/use-compact-outcome-events";
 import type { UsageHistoryRange } from "../../../shared/hooks/use-usage-stats";
 import type { TranslationKey } from "../../../shared/i18n/translations";
 import { CompactOutcomesCard } from "../components/CompactOutcomesCard";
 import { PillToggle } from "../components/PillToggle";
 
-const OUTCOME_META: Record<CompactOutcome, { icon: string; labelKey: TranslationKey; pillClass: string }> = {
+/** 复用给多个函数签名的翻译函数类型——避免同一段长类型在文件里重复抄写。 */
+type TFn = (key: TranslationKey, vars?: Record<string, string | number>) => string;
+
+/**
+ * ★★ task #109（qa 真实复现的崩溃，team-lead 复盘）：这里**必须**是
+ * `Partial<Record<...>>` + 兜底查询，不能是穷举式 `Record<...>`。这个
+ * 仓库刚真实撞过一次——backend-dev 上线了 `outcome: "render_completed"`
+ * 这个新值，而这个对象当时只列了 5 个旧 key，`OUTCOME_META[outcome]` 拿到
+ * `undefined`，`OutcomePill` 取 `.pillClass` 直接把整个面板崩掉
+ * （`TypeError: Cannot read properties of undefined (reading 'pillClass')`，
+ * 列表行和详情面板两处都会命中）。`PATH_META` 从一开始就是开放枚举、有
+ * 兜底，这次崩溃的正是没做同样处理的 `OUTCOME_META`——同一个仓库、同一
+ * 页面、同一次改动，两处防护标准不一致，栽的就是不一致的那一处。
+ *
+ * ★ task #111 落地后的语义更新：`render_completed`（不是 `render_started`）
+ * ——真正等到上游发出完成事件才记这个值（`streaming-handler.ts` 的
+ * `finally` 块里 `responseCompleted`），不是"提交了、不确定接没接受"那种
+ * 弱信号。降级重试真的失败（同步被拒 / 中途断流 / 客户端中止）时复用既有
+ * 的 `upstream_failed` 桶，不是一个独立值——`compact_path` 字段已经能
+ * 区分"这是 opaque 端点被拒还是通用端点被拒"，不需要再造一个新 outcome
+ * 值。`render_completed` 现在是真实、可信的完成信号，跟 opaque 的
+ * `success` 是同一强度的保证，所以刻意复用同一套视觉（不再是之前那个
+ * "进行中/待确认"的弱化蓝色）——两条路径谁成功谁失败，靠旁边的
+ * `PathBadge` 区分，不需要 `OutcomePill` 自己再发明一套"看起来没那么
+ * 可信"的视觉语言。
+ */
+const OUTCOME_META: Partial<Record<string, { icon: string; labelKey: TranslationKey; pillClass: string }>> = {
   success: { icon: "✅", labelKey: "compactOutcomeSuccess", pillClass: "bg-success-container text-success border-success/30" },
   budget_exceeded: { icon: "⚠️", labelKey: "compactOutcomeBudgetExceeded", pillClass: "bg-warning-container text-warning border-warning/30" },
   upstream_failed: { icon: "❌", labelKey: "compactOutcomeUpstreamFailed", pillClass: "bg-danger-container text-danger border-danger/30" },
   denied: { icon: "🛑", labelKey: "compactOutcomeDenied", pillClass: "bg-danger-container text-danger border-danger/30" },
+  render_completed: { icon: "✅", labelKey: "compactOutcomeRenderCompleted", pillClass: "bg-success-container text-success border-success/30" },
 };
+
+const OUTCOME_META_UNKNOWN = { icon: "?", labelKey: "compactOutcomeUnknown" as TranslationKey, pillClass: "bg-slate-50 text-slate-400 border-slate-200 dark:bg-white/5 dark:text-text-dim dark:border-border-dark" };
+
+/**
+ * 未知/尚未收录的 outcome 值一律落到这里——不崩、不静默丢掉那条记录，
+ * 跟 `pathMeta()` 同一条纪律。**这就是这次真实崩溃要补的那个兜底**，加
+ * 一个新 key（比如这次的 `render_completed`）只解决这一次事故，加这个
+ * 兜底才让下次后端再新增 outcome 值时不会重演同一场崩溃。
+ */
+function outcomeMeta(outcome: string): { icon: string; labelKey: TranslationKey; pillClass: string } {
+  return OUTCOME_META[outcome] ?? OUTCOME_META_UNKNOWN;
+}
+
+/**
+ * ★ task #109：压缩路径（`CompactOutcomeEvent.compact_path`）的展示元
+ * 数据——镜像后端 `CompactPath` 的三个值，不是两个：
+ * - `"opaque"`：真走了 opaque marker 路径。
+ * - `"fallback_decision"`：opaque 尝试为什么失败、触发了降级（这条本身
+ *   不是"降级后的压缩"，是"降级的原因"）。
+ * - `"fallback_render"`：降级之后，换端点重试的那次压缩自己的结果——
+ *   这才是用户原话"降级后的压缩"真正指的那一条。
+ *
+ * 按 team-lead 明确要求做成**开放枚举**：这里只是一个普通 `Record`，查
+ * 不到的 key（未来可能出现的第四条路径）会落进 {@link pathMeta} 的兜底
+ * 分支，显示"未分类"，不崩、也不静默丢掉那条记录——不写死"只有这三个值"
+ * 这个假设。
+ *
+ * 徽标故意不用 emoji（区别于上面 `OUTCOME_META` 的图标——那是已有设计
+ * 语言，不是这次改的对象）：纯文字 + 色块边框，任务里明确要求"能一眼
+ * 区分，但不要用 emoji 做标记"。
+ */
+const PATH_META: Partial<Record<string, { labelKey: TranslationKey; badgeClass: string }>> = {
+  opaque: {
+    labelKey: "compactPathOpaque",
+    badgeClass: "bg-slate-100 text-slate-600 border-slate-300 dark:bg-white/5 dark:text-text-dim dark:border-border-dark",
+  },
+  fallback_decision: {
+    labelKey: "compactPathFallbackDecision",
+    badgeClass: "bg-warning-container text-warning border-warning/30",
+  },
+  fallback_render: {
+    labelKey: "compactPathFallbackRender",
+    badgeClass: "bg-primary/10 text-primary border-primary/30",
+  },
+};
+
+const PATH_META_UNKNOWN = { labelKey: "compactPathUnknown" as TranslationKey, badgeClass: "bg-slate-50 text-slate-400 border-slate-200 dark:bg-white/5 dark:text-text-dim dark:border-border-dark" };
+
+/** 未知/尚未收录的 compact_path 值一律落到这里——开放枚举的兜底，见 `PATH_META` 文档。 */
+function pathMeta(path: string): { labelKey: TranslationKey; badgeClass: string } {
+  return PATH_META[path] ?? PATH_META_UNKNOWN;
+}
+
+/**
+ * ★ task #109（backend-dev 追加落地）：`CompactOutcomeEvent.failure_stage`
+ * 的展示元数据——把"降级重试失败"拆成两种排查方向完全相反的情况：
+ * - `"pre_stream"`：从未进入流式阶段就被拒绝——这次降级本身选错了，该调
+ *   预算/换模型。
+ * - `"mid_stream"`：进了流式阶段但没等到结束——链路不稳定，该查网络/
+ *   上游可用性，跟这次降级判断对不对无关。
+ *
+ * 同样按开放枚举处理（跟 `PATH_META`/`OUTCOME_META` 一致）：这个字段目前
+ * 只有这两个值，但字段文档里团队已经明确要求当开放枚举对待——未来出现
+ * 第三个值时不能崩、不能静默丢记录，只显示"未分类"。
+ */
+const FAILURE_STAGE_META: Partial<Record<string, { labelKey: TranslationKey; badgeClass: string }>> = {
+  pre_stream: {
+    labelKey: "compactFailureStagePreStream",
+    badgeClass: "bg-warning-container text-warning border-warning/30",
+  },
+  mid_stream: {
+    labelKey: "compactFailureStageMidStream",
+    badgeClass: "bg-danger-container text-danger border-danger/30",
+  },
+};
+
+const FAILURE_STAGE_META_UNKNOWN = { labelKey: "compactFailureStageUnknown" as TranslationKey, badgeClass: "bg-slate-50 text-slate-400 border-slate-200 dark:bg-white/5 dark:text-text-dim dark:border-border-dark" };
+
+/** 未知/尚未收录的 failure_stage 值一律落到这里——开放枚举的兜底，跟 `pathMeta`/`outcomeMeta` 同一条纪律。 */
+function failureStageMeta(stage: string): { labelKey: TranslationKey; badgeClass: string } {
+  return FAILURE_STAGE_META[stage] ?? FAILURE_STAGE_META_UNKNOWN;
+}
+
+/** 列表行/详情面板/关联记录卡片共用的"结果类型"徽标——避免同一段 pill 标记被抄三遍。 */
+function OutcomePill({ outcome, t }: { outcome: string; t: TFn }) {
+  const meta = outcomeMeta(outcome);
+  return (
+    <span class={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold ${meta.pillClass}`}>
+      <span>{meta.icon}</span>
+      <span>{t(meta.labelKey)}</span>
+    </span>
+  );
+}
+
+/** 列表行/详情面板/关联记录卡片共用的"压缩路径"徽标。 */
+function PathBadge({ path, t }: { path: string; t: TFn }) {
+  const meta = pathMeta(path);
+  return (
+    <span class={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-medium leading-none ${meta.badgeClass}`}>
+      {t(meta.labelKey)}
+    </span>
+  );
+}
+
+/** 详情面板"为什么"分组里用的失败阶段徽标（同步拒绝 vs 中途断流）。 */
+function FailureStageBadge({ stage, t }: { stage: string; t: TFn }) {
+  const meta = failureStageMeta(stage);
+  return (
+    <span class={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-medium leading-none ${meta.badgeClass}`}>
+      {t(meta.labelKey)}
+    </span>
+  );
+}
 
 /**
  * ★ #96（reviewer 交叉审查发现的用户可见误导）：`#91` 之前 `denied` 恒等于
@@ -190,21 +334,51 @@ function parseHoursFromUrl(raw: string | null): UsageHistoryRange | null {
 }
 
 function parseOutcomeFromUrl(raw: string | null): CompactOutcomeFilter | null {
-  if (raw === "all" || raw === "success" || raw === "budget_exceeded" || raw === "upstream_failed" || raw === "denied") {
+  if (
+    raw === "all" || raw === "success" || raw === "budget_exceeded" || raw === "upstream_failed" ||
+    raw === "denied" || raw === "render_completed"
+  ) {
     return raw;
   }
   return null;
 }
 
+/**
+ * ★ task #109：压缩路径筛选的 URL 值——只识别当前已知的三个值（镜像后端
+ * `CompactPath`），未来出现第四个值之前，旧链接里出现不认识的字符串
+ * （或压根没有这个参数）一律当"全部"处理，不报错、不崩，跟 `PATH_META`
+ * 的开放枚举兜底是同一条纪律。query 参数名 `compact_path` 照抄后端。
+ */
+function parseCompactPathFromUrl(raw: string | null): CompactPathFilter | null {
+  if (raw === "all" || raw === "opaque" || raw === "fallback_decision" || raw === "fallback_render") return raw;
+  return null;
+}
+
 /** 读一次当前 `location.search`，用于组件挂载时的初始状态——之后的读写都走 `useEffect`。 */
-function readInitialParamsFromUrl(): { hours: UsageHistoryRange | null; outcome: CompactOutcomeFilter | null; model: string | null; rid: string | null } {
-  if (typeof location === "undefined") return { hours: null, outcome: null, model: null, rid: null };
+function readInitialParamsFromUrl(): {
+  hours: UsageHistoryRange | null;
+  outcome: CompactOutcomeFilter | null;
+  model: string | null;
+  compactPath: CompactPathFilter | null;
+  rid: string | null;
+  /**
+   * ★ task #109：`rid` 不再唯一（同一次请求降级时，`fallback_decision` 和
+   * `fallback_render` 两条记录共享同一个 rid），URL 里必须再带一个 `ts`
+   * 才能精确还原选中的是哪一条——没有 `ts` 的旧链接（这次改动之前分享
+   * 出去的）仍然可以用，只是退化成"选中第一条匹配的记录"，不会报错或
+   * 选中失败。
+   */
+  ts: string | null;
+} {
+  if (typeof location === "undefined") return { hours: null, outcome: null, model: null, compactPath: null, rid: null, ts: null };
   const params = new URLSearchParams(location.search);
   return {
     hours: parseHoursFromUrl(params.get("hours")),
     outcome: parseOutcomeFromUrl(params.get("outcome")),
     model: params.get("model"),
+    compactPath: parseCompactPathFromUrl(params.get("compact_path")),
     rid: params.get("rid"),
+    ts: params.get("ts"),
   };
 }
 
@@ -231,6 +405,10 @@ export function CompactDetailPage() {
     if (initialParams.model !== null && initialParams.model !== "") {
       eventsState.setModel(initialParams.model);
     }
+    // ★ task #109：跟 outcome/model 同一套挂载时应用一次的模式。
+    if (initialParams.compactPath !== null && initialParams.compactPath !== "all") {
+      eventsState.setCompactPath(initialParams.compactPath);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -243,45 +421,85 @@ export function CompactDetailPage() {
   // 里那个陈旧的 rid 重新选回来（那样用户永远清不掉选中状态）——分页/
   // 时间窗口刷新导致 `events` 变化时，只要还没成功选中过，就会用最新一批
   // `events` 再试一次（目标 rid 可能不在第一页/当时还没加载出来）。
+  //
+  // ★ task #109：`rid` 不再唯一——同一次请求的 opaque/render 两条记录共享
+  // 同一个 rid。URL 里带 `ts` 时精确匹配那一条；没有 `ts`（这次改动之前
+  // 分享出去的旧链接）时退化成"选中第一条匹配 rid 的记录"，不报错。
   const triedInitialRidSelect = useRef(false);
   useEffect(() => {
     if (triedInitialRidSelect.current) return;
     if (!initialParams.rid) return;
-    if (!eventsState.events.some((e) => e.rid === initialParams.rid)) return;
+    const hasMatch = initialParams.ts
+      ? eventsState.events.some((e) => e.rid === initialParams.rid && e.ts === initialParams.ts)
+      : eventsState.events.some((e) => e.rid === initialParams.rid);
+    if (!hasMatch) return;
     triedInitialRidSelect.current = true;
-    eventsState.selectEvent(initialParams.rid);
+    eventsState.selectEvent(initialParams.rid, initialParams.ts ?? undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventsState.events]);
 
-  // 状态 → URL 的单向同步：hours/outcome/model/选中记录 任一变化都重写
-  // `location.search`。用 `replaceState` 不是 `pushState`——每次切筛选/翻页
-  // 选记录都会触发，用 `pushState` 会把浏览器"后退"按钮变成没用的筛选
-  // 历史重放，不是用户想要的导航语义；分享/刷新要的是"当前状态可还原"，
-  // 不是"每一步操作都能后退"。
+  // 状态 → URL 的单向同步：hours/outcome/model/compact_path/选中记录 任一
+  // 变化都重写 `location.search`。用 `replaceState` 不是 `pushState`——
+  // 每次切筛选/翻页选记录都会触发，用 `pushState` 会把浏览器"后退"按钮
+  // 变成没用的筛选历史重放，不是用户想要的导航语义；分享/刷新要的是
+  // "当前状态可还原"，不是"每一步操作都能后退"。
   useEffect(() => {
     if (typeof location === "undefined" || typeof history === "undefined") return;
     const params = new URLSearchParams(location.search);
     if (hours !== 24) params.set("hours", String(hours)); else params.delete("hours");
     if (eventsState.outcome !== "all") params.set("outcome", eventsState.outcome); else params.delete("outcome");
     if (eventsState.model !== "") params.set("model", eventsState.model); else params.delete("model");
-    if (eventsState.selected) params.set("rid", eventsState.selected.rid); else params.delete("rid");
+    // ★ task #109：query 参数名 `compact_path` 照抄后端，跟 `outcome`/
+    // `model` 一样只在不是"全部"时才写入。
+    if (eventsState.compactPath !== "all") params.set("compact_path", eventsState.compactPath); else params.delete("compact_path");
+    if (eventsState.selected) {
+      params.set("rid", eventsState.selected.rid);
+      // ★ task #109：`ts` 是精确还原选中记录的必要信息（rid 不再唯一），
+      // 见上面 rid 选中 effect 的注释。
+      params.set("ts", eventsState.selected.ts);
+    } else {
+      params.delete("rid");
+      params.delete("ts");
+    }
     const query = params.toString();
     const newUrl = `${location.pathname}${query ? `?${query}` : ""}${location.hash}`;
     if (newUrl !== `${location.pathname}${location.search}${location.hash}`) {
       history.replaceState(null, "", newUrl);
     }
-  }, [hours, eventsState.outcome, eventsState.model, eventsState.selected]);
+  }, [hours, eventsState.outcome, eventsState.model, eventsState.compactPath, eventsState.selected]);
 
   const pageStart = eventsState.total === 0 ? 0 : eventsState.page * eventsState.pageSize + 1;
   const pageEnd = eventsState.total === 0 ? 0 : Math.min(eventsState.total, (eventsState.page + 1) * eventsState.pageSize);
   const pageInfo = `${pageStart}-${pageEnd}`;
 
+  // ★ task #109/qa 崩溃复盘：选项列表跟 `OUTCOME_META` 的 key 走同一份
+  // 来源（`Object.keys`），不再逐个手写字面量——手写列表正是这次真实崩溃
+  // 的同类风险（后端加一个新 outcome 值，这里的硬编码列表却没人记得同步
+  // 更新）。跟下面 `pathFilterOptions` 用 `PATH_META` 的做法保持一致。
   const outcomeFilterOptions: Array<{ value: CompactOutcomeFilter; label: string }> = [
     { value: "all", label: t("compactFilterAll") },
-    { value: "success", label: t(OUTCOME_META.success.labelKey) },
-    { value: "budget_exceeded", label: t(OUTCOME_META.budget_exceeded.labelKey) },
-    { value: "upstream_failed", label: t(OUTCOME_META.upstream_failed.labelKey) },
-    { value: "denied", label: t(OUTCOME_META.denied.labelKey) },
+    ...Object.keys(OUTCOME_META).map((o) => ({ value: o as CompactOutcomeFilter, label: t(outcomeMeta(o).labelKey) })),
+  ];
+
+  // ★ task #109：压缩路径筛选——四档"全部/Opaque/降级判定/降级压缩"，跟
+  // 结果类型筛选是两个独立维度。选项直接来自 `PATH_META`（开放枚举），
+  // 不是硬编码三个值——`PATH_META` 以后加第四个 key，这里不用跟着改。
+  //
+  // ★ team-lead 建议顺手接上：`eventsState.availableCompactPaths` 是这个
+  // 时间窗口内实际出现过的路径（后端只按时间窗口过滤，见该字段文档）。
+  // 选项列表本身仍然固定来自 `PATH_META`（不因为窗口里暂时没数据就让某个
+  // 选项消失——那样用户会以为这个维度不存在，见 team-lead 原话），只是给
+  // 当前窗口没有记录的选项加一个弱化的视觉提示（`PillToggle` 的 `muted`），
+  // 提前告诉用户"选了大概率看到空列表，不是筛选坏了"。挂载/刷新期间
+  // `availableCompactPaths` 还是空数组时不弱化任何选项——那不代表"全部
+  // 没有数据"，只是还没加载完成。
+  const pathFilterOptions: Array<{ value: CompactPathFilter; label: string; muted?: boolean }> = [
+    { value: "all", label: t("compactFilterAll") },
+    ...Object.keys(PATH_META).map((p) => ({
+      value: p as CompactPathFilter,
+      label: t(pathMeta(p).labelKey),
+      muted: eventsState.availableCompactPaths.length > 0 && !eventsState.availableCompactPaths.includes(p),
+    })),
   ];
 
   // 零数据要区分"真的没有"和"当前筛选下没有"——筛选条件非"全部"时，即便
@@ -292,7 +510,15 @@ export function CompactDetailPage() {
   // 该窗口内没有记录的型号时会显示"暂无压缩记录"，而真相是"这个型号在这个
   // 窗口里没有记录"。**两种筛选维度都会让列表空掉，判断必须都覆盖**，只列
   // 其中一个是把"当前有没有在筛"这件事只答对了一半。
-  const isFiltered = eventsState.outcome !== "all" || eventsState.model !== "";
+  // ★ task #109：这次又新增了一个维度（压缩路径），同一条纪律——三个
+  // 筛选维度全部要覆盖，不能只顾旧的两个又漏了新的一个。
+  const isFiltered = eventsState.outcome !== "all" || eventsState.model !== "" || eventsState.compactPath !== "all";
+
+  // ★★ task #109（backend-dev 追加落地 /summary 的 render 并列组之后）：
+  // `CompactOutcomesCard` 的 `activeOutcome` prop 类型已经加宽到含
+  // `"render_completed"`——汇总卡片现在真的有一行对应它了，不用再像之前
+  // 那样把这个值转换成 `undefined` 藏起来，直接透传 `eventsState.outcome`
+  // 就行。
 
   return (
     // ★ 8.17：这个页面只作为 SPA 内的 tab 内容渲染（`App.tsx` 的
@@ -317,6 +543,15 @@ export function CompactDetailPage() {
           model={eventsState.model || undefined}
           activeOutcome={eventsState.outcome}
           onSelectOutcome={(outcome) => eventsState.setOutcome(outcome)}
+          activeCompactPath={eventsState.compactPath}
+          // ★ task #109：点击 render 分组的行，不能只 setOutcome——还要把
+          // 压缩路径钉死在 fallback_render，否则"降级重试的 upstream_failed"
+          // 点出来的列表会混进 fallback_decision 那组不相关的失败记录（见
+          // `CompactOutcomesCard.tsx` 里 `onSelectRenderOutcome` 的文档）。
+          onSelectRenderOutcome={(outcome) => {
+            eventsState.setCompactPath("fallback_render");
+            eventsState.setOutcome(outcome);
+          }}
         />
 
         <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
@@ -324,6 +559,14 @@ export function CompactDetailPage() {
             <div class="flex items-center gap-2">
               <span class="text-xs text-slate-500 dark:text-text-dim">{t("compactColResult")}</span>
               <PillToggle options={outcomeFilterOptions} value={eventsState.outcome} onChange={eventsState.setOutcome} />
+            </div>
+            {/* ★ task #109：压缩路径筛选——独立于上面的结果类型筛选，跟
+                型号筛选一样放在同一行，视觉语言保持一致（同款 label + 控件
+                的组合，只是这里复用 PillToggle 而不是下拉框，因为选项是个
+                小的固定集合，跟结果类型筛选的展示方式对称）。 */}
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-500 dark:text-text-dim">{t("compactColPath")}</span>
+              <PillToggle options={pathFilterOptions} value={eventsState.compactPath} onChange={eventsState.setCompactPath} />
             </div>
             <div class="flex items-center gap-2">
               <span class="text-xs text-slate-500 dark:text-text-dim">{t("compactColModel")}</span>
@@ -350,7 +593,19 @@ export function CompactDetailPage() {
                 onClick={() => eventsState.setOutcome("all")}
                 class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20"
               >
-                <span>{t("compactFilteredBy", { label: t(OUTCOME_META[eventsState.outcome].labelKey) })}</span>
+                <span>{t("compactFilteredBy", { label: t(outcomeMeta(eventsState.outcome).labelKey) })}</span>
+                <span aria-hidden="true">×</span>
+              </button>
+            )}
+            {/* ★ task #109：压缩路径筛选跟结果类型筛选一样不联动汇总区
+                （汇总卡片本次拍板不接入这个维度），所以同一条 8.19 的纪律
+                适用——列表被筛窄了必须在列表这一侧显眼标出来。 */}
+            {eventsState.compactPath !== "all" && (
+              <button
+                onClick={() => eventsState.setCompactPath("all")}
+                class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20"
+              >
+                <span>{t("compactFilteredBy", { label: t(pathMeta(eventsState.compactPath).labelKey) })}</span>
                 <span aria-hidden="true">×</span>
               </button>
             )}
@@ -380,20 +635,25 @@ export function CompactDetailPage() {
                       </div>
                       <div class="max-h-[480px] overflow-y-auto">
                         {eventsState.events.map((e) => {
-                          const meta = OUTCOME_META[e.outcome];
+                          // ★ task #109：`rid` 不再唯一（同一次请求的 opaque/
+                          // render 两条记录共享同一个 rid），选中态判断和
+                          // `selectEvent` 调用都必须带上 `ts` 才能精确定位到
+                          // 这一行，不能只靠 rid。
                           const isSelected = eventsState.selected?.rid === e.rid && eventsState.selected?.ts === e.ts;
                           return (
                             <button
                               key={`${e.rid}-${e.ts}`}
                               class={`w-full text-left grid grid-cols-12 items-center px-3 py-2 text-xs border-b border-slate-100 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark ${isSelected ? "bg-primary/5" : ""}`}
-                              onClick={() => eventsState.selectEvent(e.rid)}
+                              onClick={() => eventsState.selectEvent(e.rid, e.ts)}
                             >
                               <div class="col-span-2 text-slate-500 dark:text-text-dim font-mono">{formatTimeOnly(e.ts)}</div>
-                              <div class="col-span-2">
-                                <span class={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold ${meta.pillClass}`}>
-                                  <span>{meta.icon}</span>
-                                  <span>{t(meta.labelKey)}</span>
-                                </span>
+                              {/* ★ task #109：压缩路径徽标叠在结果类型 pill 下面，
+                                  同一个单元格里——不新开一列（省一次改表头/列宽的
+                                  连带改动），两者堆叠着看正好回答"发生了什么 +
+                                  走的哪条路径"这两个一起看才有意义的问题。 */}
+                              <div class="col-span-2 flex flex-col items-start gap-0.5">
+                                <OutcomePill outcome={e.outcome} t={t} />
+                                <PathBadge path={e.compact_path} t={t} />
                               </div>
                               <div class="col-span-2 truncate font-mono text-slate-600 dark:text-text-dim">{e.model}</div>
                               {/* 列表这一列只显示总耗时（简洁，跟其它列一样是单值截断展示）；
@@ -438,7 +698,12 @@ export function CompactDetailPage() {
               </div>
               <div class="p-3 max-h-[540px] overflow-y-auto">
                 {eventsState.selected ? (
-                  <DetailPanel event={eventsState.selected} t={t} />
+                  <DetailPanel
+                    event={eventsState.selected}
+                    events={eventsState.events}
+                    onSelectRelated={(rid, ts) => eventsState.selectEvent(rid, ts)}
+                    t={t}
+                  />
                 ) : (
                   <div class="text-xs text-slate-400 dark:text-text-dim py-6 text-center">
                     {t("compactDetailSelectHint")}
@@ -528,8 +793,32 @@ function CopyableRid({ rid, t }: { rid: string; t: (key: TranslationKey, vars?: 
   );
 }
 
-function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: TranslationKey, vars?: Record<string, string | number>) => string }) {
-  const meta = OUTCOME_META[e.outcome];
+function DetailPanel({
+  event: e,
+  events,
+  onSelectRelated,
+  t,
+}: {
+  event: CompactOutcomeEvent;
+  /**
+   * ★ task #109：当前已加载（受时间窗口/筛选/分页限制）的事件列表——用来
+   * 找"关联记录"（同一个 rid 的另一条记录——一次降级会产生
+   * `fallback_decision`+`fallback_render` 两条记录，共享同一个 rid，见
+   * `CompactOutcomeEvent.compact_path` 文档）。已知限制：只在这份已加载
+   * 的数据里找，不会为了找关联记录单独发一次请求——如果用户按压缩路径
+   * 筛过（比如只看 opaque），另一半记录不在 `events` 里，关联记录区就
+   * 不会显示，不是"没有关联记录"，是"当前筛选范围里看不到"。这是一个
+   * 已知取舍，不是 bug：为了这个次要功能单独发请求/绕开当前筛选条件
+   * 查询，复杂度收益不成比例。
+   */
+  events: CompactOutcomeEvent[];
+  onSelectRelated: (rid: string, ts: string) => void;
+  t: TFn;
+}) {
+  // ★ task #109：同一次客户端请求降级时，`fallback_decision`（为什么触发
+  // 降级）和 `fallback_render`（降级后那次重试自己的结果）共享同一个 rid
+  // （用 `ts` 排除自己）。
+  const related = events.find((other) => other.rid === e.rid && other.ts !== e.ts);
 
   return (
     <div>
@@ -539,10 +828,12 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
           <CopyableRid rid={e.rid} t={t} />
         </DetailRow>
         <DetailRow label={t("compactDetailResult")}>
-          <span class={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold ${meta.pillClass}`}>
-            <span>{meta.icon}</span>
-            <span>{t(meta.labelKey)}</span>
-          </span>
+          <OutcomePill outcome={e.outcome} t={t} />
+        </DetailRow>
+        {/* ★ task #109：压缩路径紧挨着结果类型——两者一起看才回答"发生了
+            什么 + 走的哪条路径"。 */}
+        <DetailRow label={t("compactDetailPath")}>
+          <PathBadge path={e.compact_path} t={t} />
         </DetailRow>
         <DetailRow label={t("compactDetailModel")}>
           <span class="font-mono">{e.model}</span>
@@ -555,6 +846,27 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
           {formatDurationSummary(e, t) ?? "—"}
         </DetailRow>
       </DetailGroup>
+
+      {/* ★ task #109：关联记录——同一次请求降级时产生的另一条记录
+          （fallback_decision ↔ fallback_render）。这正是用户要的"能对比"
+          落地成 UI：不需要用户自己去凑两条 rid 相同的行，点一下直接跳转
+          到另一条。 */}
+      {related && (
+        <DetailGroup title={t("compactDetailGroupRelated")}>
+          <button
+            type="button"
+            onClick={() => onSelectRelated(related.rid, related.ts)}
+            class="w-full text-left text-xs px-2 py-1.5 rounded-md border border-slate-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark flex items-center justify-between gap-2"
+          >
+            <span class="flex items-center gap-1.5 flex-wrap">
+              <PathBadge path={related.compact_path} t={t} />
+              <OutcomePill outcome={related.outcome} t={t} />
+            </span>
+            <span class="text-slate-400 dark:text-text-dim shrink-0 whitespace-nowrap">{t("compactDetailViewRelated")} →</span>
+          </button>
+          <p class="text-[11px] text-slate-400 dark:text-text-dim mt-1">{t("compactDetailRelatedHint")}</p>
+        </DetailGroup>
+      )}
 
       {e.outcome === "budget_exceeded" && (
         <DetailGroup title={t("compactDetailGroupWhy")}>
@@ -592,20 +904,65 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
       {(e.outcome === "upstream_failed" || e.outcome === "denied") && (
         <DetailGroup title={t("compactDetailGroupWhy")}>
           {/* ★ #96：denied 专有——HTTP 状态码不再是隐含的 409，直接摆出来，
-              跟下面"怎么回退的"里的指引对应，不用用户自己去猜。 */}
-          {e.outcome === "denied" && (
+              跟下面"怎么回退的"里的指引对应，不用用户自己去猜。denied 恒
+              显示这一行（缺省=旧数据时显示占位符"—"，不是悄悄不显示这一
+              行——这一点#96 就是这么设计的，这次没有改）。
+              ★ task #109：非 denied 时只在真的有值才显示——`fallback_render`
+              失败时（`compact_path === "fallback_render"`）可能带
+              `http_status`（`failure_stage === "pre_stream"` 恒带，见下面
+              `failure_stage` 那一行），中途断流场景（`"mid_stream"`）不带。 */}
+          {(e.outcome === "denied" || e.http_status !== undefined) && (
             <DetailRow label={t("compactDetailHttpStatus")}>{e.http_status ?? "—"}</DetailRow>
+          )}
+          {/* ★ task #109（backend-dev 追加落地）：把"降级重试失败"拆成两种
+              排查方向完全相反的情况——同步拒绝（该调预算/换模型）vs 中途
+              断流（该查链路）。缺省时（历史行）不显示这一行，不假装比
+              后端实际记录更细。 */}
+          {e.compact_path === "fallback_render" && e.failure_stage !== undefined && (
+            <DetailRow label={t("compactDetailFailureStage")}>
+              <FailureStageBadge stage={e.failure_stage} t={t} />
+            </DetailRow>
           )}
           <DetailRow label={t("compactDetailReason")}>{e.reason ?? "—"}</DetailRow>
         </DetailGroup>
       )}
 
-      <DetailGroup title={t("compactDetailGroupHow")}>
+      <DetailGroup
+        title={e.compact_path === "fallback_render" ? t("compactDetailGroupWhatRender") : t("compactDetailGroupHow")}
+      >
+        {/* ★ task #109：`fallback_render` 记录本身就是"降级之后那次尝试"，
+            标题/文案不能沿用 opaque 语境的"怎么回退的"（这次尝试失败之后
+            已经没有再降一级的地方了，用同一套文案会误导用户以为还有下一
+            层）——按 `compact_path` 先分流，opaque/fallback_decision 分支
+            保持原样，不是重新设计整套判断。
+            ★★ task #111 落地后的语义更新：`render_completed` 是真实、
+            可信的完成信号（不是"提交了，不确定接没接受"那种弱信号了）。
+            ★★ task #109（backend-dev 追加落地）：`upstream_failed` 进一步
+            按 `failure_stage` 分流——同步拒绝和中途断流的排查方向完全
+            相反，不能用同一句话打发。缺省（历史行）时退回原来那句"三种
+            情况未细分"的文案，不假装知道更多。 */}
         <p class="text-xs text-slate-600 dark:text-text-dim leading-relaxed">
-          {e.outcome === "budget_exceeded" && t("compactDetailHowBudgetExceeded")}
-          {e.outcome === "denied" && t(deniedGuidanceKey(e))}
-          {e.outcome === "upstream_failed" && t("compactDetailHowUpstreamFailed")}
-          {e.outcome === "success" && (e.replayed ? t("compactDetailHowSuccessReplayed") : t("compactDetailHowSuccess"))}
+          {e.compact_path === "fallback_render" ? (
+            <>
+              {e.outcome === "render_completed" && t("compactDetailHowRenderCompleted")}
+              {/* ★ 三元链而不是三个并列 `&&`——`failure_stage` 是开放枚举，
+                  未来出现第三个值时必须落回通用文案，不能因为不匹配前两个
+                  分支就渲染出一句空白（那样比直接显示"未细分"的兜底措辞
+                  更糟：用户会以为这里本该有文字但丢了）。 */}
+              {e.outcome === "upstream_failed" && (
+                e.failure_stage === "pre_stream" ? t("compactDetailHowRenderFailedPreStream") :
+                e.failure_stage === "mid_stream" ? t("compactDetailHowRenderFailedMidStream") :
+                t("compactDetailHowRenderUpstreamFailed")
+              )}
+            </>
+          ) : (
+            <>
+              {e.outcome === "budget_exceeded" && t("compactDetailHowBudgetExceeded")}
+              {e.outcome === "denied" && t(deniedGuidanceKey(e))}
+              {e.outcome === "upstream_failed" && t("compactDetailHowUpstreamFailed")}
+              {e.outcome === "success" && (e.replayed ? t("compactDetailHowSuccessReplayed") : t("compactDetailHowSuccess"))}
+            </>
+          )}
         </p>
       </DetailGroup>
 
@@ -627,6 +984,11 @@ function DetailPanel({ event: e, t }: { event: CompactOutcomeEvent; t: (key: Tra
           cheap_estimate_tokens 全部接进来了，那条提示已经不成立，整块
           跟着删掉（不是留一个空字符串占位），不是"顺手清理"，是它描述的
           缺口这次真的补上了。 */}
+      {/* ★ task #111 落地后：render_completed 不再需要这个提示——它曾经
+          描述的缺口（"不确认上游是否接受、更不确认是否生成成功"）已经被
+          `streaming-handler.ts` 的真实完成信号补上了，整块提示对
+          render_completed 已经不成立，不留在这里（同 #97 那次"缺口真的
+          补上了，提示跟着删掉"的处理方式，不是遗漏）。 */}
       {(e.outcome === "success" || e.outcome === "upstream_failed" || e.outcome === "denied") && (
         <DetailGroup title={t("compactDetailGroupMissing")}>
           <div class="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700/40 rounded-lg p-2 leading-relaxed">

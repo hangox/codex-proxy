@@ -333,6 +333,20 @@ export function anthropicHistoryToCompactCodexInput(
 export function summarizeCompactInputBytes(input: CodexInputItem[]): {
   totalBytes: number;
   breakdown: string;
+  /**
+   * ★ #115：`classifyInputItem` 的 `"image"`/`"text"` 桶字节数单列出来——
+   * 团队评估 #112 时确认"cheap 估算失真的两个已知根因之一就是图片"（另一个
+   * 是分词器熔断外推），#115 落地"cheap 来源放宽阈值"之后，这两个数直接
+   * 供 `budget_exceeded` 事件做内容画像：同样是 `estimate_source:"cheap"`
+   * 触发的放宽，图片占比高的请求和纯文本大请求是完全不同的失真机制，混在
+   * 一起没法回答"这次放宽到底救回了哪一类误判"。
+   *
+   * 沿用 `classifyInputItem` 已有的分类口径，**不是**新开一套统计逻辑——
+   * 已知的不精确之处同样沿用该函数文档的注意事项（只看每个 item 的第一个
+   * content part 归类，多 part 混合内容会把字节计入第一个 part 的桶）。
+   */
+  imageBytes: number;
+  textBytes: number;
 } {
   const buckets = new Map<string, { count: number; bytes: number }>();
   let totalBytes = 0;
@@ -349,7 +363,12 @@ export function summarizeCompactInputBytes(input: CodexInputItem[]): {
     .sort((a, b) => b[1].bytes - a[1].bytes)
     .map(([kind, v]) => `${kind}:${v.count}/${v.bytes}`)
     .join(",");
-  return { totalBytes, breakdown };
+  return {
+    totalBytes,
+    breakdown,
+    imageBytes: buckets.get("image")?.bytes ?? 0,
+    textBytes: buckets.get("text")?.bytes ?? 0,
+  };
 }
 
 /** 给单个 input item 归类，用于体积拆分；只看结构，不改内容。 */
@@ -878,6 +897,90 @@ export function trimCompactInputForBudget(
   return { input: trimmed, trimmedCount };
 }
 
+/**
+ * ★ #115（用户拍板，原话"大胆一点"，#112 评估阶段已确认根因）：`cheap`
+ * 来源的估算——即精确分词器整条路径都没跑（含图片，见
+ * `compactRequestHasImageContent`）或跑失败退回粗筛的那两种"算不准"场景
+ * ——预判阈值从 `budgetTokens` 放宽到 `budgetTokens × CHEAP_ESTIMATE_BUDGET_MULTIPLIER`，
+ * 超过放宽后的阈值才直接跳过上游；`budgetTokens` ~ `budgetTokens × 4` 之间
+ * 放行给上游，用真实的 400/成功结果裁决，不再由这一个粗筛数字说了算。
+ *
+ * 为什么只动 `cheap`、`precise`/`precise_extrapolated` 一行不动：分词器
+ * 路径实测误差 <1.5%（`TOKENIZER_ESTIMATE_SAFETY_MARGIN` 头部注释），
+ * 可信——可信的判断没有理由放宽，放宽等于主动引入误判。`cheap` 恰恰相反，
+ * 它触发预算预判拦截的场景本来就是"我们不信任这个数字，但没有更好的
+ * 数字"（含图片的请求：base64 字节数和真实 image token 数几乎无关，见
+ * `estimateCompactInputTokens` 头部注释；分词器加载/执行失败：极端 edge
+ * case，不应该由一个连自己都不准的数字去承担"一次性拦死"的后果）——算不
+ * 准就不该硬拦截，该做的是把决定权交给真正知道答案的一方（上游）。
+ *
+ * 为什么是 4 不是别的倍数——★ forensics 从生产捞的真实取证（不是拍脑袋，
+ * 也不是只有下面这条定性论据）：4 个 `budget_exceeded` 样本、模型
+ * `gpt-5.6-sol`（预算 390000），估算 vs 真实 `usage.input_tokens` 高估比例：
+ *
+ * | rid        | 估算 tokens | 真实 input | 高估   |
+ * |------------|------------|-----------|--------|
+ * | e7fd8794   | 868679     | 267633    | 3.25x  |
+ * | d19cf0a5   | 589908     | 267699    | 2.20x  |
+ * | bbfa4d06   | 460656     | 254247    | 1.81x  |
+ * | 355e4ffb   | 453885     | 263436    | 1.72x  |
+ *
+ * 四次真实值全部落在预算（390000）以下——四次都是误判。最大高估 3.25x，
+ * 4× 在这个实测下界之上留了余量，同时仍然覆盖 `estimateCompactInputTokens`
+ * 头部注释记录的那个已知极端案例（8.9MB、95% 图片，无论按 2.18 还是 2.70
+ * 换算都远超任何型号预算的数量级）——4× 放宽后那类请求仍然拦得住，不会把
+ * "确定救不回来"的请求放给上游白打一次。
+ *
+ * ★★ 这份数据必须带着两条限定一起看，否则会被当成比实际更强的证据：
+ *
+ * 1. **样本是 2 个独立会话，不是 4 个独立样本**——按 `conv_hash` 去重后，
+ *    `d19cf0a5`/`bbfa4d06`/`355e4ffb` 是同一会话（`74cb4942`）的三次连续
+ *    尝试，`e7fd8794` 属于另一个会话（`91c1ac60`）。**n=2，不足以单独定
+ *    任何分组常数**（比如"图片类" vs "纯文本大会话类"分别应该放宽多少）
+ *    ——这正是加 `has_image`/`image_bytes`/`text_bytes` 埋点的原因：等
+ *    生产样本攒够了，才能把 4 这个笼统数字拆成分内容类型的、真正有统计
+ *    意义的校准值。
+ * 2. **有一个未查明的异常，不强行解释**——同一会话 `74cb4942` 的三次尝试
+ *    里，第 1 次走的是"图片豁免"路径（`estimate_source=cheap`，27ms，
+ *    没碰分词器），后 2 次走的是"分词器熔断"路径（`estimate_source=cheap`，
+ *    ~4100ms，触发 2000ms 熔断退回粗筛）——内容大概率相近（同一会话连续
+ *    尝试）却被分类进了两种不同的"算不准"机制。**不能排除熔断路径这两次
+ *    的根源其实也是图片**（即两条看似独立的失真机制，实际可能是同一个
+ *    根因在不同代码路径上的两种表现）。forensics 和这次评估都只把它标记
+ *    为"未查明"，没有强行给出机制解释——这条注释延续同样的克制，不在这里
+ *    编一个听起来合理但没有验证过的归因。
+ *
+ * **4 这个数字的定位：是有实测下界（3.25x）支撑、留了余量的起点值，不是
+ * 校准结果**——n=2 不足以说"4 就是对的"，只能说"4 在已知的 2 个会话样本
+ * 之上留了安全边际，且没有让已知极端案例失守"。等埋点攒够生产样本、能
+ * 按内容类型分组之后，应该重新审视这个数字，不是把它当成长期不变的常数。
+ *
+ * 不动 `COMPACT_TOKEN_BUDGET_BY_MODEL`（每型号真实测过的预算表）和
+ * `CUMULATIVE_TIME_BUDGET_MS`/`MIN_PROCESSED_FRACTION_FOR_EXTRAPOLATION`
+ * （分词器熔断的 2000ms/20% 阈值）——这两处是团队#115 派发时明确划定的
+ * 边界，不在这次评估范围内，改动会混淆"哪个改动对应哪个观测"。
+ */
+const CHEAP_ESTIMATE_BUDGET_MULTIPLIER = 4;
+
+/**
+ * ★ #115：单个估算是否落在（放宽后的）预算内。`source !== "cheap"` 时
+ * 恒等于原始的"严格不超预算"判断，不受这次改动影响；`source === "cheap"`
+ * 时额外放宽到 `budgetTokens × CHEAP_ESTIMATE_BUDGET_MULTIPLIER`，见
+ * `CHEAP_ESTIMATE_BUDGET_MULTIPLIER` 头部的完整理由。抽成一个函数而不是
+ * 在 `planCompactRequestForBudget` 里散落判断，是因为同一条放宽规则要在
+ * 两个阶段（裁剪前的 `refined`、裁剪后的 `final`）各判一次，两处逻辑必须
+ * 保持逐字一致——散落写两遍是下一次改阈值时漏改一处的现成陷阱。
+ */
+function isEstimateWithinBudget(
+  tokens: number,
+  budgetTokens: number,
+  source: "cheap" | "precise" | "precise_extrapolated",
+): boolean {
+  if (tokens <= budgetTokens) return true;
+  if (source !== "cheap") return false;
+  return tokens <= budgetTokens * CHEAP_ESTIMATE_BUDGET_MULTIPLIER;
+}
+
 /** 单次预算校验的结果——`withinBudget:false` 时调用方应当放弃这次 compact，改走降级。 */
 export interface CompactBudgetPlan {
   compactRequest: CodexCompactRequest;
@@ -892,9 +995,13 @@ export interface CompactBudgetPlan {
    * 怀疑超限后触发的精确估算，完整跑完没有熔断）、`"precise_extrapolated"`
    * （精确估算触发了 2000ms 熔断，是按已处理比例外推出来的，可信度明显
    * 低于 `"precise"`——半截版本把这个值也标成 `"precise"` 会比完全不记录
-   * 更糟，见 `estimateTokensForBudgetCheck` 文档）。纯诊断字段，不参与
-   * `withinBudget` 判定本身，供日志/Dashboard 排查"这次降级的估算值到底
-   * 有多可信"。
+   * 更糟，见 `estimateTokensForBudgetCheck` 文档）。
+   *
+   * ★ #115 更新：这句话此前是"纯诊断字段，不参与 withinBudget 判定本身"——
+   * #115 之后不再成立。`source === "cheap"` 时，`withinBudget` 的判定阈值
+   * 会放宽到 `budgetTokens × CHEAP_ESTIMATE_BUDGET_MULTIPLIER`，见
+   * `isEstimateWithinBudget`。这个字段现在既是诊断字段，也直接参与
+   * `withinBudget` 的计算。
    */
   estimateSource: "cheap" | "precise" | "precise_extrapolated";
   /** 仅 `estimateSource === "precise_extrapolated"` 时有值，见同名字段在 `tokenizeCompactContent` 的文档。 */
@@ -908,6 +1015,20 @@ export interface CompactBudgetPlan {
    * 数据读，不用再像 8.9 那次靠 qa 专门跑真实会话切片人工标定。
    */
   cheapEstimateTokens: number;
+  /**
+   * ★ #115：这次请求是否含图片内容（`compactRequestHasImageContent`，跟
+   * 决定"是否整体退回粗筛"用的是同一个判断，不是另开一套口径）。图片是
+   * `cheap` 来源两个已知失真场景之一，这个字段配合下面的
+   * `imageBytes`/`textBytes`，让 `budget_exceeded` 事件能回答"这次放宽
+   * 到底救回的是图片请求还是纯文本大请求"——不带这个字段，`estimate_source:
+   * "cheap"` 本身分不出这两类，是完全不同的失真机制（见
+   * `CHEAP_ESTIMATE_BUDGET_MULTIPLIER` 头部文档）。
+   */
+  hasImage: boolean;
+  /** ★ #115：见 `summarizeCompactInputBytes` 对应字段文档，取自裁剪前的原始 input。 */
+  imageBytes: number;
+  /** ★ #115：见 `summarizeCompactInputBytes` 对应字段文档，取自裁剪前的原始 input。 */
+  textBytes: number;
 }
 
 /**
@@ -938,6 +1059,12 @@ export interface CompactBudgetPlan {
  * 不会在裁剪后退化回只用粗筛——裁剪本身省不了多少（见
  * `trimCompactInputForBudget` 文档"中位数只省3.2%"），精确估算在裁剪前后
  * 都应该是更可信的判据。
+ *
+ * ★ #115：下面两处 `withinBudget` 判断都改成走 `isEstimateWithinBudget`
+ * 而不是裸的 `tokens <= budgetTokens`——`source === "cheap"` 时会按
+ * `CHEAP_ESTIMATE_BUDGET_MULTIPLIER` 放宽阈值，`source` 是 `"precise"`/
+ * `"precise_extrapolated"` 时该函数行为跟放宽前逐字节一致（`tokens <=
+ * budgetTokens` 那一支），不是"顺手也放宽了精确路径"。
  */
 export async function planCompactRequestForBudget(
   compactRequest: CodexCompactRequest,
@@ -948,6 +1075,10 @@ export async function planCompactRequestForBudget(
     : 0;
 
   const initial = summarizeCompactInputBytes(compactRequest.input);
+  // ★ #115：只在裁剪前的原始 input 上算一次，见 `CompactBudgetPlan.hasImage`
+  // 等字段文档——裁剪只动 function_call_output 的文本内容，不会新增/去掉
+  // 图片，用裁剪前的值即可代表整次请求的内容画像，不需要在每个分支重算。
+  const hasImage = compactRequestHasImageContent(compactRequest);
   const cheapEstimate = estimateCompactInputTokens(initial.totalBytes + toolsBytes);
   if (cheapEstimate <= budgetTokens) {
     return {
@@ -958,11 +1089,14 @@ export async function planCompactRequestForBudget(
       trimmedCount: 0,
       estimateSource: "cheap",
       cheapEstimateTokens: cheapEstimate,
+      hasImage,
+      imageBytes: initial.imageBytes,
+      textBytes: initial.textBytes,
     };
   }
 
   const refined = await estimateTokensForBudgetCheck(compactRequest, toolsBytes);
-  if (refined.tokens <= budgetTokens) {
+  if (isEstimateWithinBudget(refined.tokens, budgetTokens, refined.source)) {
     return {
       compactRequest,
       estimatedTokens: refined.tokens,
@@ -972,6 +1106,9 @@ export async function planCompactRequestForBudget(
       estimateSource: refined.source,
       processedFraction: refined.processedFraction,
       cheapEstimateTokens: cheapEstimate,
+      hasImage,
+      imageBytes: initial.imageBytes,
+      textBytes: initial.textBytes,
     };
   }
 
@@ -985,7 +1122,7 @@ export async function planCompactRequestForBudget(
     compactRequest: trimmedRequest,
     estimatedTokens: final.tokens,
     budgetTokens,
-    withinBudget: final.tokens <= budgetTokens,
+    withinBudget: isEstimateWithinBudget(final.tokens, budgetTokens, final.source),
     trimmedCount,
     estimateSource: final.source,
     processedFraction: final.processedFraction,
@@ -998,6 +1135,9 @@ export async function planCompactRequestForBudget(
     // 0；`trimmedCount === 0` 时（多数情况，`trimCompactInputForBudget`
     // 文档记录过"中位数只省 3.2%"）两者内容范围一致，是干净的标定样本。
     cheapEstimateTokens: cheapEstimate,
+    hasImage,
+    imageBytes: initial.imageBytes,
+    textBytes: initial.textBytes,
   };
 }
 
@@ -1096,6 +1236,16 @@ export interface CompactServiceErrorClassification {
    * 没有这个字段，不强凑 0。
    */
   upstreamMs?: number;
+  /**
+   * ★ #115：见 `CompactBudgetPlan.hasImage` 同名字段文档。仅
+   * `skippedUpstream:true` 时有意义——透传自 `planCompactRequestForBudget`
+   * 的 `budgetPlan.hasImage`。
+   */
+  hasImage?: boolean;
+  /** ★ #115：见 `CompactBudgetPlan.imageBytes` 同名字段文档。仅 `skippedUpstream:true` 时有意义。 */
+  imageBytes?: number;
+  /** ★ #115：见 `CompactBudgetPlan.textBytes` 同名字段文档。仅 `skippedUpstream:true` 时有意义。 */
+  textBytes?: number;
 }
 
 /**
@@ -1194,6 +1344,12 @@ export class CompactServiceError extends Error {
   readonly cheapEstimateTokens?: number;
   readonly durationMs?: number;
   readonly upstreamMs?: number;
+  /** ★ #115：见 CompactServiceErrorClassification 同名字段文档。 */
+  readonly hasImage?: boolean;
+  /** ★ #115：见 CompactServiceErrorClassification 同名字段文档。 */
+  readonly imageBytes?: number;
+  /** ★ #115：见 CompactServiceErrorClassification 同名字段文档。 */
+  readonly textBytes?: number;
 
   constructor(
     message: string,
@@ -1220,6 +1376,9 @@ export class CompactServiceError extends Error {
     this.cheapEstimateTokens = classification.cheapEstimateTokens;
     this.durationMs = classification.durationMs;
     this.upstreamMs = classification.upstreamMs;
+    this.hasImage = classification.hasImage;
+    this.imageBytes = classification.imageBytes;
+    this.textBytes = classification.textBytes;
   }
 }
 

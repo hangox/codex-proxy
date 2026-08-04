@@ -280,6 +280,9 @@ describe("recordOpaqueCompactFallback", () => {
       expect(entry.outcome).toBe("budget_exceeded");
       expect(entry.estimated_tokens).toBe(448457);
       expect(entry.budget_tokens).toBe(390000);
+      // ★ #108：这条记的是"opaque 尝试为什么失败、触发了降级"，见
+      // compact-outcome-log.ts 的 CompactPath 文档。
+      expect(entry.compact_path).toBe("fallback_decision");
     });
 
     // ★ #97（用户原话："这个为什么是降级？"——team-lead 排查这条具体记录
@@ -383,6 +386,56 @@ describe("recordOpaqueCompactFallback", () => {
       const [entry] = readCompactOutcomeLines();
       expect(entry.duration_ms).toBe(1234);
       expect(entry.upstream_ms).toBe(980);
+    });
+
+    // ★ #115：hasImage/imageBytes/textBytes 三件套原样透传到
+    // compact-outcomes.jsonl，同一条纪律——只在 budget_exceeded 有意义，
+    // 不传时省略键，不补 false/0。
+    it("classification 带 hasImage/imageBytes/textBytes 时原样透传（cheap 放宽命中的图片场景）", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-budget-image",
+        model: "gpt-5.6-sol",
+        inputItems: 3,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Estimated compact input (~2000000 tokens) exceeds the context window budget (~390000 tokens)",
+        classification: {
+          skippedUpstream: true,
+          estimatedTokens: 2_000_000,
+          budgetTokens: 390000,
+          estimateSource: "cheap",
+          hasImage: true,
+          imageBytes: 5_000_000,
+          textBytes: 120,
+        },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect(entry.outcome).toBe("budget_exceeded");
+      expect(entry.has_image).toBe(true);
+      expect(entry.image_bytes).toBe(5_000_000);
+      expect(entry.text_bytes).toBe(120);
+    });
+
+    it("classification 不带 hasImage 等三个字段时，compact-outcomes.jsonl 里省略键，不补默认值", async () => {
+      const { recordOpaqueCompactFallback } = await import(
+        "@src/routes/shared/opaque-compact-fallback-log.js"
+      );
+      recordOpaqueCompactFallback({
+        requestId: "rid-budget-no-content-shape",
+        model: "gpt-5.6-sol",
+        inputItems: 500,
+        clientConversationId: SESSION_ID,
+        errorName: "CompactServiceError",
+        errorMessage: "Estimated compact input (~300000 tokens) exceeds the context window budget (~260000 tokens)",
+        classification: { skippedUpstream: true, estimatedTokens: 300000, budgetTokens: 260000 },
+      });
+      const [entry] = readCompactOutcomeLines();
+      expect("has_image" in entry).toBe(false);
+      expect("image_bytes" in entry).toBe(false);
+      expect("text_bytes" in entry).toBe(false);
     });
 
     it("没有 durationMs/upstreamMs 时省略键，不补 0", async () => {

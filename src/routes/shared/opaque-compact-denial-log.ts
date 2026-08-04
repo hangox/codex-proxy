@@ -170,5 +170,8 @@ export function recordOpaqueCompactDenial(input: OpaqueCompactDenialInput): void
     cause: input.cause,
     durationMs: input.durationMs,
     upstreamMs: input.upstreamMs,
+    // ★ #108：fail-closed 决策本身就是 opaque 路径内部的结果，见
+    // compact-outcome-log.ts 的 CompactPath 文档。
+    compactPath: "opaque",
   });
 }

@@ -152,6 +152,132 @@ describe("GET /admin/compact-outcomes/summary", () => {
     const body = await res.json();
     expect(body.by_request.total).toBe(2);
   });
+
+  // ★ #108：不带 compact_path 参数时，默认排除 fallback_render——保住既有
+  // "opaque 压缩成功率"卡片的数字不被这次改动稀释，见 compact-outcome-log.ts
+  // 的 CompactPath / getCompactOutcomeStats 头部注释。
+  describe("★ #108 compact_path 参数", () => {
+    it("不带 compact_path 时，默认排除 fallback_render（既有口径不变）", async () => {
+      const { Hono } = await import("hono");
+      const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+      const res = await app.request("/admin/compact-outcomes/summary?hours=all");
+      const body = await res.json();
+      expect(body.by_request.total).toBe(1);
+    });
+
+    // ★ #108（team-lead 批准附加条件）：/summary 必须在默认排除
+    // fallback_render 的同时，额外并列一个 render 键——不然"方便对比"这个
+    // 用户诉求会落空（明细列表逐条数记录不叫"方便对比"，需要一个汇总数字）。
+    describe("★ #108 /summary 并列的 render 组", () => {
+      it("默认调用（不带 compact_path）时，响应体里同时有主口径（排除 render）和并列的 render 组", async () => {
+        const { Hono } = await import("hono");
+        const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+        const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+        recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+        recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+        recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "upstream_failed", compactPath: "fallback_render" });
+
+        const app = new Hono();
+        app.route("/", createCompactOutcomesRoutes());
+        const res = await app.request("/admin/compact-outcomes/summary?hours=all");
+        const body = await res.json();
+
+        // 主口径不变：只有 opaque 那一条，render 事件被排除在外——这是
+        // 既有"opaque 压缩成功率"卡片的数字，不能被这次改动稀释。
+        expect(body.by_request.total).toBe(1);
+        // 并列的 render 组：单独统计 fallback_render 的两条事件，不占用
+        // 主口径的分母。
+        expect(body.render).toBeDefined();
+        expect(body.render.by_request.total).toBe(2);
+        expect(body.render.by_request.render_completed).toBe(1);
+        expect(body.render.by_request.upstream_failed).toBe(1);
+        expect(body.render.by_session).toBeDefined();
+        // render 组不需要 recent_budget_exceeded——fallback_render 路径
+        // 不会产生这个 outcome，塞一个恒为空数组的字段没有信息量。
+        expect(body.render.recent_budget_exceeded).toBeUndefined();
+      });
+
+      it("render 组和主口径共享同一套 hours/model 筛选条件，不会出现两组数字用了不同筛选范围", async () => {
+        const { Hono } = await import("hono");
+        const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+        const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+        recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "gpt-5.6-sol", outcome: "render_completed", compactPath: "fallback_render" });
+        recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "gpt-5.6-terra", outcome: "render_completed", compactPath: "fallback_render" });
+
+        const app = new Hono();
+        app.route("/", createCompactOutcomesRoutes());
+        const res = await app.request("/admin/compact-outcomes/summary?hours=all&model=gpt-5.6-sol");
+        const body = await res.json();
+        // render 组只统计 gpt-5.6-sol，跟主口径用的是同一个 model 参数。
+        expect(body.render.by_request.total).toBe(1);
+      });
+
+      it("即便显式传了 compact_path=fallback_render，render 组依然存在（跟主口径数字一致，冗余但不出错）", async () => {
+        const { Hono } = await import("hono");
+        const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+        const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+        recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+        const app = new Hono();
+        app.route("/", createCompactOutcomesRoutes());
+        const res = await app.request("/admin/compact-outcomes/summary?hours=all&compact_path=fallback_render");
+        const body = await res.json();
+        expect(body.by_request.total).toBe(1);
+        expect(body.render.by_request.total).toBe(1);
+      });
+    });
+
+    it("compact_path=fallback_render 时只统计 fallback_render 事件", async () => {
+      const { Hono } = await import("hono");
+      const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+      const res = await app.request("/admin/compact-outcomes/summary?hours=all&compact_path=fallback_render");
+      const body = await res.json();
+      expect(body.by_request.total).toBe(1);
+      expect(body.by_request.render_completed).toBe(1);
+    });
+
+    it("compact_path=all 时三类全部计入", async () => {
+      const { Hono } = await import("hono");
+      const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+      const res = await app.request("/admin/compact-outcomes/summary?hours=all&compact_path=all");
+      const body = await res.json();
+      expect(body.by_request.total).toBe(2);
+    });
+
+    it("非法 compact_path 值返回 400", async () => {
+      const { Hono } = await import("hono");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+
+      const res = await app.request("/admin/compact-outcomes/summary?hours=all&compact_path=not_a_real_path");
+      expect(res.status).toBe(400);
+    });
+  });
 });
 
 // ★ 8.17：压缩明细面板的列表数据源。
@@ -292,5 +418,66 @@ describe("GET /admin/compact-outcomes/events", () => {
     const eventsBody = await eventsRes.json();
 
     expect(eventsBody.total).toBe(summaryBody.by_request.total);
+  });
+
+  // ★ #108：默认展示全部三条路径（跟 /summary 默认排除 fallback_render
+  // 刻意相反），可选按 compact_path 精确筛选。
+  describe("★ #108 compact_path 参数", () => {
+    it("不带 compact_path 时不过滤——opaque/fallback_decision/fallback_render 全部展示", async () => {
+      const { Hono } = await import("hono");
+      const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "upstream_failed", compactPath: "fallback_decision" });
+      recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+      const res = await app.request("/admin/compact-outcomes/events?hours=all");
+      const body = await res.json();
+      expect(body.total).toBe(3);
+    });
+
+    it("按 compact_path 精确筛选", async () => {
+      const { Hono } = await import("hono");
+      const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+      const res = await app.request("/admin/compact-outcomes/events?hours=all&compact_path=fallback_render");
+      const body = await res.json();
+      expect(body.total).toBe(1);
+      expect(body.events[0].compact_path).toBe("fallback_render");
+    });
+
+    it("非法 compact_path 值返回 400（/events 不接受 'all' 哨兵——本来就不过滤）", async () => {
+      const { Hono } = await import("hono");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+
+      const res = await app.request("/admin/compact-outcomes/events?hours=all&compact_path=not_a_real_path");
+      expect(res.status).toBe(400);
+    });
+
+    it("★ 8.18 同款：端点透传 availableCompactPaths，供前端路径筛选下拉框", async () => {
+      const { Hono } = await import("hono");
+      const { recordCompactOutcome } = await import("@src/routes/shared/compact-outcome-log.js");
+      const { createCompactOutcomesRoutes } = await import("@src/routes/admin/compact-outcomes.js");
+
+      recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+      recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+      const app = new Hono();
+      app.route("/", createCompactOutcomesRoutes());
+      const res = await app.request("/admin/compact-outcomes/events?hours=all&compact_path=opaque");
+      const body = await res.json();
+      expect(body.availableCompactPaths).toEqual(["opaque", "fallback_render"]); // 即便筛了 path，选项列表仍然完整
+    });
   });
 });

@@ -84,14 +84,40 @@ export function CompactOutcomesCard({
   model,
   activeOutcome,
   onSelectOutcome,
+  activeCompactPath,
+  onSelectRenderOutcome,
 }: {
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
   variant?: "full" | "compact";
   hours: UsageHistoryRange;
   onHoursChange?: (h: UsageHistoryRange) => void;
   model?: string | null;
-  activeOutcome?: CompactOutcome | "all";
+  // ★ task #109：加宽到含 `"render_completed"`——这个值曾经在这个组件的
+  // 世界观里不存在（汇总卡片本次拍板不接入 render 维度），现在render 组
+  // 上线了，调用方（`CompactDetailPage.tsx`）传的 `eventsState.outcome`
+  // 本来就可能是这个值，不用再在调用方那边转换成 `undefined` 藏起来。
+  activeOutcome?: CompactOutcome | "render_completed" | "all";
   onSelectOutcome?: (outcome: CompactOutcome) => void;
+  /**
+   * ★ task #109（backend-dev 追加落地，team-lead 明确要求"排除
+   * fallback_render 的附加条件是并列展示 render 组数字"）：只对
+   * `variant="full"` 有意义——当前明细列表的压缩路径筛选值，只用来给
+   * render 分组里"选中"的那一行加高亮，跟 `activeOutcome` 是同一套用途，
+   * 不影响汇总数字本身。之所以需要单独一个 prop（不能只靠 `activeOutcome`
+   * 判断）：`upstream_failed` 这个 outcome 值在 opaque 分组（来自
+   * fallback_decision）和 render 分组（来自 fallback_render）都可能出现，
+   * 只看 `activeOutcome === "upstream_failed"` 没法区分用户筛的是哪一组，
+   * 会导致两个不相关的行同时被高亮。
+   */
+  activeCompactPath?: string;
+  /**
+   * ★ task #109：render 分组两行的点击回调——跟 `onSelectOutcome` 分开，
+   * 不复用同一个函数，是因为点击 render 分组的行不只是设置 outcome，还
+   * 必须同时把压缩路径筛选钉死在 `"fallback_render"`（否则"降级重试的
+   * upstream_failed"点出来的列表会混进 fallback_decision 那组不相关的
+   * 失败记录，用户点了却看到一堆看不懂是什么的行）。
+   */
+  onSelectRenderOutcome?: (outcome: "render_completed" | "upstream_failed") => void;
 }) {
   const { stats, loading } = useCompactOutcomeStats(hours, variant === "full" ? model : undefined);
 
@@ -100,6 +126,23 @@ export function CompactOutcomesCard({
   const breakdown: CompactOutcomeBreakdown | null =
     stats === null ? null : variant === "compact" ? stats.by_session : stats.by_request;
   const hasData = breakdown !== null && breakdown.total > 0;
+
+  // ★ task #109：render 分组的展示状态跟上面的 opaque `breakdown`/`hasData`
+  // 完全独立算——两组理论上可能一个有数据一个没有（比如这个窗口里 opaque
+  // 全部走通、一次都没降级），不能让 opaque 那边"没数据"顺带把 render 组
+  // 也吞掉，也不能反过来。`stats.render` 缺省（旧后端，这次改动还没部署到
+  // 的环境）时整块不渲染，不是显示成"没数据"——那是两件不同的事："这个
+  // 功能还没上线"和"这个功能上线了但这个窗口恰好没有降级"。
+  const renderBreakdown = variant === "full" ? stats?.render?.by_request ?? null : null;
+  const hasRenderData = renderBreakdown !== null && renderBreakdown.total > 0;
+  // ★★ backend-dev 原话："success_rate 这个字段名字是 success_rate，实际
+  // 算的是 success/total，render 组永远没有 success（只有
+  // render_completed），这个字段对 render 组没有意义，请不要直接展示
+  // 它"——自己拿 render_completed/total 现算，不读 `renderBreakdown.
+  // success_rate`。
+  const renderCompletionRate = renderBreakdown !== null && renderBreakdown.total > 0
+    ? renderBreakdown.render_completed / renderBreakdown.total
+    : 0;
 
   if (variant === "compact") {
     return (
@@ -187,7 +230,13 @@ export function CompactOutcomesCard({
               icon="❌"
               label={t("compactOutcomeUpstreamFailed")}
               count={breakdown.upstream_failed}
-              active={activeOutcome === "upstream_failed"}
+              // ★ task #109：`upstream_failed` 这个 outcome 值在 opaque
+              // 分组（来自 fallback_decision）和下面新增的 render 分组
+              // （来自 fallback_render）都可能出现——只判断
+              // `activeOutcome === "upstream_failed"` 会让两个不相关的行
+              // 同时高亮，必须再看 `activeCompactPath` 排除掉"用户其实筛的
+              // 是 render 分组那条"这种情况。
+              active={activeOutcome === "upstream_failed" && activeCompactPath !== "fallback_render"}
               onClick={onSelectOutcome ? () => onSelectOutcome("upstream_failed") : undefined}
             />
             <CompactOutcomeRow
@@ -205,6 +254,62 @@ export function CompactOutcomesCard({
             <span>{t("compactCountingBasisRequest")}</span>
           </div>
         </>
+      )}
+
+      {/* ★ task #109（backend-dev 追加落地，team-lead 明确要求）：并列展示
+          "降级重试"这组数字——跟上面 opaque 那组**完全独立**渲染（不嵌套在
+          `hasData` 分支里），理由见 `renderBreakdown`/`hasRenderData` 声明
+          处的注释。`stats.render` 缺省（旧后端）时整块不出现，不是显示成
+          "没数据"。
+          ★★ 两条硬要求都在这里落地：
+          1. 同屏可见，不用切换视图——这个 section 就在上面那组下方，同一
+             张卡片里。
+          2. 分母写清楚，不能让用户自己脑补——大字号数字旁边直接拼出
+             "{completed} of {total} completed" 这种带分母的句子（不是只有
+             一个孤立的百分比），另外 `compactRenderCountingBasisHint` 那行
+             提示明确点破"这组的分母跟上面不是一回事，不能直接比"。 */}
+      {!loading && stats?.render && (
+        <div class="mt-4 pt-4 border-t border-gray-200 dark:border-border-dark">
+          <h4 class="text-xs font-semibold text-slate-600 dark:text-text-dim mb-2">
+            {t("compactRenderGroupTitle")}
+          </h4>
+          {!hasRenderData ? (
+            <div class="text-center py-2 text-slate-400 dark:text-text-dim text-xs">{t("compactNoData")}</div>
+          ) : (
+            <>
+              <div class="text-center mb-2">
+                <div class="text-2xl font-bold text-slate-800 dark:text-text-main">
+                  {Math.round(renderCompletionRate * 100)}%
+                </div>
+                <div class="text-xs text-slate-500 dark:text-text-dim mt-1">
+                  {t("compactRenderSummary", { completed: renderBreakdown!.render_completed, total: renderBreakdown!.total })}
+                </div>
+              </div>
+
+              <div class="space-y-0.5">
+                <CompactOutcomeRow
+                  icon="✅"
+                  label={t("compactOutcomeRenderCompleted")}
+                  count={renderBreakdown!.render_completed}
+                  active={activeCompactPath === "fallback_render" && activeOutcome === "render_completed"}
+                  onClick={onSelectRenderOutcome ? () => onSelectRenderOutcome("render_completed") : undefined}
+                />
+                <CompactOutcomeRow
+                  icon="❌"
+                  label={t("compactOutcomeUpstreamFailed")}
+                  count={renderBreakdown!.upstream_failed}
+                  active={activeCompactPath === "fallback_render" && activeOutcome === "upstream_failed"}
+                  onClick={onSelectRenderOutcome ? () => onSelectRenderOutcome("upstream_failed") : undefined}
+                />
+              </div>
+
+              <div class="mt-2 flex items-start gap-1 text-[11px] text-slate-400 dark:text-text-dim">
+                <span>ⓘ</span>
+                <span>{t("compactRenderCountingBasisHint")}</span>
+              </div>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

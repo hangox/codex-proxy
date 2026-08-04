@@ -297,6 +297,17 @@ export const translations = {
     // 400，这个标签覆盖的记录现在混着 400 和 409，具体状态码见每条记录自己
     // 的 HTTP Status 行（compactDetailHttpStatus）/列表关键信息列。
     compactOutcomeDenied: "Denied",
+    // ★ task #111: a real, confirmed completion signal (the upstream
+    // stream's completion event was actually observed) — same strength of
+    // guarantee as opaque's "Success", not the earlier "request sent, not
+    // confirmed accepted" placeholder. Deliberately reuses the same visual
+    // tier as Success now that the confidence gap is gone; the PathBadge
+    // next to it already distinguishes which route produced the result.
+    compactOutcomeRenderCompleted: "Completed",
+    // ★ task #109/qa crash postmortem: fallback for any outcome value this
+    // build doesn't recognize yet — see `outcomeMeta()` in
+    // CompactDetailPage.tsx. Never crash, never silently drop the record.
+    compactOutcomeUnknown: "Unclassified",
     compactNoData: "No data yet",
     // ★ 8.19（reviewer2 P1 修复）：压缩明细页的汇总卡片固定按请求计数（不再
     // 提供按会话/按请求的视图切换——切换过去列表也不会跟着聚合，对不上），
@@ -304,6 +315,19 @@ export const translations = {
     // 这条不对称设计，防止用户以为汇总没反应过来。
     compactCountingBasisRequest:
       "Counts are per request (not deduplicated by session) — this may differ from the summary card on the dashboard overview. Clicking a row below filters the list; this summary always shows the full breakdown.",
+    // ★ task #109 (backend-dev's follow-up addition to /summary, an
+    // explicit condition team-lead attached when approving "exclude
+    // fallback_render from the top-level counts" — otherwise the user's
+    // "make it easy to compare" request goes unmet): a second, parallel
+    // group of numbers for the fallback retry — shown side by side with
+    // the opaque group above, never behind a view toggle.
+    compactRenderGroupTitle: "Fallback Retries",
+    // ★★ Denominator must be explicit in the sentence itself, not just in
+    // a percentage — team-lead's hard requirement: users must not be able
+    // to mistake this for the same denominator as the opaque group above.
+    compactRenderSummary: "{completed} of {total} completed",
+    compactRenderCountingBasisHint:
+      "This counts fallback retries specifically (after opaque compact failed) — a different denominator from the opaque breakdown above. Don't add or compare the two directly.",
     // ★ 8.19：列表被结果类型筛选收窄时的可见提示 + 清除入口。
     compactFilteredBy: "Filtered: {label}",
     compactEstTokens: "est.",
@@ -318,6 +342,31 @@ export const translations = {
     compactFilterAllModels: "All models",
     compactColTime: "Time",
     compactColResult: "Result",
+    // ★ task #109: the compact-path dimension, orthogonal to "Result"
+    // (outcome). Three values, not two — mirrors backend's `CompactPath`:
+    // "opaque" (the real opaque marker path), "fallback_decision" (why
+    // opaque failed, triggering the fallback), "fallback_render" (the
+    // retry itself, after switching to the normal-generation endpoint —
+    // this is what "the compressed output after downgrading" means).
+    // See `PATH_META` in CompactDetailPage.tsx for why it's open-ended.
+    compactColPath: "Compact Path",
+    compactPathOpaque: "Opaque",
+    compactPathFallbackDecision: "Fallback (why)",
+    compactPathFallbackRender: "Fallback (retry)",
+    // Defensive fallback for a compact_path value the UI doesn't recognize
+    // yet — never crash, never silently drop the record, see `pathMeta()`.
+    compactPathUnknown: "Unclassified",
+    // ★ task #109 (backend-dev's follow-up addition): only meaningful for
+    // compact_path === "fallback_render" && outcome === "upstream_failed".
+    // Splits "the fallback retry failed" into two directions that point at
+    // completely different root causes — see failure_stage's field doc in
+    // use-compact-outcome-events.ts.
+    compactDetailFailureStage: "Failure stage",
+    compactFailureStagePreStream: "Rejected before streaming",
+    compactFailureStageMidStream: "Disconnected mid-stream",
+    // Defensive fallback for a failure_stage value the UI doesn't recognize
+    // yet — same open-enum rule as compactPathUnknown/compactOutcomeUnknown.
+    compactFailureStageUnknown: "Unclassified",
     compactColModel: "Model",
     compactColDuration: "Duration",
     compactColKeyInfo: "Key info",
@@ -325,8 +374,19 @@ export const translations = {
     compactListEmptyFiltered: "No records match the current filter — try widening it",
     compactDetailSelectHint: "Select a record to view details",
     compactDetailGroupRecord: "Record",
+    // ★ task #109: same-rid record correlation — a fallback happens in two
+    // stages (decision, then retry), and the two records share the same
+    // request ID.
+    compactDetailGroupRelated: "Related record",
+    compactDetailViewRelated: "View",
+    compactDetailRelatedHint:
+      "Same request (same request ID) — one record is why the opaque attempt failed, the other is the fallback retry's own result.",
     compactDetailGroupWhy: "Why",
     compactDetailGroupHow: "How it fell back",
+    // ★ task #109: fallback_render records ARE the fallback attempt itself
+    // — there's no further level to fall back to, so reusing the opaque
+    // wording here would suggest one exists.
+    compactDetailGroupWhatRender: "What happened",
     compactDetailGroupSession: "Session",
     compactDetailGroupMissing: "Needs more collection",
     compactDetailTime: "Time",
@@ -334,6 +394,7 @@ export const translations = {
     compactDetailCopyRid: "Copy request ID",
     compactDetailCopied: "Copied",
     compactDetailResult: "Result",
+    compactDetailPath: "Compact path",
     compactDetailModel: "Model",
     compactDetailDuration: "Duration",
     compactDetailUpstreamMs: "upstream",
@@ -376,6 +437,33 @@ export const translations = {
       "Idempotent short-circuit — reused the previous marker without calling upstream again.",
     compactDetailHowUpstreamFailed:
       "Upstream was contacted and rejected the compact call; the request fell back to the full-generation slow path.",
+    // ★ task #111: fallback_render outcomes get their own wording — this IS
+    // the fallback attempt, not something that fell back further.
+    // ★★ Rewritten after task #111 landed: earlier copy here said "a
+    // response was received, but acceptance isn't confirmed" — that was
+    // accurate for the interim render_started design, but is now WRONG.
+    // render_completed is a real, confirmed completion signal (observed
+    // the upstream stream's actual completion event), so say so plainly —
+    // don't keep hedging language that no longer matches what the data
+    // means (see CompactOutcomeEventOutcome's doc for the full story).
+    compactDetailHowRenderCompleted:
+      "Opaque compact failed, so this request fell back to a normal (uncompacted) generation call — which completed successfully. The compression was produced by the fallback endpoint instead of the opaque marker path.",
+    // ★ task #111: also rewritten — this failure is now confirmed, not
+    // speculative. This is the fallback wording for records that don't
+    // have `failure_stage` (older rows) — new rows carry it and use the
+    // two more specific messages below instead.
+    compactDetailHowRenderUpstreamFailed:
+      "Opaque compact failed, and the fallback (uncompacted) generation call also failed to complete — either rejected by upstream, disconnected mid-stream, or aborted. These aren't distinguished from each other in this record.",
+    // ★ task #109 (backend-dev's follow-up addition): failure_stage ===
+    // "pre_stream" — never entered the streaming phase, upstream rejected
+    // it synchronously. Points at the downgrade decision itself, not the
+    // connection — surface the actionable direction, not just the fact.
+    compactDetailHowRenderFailedPreStream:
+      "Opaque compact failed, and the fallback (uncompacted) generation call never entered the streaming phase — upstream rejected it synchronously before generation started. This suggests the downgrade itself was a bad call (e.g. still too large for the fallback endpoint) — consider adjusting the budget estimation threshold or switching models, not the network.",
+    // failure_stage === "mid_stream" — upstream accepted it and started
+    // streaming, but the connection didn't survive to completion.
+    compactDetailHowRenderFailedMidStream:
+      "Opaque compact failed, and the fallback (uncompacted) generation call was accepted and started streaming — but the connection was lost before it finished (disconnect, client abort, or exhausted empty-response retries). This points at an unstable link, not a bad downgrade decision — check network/upstream availability instead.",
     compactDetailConvHash: "conv_hash",
     compactDetailConvHashHint:
       "Unstable across process restarts — the same session may show a different conv_hash. This is a deliberate privacy design, not a bug.",
@@ -834,9 +922,28 @@ export const translations = {
     // ★ #96：不再硬编码"(409)"——#91 之后族 A 撞在非 compact 请求上改成了
     // 400，具体状态码见每条记录自己的 HTTP Status 行/列表关键信息列。
     compactOutcomeDenied: "拒绝",
+    // ★ task #111：真实、可信的完成信号（真的观测到了上游发出的完成
+    // 事件），跟 opaque 的"成功"是同一强度的保证，不再是那种"提交了、
+    // 不确定接没接受"的占位信号。置信度差距已经没有了，这里刻意复用
+    // 跟"成功"同一档的视觉——旁边的 `PathBadge` 已经能区分是哪条路径
+    // 产出的结果，不需要 `OutcomePill` 自己再发明一套"看起来没那么可信"
+    // 的视觉语言。
+    compactOutcomeRenderCompleted: "已完成",
+    // ★ task #109/qa 崩溃复盘：未知 outcome 值的兜底——见
+    // CompactDetailPage.tsx 的 `outcomeMeta()`，不崩、不静默丢记录。
+    compactOutcomeUnknown: "未分类",
     compactNoData: "暂无数据",
     compactCountingBasisRequest:
       "计数口径：按请求（不按会话去重）——可能和总览页那张卡片的数字不同。点击下方某一类只筛选下方列表，本汇总始终显示全部结果类型的合计。",
+    // ★ task #109（backend-dev 追加给 /summary 落地，team-lead 批准"顶层
+    // 排除 fallback_render"时明确设成前提条件——不然"方便对比"这个用户
+    // 原话会落空）：跟上面 opaque 那组并列的第二组数字——同屏可见，不藏在
+    // 切换视图后面。
+    compactRenderGroupTitle: "降级重试",
+    // ★★ 分母必须写进句子本身，不能只给一个百分比——team-lead 的硬要求：
+    // 不能让用户把这个数字的分母和上面 opaque 那组的分母混为一谈。
+    compactRenderSummary: "{total} 次重试中，{completed} 次完成",
+    compactRenderCountingBasisHint: "这组统计的是 opaque 压缩失败之后的降级重试——分母跟上面 opaque 那组不是一回事，不能直接相加或相除对比。",
     compactFilteredBy: "筛选中：{label}",
     compactEstTokens: "估算",
     compactBudgetTokens: "预算",
@@ -849,6 +956,31 @@ export const translations = {
     compactFilterAllModels: "全部型号",
     compactColTime: "时间",
     compactColResult: "结果",
+    // ★ task #109：压缩路径维度，跟"结果"（outcome）是两个独立维度。三个
+    // 值，不是两个——镜像后端 `CompactPath`："opaque"（真走了 opaque
+    // marker 路径）、"fallback_decision"（opaque 为什么失败、触发了降级）、
+    // "fallback_render"（换端点重试的那次压缩自己的结果——这才是"降级后
+    // 的压缩"真正指的那一条）。开放枚举的理由见 CompactDetailPage.tsx 的
+    // `PATH_META` 注释——不要假设以后只会有这三个值。
+    compactColPath: "压缩路径",
+    // 中文用户对 "Opaque" 这个英文术语没有天然理解——加中文注解，而不是
+    // 直接沿用英文（team-lead 明确要求：面板是给用户看的）。
+    compactPathOpaque: "不透明压缩（Opaque）",
+    compactPathFallbackDecision: "降级判定",
+    compactPathFallbackRender: "降级压缩",
+    // 未来出现第四条路径、前端还没来得及认识这个新值时的兜底显示——不崩、
+    // 不静默丢记录，见 `pathMeta()`。
+    compactPathUnknown: "未分类",
+    // ★ task #109（backend-dev 追加落地）：只对 compact_path ===
+    // "fallback_render" && outcome === "upstream_failed" 有意义——把"降级
+    // 重试失败"拆成两个排查方向完全相反的情况，见 use-compact-outcome-
+    // events.ts 里 `failure_stage` 的字段文档。
+    compactDetailFailureStage: "失败阶段",
+    compactFailureStagePreStream: "提交前被拒",
+    compactFailureStageMidStream: "生成中断开",
+    // 未来出现第三个值时的兜底——跟 compactPathUnknown/compactOutcomeUnknown
+    // 同一条开放枚举纪律。
+    compactFailureStageUnknown: "未分类",
     compactColModel: "型号",
     compactColDuration: "耗时",
     compactColKeyInfo: "关键信息",
@@ -856,8 +988,17 @@ export const translations = {
     compactListEmptyFiltered: "没有符合筛选条件的记录，试试调整筛选范围",
     compactDetailSelectHint: "选择一条记录查看详情",
     compactDetailGroupRecord: "记录",
+    // ★ task #109：同一个 rid 的关联记录——一次降级分两阶段（先判定失败、
+    // 再执行重试），两条记录共享同一个请求 ID。
+    compactDetailGroupRelated: "关联记录",
+    compactDetailViewRelated: "查看",
+    compactDetailRelatedHint: "同一次请求（请求 ID 相同）——一条是 opaque 为什么失败，另一条是降级重试自己的结果。",
     compactDetailGroupWhy: "为什么",
     compactDetailGroupHow: "怎么回退的",
+    // ★ task #109：降级压缩记录本身就是"降级之后的那次尝试"，没有再下
+    // 一层可以回退了——沿用 opaque 语境的"怎么回退的"会让用户以为还有
+    // 下一步。
+    compactDetailGroupWhatRender: "发生了什么",
     compactDetailGroupSession: "会话",
     compactDetailGroupMissing: "需新增采集",
     compactDetailTime: "时间",
@@ -865,6 +1006,7 @@ export const translations = {
     compactDetailCopyRid: "复制请求 ID",
     compactDetailCopied: "已复制",
     compactDetailResult: "结果",
+    compactDetailPath: "压缩路径",
     compactDetailModel: "型号",
     compactDetailDuration: "耗时",
     compactDetailUpstreamMs: "上游",
@@ -893,6 +1035,23 @@ export const translations = {
     compactDetailHowSuccess: "正常完成，marker 已签发并落盘。",
     compactDetailHowSuccessReplayed: "幂等短路，直接复用上一次的 marker，未重复调用上游。",
     compactDetailHowUpstreamFailed: "已联系上游，被上游拒绝，随即降级为全量生成慢路径。",
+    // ★ task #111 落地后重写：这里之前的文案说"已经拿到响应，但接受与否
+    // 确认不了"——那是上一版 render_started 的准确措辞，现在**不对了**。
+    // render_completed 是真实、可信的完成信号（真的观测到了上游的完成
+    // 事件），应该直接说清楚，不能继续沿用一套已经不匹配数据语义的
+    // 保留措辞（完整原因见 CompactOutcomeEventOutcome 的类型文档）。
+    compactDetailHowRenderCompleted: "opaque 压缩失败，这次请求降级为一次普通（未压缩）生成调用——并且成功完成了。这次压缩是由降级端点产出的，不是通过 opaque marker 路径。",
+    // ★ task #111：这条失败也是真实确认的，不再是推测。这是没有
+    // `failure_stage` 字段的记录（历史行）用的兜底文案——新写入的行都带
+    // 这个字段，走下面两条更具体的文案。
+    compactDetailHowRenderUpstreamFailed: "opaque 压缩失败，降级后的普通（未压缩）生成调用也没能完成——可能是被上游拒绝、中途断流，或是被中止。这条记录没有细分具体是哪一种。",
+    // ★ task #109（backend-dev 追加落地）：failure_stage === "pre_stream"
+    // ——从未进入流式阶段，上游同步拒绝。指向的是"这次降级选错了"，不是
+    // 链路问题——给出可操作的方向，不只是陈述事实。
+    compactDetailHowRenderFailedPreStream: "opaque 压缩失败，降级后的普通（未压缩）生成调用从未进入流式阶段——上游在开始生成之前就同步拒绝了。这说明这次降级本身选错了（比如降级端点依然装不下），该去调预算估算阈值或者换模型，不是查网络。",
+    // failure_stage === "mid_stream" ——上游已接受、开始流式生成，但没能
+    // 撑到结束。
+    compactDetailHowRenderFailedMidStream: "opaque 压缩失败，降级后的普通（未压缩）生成调用已经被上游接受、开始流式生成——但连接没能撑到结束（中途断流、客户端中止，或空响应重试耗尽）。这说明是链路不稳定，不是降级判断出了问题——该去查网络/上游服务可用性。",
     compactDetailConvHash: "conv_hash",
     compactDetailConvHashHint: "跨进程重启时同一会话可能显示为不同的 conv_hash——这是刻意的隐私设计，不是 bug。",
     compactDetailMissingSuccess: "output_items / generation / marker_chars —— 这些值日志里有，但还没进结构化存储，需要新增采集（耗时已经在上面采集了）",

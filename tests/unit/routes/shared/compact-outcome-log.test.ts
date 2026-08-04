@@ -110,6 +110,41 @@ describe("recordCompactOutcome", () => {
     expect(entry.replayed).toBeUndefined();
   });
 
+  // ★ #115：内容画像三件套——hasImage/imageBytes/textBytes 原样落盘为
+  // has_image/image_bytes/text_bytes，缺省时是"没有这个键"（跟
+  // estimate_source 那组字段同一条纪律），不强凑成 false/0。
+  it("hasImage/imageBytes/textBytes 都传时原样落盘为 has_image/image_bytes/text_bytes", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-content-shape",
+      clientConversationId: "s1",
+      model: "gpt-5.6-terra",
+      outcome: "budget_exceeded",
+      estimateSource: "cheap",
+      hasImage: true,
+      imageBytes: 1_234_567,
+      textBytes: 42,
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.has_image).toBe(true);
+    expect(entry.image_bytes).toBe(1_234_567);
+    expect(entry.text_bytes).toBe(42);
+  });
+
+  it("hasImage/imageBytes/textBytes 不传时不落盘对应键，不补 false/0", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-content-shape-absent",
+      clientConversationId: "s1",
+      model: "m",
+      outcome: "success",
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect("has_image" in entry).toBe(false);
+    expect("image_bytes" in entry).toBe(false);
+    expect("text_bytes" in entry).toBe(false);
+  });
+
   // ★ #88：耗时埋点——四种 outcome 都可能有 duration_ms，只有真正联系过
   // 上游的才有 upstream_ms；缺省时必须是"没有这个键"（undefined），不能
   // 补 0（0 会被误读成"真的是 0ms"）。
@@ -591,5 +626,288 @@ describe("queryCompactOutcomeEvents", () => {
       expect(stats.by_request.total).toBe(1);
       expect(page.total).toBe(1);
     });
+  });
+});
+
+// ★ #108/#111（用户原话："我想把压缩都统计到这里来，就是降级后的压缩也
+// 在这里统一展示，这样才能方便对比"）：新增 compact_path 维度 +
+// render_completed outcome——完成状态是真实的（`recordCompactFallbackRenderOutcome`
+// 从 `streaming-handler.ts`/`proxy-handler.ts` 的真实终止点调用），不是
+// 早期设计里那个语义残缺的 "render_started"。
+describe("★ #108 recordCompactOutcome: compact_path", () => {
+  it("compactPath 原样落盘为 compact_path", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-path",
+      clientConversationId: "s1",
+      model: "gpt-5.4",
+      outcome: "render_completed",
+      compactPath: "fallback_render",
+      durationMs: 9271,
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.compact_path).toBe("fallback_render");
+    expect(entry.outcome).toBe("render_completed");
+    expect(entry.duration_ms).toBe(9271);
+  });
+
+  it("compactPath 缺省时是省略键（undefined），不是空字符串", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({ requestId: "rid-no-path", clientConversationId: "s1", model: "m", outcome: "success" });
+    const raw = readFileSync(resolve(tmpDataDir, "compact-outcomes.jsonl"), "utf-8").trim();
+    const rawEntry = JSON.parse(raw) as Record<string, unknown>;
+    expect("compact_path" in rawEntry).toBe(false);
+    const [entry] = readCompactOutcomeLog();
+    // 但 readCompactOutcomeLog 的读侧会把它补全成 "opaque"（success 只有
+    // opaque 路径会产生）——这条断言证明补全只发生在读侧，不影响磁盘上的
+    // 原始写入。
+    expect(entry.compact_path).toBe("opaque");
+  });
+});
+
+// ★ #108/#111：`recordCompactFallbackRenderOutcome` 是 proxy-handler.ts/
+// streaming-handler.ts（所有代理请求共用的文件）新增调用的唯一收口点——
+// 这里直接测函数本身的 no-op 保证，不依赖 e2e 测试栈去间接验证（e2e 层面
+// 用 spy 验证"没被调用"是假命题：这个函数在共用文件里是*无条件*调用的，
+// "no-op" 指的是内部读不到 compactFallbackRender 就直接 return、绝不写盘，
+// 不是"从不被调用"——见 tests/e2e/messages.test.ts 里那条被撤回的错误断言
+// 的教训）。
+describe("★ #108/#111 recordCompactFallbackRenderOutcome", () => {
+  // ★★ 这条测试是「普通请求不得产生 compact-outcome 记录」这个保证**唯一**
+  // 真正守住的地方——qa 2026-08-04 做过变异测试实测验证，不是推断：
+  //
+  // 1. **这条锁的是"守卫被破坏时必须变红"，不是"函数行为正常"。** qa 把
+  //    `recordCompactFallbackRenderOutcome` 内部的 `if (!ctx) return;` 临时
+  //    改成"给一个假的默认 ctx"（模拟守卫被误删/改坏），跑完立刻 revert
+  //    并逐字节确认还原——这条测试**真的变红**了（`readCompactOutcomeLog()`
+  //    从预期的 `[]` 变成真写入了一条 `render_completed`）。
+  //
+  // 2. **`tests/e2e/messages.test.ts` 里那条 "a normal request behaves
+  //    identically end-to-end" 拦不住这个**，同一次变异测试下它依然全绿。
+  //    原因很硬：那条测试只查 HTTP 层的 status/header/body，而这个函数
+  //    整体包在 `try/catch`（"日志失败绝不能影响主流程"）里——就算内部
+  //    访问 undefined 抛异常、或者写盘写了 garbage，都不会让请求本身失败、
+  //    不会反映到响应上。两条测试**看起来重复，实际上只有这条真正守住
+  //    这个保证**——将来如果有人精简测试、把这条当冗余删掉，守卫被破坏
+  //    之后就再也没有任何东西会变红，e2e 那条不是备份，是完全不同的
+  //    覆盖面（它守的是"公共路径改动不影响普通请求的 HTTP 行为"，这条
+  //    守的是"没有上下文就不写盘"，两个断言在同一次变异下一红一绿，
+  //    互不替代）。
+  //
+  // 3. ★ **一个已知、经过评估、刻意接受的盲区，不是遗漏**：如果破坏方式
+  //    换成"精确删掉 `if (!ctx) return;` 这一行"（跟 qa 那种"改成假默认
+  //    ctx"是不同的破坏方式），`ctx.requestId` 会抛 `TypeError`，但这个
+  //    异常会被**同一个** try/catch 吞掉——外部可观测行为（不写任何记录）
+  //    跟守卫存在时完全一致，这条测试抓不到。这是变异测试理论里的
+  //    "等价变异"（equivalent mutant），理论上就无法被任何行为测试消除，
+  //    不是这条测试的漏洞。**刻意不为它把这处判断挪到 try 外面**——那样
+  //    做会削弱"日志失败绝不能影响主流程"这条更重要、优先级更高的容错
+  //    保证，用一个理论上就测不到的边缘情况去换一条核心保证变脆，不划算。
+  it("req.compactFallbackRender 缺失时是严格 no-op——不写入 compact-outcomes.jsonl，团队要求的公共路径回归", async () => {
+    const { recordCompactFallbackRenderOutcome, readCompactOutcomeLog } = await importModule();
+    // 模拟一个完全不涉及 opaque compact fallback 的普通请求对象——没有
+    // compactFallbackRender 字段，就是 messages.ts 对绝大多数请求实际传
+    // 进来的样子。
+    recordCompactFallbackRenderOutcome({ model: "gpt-5.4", clientConversationId: "s1" }, true);
+    recordCompactFallbackRenderOutcome({ model: "gpt-5.4", clientConversationId: "s1" }, false, { httpStatus: 400, failureStage: "pre_stream" });
+    expect(readCompactOutcomeLog()).toEqual([]);
+    expect(existsSync(resolve(tmpDataDir, "compact-outcomes.jsonl"))).toBe(false);
+  });
+
+  it("completed=true → outcome=render_completed，真实写入 compact-outcomes.jsonl", async () => {
+    const { recordCompactFallbackRenderOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactFallbackRenderOutcome(
+      { compactFallbackRender: { requestId: "rid-render-ok", startedAt: Date.now() - 9271 }, model: "gpt-5.4", clientConversationId: "s1" },
+      true,
+    );
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.compact_path).toBe("fallback_render");
+    expect(entry.outcome).toBe("render_completed");
+    expect(entry.duration_ms).toBeGreaterThanOrEqual(9271);
+    expect("failure_stage" in entry).toBe(false);
+  });
+
+  it("completed=false + failureStage='pre_stream'——从未进流式阶段就被拒绝，带真实 httpStatus", async () => {
+    const { recordCompactFallbackRenderOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactFallbackRenderOutcome(
+      { compactFallbackRender: { requestId: "rid-render-rejected", startedAt: Date.now() }, model: "gpt-5.4", clientConversationId: "s1" },
+      false,
+      { httpStatus: 400, failureStage: "pre_stream" },
+    );
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.outcome).toBe("upstream_failed");
+    expect(entry.failure_stage).toBe("pre_stream");
+    expect(entry.http_status).toBe(400);
+  });
+
+  it("completed=false + failureStage='mid_stream'——已进流式阶段才失败，没有 httpStatus", async () => {
+    const { recordCompactFallbackRenderOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactFallbackRenderOutcome(
+      { compactFallbackRender: { requestId: "rid-render-disconnect", startedAt: Date.now() }, model: "gpt-5.4", clientConversationId: "s1" },
+      false,
+      { failureStage: "mid_stream" },
+    );
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.outcome).toBe("upstream_failed");
+    expect(entry.failure_stage).toBe("mid_stream");
+    expect("http_status" in entry).toBe(false);
+  });
+
+  it("两个 failure_stage 排查方向不同，不能互相覆盖/混淆——同一批数据里两种子因分别可查", async () => {
+    const { recordCompactFallbackRenderOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactFallbackRenderOutcome(
+      { compactFallbackRender: { requestId: "rid-a", startedAt: Date.now() }, model: "m", clientConversationId: "s1" },
+      false,
+      { httpStatus: 400, failureStage: "pre_stream" },
+    );
+    recordCompactFallbackRenderOutcome(
+      { compactFallbackRender: { requestId: "rid-b", startedAt: Date.now() }, model: "m", clientConversationId: "s2" },
+      false,
+      { failureStage: "mid_stream" },
+    );
+    const page = queryCompactOutcomeEvents({ windowHours: "all", compactPath: "fallback_render" });
+    expect(page.total).toBe(2);
+    const stages = page.events.map((e) => e.failure_stage).sort();
+    expect(stages).toEqual(["mid_stream", "pre_stream"]);
+  });
+});
+
+// ★ #108：历史行（这次改动之前写入的、没有 compact_path 字段的行）在读侧
+// 必须被确定性地补全，不是留空、也不是给一个"unknown"占位。
+describe("★ #108 resolveCompactPath（历史行补全）", () => {
+  it.each([
+    ["success", "opaque"],
+    ["denied", "opaque"],
+    ["budget_exceeded", "fallback_decision"],
+    ["upstream_failed", "fallback_decision"],
+  ] as const)("outcome=%s 的历史行（无 compact_path 字段）被补全为 %s", async (outcome, expectedPath) => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    // 不传 compactPath，模拟这次改动之前写入的历史行。
+    recordCompactOutcome({ requestId: "rid-legacy", clientConversationId: "s1", model: "m", outcome });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.compact_path).toBe(expectedPath);
+  });
+
+  it("新写入的 fallback_render 行不受历史补全逻辑影响——显式字段原样保留", async () => {
+    const { recordCompactOutcome, readCompactOutcomeLog } = await importModule();
+    recordCompactOutcome({
+      requestId: "rid-render",
+      clientConversationId: "s1",
+      model: "m",
+      outcome: "render_completed",
+      compactPath: "fallback_render",
+      durationMs: 5,
+    });
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.compact_path).toBe("fallback_render");
+  });
+});
+
+// ★ #108：`/summary`（Dashboard 现有"opaque 压缩成功率"卡片）背后的
+// getCompactOutcomeStats 默认口径必须排除 fallback_render——否则这次改动
+// 会悄悄稀释一张已经被 #47/#54/#91 反复门禁验证过的既有卡片数字。
+describe("★ #108 getCompactOutcomeStats: compactPathFilter 默认排除 fallback_render", () => {
+  it("不传 compactPathFilter 时，fallback_render 事件不计入 by_request/by_session", async () => {
+    const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "upstream_failed", compactPath: "fallback_decision" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const stats = getCompactOutcomeStats("all");
+    // 默认口径：只有 opaque + fallback_decision 两类计入——和这次改动之前
+    // 的既有行为（success/budget_exceeded/upstream_failed/denied 四类）
+    // 完全一致，fallback_render 被排除。
+    expect(stats.by_request.total).toBe(2);
+    expect(stats.by_request.render_completed).toBe(0);
+  });
+
+  it('传 compactPathFilter="fallback_render" 时只统计 fallback_render 事件', async () => {
+    const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const stats = getCompactOutcomeStats("all", 10, undefined, undefined, "fallback_render");
+    expect(stats.by_request.total).toBe(1);
+    expect(stats.by_request.render_completed).toBe(1);
+  });
+
+  it('传 compactPathFilter="all" 时三类全部计入，数字等于不做任何 path 过滤', async () => {
+    const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "upstream_failed", compactPath: "fallback_decision" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const stats = getCompactOutcomeStats("all", 10, undefined, undefined, "all");
+    expect(stats.by_request.total).toBe(3);
+  });
+
+  it("回归：不传 compactPathFilter 时，既有四类 outcome 的统计行为和这次改动之前完全一致", async () => {
+    const { recordCompactOutcome, getCompactOutcomeStats } = await importModule();
+    for (let i = 0; i < 5; i++) {
+      recordCompactOutcome({ requestId: `r${i}`, clientConversationId: "s1", model: "m", outcome: "budget_exceeded" });
+    }
+    recordCompactOutcome({ requestId: "r-final", clientConversationId: "s1", model: "m", outcome: "success" });
+
+    const stats = getCompactOutcomeStats("all");
+    expect(stats.by_request.total).toBe(6);
+    expect(stats.by_request.budget_exceeded).toBe(5);
+    expect(stats.by_request.success).toBe(1);
+  });
+});
+
+// ★ #108：/events 的数据源，默认展示全部三条路径（不像 /summary 那样默认
+// 排除 fallback_render）——见 compact-outcomes.ts 里两处默认值相反的注释。
+describe("★ #108 queryCompactOutcomeEvents: compact_path 过滤 + availableCompactPaths", () => {
+  it("不传 compactPath 时不过滤——opaque/fallback_decision/fallback_render 全部展示", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "upstream_failed", compactPath: "fallback_decision" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all" });
+    expect(page.total).toBe(3);
+  });
+
+  it("按 compactPath 精确筛选", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all", compactPath: "fallback_render" });
+    expect(page.total).toBe(1);
+    expect(page.events[0].rid).toBe("r2");
+  });
+
+  it("同一个 rid 的 fallback_decision + fallback_render 两行都能被查到（同会话降级排查场景）", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "rid-shared", clientConversationId: "s1", model: "m", outcome: "upstream_failed", compactPath: "fallback_decision" });
+    recordCompactOutcome({ requestId: "rid-shared", clientConversationId: "s1", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all", convHashPrefix: "" });
+    expect(page.total).toBe(2);
+    // rid 是 requestId.slice(0, 8)（见 recordCompactOutcome 实现），不是原始 requestId 本身。
+    expect(page.events.every((e) => e.rid === "rid-shar")).toBe(true);
+    expect(new Set(page.events.map((e) => e.compact_path))).toEqual(new Set(["fallback_decision", "fallback_render"]));
+  });
+
+  it("availableCompactPaths：去重、按固定顺序（opaque → fallback_decision → fallback_render）返回", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r3", clientConversationId: "s3", model: "m", outcome: "upstream_failed", compactPath: "fallback_decision" });
+    recordCompactOutcome({ requestId: "r4", clientConversationId: "s4", model: "m", outcome: "success", compactPath: "opaque" }); // 重复路径
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all" });
+    expect(page.availableCompactPaths).toEqual(["opaque", "fallback_decision", "fallback_render"]);
+  });
+
+  it("availableCompactPaths 不因当前 compactPath 筛选而收窄", async () => {
+    const { recordCompactOutcome, queryCompactOutcomeEvents } = await importModule();
+    recordCompactOutcome({ requestId: "r1", clientConversationId: "s1", model: "m", outcome: "success", compactPath: "opaque" });
+    recordCompactOutcome({ requestId: "r2", clientConversationId: "s2", model: "m", outcome: "render_completed", compactPath: "fallback_render" });
+
+    const page = queryCompactOutcomeEvents({ windowHours: "all", compactPath: "opaque" });
+    expect(page.availableCompactPaths).toEqual(["opaque", "fallback_render"]);
+    expect(page.events).toHaveLength(1); // 但实际返回的记录仍然只有 opaque 那条
   });
 });

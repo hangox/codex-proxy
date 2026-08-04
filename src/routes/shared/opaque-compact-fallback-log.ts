@@ -111,6 +111,16 @@ export interface OpaqueCompactFallbackInput {
     durationMs?: number;
     /** ★ #88：`CompactServiceError.upstreamMs`，见同名字段文档。 */
     upstreamMs?: number;
+    /**
+     * ★ #115：`CompactServiceError.hasImage`——见
+     * `codex-compact-service.ts` 的 `CompactBudgetPlan.hasImage` 完整文档。
+     * 只对 `budget_exceeded`（`skippedUpstream:true`）有意义。
+     */
+    hasImage?: boolean;
+    /** ★ #115：`CompactServiceError.imageBytes`，见同名字段文档。 */
+    imageBytes?: number;
+    /** ★ #115：`CompactServiceError.textBytes`，见同名字段文档。 */
+    textBytes?: number;
   };
 }
 
@@ -162,8 +172,19 @@ export function recordOpaqueCompactFallback(input: OpaqueCompactFallbackInput): 
     estimateSource: input.classification?.estimateSource,
     processedFraction: input.classification?.processedFraction,
     cheapEstimateTokens: input.classification?.cheapEstimateTokens,
+    // ★ #115：内容画像三件套，同样原样透传——只对 budget_exceeded 有意义，
+    // upstream_failed 场景 input.classification?.hasImage 等本来就是
+    // undefined。
+    hasImage: input.classification?.hasImage,
+    imageBytes: input.classification?.imageBytes,
+    textBytes: input.classification?.textBytes,
     reason: input.errorName,
     durationMs: input.classification?.durationMs,
     upstreamMs: input.classification?.upstreamMs,
+    // ★ #108：这条记的是"opaque 尝试为什么失败、触发了降级"，不是降级之后
+    // 那次真实压缩自己的结果（那条另有独立的写入点，见
+    // compact-outcome-log.ts 的 CompactPath 文档、messages.ts 的
+    // finalizeCompactFallbackResponse）。
+    compactPath: "fallback_decision",
   });
 }

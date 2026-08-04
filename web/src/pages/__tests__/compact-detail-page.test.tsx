@@ -31,6 +31,9 @@ function makeEvent(overrides: Partial<CompactOutcomeEvent> = {}): CompactOutcome
     rid: "39587bd5",
     conv_hash: "a3f9e21c",
     model: "gpt-5.6-sol",
+    // ★ task #109：默认走 opaque 路径——跟后端契约一致（历史数据/opaque
+    // 事件缺省即 "opaque"，不是 undefined）。
+    compact_path: "opaque",
     outcome: "budget_exceeded",
     estimated_tokens: 479024,
     budget_tokens: 390000,
@@ -44,11 +47,18 @@ function makeEventsState(overrides: Partial<ReturnType<typeof mockEvents.useComp
     setOutcome: vi.fn(),
     model: "",
     setModel: vi.fn(),
+    // ★ task #109
+    compactPath: "all" as const,
+    setCompactPath: vi.fn(),
     search: "",
     setSearch: vi.fn(),
     events: [makeEvent()],
     total: 1,
     availableModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
+    // ★ task #109：默认全部三条路径都"有数据"，跟现有测试的默认预期
+    // （不弱化任何筛选选项）保持一致——单独测 muted 效果的用例会自己
+    // override 成一个子集。
+    availableCompactPaths: ["opaque", "fallback_decision", "fallback_render"],
     loading: false,
     selected: null,
     selectEvent: vi.fn(),
@@ -63,7 +73,7 @@ function makeEventsState(overrides: Partial<ReturnType<typeof mockEvents.useComp
 }
 
 function makeStatsState() {
-  const breakdown = { success: 3, budget_exceeded: 1, upstream_failed: 0, denied: 0, total: 4, success_rate: 0.75 };
+  const breakdown = { success: 3, budget_exceeded: 1, upstream_failed: 0, denied: 0, render_completed: 0, total: 4, success_rate: 0.75 };
   return { stats: { by_session: breakdown, by_request: breakdown, recent_budget_exceeded: [] }, loading: false };
 }
 
@@ -147,7 +157,7 @@ describe("CompactDetailPage — 列表", () => {
     expect(screen.queryByText("No compact records yet")).toBeNull();
   });
 
-  it("点击列表行调用 selectEvent(rid)", () => {
+  it("点击列表行调用 selectEvent(rid, ts)——task #109 之后 rid 不再唯一，必须带 ts 才能精确定位", () => {
     const selectEvent = vi.fn();
     mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
     mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selectEvent }));
@@ -156,7 +166,7 @@ describe("CompactDetailPage — 列表", () => {
     const modelCandidates = screen.getAllByText("gpt-5.6-sol");
     const rowButton = modelCandidates.find((el) => el.closest("button") !== null);
     fireEvent.click(rowButton!);
-    expect(selectEvent).toHaveBeenCalledWith("39587bd5");
+    expect(selectEvent).toHaveBeenCalledWith("39587bd5", "2026-08-03T14:32:07.000Z");
   });
 
   it("分页按钮调用 nextPage/prevPage，受 hasNext/hasPrev 控制禁用状态", () => {
@@ -515,6 +525,9 @@ describe("CompactDetailPage — 详情面板", () => {
 
     // Duration 行等其它字段缺省时也显示 "—"——用 DetailRow 的兄弟节点结构
     // 精确定位到 "HTTP Status" 那一行自己的值，不跟其它 "—" 撞在一起。
+    // ★ task #109：denied 恒显示这一行（缺省时占位符），render 记录只在
+    // http_status 有值时才显示——两条规则合起来看 CompactDetailPage.tsx
+    // 里那一行 `e.outcome === "denied" || e.http_status !== undefined`。
     const label = screen.getByText("HTTP Status");
     const row = label.closest("div");
     expect(row?.textContent).toBe("HTTP Status—");
@@ -685,7 +698,7 @@ describe("CompactDetailPage — URL 状态同步", () => {
     expect(mockEvents.useCompactOutcomeEvents).toHaveBeenCalledWith(24);
   });
 
-  it("挂载时 URL 带 rid 且 events 里有匹配记录，调用 selectEvent", () => {
+  it("挂载时 URL 带 rid（不带 ts，旧链接）且 events 里有匹配记录，调用 selectEvent(rid, undefined)", () => {
     history.replaceState(null, "", "/?rid=target-rid");
     mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
     const selectEvent = vi.fn();
@@ -695,7 +708,26 @@ describe("CompactDetailPage — URL 状态同步", () => {
     }));
     renderPage();
 
-    expect(selectEvent).toHaveBeenCalledWith("target-rid");
+    expect(selectEvent).toHaveBeenCalledWith("target-rid", undefined);
+  });
+
+  // ★ task #109：rid 不再唯一（同一次请求降级时，fallback_decision/
+  // fallback_render 两条记录共享 rid）——URL 带 ts 时必须精确匹配那一条，
+  // 不能只按 rid 随便选第一条。
+  it("挂载时 URL 同时带 rid 和 ts，精确匹配那一条记录才调用 selectEvent", () => {
+    history.replaceState(null, "", "/?rid=shared-rid&ts=2026-08-04T00%3A00%3A02.000Z");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selectEvent = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [
+        makeEvent({ rid: "shared-rid", ts: "2026-08-04T00:00:01.000Z", compact_path: "fallback_decision" }),
+        makeEvent({ rid: "shared-rid", ts: "2026-08-04T00:00:02.000Z", compact_path: "fallback_render", outcome: "render_completed" }),
+      ],
+      selectEvent,
+    }));
+    renderPage();
+
+    expect(selectEvent).toHaveBeenCalledWith("shared-rid", "2026-08-04T00:00:02.000Z");
   });
 
   it("URL 带 rid 但当前已加载的 events 里没有这一条时，不调用 selectEvent（避免用一个查不到的 rid 反复尝试）", () => {
@@ -794,5 +826,406 @@ describe("CompactDetailPage — 复制请求 ID", () => {
     await Promise.resolve();
     // rid 文本本身仍然可见——复制失败不影响这条记录原有的可读性。
     expect(screen.getByText("fail-to-copy-rid")).toBeTruthy();
+  });
+});
+
+// ★ task #109（用户原话："我想把压缩都统计到这里来，就是降级后的压缩也
+// 在这里统一展示"）：opaque compact 失败后降级出的 render（全量生成）
+// 尝试，跟 opaque 记录用同一份数据统一展示、可对比。
+describe("CompactDetailPage — ★ task #109 压缩路径（opaque / fallback_decision / fallback_render）", () => {
+  it("列表行显示压缩路径徽标，跟结果类型 pill 一起", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ compact_path: "opaque" })],
+    }));
+    renderPage();
+    // "Opaque" 同时出现在列表行徽标和压缩路径筛选 pill 里——这里只断言至少
+    // 存在（跟其它同名文案重复的测试同一套容忍度，不做过度精确定位）。
+    expect(screen.getAllByText("Opaque").length).toBeGreaterThan(0);
+  });
+
+  // ★ task #111 落地：outcome 值从 render_started 换成了 render_completed
+  // ——这正是 qa 真实复现的那次崩溃的根因（OUTCOME_META 当时穷举声明，
+  // 少了这个 key 就整页崩），下面这条用例锁住新值能正常渲染。
+  it("fallback_render 记录：显示 '已完成' 结果标签", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ compact_path: "fallback_render", outcome: "render_completed", reason: undefined })],
+    }));
+    expect(() => renderPage()).not.toThrow();
+    expect(screen.getAllByText("Completed").length).toBeGreaterThan(0);
+  });
+
+  // ★★ task #109/qa 崩溃复盘的核心回归：这条锁住的正是真实发生过的那次
+  // 崩溃——outcome 值是 OUTCOME_META 里完全没见过的字符串时，列表和详情
+  // 面板都不能崩（`OutcomePill` 取 `.pillClass` 曾经因为这个直接炸掉）。
+  it("未知 outcome 值（后端加了 OUTCOME_META 还没认识的新值）兜底显示'未分类'，不崩、不丢记录——qa 真实复现过的崩溃场景", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const unknownOutcomeEvent = makeEvent({
+      outcome: "a_future_outcome_value_nobody_has_seen_yet" as never,
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [unknownOutcomeEvent],
+      selected: unknownOutcomeEvent,
+    }));
+    expect(() => renderPage()).not.toThrow();
+    // 列表行 + 详情面板的"结果"行，两处都应该显示"未分类"，不是崩溃。
+    expect(screen.getAllByText("Unclassified").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("未知 compact_path 值（尚未认识的第四条路径）兜底显示'未分类'，不崩、不丢记录", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [makeEvent({ compact_path: "client_initiated" as never })],
+    }));
+    expect(() => renderPage()).not.toThrow();
+    expect(screen.getAllByText("Unclassified").length).toBeGreaterThan(0);
+  });
+
+  // ★ task #109（team-lead 建议顺手接上 availableCompactPaths）：当前窗口
+  // 没有数据的路径选项要弱化视觉（不是隐藏、不是 disabled），提前告诉
+  // 用户"选了大概率是空列表，不是筛选坏了"。
+  it("availableCompactPaths 不含某个路径时，对应筛选选项弱化（opacity-50），但仍可点击", () => {
+    const setCompactPath = vi.fn();
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      setCompactPath,
+      availableCompactPaths: ["opaque"], // 这个窗口里只有 opaque 有记录
+    }));
+    renderPage();
+
+    const candidates = screen.getAllByText("Fallback (retry)");
+    const pillButton = candidates.find((el) => el.closest("button") !== null)!.closest("button")!;
+    expect(pillButton.className).toContain("opacity-50");
+    // 仍然可点——不是 disabled。
+    fireEvent.click(pillButton);
+    expect(setCompactPath).toHaveBeenCalledWith("fallback_render");
+
+    // 有数据的 opaque 选项不弱化。
+    const opaqueCandidates = screen.getAllByText("Opaque");
+    const opaqueButton = opaqueCandidates.find((el) => el.closest("button") !== null)!.closest("button")!;
+    expect(opaqueButton.className).not.toContain("opacity-50");
+  });
+
+  it("availableCompactPaths 还是空数组（挂载/刷新中）时不弱化任何选项——空数组不代表'全部没有数据'", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ availableCompactPaths: [] }));
+    renderPage();
+
+    const candidates = screen.getAllByText("Fallback (retry)");
+    const pillButton = candidates.find((el) => el.closest("button") !== null)!.closest("button")!;
+    expect(pillButton.className).not.toContain("opacity-50");
+  });
+
+  it("点击压缩路径筛选 pill 调用 setCompactPath", () => {
+    const setCompactPath = vi.fn();
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setCompactPath }));
+    renderPage();
+
+    const candidates = screen.getAllByText("Fallback (retry)");
+    const pillButton = candidates.find((el) => el.closest("button") !== null);
+    expect(pillButton).toBeTruthy();
+    fireEvent.click(pillButton!);
+    expect(setCompactPath).toHaveBeenCalledWith("fallback_render");
+  });
+
+  it("compactPath 非 'all' 时显示 'Filtered: {label}' 徽标，点击调用 setCompactPath('all')", () => {
+    const setCompactPath = vi.fn();
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ compactPath: "fallback_render", setCompactPath }));
+    renderPage();
+
+    const badges = screen.getAllByText(/Filtered:/);
+    const pathBadge = badges.find((el) => el.textContent?.includes("Fallback (retry)"));
+    expect(pathBadge).toBeTruthy();
+    fireEvent.click(pathBadge!.closest("button")!);
+    expect(setCompactPath).toHaveBeenCalledWith("all");
+  });
+
+  it("★★ 8.20 同款回归：只按压缩路径筛选（outcome/model 仍是默认值）没有记录时，显示'调整筛选范围'文案，不是'暂无压缩记录'", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ events: [], total: 0, compactPath: "fallback_render" }));
+    renderPage();
+    expect(screen.getByText(/No records match the current filter/)).toBeTruthy();
+    expect(screen.queryByText("No compact records yet")).toBeNull();
+  });
+
+  it("详情面板显示'压缩路径'行", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ compact_path: "opaque" });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    const label = screen.getByText("Compact path");
+    expect(label.closest("div")?.textContent).toContain("Opaque");
+  });
+
+  // ★★ task #111 落地后重写：render_completed 现在是真实、可信的完成
+  // 信号（不是早期设计里那个"提交了、不确定接没接受"的弱信号）。这条
+  // 测试锁住新文案不再说"不确定"，而且新旧字段语义都要对——duration_ms
+  // 现在是真实的完整耗时（不是早期设计里的半截 TTFB），http_status 对
+  // render_completed 没有意义（成功了，不需要状态码解释）。
+  it("render_completed：详情面板显示专属'发生了什么'文案，明确说'成功完成'，不再是'不确定'的旧措辞", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "render_completed", reason: undefined,
+      estimated_tokens: undefined, budget_tokens: undefined,
+      http_status: undefined, duration_ms: 2140, upstream_ms: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText("What happened")).toBeTruthy();
+    expect(screen.getByText(/completed successfully/)).toBeTruthy();
+    // ★ 旧措辞（"不确定接没接受"）不应该再出现——那是 render_started 时代
+    // 的诚实措辞，现在数据语义变了，文案必须跟着变，不能继续挂着一套
+    // 不再准确的免责声明。
+    expect(screen.queryByText(/isn't confirmed/)).toBeNull();
+    // render_completed 不触发"为什么"分组（成功了，没有"原因"这个概念）。
+    expect(screen.queryByText("Reason")).toBeNull();
+    expect(screen.queryByText("HTTP Status")).toBeNull();
+    // Duration 现在是真实完整耗时，正常显示（不再有 TTFB 这个独立字段）。
+    expect(screen.queryByText("Time to first response")).toBeNull();
+    expect(screen.getByText("2.1s")).toBeTruthy();
+  });
+
+  // ★ task #111 落地后：render_completed 不再需要"需新增采集"提示——它
+  // 曾经描述的缺口（真实完成状态）已经被这次改动补上了，整块提示不应该
+  // 再出现在这个 outcome 上（同 #97 那次"缺口真的补上了，提示跟着删掉"
+  // 的处理方式）。
+  it("render_completed：不显示'需新增采集'提示——真实完成状态的缺口已经补上了", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "render_completed", reason: undefined,
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.queryByText("Needs more collection")).toBeNull();
+  });
+
+  // ★ task #111：fallback_render 的失败现在是真实确认的（同步拒绝/中途
+  // 断流/客户端中止，折叠进同一个 upstream_failed 桶，backend-dev 明确
+  // 记录的取舍——这次改动不细分子因）。详情面板用 render 专属文案，不是
+  // opaque 的"联系上游被拒绝、降级为全量生成"文案（render 本身已经是
+  // 降级后的尝试，没有再下一级）。
+  it("fallback_render + upstream_failed：详情面板用 render 专属文案（三种终止点未细分），不是 opaque 的'联系上游被拒绝、降级为全量生成'文案", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "upstream_failed", reason: "CodexApiError",
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.getByText(/fallback \(uncompacted\) generation call also failed to complete/)).toBeTruthy();
+    expect(screen.queryByText(/the request fell back to the full-generation slow path/)).toBeNull();
+  });
+
+  // ★ task #109（backend-dev 追加落地）：failure_stage 把"降级重试失败"
+  // 拆成两个排查方向完全相反的情况——这几条测试锁住两个具体值各自的
+  // 徽标 + 指引文案，以及缺省/未知值时的兜底行为。
+  it("failure_stage='pre_stream'：显示'提交前被拒'徽标 + 对应的'该调预算/换模型'指引，附带真实 http_status", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "upstream_failed", reason: "CodexApiError",
+      estimated_tokens: undefined, budget_tokens: undefined,
+      failure_stage: "pre_stream", http_status: 400,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    const label = screen.getByText("Failure stage");
+    expect(label.closest("div")?.textContent).toContain("Rejected before streaming");
+    expect(screen.getByText(/never entered the streaming phase/)).toBeTruthy();
+    expect(screen.getByText(/adjusting the budget estimation threshold or switching models/)).toBeTruthy();
+    // 同步拒绝场景应该有真实 http_status。
+    const httpLabel = screen.getByText("HTTP Status");
+    expect(httpLabel.closest("div")?.textContent).toBe("HTTP Status400");
+  });
+
+  it("failure_stage='mid_stream'：显示'生成中断开'徽标 + 对应的'该查链路'指引，不带 http_status", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "upstream_failed", reason: "CodexApiError",
+      estimated_tokens: undefined, budget_tokens: undefined,
+      failure_stage: "mid_stream", http_status: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    const label = screen.getByText("Failure stage");
+    expect(label.closest("div")?.textContent).toContain("Disconnected mid-stream");
+    expect(screen.getByText(/connection was lost before it finished/)).toBeTruthy();
+    expect(screen.getByText(/check network\/upstream availability/)).toBeTruthy();
+    // 中途断流场景没有单一状态码概念，不该显示 HTTP Status 行。
+    expect(screen.queryByText("HTTP Status")).toBeNull();
+  });
+
+  it("failure_stage 缺省（历史行）：不显示'失败阶段'行，退回通用的'三种情况未细分'文案", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "upstream_failed", reason: "CodexApiError",
+      estimated_tokens: undefined, budget_tokens: undefined,
+      failure_stage: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    renderPage();
+
+    expect(screen.queryByText("Failure stage")).toBeNull();
+    expect(screen.getByText(/aren't distinguished from each other in this record/)).toBeTruthy();
+  });
+
+  it("未知 failure_stage 值：徽标兜底显示'未分类'，'为什么'文案退回通用兜底，不崩、不丢记录", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({
+      compact_path: "fallback_render", outcome: "upstream_failed", reason: "CodexApiError",
+      estimated_tokens: undefined, budget_tokens: undefined,
+      failure_stage: "a_future_stage_nobody_has_seen_yet" as never,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected }));
+    expect(() => renderPage()).not.toThrow();
+
+    const label = screen.getByText("Failure stage");
+    expect(label.closest("div")?.textContent).toContain("Unclassified");
+    // 未知值时"为什么"文案退回通用兜底（不假装知道更细的信息）。
+    expect(screen.getByText(/aren't distinguished from each other in this record/)).toBeTruthy();
+  });
+
+  // ★ task #109：同一次客户端请求降级时，fallback_decision（为什么失败）
+  // 和 fallback_render（重试自己的结果）共享同一个 rid——这是"能对比"这个
+  // 用户诉求落地成 UI 的核心机制。
+  it("关联记录：同一 rid 的另一条记录（fallback_decision ↔ fallback_render）会出现在详情面板，点击调用 selectEvent 跳转", () => {
+    const selectEvent = vi.fn();
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const decisionEvent = makeEvent({
+      rid: "shared-rid", ts: "2026-08-04T00:00:01.000Z", compact_path: "fallback_decision",
+      outcome: "upstream_failed", reason: "CompactServiceError",
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    const renderEvent = makeEvent({
+      rid: "shared-rid", ts: "2026-08-04T00:00:02.000Z", compact_path: "fallback_render",
+      outcome: "render_completed", reason: undefined,
+      estimated_tokens: undefined, budget_tokens: undefined,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [decisionEvent, renderEvent],
+      selected: decisionEvent,
+      selectEvent,
+    }));
+    renderPage();
+
+    expect(screen.getByText("Related record")).toBeTruthy();
+    // "View" 子串同时匹配"View →"（关联记录按钮）和"View full logs..."
+    // （页面底部跳转日志的链接）——用"是不是 <button>"精确定位到关联记录
+    // 那一个，跟文件里其它同名/近似文案的处理手法一致。
+    const viewCandidates = screen.getAllByText(/View/);
+    const relatedButton = viewCandidates.find((el) => el.closest("button") !== null);
+    expect(relatedButton).toBeTruthy();
+    fireEvent.click(relatedButton!.closest("button")!);
+    expect(selectEvent).toHaveBeenCalledWith("shared-rid", "2026-08-04T00:00:02.000Z");
+  });
+
+  it("没有关联记录（events 里只有这一条）时不显示'关联记录'分组", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const selected = makeEvent({ rid: "lonely-rid" });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ selected, events: [selected] }));
+    renderPage();
+
+    expect(screen.queryByText("Related record")).toBeNull();
+  });
+
+  it("isFiltered 同时覆盖 compactPath 维度——只按压缩路径筛选也算'当前有筛选'（8.20 教训：漏了任意一个维度都会显示错误的空数据文案）", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      events: [], total: 0, outcome: "all", model: "", compactPath: "opaque",
+    }));
+    renderPage();
+    expect(screen.getByText(/No records match the current filter/)).toBeTruthy();
+  });
+
+  // ★ task #109（backend-dev 追加落地 /summary 的 render 并列组）：点击
+  // 汇总卡片里 render 分组的行，必须同时把明细列表的压缩路径筛选钉死在
+  // fallback_render——不是单测 CompactOutcomesCard 自己的行为（那边已经
+  // 测过 onSelectRenderOutcome 会被正确调用），这里测的是 CompactDetailPage
+  // 自己接的那个箭头函数有没有正确调用两个 setter，是端到端接线测试。
+  it("点击汇总卡片 render 分组的行：同时调用 setCompactPath('fallback_render') 和 setOutcome", () => {
+    const setOutcome = vi.fn();
+    const setCompactPath = vi.fn();
+    mockStats.useCompactOutcomeStats.mockReturnValue({
+      stats: {
+        by_session: { success: 3, budget_exceeded: 1, upstream_failed: 0, denied: 0, render_completed: 0, total: 4, success_rate: 0.75 },
+        by_request: { success: 3, budget_exceeded: 1, upstream_failed: 0, denied: 0, render_completed: 0, total: 4, success_rate: 0.75 },
+        recent_budget_exceeded: [],
+        render: {
+          by_request: { success: 0, budget_exceeded: 0, upstream_failed: 1, denied: 0, render_completed: 3, total: 4, success_rate: 1 },
+          by_session: { success: 0, budget_exceeded: 0, upstream_failed: 1, denied: 0, render_completed: 3, total: 4, success_rate: 1 },
+        },
+      },
+      loading: false,
+    });
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setOutcome, setCompactPath }));
+    renderPage();
+
+    // "Completed" 同时出现在汇总卡片 render 分组的行（<div>，可点）和结果
+    // 类型筛选栏里对应 render_completed 的 pill（<button>）——用"不在
+    // <button> 里"精确定位到汇总卡片那一行，跟文件里其它同名文案的处理
+    // 手法一致。
+    const candidates = screen.getAllByText("Completed");
+    const summaryRow = candidates.find((el) => el.closest("button") === null);
+    expect(summaryRow).toBeTruthy();
+    fireEvent.click(summaryRow!);
+    expect(setCompactPath).toHaveBeenCalledWith("fallback_render");
+    expect(setOutcome).toHaveBeenCalledWith("render_completed");
+  });
+});
+
+describe("CompactDetailPage — ★ task #109 URL 状态同步（compact_path/ts）", () => {
+  it("挂载时从 URL 读取 compact_path，应用到 setCompactPath", () => {
+    history.replaceState(null, "", "/?compact_path=fallback_render");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const setCompactPath = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setCompactPath }));
+    renderPage();
+
+    expect(setCompactPath).toHaveBeenCalledWith("fallback_render");
+  });
+
+  it("URL 带不认识的 compact_path 值时忽略，不调用 setCompactPath（开放枚举的兜底，不是硬编码只认三个值）", () => {
+    history.replaceState(null, "", "/?compact_path=client_initiated");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    const setCompactPath = vi.fn();
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ setCompactPath }));
+    renderPage();
+
+    expect(setCompactPath).not.toHaveBeenCalled();
+  });
+
+  it("选中记录变化后，写回 location.search 带上 compact_path 筛选值和选中记录的 ts", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({
+      compactPath: "fallback_render",
+      selected: makeEvent({ rid: "current-rid", ts: "2026-08-04T00:00:02.000Z" }),
+    }));
+    renderPage();
+
+    const params = new URLSearchParams(location.search);
+    expect(params.get("compact_path")).toBe("fallback_render");
+    expect(params.get("rid")).toBe("current-rid");
+    expect(params.get("ts")).toBe("2026-08-04T00:00:02.000Z");
+  });
+
+  it("回到默认状态（compactPath='all'、无选中）时，compact_path/ts 参数被清掉", () => {
+    history.replaceState(null, "", "/?compact_path=fallback_render&rid=old&ts=2026-08-04T00%3A00%3A02.000Z");
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(makeEventsState({ compactPath: "all", selected: null }));
+    renderPage();
+
+    const params = new URLSearchParams(location.search);
+    expect(params.has("compact_path")).toBe(false);
+    expect(params.has("ts")).toBe(false);
   });
 });

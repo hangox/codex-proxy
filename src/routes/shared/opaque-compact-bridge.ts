@@ -279,6 +279,11 @@ export async function respondWithOpaqueCompactMarker(options: {
         estimateSource: budgetPlan.estimateSource,
         processedFraction: budgetPlan.processedFraction,
         cheapEstimateTokens: budgetPlan.cheapEstimateTokens,
+        // ★ #115：内容画像三件套，同样整条链路一起接——见
+        // CompactBudgetPlan.hasImage 等字段文档。
+        hasImage: budgetPlan.hasImage,
+        imageBytes: budgetPlan.imageBytes,
+        textBytes: budgetPlan.textBytes,
         // ★ #88：从未联系上游，这个耗时纯粹是 restore/preservedTail 合并/
         // 预算预判本身的开销——理应是毫秒级，如果这里也慢了说明瓶颈根本
         // 不在上游。
@@ -338,6 +343,9 @@ export async function respondWithOpaqueCompactMarker(options: {
         // 没有 upstreamMs——理应是毫秒级的 DB 查找，耗时异常本身就是线索
         // （比如锁竞争）。
         durationMs: Date.now() - started,
+        // ★ #108：真走了 opaque marker 路径，见 compact-outcome-log.ts 的
+        // CompactPath 文档。
+        compactPath: "opaque",
       });
       return makeMarkerResponse(replayed, model);
     }
@@ -372,6 +380,14 @@ export async function respondWithOpaqueCompactMarker(options: {
         // upstreamMs（如果 executeCompactOnly 内部已经设置过）原样保留——
         // 这里只补总耗时，不动这个子集字段。
         upstreamMs: error.upstreamMs,
+        // ★ #115：这条 catch/rethrow 是"补 durationMs，其余分类原样保留"，
+        // 见上面的函数级注释——内容画像三件套同样原样透传，不重新计算。
+        estimateSource: error.estimateSource,
+        processedFraction: error.processedFraction,
+        cheapEstimateTokens: error.cheapEstimateTokens,
+        hasImage: error.hasImage,
+        imageBytes: error.imageBytes,
+        textBytes: error.textBytes,
       });
     }
     throw error;
@@ -421,6 +437,9 @@ export async function respondWithOpaqueCompactMarker(options: {
     replayed: stored.replayed,
     durationMs: Date.now() - started,
     upstreamMs: compact.compactLatencyMs,
+    // ★ #108：真走了 opaque marker 路径，见 compact-outcome-log.ts 的
+    // CompactPath 文档。
+    compactPath: "opaque",
   });
   return makeMarkerResponse(stored.marker, model);
 }

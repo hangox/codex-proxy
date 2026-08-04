@@ -10,6 +10,7 @@ import { EmptyResponseError, type UsageInfo } from "../../translation/codex-even
 import { releaseAccount } from "./account-acquisition.js";
 import type { FormatAdapter, ProxyRequest, UsageHint } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
+import { recordCompactFallbackRenderOutcome } from "./compact-outcome-log.js";
 import { streamResponse } from "./response-processor.js";
 import { createResponseMetadataCollector } from "./response-metadata-collector.js";
 import { logProxyUsage } from "./proxy-usage-log.js";
@@ -214,6 +215,19 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
           includeReasoningInHighInputWarning: true,
         });
       }
+      // ★ #108/#111：这个 finally 是"进入了流式阶段"的 compact-fallback-render
+      // 请求唯一的真实终止点——`responseCompleted` 只在上游真正发出完成
+      // 事件时置 true（中途断流/空响应耗尽重试/客户端中止都不会），是货真
+      // 价实的完成信号，不是"流开始了"。no-op 除非 `req.compactFallbackRender`
+      // 存在（见该字段文档）。失败时 `failureStage: "mid_stream"`——已经进了
+      // 流式阶段才失败，跟 `proxy-handler.ts` 那几个"从未进流式阶段"的
+      // `"pre_stream"` 终止点是完全不同的排查方向（查链路稳定性，不是查
+      // 预算估算），不能共用同一个值。
+      recordCompactFallbackRenderOutcome(
+        req,
+        responseCompleted,
+        responseCompleted ? undefined : { failureStage: "mid_stream" },
+      );
       releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(usageInfo, req.expectsImageGen), released);
     }
   });

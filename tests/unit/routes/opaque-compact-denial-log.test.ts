@@ -295,6 +295,9 @@ describe("recordOpaqueCompactDenial", () => {
     expect(entry.outcome).toBe("denied");
     expect(entry.reason).toBe("store_unavailable");
     expect(entry.model).toBe("gpt-5.6-sol");
+    // ★ #108：fail-closed 决策本身是 opaque 路径内部的结果，见
+    // compact-outcome-log.ts 的 CompactPath 文档。
+    expect(entry.compact_path).toBe("opaque");
   });
 
   it("model 缺省时 compact-outcomes.jsonl 里落 \"unknown\"，不强凑/不报错", async () => {

@@ -42,6 +42,7 @@ import { CookieJar } from "@src/proxy/cookie-jar.js";
 import { ProxyPool } from "@src/proxy/proxy-pool.js";
 import { loadStaticModels } from "@src/models/model-store.js";
 import * as opaqueCompactFallbackLog from "@src/routes/shared/opaque-compact-fallback-log.js";
+import * as compactOutcomeLog from "@src/routes/shared/compact-outcome-log.js";
 
 interface TestContext {
   app: Hono;
@@ -1492,6 +1493,213 @@ describe("E2E: POST /v1/messages", () => {
         }
       });
 
+      it("★ #108/#111: opaque failure that falls back to a fully-completed render records a second compact-outcome row with the REAL outcome (compact_path=fallback_render, outcome=render_completed, real duration_ms)", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        setTransportPost(async (url) => {
+          if (url.endsWith("/codex/responses/compact")) {
+            return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
+          }
+          return makeTransportResponse(buildTextStreamChunks("resp_render_success", "render worked"));
+        });
+
+        // ★ `recordCompactFallbackRenderOutcome` 是同一个模块
+        // （compact-outcome-log.ts）内部对 `recordCompactOutcome` 的调用，
+        // ESM live-binding 下同模块内部调用不会被 `vi.spyOn` 拦截到——
+        // 必须直接 spy 这个函数本身（它是从 proxy-handler.ts/
+        // streaming-handler.ts 这两个外部模块调用进来的，跨模块调用能被
+        // 正常拦截）。decisionCall 依然走 recordCompactOutcome 的 spy——
+        // 那条是 opaque-compact-fallback-log.ts 调用的，跨模块，没有这个
+        // 限制。
+        const outcomeSpy = vi.spyOn(compactOutcomeLog, "recordCompactOutcome");
+        const renderSpy = vi.spyOn(compactOutcomeLog, "recordCompactFallbackRenderOutcome");
+        try {
+          const res = await messagesRequest(defaultBody({
+            stream: true,
+            messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
+          }), { "x-claude-code-session-id": "session-fallback-render-success" });
+
+          expect(res.status).toBe(200);
+          expect(res.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
+          // ★ handleStreaming 的 finally 块（recordCompactFallbackRenderOutcome
+          // 的调用点）只在流真正被驱动完之后才执行——必须先把 body 读完，
+          // 不能只看 status/header 就断言 spy 调用次数，否则在流还没跑完
+          // 时检查会得到假的"0 次调用"。
+          await res.text();
+
+          // decisionCall："opaque 为什么失败"（fallback_decision），来自
+          // recordOpaqueCompactFallback → recordCompactOutcome。
+          const decisionCall = outcomeSpy.mock.calls.map((args) => args[0]).find((c) => c.compactPath === "fallback_decision");
+          expect(decisionCall).toBeDefined();
+
+          // renderCall："降级之后那次压缩自己的结果"，来自
+          // recordCompactFallbackRenderOutcome(req, completed, extra)。
+          expect(renderSpy).toHaveBeenCalledTimes(1);
+          const [req, completed, extra] = renderSpy.mock.calls[0]!;
+          // 两条记录共享同一个 rid。
+          expect(req.compactFallbackRender?.requestId).toBe(decisionCall!.requestId);
+
+          // ★ #111：上游真的发出了 response.completed，streaming-handler.ts
+          // 的 finally 块据此记下真实完成，不再是语义残缺的 "render_started"。
+          expect(completed).toBe(true);
+          expect(extra?.httpStatus).toBeUndefined();
+        } finally {
+          outcomeSpy.mockRestore();
+          renderSpy.mockRestore();
+        }
+      });
+
+      it("★ #108/#111: render's duration_ms starts at the fallback DECISION, not the whole request's entry — a slow opaque failure must not bleed into render's timing", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        // 上游 compact 端点被拖慢 300ms 才拒绝——模拟"opaque 是被上游拖到
+        // 超时才失败"这类场景（team-lead 举的例子是数十秒量级，这里用
+        // 300ms 保持测试快，量级足够验证"没有被重复计入"这条结论，不需要
+        // 真的等几十秒）。
+        const OPAQUE_DELAY_MS = 300;
+        setTransportPost(async (url) => {
+          if (url.endsWith("/codex/responses/compact")) {
+            await new Promise((resolve) => setTimeout(resolve, OPAQUE_DELAY_MS));
+            return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected slow opaque compact failure" } }));
+          }
+          return makeTransportResponse(buildTextStreamChunks("resp_render_timing", "render worked"));
+        });
+
+        const renderSpy = vi.spyOn(compactOutcomeLog, "recordCompactFallbackRenderOutcome");
+        try {
+          const res = await messagesRequest(defaultBody({
+            stream: true,
+            messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
+          }), { "x-claude-code-session-id": "session-fallback-render-timing" });
+          expect(res.status).toBe(200);
+          await res.text();
+
+          expect(renderSpy).toHaveBeenCalledTimes(1);
+          const [req] = renderSpy.mock.calls[0]!;
+          const renderDurationMs = Date.now() - req.compactFallbackRender!.startedAt;
+          // ★ 核心断言：render 自己测到的耗时必须远小于 opaque 那 300ms 的
+          // 延迟——如果 startedAt 还是用 requestStartedAt（整个请求进来的
+          // 那一刻，在 opaque 慢失败之前），这个数字至少会是 300ms+；用
+          // "降级决定那一刻"之后，理论上只有几毫秒的框架开销。留足够宽的
+          // 容差（150ms）避免真实 CI 环境偶发抖动，但必须清楚地小于那 300ms
+          // 延迟本身，否则说明回归了。
+          expect(renderDurationMs).toBeLessThan(150);
+        } finally {
+          renderSpy.mockRestore();
+        }
+      });
+
+      it("★ #108/#111: opaque failure whose render retry is synchronously rejected before ever streaming records outcome=upstream_failed with a real httpStatus (case A: never entered handleStreaming)", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        setTransportPost(async (url) => {
+          if (url.endsWith("/codex/responses/compact")) {
+            return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
+          }
+          // 换端点之后依然被拒——这个 400 在真正进入流式阶段之前就被
+          // sendProxyUpstreamAttempt 同步抛出，proxy-handler.ts 的终止点
+          // （不是 streaming-handler.ts）负责记这一条，见
+          // recordCompactFallbackRenderOutcome 文档"覆盖的终止点"分类 1。
+          return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected render failure too" } }));
+        });
+
+        const renderSpy = vi.spyOn(compactOutcomeLog, "recordCompactFallbackRenderOutcome");
+        try {
+          const res = await messagesRequest(defaultBody({
+            stream: true,
+            messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
+          }), { "x-claude-code-session-id": "session-fallback-render-failure" });
+
+          // ★ 这次请求的真实 HTTP 状态依然是 200（streamErrorResponse 对
+          // 流式请求恒定如此，见 messages.ts 的历史注释）——但这不再是
+          // compact-outcome-log 唯一能看到的信号：真相在 proxy-handler.ts
+          // 内部、转换成假 200 之前就已经被记下来了。
+          expect(res.status).toBe(200);
+          expect(res.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
+
+          expect(renderSpy).toHaveBeenCalledTimes(1);
+          const [, completed, extra] = renderSpy.mock.calls[0]!;
+          expect(completed).toBe(false);
+          // ★ 案例 1（从未进流式阶段）有真实状态码可记——不像之前撤回的
+          // 设计那样，这次是同步抛出的 CodexApiError，跟"流式响应看不到
+          // 状态码"这条限制无关。
+          expect(typeof extra?.httpStatus).toBe("number");
+          expect(extra!.httpStatus).toBeGreaterThanOrEqual(400);
+          // ★ 案例 1 = "pre_stream"：从未进流式阶段就被拒绝，排查方向是
+          // "这次降级选错了"（调预算/换模型），跟案例 2 的"mid_stream"
+          // （查链路稳定性）必须能区分开，不能都塞进同一个 upstream_failed
+          // 就完事。
+          expect(extra?.failureStage).toBe("pre_stream");
+        } finally {
+          renderSpy.mockRestore();
+        }
+      });
+
+      it("★ #108/#111: opaque failure whose render retry starts streaming but the upstream disconnects mid-stream (no response.completed) records outcome=upstream_failed, NOT render_completed (case B: streaming-handler.ts finally, responseCompleted stays false)", async () => {
+        setClaudeCodeOpaqueCompactExperimental(true);
+        // 上游发了 created/in_progress/一段文本，但从未发 response.completed
+        // 就断流——真实场景是网络中断/上游超时提前把连接切了。这是这次改动
+        // 要锁住的核心保证："进了流式阶段"不等于"算成功"，必须真的等到
+        // responseCompleted。
+        const prematureSse =
+          sseChunk("response.created", { response: { id: "resp_premature_render" } }) +
+          sseChunk("response.in_progress", { response: { id: "resp_premature_render" } }) +
+          sseChunk("response.output_text.delta", { delta: "partial output before disconnect" });
+        setTransportPost(async (url) => {
+          if (url.endsWith("/codex/responses/compact")) {
+            return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
+          }
+          return makeTransportResponse(prematureSse);
+        });
+
+        const renderSpy = vi.spyOn(compactOutcomeLog, "recordCompactFallbackRenderOutcome");
+        try {
+          const res = await messagesRequest(defaultBody({
+            stream: true,
+            messages: [{ role: "user", content: "original history" }, { role: "user", content: compactPrompt }],
+          }), { "x-claude-code-session-id": "session-fallback-render-midstream-failure" });
+
+          expect(res.status).toBe(200);
+          expect(res.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
+          // ★ 同上：finally 块只在流真正跑完（这里是"耗尽输入、自然结束"，
+          // 不是收到 response.completed）之后才执行。
+          await res.text();
+
+          expect(renderSpy).toHaveBeenCalledTimes(1);
+          const [, completed, extra] = renderSpy.mock.calls[0]!;
+          // ★ 核心保证：中途断流（没有 response.completed）绝不能被记成
+          // 完成——哪怕它已经拿到了部分文本、哪怕它确实进了
+          // streaming-handler.ts 的正常路径。
+          expect(completed).toBe(false);
+          // 这个终止点（streaming-handler.ts 的 finally）没有单一的 HTTP
+          // 状态码概念——不写 httpStatus，不强凑。
+          expect(extra?.httpStatus).toBeUndefined();
+          // ★ 案例 2 = "mid_stream"：已经进了流式阶段才失败，排查方向是
+          // "链路本身不稳定"（查网络/上游），跟案例 1 的"pre_stream"必须能
+          // 区分开——这正是团队要求"半覆盖比不覆盖更危险"那条的落地检查。
+          expect(extra?.failureStage).toBe("mid_stream");
+        } finally {
+          renderSpy.mockRestore();
+        }
+      });
+
+      it("★ #108/#111: a normal (non-fallback) request behaves identically end-to-end — proxy-handler.ts/streaming-handler.ts are shared by every request, this is the public-path regression team-lead asked for", async () => {
+        // ★ 这条测试第一版断言 `recordCompactFallbackRenderOutcome` 从不被
+        // 调用——是错的：这个新钩子在 streaming-handler.ts 的 finally 里是
+        // *无条件*调用的（每个终止点都调一次，纯加法），"no-op" 指的是它
+        // 内部读到 `req.compactFallbackRender` 缺失就直接 `return`、绝不
+        // 写盘、绝不影响响应——不是"从不被调用"。spy 拦截的是调用本身，
+        // 拦不住"调用了但内部什么都没做"，用它验证"no-op" 天然会给假阳性
+        // 失败。真正该验的是**外部可观察行为**：状态码、响应内容、诊断
+        // header，这些跟这次改动之前必须逐字节一致。
+        setTransportPost(async () =>
+          makeTransportResponse(buildTextStreamChunks("resp_normal_regression", "ordinary response")),
+        );
+
+        const res = await messagesRequest(defaultBody({ stream: true }));
+        expect(res.status).toBe(200);
+        expect(res.headers.get("x-codex-proxy-compact-fallback")).toBeNull();
+        const body = await res.text();
+        expect(JSON.stringify(parseAnthropicSSE(body))).toContain("ordinary response");
+      });
+
       it("opaque compact bridge: successful compact does NOT set the fallback diagnostic header", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         setTransportPost(async (url) => {
@@ -1590,10 +1798,15 @@ describe("E2E: POST /v1/messages", () => {
         // 直接覆盖过，比在这里靠真实熔断计时凑出来更稳）。
         const fallbackLogSpy = vi.spyOn(opaqueCompactFallbackLog, "recordOpaqueCompactFallback");
 
-        // ~3MB 纯文本（不是 tool_result），远超默认预算（260K token），且
+        // ~8MB 纯文本（不是 tool_result）——这次请求走的是"codex"→
+        // 默认模型 gpt-5.4（config/default.yaml 的 model.default），预算
+        // 680,000 token。★ #115 之后 cheap 来源的预判阈值放宽到
+        // budget×4=2,720,000 token（≈7,344,000 字节），必须明显超过这个
+        // 放宽后的阈值才能仍然判定"裁不动、直接跳过上游"——8MB≈2,962,963
+        // token，留了足够余量，不是刚好卡在旧阈值（260K/680K）上就够。
         // trimCompactInputForBudget 只裁 function_call_output，救不了这种
         // 形状——预算预判应该判定"裁不动"，直接跳过上游 compact 调用。
-        const hugeText = "x".repeat(3_000_000);
+        const hugeText = "x".repeat(8_000_000);
         const recompactRes = await messagesRequest(defaultBody({
           stream: true,
           messages: [
@@ -1619,6 +1832,58 @@ describe("E2E: POST /v1/messages", () => {
         } finally {
           fallbackLogSpy.mockRestore();
         }
+      }, 20_000); // ★ #115：8MB 内容让真实分词器两次触发 2000ms 熔断（root
+      // compact 一次、recompact 一次），并行跑其它测试文件时总耗时会逼近
+      // 默认 5000ms 超时——见 task #106 记录的同一类计时敏感 flake，不是
+      // 这次改动引入的新问题，显式给足余量即可，不依赖默认超时。
+
+      it("★ #115: a cheap-source estimate landing between budget and budget×4 now reaches upstream instead of being pre-emptively skipped", async () => {
+        // "codex" 请求映射到 config/default.yaml 的 model.default（gpt-5.4），
+        // 预算 680,000 token（见 resolveCompactTokenBudget 单测里的实测表）。
+        // 用一段 ~3,000,000 字节的 base64 图片强制走 cheap 估算（含图片，见
+        // compactRequestHasImageContent）：cheap 估算 ≈ ceil(3,000,000/2.70)
+        // ≈ 1,111,112 token——严格大于 budget（680,000），但严格小于
+        // budget×4（2,720,000）。#115 之前这个区间会被直接判 withinBudget:
+        // false、连上游都不打；#115 之后应该放行，真的打一次 compact 端点，
+        // 让上游用真实结果裁决。
+        setClaudeCodeOpaqueCompactExperimental(true);
+        const urls: string[] = [];
+        setTransportPost(async (url) => {
+          urls.push(url);
+          return url.endsWith("/codex/responses/compact")
+            ? makeErrorTransportResponse(200, JSON.stringify({
+                output: [{ type: "reasoning", encrypted_content: "opaque-cheap-loosened-seed", summary: [] }],
+              }))
+            : makeTransportResponse(buildTextStreamChunks("resp_cheap_loosened", "should not be reached"));
+        });
+
+        const res = await messagesRequest(defaultBody({
+          stream: true,
+          messages: [
+            {
+              // Anthropic wire format uses block type "image" + a base64
+              // `source` object (see anthropic-to-codex.ts:80-106 /
+              // anthropicHistoryToCompactCodexInput:271-280) — NOT the
+              // internal Codex `input_image` shape, which only exists
+              // after translation. Using the wrong shape here would make
+              // this request fall through to the generic text/JSON-wrap
+              // path instead of the image path, silently testing the
+              // wrong branch.
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(3_000_000) } },
+              ],
+            },
+            { role: "user", content: compactPrompt },
+          ],
+        }), { "x-claude-code-session-id": "session-cheap-loosened" });
+
+        expect(res.status).toBe(200);
+        // 决定性断言：真的打了一次上游 compact 端点——#115 之前这个区间会
+        // 在预算预判阶段就被拦下，urls 里不会出现这个端点。
+        expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(1);
+        // 走的是 opaque 成功路径，不是降级——没有降级诊断 header。
+        expect(res.headers.get("x-codex-proxy-compact-fallback")).toBeNull();
       });
 
       it("opaque compact bridge: client abort cancels compact without saving state or falling back", async () => {

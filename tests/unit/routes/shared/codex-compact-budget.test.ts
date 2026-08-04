@@ -326,4 +326,110 @@ describe("planCompactRequestForBudget", () => {
     expect(plan.estimateSource).toBe("precise_extrapolated");
     expect(plan.processedFraction).toBe(0.42);
   });
+
+  describe("★ #115：cheap 来源放宽阈值到 budget×4，precise/precise_extrapolated 一行不动", () => {
+    it("cheap 来源、超预算但在 4× 阈值内：放行（withinBudget:true），不再直接跳过上游", async () => {
+      // 含图片内容强制退回 cheap（见上面 8.11 那条测试），1,200,000 字节的
+      // base64 图片：cheap 估算 ≈ ceil(1.2M/2.70) ≈ 444,445 token，budget 是
+      // 260,000（未校准型号兜底档）——estimated 在 budget（260,000）和
+      // budget×4（1,040,000）之间，改动前会判 withinBudget:false 直接跳过
+      // 上游，改动后应该放行。
+      const request = buildRequest({
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_image", image_url: `data:image/png;base64,${"A".repeat(1_200_000)}` },
+          ],
+        }],
+      });
+      const plan = await planCompactRequestForBudget(request);
+
+      expect(plan.estimateSource).toBe("cheap");
+      expect(plan.estimatedTokens).toBeGreaterThan(plan.budgetTokens); // 确认这次确实是"超预算"的场景
+      expect(plan.estimatedTokens).toBeLessThanOrEqual(plan.budgetTokens * 4);
+      expect(plan.withinBudget).toBe(true); // ★ 决定性断言：#115 之前这里是 false
+      // 分词器路径依然没有被触发——图片豁免和放宽阈值是两件独立的事，
+      // 放宽不应该反过来让图片开始走分词器。
+      expect(mockTokenizeCompactContent).not.toHaveBeenCalled();
+    });
+
+    it("cheap 来源、超过 4× 阈值：仍然 withinBudget:false，放宽不是无限放行", async () => {
+      // 3,000,000 字节的图片：cheap 估算 ≈ ceil(3M/2.70) ≈ 1,111,112 token，
+      // 严格大于 budget×4（1,040,000）——即使放宽了阈值，这类量级已知救不
+      // 回来（`CHEAP_ESTIMATE_BUDGET_MULTIPLIER` 头部注释引用的生产实测
+      // 8.9MB/95%图片案例就是这个数量级），必须仍然直接跳过上游。
+      const request = buildRequest({
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_image", image_url: `data:image/png;base64,${"A".repeat(3_000_000)}` },
+          ],
+        }],
+      });
+      const plan = await planCompactRequestForBudget(request);
+
+      expect(plan.estimateSource).toBe("cheap");
+      expect(plan.estimatedTokens).toBeGreaterThan(plan.budgetTokens * 4);
+      expect(plan.withinBudget).toBe(false);
+    });
+
+    it("precise 来源即使落在 budget~4×budget 区间也不放宽：只有 cheap 来源受益于这次改动", async () => {
+      // mock 分词器比例 4 chars/token：2,000,000 字符 → 500,000 token，
+      // budget 260,000 的 4 倍是 1,040,000——500,000 落在这个区间内，如果
+      // 放宽逻辑误伤了 precise 来源，这里就会错误地判 withinBudget:true。
+      // 用纯文本（非 function_call_output）保证裁剪"裁不动"，两级估算都
+      // 应该稳定给出同一个精确值。
+      const request = buildRequest({
+        input: [{ role: "user", content: "x".repeat(2_000_000) }],
+      });
+      const plan = await planCompactRequestForBudget(request);
+
+      expect(plan.estimateSource).toBe("precise");
+      expect(plan.estimatedTokens).toBeGreaterThan(plan.budgetTokens);
+      expect(plan.estimatedTokens).toBeLessThanOrEqual(plan.budgetTokens * 4);
+      expect(plan.withinBudget).toBe(false); // ★ 决定性断言：precise 不因为落在放宽区间就被放行
+    });
+  });
+
+  describe("★ #115：has_image/image_bytes/text_bytes 内容画像埋点", () => {
+    it("纯文本请求：hasImage:false，textBytes>0，imageBytes:0", async () => {
+      const request = buildRequest({
+        input: [{ role: "user", content: "hello, this is a small compact input" }],
+      });
+      const plan = await planCompactRequestForBudget(request);
+
+      expect(plan.hasImage).toBe(false);
+      expect(plan.textBytes).toBeGreaterThan(0);
+      expect(plan.imageBytes).toBe(0);
+    });
+
+    it("含图片请求：hasImage:true，imageBytes>0", async () => {
+      const request = buildRequest({
+        input: [{
+          role: "user",
+          content: [{ type: "input_image", image_url: `data:image/png;base64,${"A".repeat(1000)}` }],
+        }],
+      });
+      const plan = await planCompactRequestForBudget(request);
+
+      expect(plan.hasImage).toBe(true);
+      expect(plan.imageBytes).toBeGreaterThan(0);
+    });
+
+    it("裁剪分支（走到 trim 之后的 final 估算）同样带着裁剪前的内容画像，不因为触发裁剪就丢失", async () => {
+      // 复用"超预算但裁剪能救回来"那条用例的构造（function_call_output，
+      // 会触发裁剪）——hasImage/imageBytes/textBytes 应该照样有值，且是
+      // 对裁剪前原始 input 算的（trimCompactInputForBudget 不影响图片/
+      // 文本分类判断本身）。
+      const request = buildRequest({
+        input: [functionCallOutput("c1", "a".repeat(1_200_000))],
+      });
+      const plan = await planCompactRequestForBudget(request);
+
+      expect(plan.trimmedCount).toBeGreaterThan(0); // 确认真的走了裁剪分支
+      expect(plan.hasImage).toBe(false);
+      expect(plan.textBytes).toBe(0); // function_call_output 不归入 "text" 桶（分类是 "tool_result"）
+      expect(plan.imageBytes).toBe(0);
+    });
+  });
 });

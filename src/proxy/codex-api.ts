@@ -77,6 +77,7 @@ import {
   type CodexResponsesRequest,
   type CodexCompactRequest,
   type CodexCompactResponse,
+  type CodexContentPart,
   type CodexInputItem,
   type CodexSSEEvent,
   type CodexUsageResponse,
@@ -133,16 +134,40 @@ function truncateUtf8TextToApproxTokens(text: string, maxTokens: number): string
   return chars.slice(0, low).join("");
 }
 
+/**
+ * 取出一个 content part 里的文本；拿不到可信文本时返回 null。
+ *
+ * ★ 这里的入参是**未经校验的客户端 body**：`responses.ts` 的
+ * `input: Array.isArray(body.input) ? ... : []` 只保证它是个数组，元素形状
+ * 完全没有约束。TS 类型在这条链路上是一厢情愿的，不是运行时保证——
+ * `{"role":"user"}`（没有 content）、`{"role":"user","content":123}`、
+ * `{"type":"input_audio"}`（没有 text）都是能真的打进来的形状，实测三种
+ * 都会抛 TypeError。
+ *
+ * 而且抛的时机最差：本地装配发生在**上游 compaction 已经成功返回、token
+ * 已经花掉之后**，抛的又是 TypeError 而不是 CodexApiError，于是被
+ * `responses.ts` 直接 rethrow 成未处理 500——compact 结果丢失、无分类、
+ * 无 outcome 记录。v1 时代这个 body 只是原样转发给上游判 400。
+ *
+ * 判据：本地装配永远不许抛 TypeError。非法形状按「没有文本」处理（计 0 /
+ * 跳过），把该报错的责任留给上游。
+ */
+type TextualContentPart = Extract<CodexContentPart, { text: string }>;
+
+function isTextualPart(part: unknown): part is TextualContentPart {
+  return typeof part === "object"
+    && part !== null
+    && typeof (part as Record<string, unknown>).text === "string";
+}
+
 function userMessageApproxTokens(
   item: Extract<CodexInputItem, { role: "user" }>,
 ): number {
   if (typeof item.content === "string") return approximateTextTokens(item.content);
-  return item.content.reduce((total, part) => {
-    if (part.type === "input_text" || part.type === "output_text") {
-      return total + approximateTextTokens(part.text);
-    }
-    return total;
-  }, 0);
+  if (!Array.isArray(item.content)) return 0;
+  return item.content.reduce((total: number, part) => (
+    isTextualPart(part) ? total + approximateTextTokens(part.text) : total
+  ), 0);
 }
 
 function truncateUserMessageToApproxTokens(
@@ -154,10 +179,15 @@ function truncateUserMessageToApproxTokens(
     const content = truncateUtf8TextToApproxTokens(item.content, maxTokens);
     return content ? { ...item, content } : null;
   }
+  // 同 userMessageApproxTokens：content 不是数组说明这条 item 形状非法，
+  // 本地不判错、也不崩，直接当作「没有可保留的内容」。
+  if (!Array.isArray(item.content)) return null;
 
   let remaining = maxTokens;
   const content = item.content.flatMap((part): typeof item.content => {
-    if (part.type === "input_image") return [part];
+    // 没有可信文本的 part（input_image、以及任何未知类型）原样保留，不参与
+    // 按 token 预算的截断——不能对它调 Buffer.byteLength。
+    if (!isTextualPart(part)) return [part];
     if (remaining <= 0) return [];
     const tokens = approximateTextTokens(part.text);
     if (tokens <= remaining) {

@@ -227,6 +227,26 @@ export function expectCompactionAtEndOfCompactOutput(input: unknown[]): number {
   let prefixEnd = 0;
   while (prefixEnd < before.length && isInlineInstructionItem(before[prefixEnd])) prefixEnd += 1;
 
+  // 第二道、**独立锚定**的检查：真正要防的回归是「历史/preservedTail 混进了
+  // 压缩产物段」。上面那条白名单（只允许 user）今天已经覆盖它，这里是刻意的
+  // 冗余——白名单会随产品形状变（F11 就变过一次），而这条用的是「什么绝对
+  // 不该出现在 compaction 之前」，不依赖「什么可以出现」。将来若有人为了让
+  // 新形状通过而放松上面那条，这条仍然拦得住历史泄漏。
+  const HISTORY_KINDS = ["function_call", "function_call_output"];
+  const historyLeaks = before.filter((item) => {
+    if (typeof item !== "object" || item === null) return false;
+    const record = item as Record<string, unknown>;
+    return record.role === "assistant"
+      || (typeof record.type === "string" && HISTORY_KINDS.includes(record.type));
+  });
+  if (historyLeaks.length > 0) {
+    throw new Error(
+      `压缩产物段被历史污染：compaction 之前出现了 ${historyLeaks.length} 个 `
+      + `assistant/function_call/function_call_output 项——它们必须排在 compaction 之后。`
+      + JSON.stringify(historyLeaks).slice(0, 300),
+    );
+  }
+
   const offenders = before.slice(prefixEnd).filter((item) => (
     typeof item !== "object" || item === null
     || (item as Record<string, unknown>).role !== "user"

@@ -464,6 +464,31 @@ describe("QA-M compact 的上游配额帧真的写进账号池（F9 端到端）
     expect(calls).toHaveLength(1);
   });
 
+  // ★ 配额记录有**两个**路由层调用点，M1 只覆盖 /v1/messages 那个。
+  // 实测：单独删掉 /v1/responses/compact 这个调用点，tests/e2e + tests/unit/proxy
+  // 共 532 条**全绿**——同一道缝，只是换了条路由。所以这条必须单独钉。
+  it("QA-M3 /v1/responses/compact 路由的配额帧同样写进账号池（第二个调用点）", async () => {
+    expect(ctx.accountPool.getEntry(ctx.entryId)?.cachedQuota ?? null).toBeNull();
+    setUpstreamRateLimits([{
+      primary: { used_percent: 61.25, window_minutes: 60, reset_at: null },
+      secondary: null,
+    }]);
+    recordAndReply(() => makeTransportResponse(v2CompactStream("opaque-qa-m3")));
+
+    const res = await ctx.app.request("/v1/responses/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(compactBody),
+    });
+    expect(res.status).toBe(200);
+    await res.json();
+
+    const quota = ctx.accountPool.getEntry(ctx.entryId)?.cachedQuota;
+    console.log(`[QA-M3] /v1/responses/compact 之后 cachedQuota.rate_limit = ${JSON.stringify(quota?.rate_limit)}`);
+    expect(quota).toBeTruthy();
+    expect(quota?.rate_limit?.used_percent).toBe(61.25);
+  });
+
   it("QA-M2 对照组：上游没发 rate limit 帧时不会凭空写出配额", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
     setUpstreamRateLimits([]);

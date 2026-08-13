@@ -30,8 +30,9 @@ import {
   resetTransportState,
   getMockTransport,
   makeTransportResponse,
-  makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -155,11 +156,9 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
     const ctx = buildApp("acct-lifecycle-self-heal", "lifecycle-self-heal@test.com");
     const compactBodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
-      if (url.endsWith("/codex/responses/compact")) {
+      if (isCompactV2Request(body)) {
         compactBodies.push(JSON.parse(body) as Record<string, unknown>);
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-persisted-root", summary: [] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: "opaque-persisted-root" });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });
@@ -202,8 +201,8 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
   it("E3: cross-account access remains fail-closed even on a fresh /compact request (account_mismatch is not in any self-heal/ignore family)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
     const owner = buildApp("acct-lifecycle-owner", "lifecycle-owner@test.com");
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await request(owner, defaultBody({
@@ -306,11 +305,9 @@ describe("opaque compact lifecycle — real SQLite repository + real routes (Rev
     const ctx = buildApp("acct-lifecycle-lockguard", "lifecycle-lockguard@test.com");
     const compactBodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
-      if (url.endsWith("/codex/responses/compact")) {
+      if (isCompactV2Request(body)) {
         compactBodies.push(JSON.parse(body) as Record<string, unknown>);
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-lockguard-root", summary: [] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: "opaque-lockguard-root" });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

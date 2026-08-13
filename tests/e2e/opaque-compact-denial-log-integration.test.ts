@@ -14,6 +14,8 @@ import {
   makeTransportResponse,
   makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -129,8 +131,8 @@ describe("8.6: opaque compact denial log — real /v1/messages integration", () 
     let now = 1_000_000;
     installInMemoryOpaqueCompactStateStore({ ttlMs: 30 * 60_000, now: () => now });
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest({
@@ -214,17 +216,15 @@ describe("8.6: opaque compact denial log — real /v1/messages integration", () 
     setClaudeCodeOpaqueCompactExperimental(true);
 
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
         // 第一次（root）成功，第二次（recompact）撞 429——429 按
         // handleCodexApiError 的分类本来是 action:"retry"，但这个账号池
         // 只有一个账号、且 marker 已把这次 recompact 钉死在它上面，
         // requiredEntryId 短路成立即放弃，走 crossAccountBlocked 分支。
         if (compactCallCount === 1) {
-          return makeErrorTransportResponse(200, JSON.stringify({
-            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "summary" }] }],
-          }));
+          return makeCompactV2Response({ encryptedContent: "summary" });
         }
         return makeErrorTransportResponse(429, JSON.stringify({ error: { message: "rate limited" } }));
       }

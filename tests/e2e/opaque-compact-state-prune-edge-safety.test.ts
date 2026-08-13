@@ -36,8 +36,9 @@ import {
   setTransportPost,
   resetTransportState,
   makeTransportResponse,
-  makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -166,12 +167,10 @@ describe("opaque compact state — prune must not destroy a still-pending crash-
   it("(a) COMMIT 成功但 marker 未送达 + 旁边会话持续 churn 触发 prune → 原样输入重试仍必须 successor_replay，不重新打上游", async () => {
     setupRuntime(4);
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `summary #${compactCallCount}` }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `summary #${compactCallCount}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });
@@ -244,12 +243,10 @@ describe("opaque compact state — prune must not destroy a still-pending crash-
   it("(b) 同一个 predecessor 的两条分叉，一条已送达、另一条还在等 → prune 不得连带清空还在等的那条分叉的 edge", async () => {
     setupRuntime(4);
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `summary #${compactCallCount}` }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `summary #${compactCallCount}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

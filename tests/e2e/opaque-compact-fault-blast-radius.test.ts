@@ -43,8 +43,9 @@ import {
   resetTransportState,
   getMockTransport,
   makeTransportResponse,
-  makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -209,11 +210,9 @@ describe("opaque compact store fault — blast radius (production incident: 94x 
   it("an arbitrary unexpected exception at the repository boundary globally detaches the store, 409s every session (including ones that never touched the failing marker), never self-heals, and the original exception content reaches the new structured logs without leaking into the client response", async () => {
     const compactBodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
-      if (url.endsWith("/codex/responses/compact")) {
+      if (isCompactV2Request(body)) {
         compactBodies.push(JSON.parse(body) as Record<string, unknown>);
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: `opaque-blast-root-${compactBodies.length}`, summary: [] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `opaque-blast-root-${compactBodies.length}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

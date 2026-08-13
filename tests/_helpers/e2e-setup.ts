@@ -58,6 +58,18 @@ export function resetTransportState(): void {
   _lastTransportBody = null;
   mockConfig.model.claude_code_opaque_compact_experimental = false;
   mockConfig.model.compact_protocol = "auto";
+  mockConfig.model.system_prompt_strategy = "instructions";
+}
+
+/**
+ * 切换 system prompt 注入策略。inline 两种模式下用户 system prompt 不在顶层
+ * instructions 里，而是被 unshift 成 input 最前面的 developer/system item——
+ * opaque 恢复路径能不能保住它，只有在这两种模式下才验得出来。
+ */
+export function setSystemPromptStrategy(
+  strategy: "instructions" | "developer_inline" | "system_inline",
+): void {
+  mockConfig.model.system_prompt_strategy = strategy;
 }
 
 /**

@@ -17,6 +17,9 @@ vi.mock("@src/config.js", () => ({
   getConfig: vi.fn(() => ({
     api: { base_url: "https://chatgpt.com/backend-api" },
     client: { app_version: "1.0.0" },
+    // compact 协议开关：auto = 纯 v2、无自动回落（产品默认值）。
+    // 需要验 v1 分支的用例自己改这个 mock 的返回值。
+    model: { compact_protocol: "auto" },
   })),
 }));
 
@@ -37,6 +40,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CodexApi, CodexApiError, type CodexSSEEvent } from "@src/proxy/codex-api.js";
 import { mockResponse, sseChunk } from "@helpers/sse.js";
 import { getTransport } from "@src/tls/transport.js";
+import { getConfig } from "@src/config.js";
 import type { TlsTransport, TlsTransportResponse } from "@src/tls/transport.js";
 
 /** Collect all events from parseStream into an array. */
@@ -440,12 +444,12 @@ describe("CodexApi.createCompactResponse", () => {
     });
   });
 
-  it("falls back to legacy /responses/compact only when the trigger is explicitly unsupported", async () => {
-    mockCreateWebSocketResponse.mockRejectedValue(
-      new CodexApiError(400, JSON.stringify({
-        error: { code: "invalid_value", message: "Invalid value: compaction_trigger is not supported" },
-      })),
-    );
+  it("compact_protocol: \"v1\" 直接走 legacy 端点，压根不先试 v2", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce({
+      api: { base_url: "https://chatgpt.com/backend-api" },
+      client: { app_version: "1.0.0" },
+      model: { compact_protocol: "v1" },
+    } as unknown as ReturnType<typeof getConfig>);
     const transport = makeMockTransport({
       post: vi.fn().mockResolvedValue({
         status: 200,
@@ -464,12 +468,49 @@ describe("CodexApi.createCompactResponse", () => {
       input: [{ role: "user", content: "history" }],
     });
 
-    expect(mockCreateWebSocketResponse).toHaveBeenCalledOnce();
+    // 关键：没有「先试 v2 再回落」，v2 一次都没发起过。
+    expect(mockCreateWebSocketResponse).not.toHaveBeenCalled();
     expect(transport.post).toHaveBeenCalledOnce();
     expect(vi.mocked(transport.post).mock.calls[0][0]).toBe(
       "https://chatgpt.com/backend-api/codex/responses/compact",
     );
     expect(result.output).toEqual([{ type: "reasoning", encrypted_content: "legacy" }]);
+  });
+
+  // ★ 这条替换了原来的「只在 trigger 明确不被支持时才回落 v1」。
+  //
+  // 原测试有两个问题，都不是断言写错、是**前提**就不成立：
+  // 1. 它用 mockRejectedValue(CodexApiError(400, code=invalid_value)) 制造上游
+  //    错误，但 ws-transport.ts 的 ROTATABLE_ERROR_CODES 里没有 invalid_value
+  //    ——真实传输下这类错误是**流内 SSE error 帧**，不是 reject。验的不是
+  //    生产路径。
+  // 2. 它验的「自动回落」行为本身已经被删掉了：回落判据只能来自上游错误文案，
+  //    而「从错误文案反推上游支不支持某能力」被实测证明会把「请求构造错了」
+  //    误判成「端点被下掉了」（`compaction_trigger must be the last input item`
+  //    同时命中 invalid 和 compaction_trigger）。
+  //
+  // 现在按真实传输形态重写：错误以流内 error 帧出现，且**不得**触发第二次请求。
+  it("auto 下流内 error 帧（哪怕文案里同时出现 invalid 和 compaction_trigger）也不回落 v1", async () => {
+    mockCreateWebSocketResponse.mockResolvedValue(mockResponse(
+      sseChunk("error", {
+        error: {
+          code: "invalid_value",
+          message: "Invalid value for 'input': compaction_trigger must be the last input item",
+        },
+      }),
+    ));
+    const transport = makeMockTransport();
+    vi.mocked(getTransport).mockReturnValue(transport);
+
+    await expect(createApi().createCompactResponse({
+      model: "gpt-5.4",
+      instructions: "compact",
+      input: [{ role: "user", content: "history" }],
+    })).rejects.toMatchObject({ status: 400 });
+
+    // 决定性断言：没有第二次上游请求。此前这条会被判成「v2 不可用」→ 打一次
+    // 注定 404 的 v1 → 客户端看到 404，而真实原因是 400 参数位置放错。
+    expect(transport.post).not.toHaveBeenCalled();
   });
 
   it("does not fall back after quota errors", async () => {
@@ -486,6 +527,22 @@ describe("CodexApi.createCompactResponse", () => {
       instructions: "compact",
       input: [],
     })).rejects.toMatchObject({ status: 429 });
+    expect(transport.post).not.toHaveBeenCalled();
+  });
+
+  it("auto 下 HTTP 404 原样上抛，不吞成「v2 不可用」——CF path-block 的自愈依赖它", async () => {
+    // /codex/responses 是所有普通请求都在打的端点，它返回空 body 404 的真实
+    // 含义是 Cloudflare path-block，不可能是「v2 不被支持」。吞掉会让
+    // proxy-error-handler 那套清 cookie / 计数 / 禁用账号的恢复逻辑失效。
+    mockCreateWebSocketResponse.mockRejectedValue(new CodexApiError(404, ""));
+    const transport = makeMockTransport();
+    vi.mocked(getTransport).mockReturnValue(transport);
+
+    await expect(createApi().createCompactResponse({
+      model: "gpt-5.4",
+      instructions: "compact",
+      input: [{ role: "user", content: "history" }],
+    })).rejects.toMatchObject({ status: 404 });
     expect(transport.post).not.toHaveBeenCalled();
   });
 

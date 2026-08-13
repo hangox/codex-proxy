@@ -92,6 +92,18 @@ export const ConfigSchema = z.object({
     system_prompt_strategy: z
       .enum(["instructions", "developer_inline", "system_inline"])
       .default("instructions"),
+    /**
+     * 走哪个 Responses compaction 协议。这是上游回滚 / 出现旧客户端时**唯一
+     * 不依赖任何猜测**的逃生舱：改一个配置键即可，不需要发版。
+     *
+     * - `auto`（默认）：纯 v2（/codex/responses + 末尾 compaction_trigger 哨兵），
+     *   **没有任何自动回落**——不再从上游错误文案反推「v2 是不是不被支持」，
+     *   那条判据被实测证明会把「请求构造错了」误判成「端点被下掉了」。
+     * - `v1`：直接走 legacy 的 JSON /codex/responses/compact，不先试 v2。
+     * - `v2`：同 auto。单独保留是为了让「我明确不要回落」可表达，也让 auto
+     *   的语义将来可以演进而不破坏显式选择。
+     */
+    compact_protocol: z.enum(["auto", "v1", "v2"]).default("auto"),
   }),
   auth: z.object({
     jwt_token: z.string().nullable().default(null),

@@ -25,6 +25,9 @@ model:
   # The two `_inline` modes can bypass Codex backend's built-in base prompt prior
   # in cases where the `instructions` field is overridden by server-injected context.
   system_prompt_strategy: instructions
+  # Responses compaction 协议：auto(默认，纯 v2、无自动回落) | v1 | v2
+  # 上游回滚或出现旧客户端时，把它改成 v1 即可，不需要发版。
+  compact_protocol: auto
 auth:
   jwt_token: null
   chatgpt_oauth: true

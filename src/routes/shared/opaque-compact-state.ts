@@ -431,6 +431,33 @@ export function removeOpaquePreservedTailReplay(
   return retained;
 }
 
+/**
+ * marker 边界**之前**那段里，属于「本轮指令」而不是「历史对话」的 item。
+ *
+ * 为什么需要单独捞出来：`system_prompt_strategy = developer_inline` /
+ * `system_inline` 时，用户的 system prompt 不在顶层 `instructions` 里
+ * （`anthropic-to-codex.ts` 刻意让 instructions 不含用户内容，注释写的
+ * "nothing to bypass"），而是被 `unshift` 成 input 最前面的一个
+ * `{role:"developer"|"system"}` item——**inline 模式下它只存在于这一个地方**。
+ *
+ * 而恢复逻辑只保留 `[boundaryIndex, end)`，于是这条 item 被整个丢掉且再没
+ * 插回去。后果：inline 模式 + 客户端有 system prompt + 走 opaque compact 恢复
+ * → 该轮及之后每一轮恢复请求都没有用户 system prompt，顶层 instructions 也是
+ * 空的，模型完全失去系统指令，**没有任何报错**。
+ *
+ * 判据刻意基于 item 语义（role 是不是 developer/system），不是 index 位置：
+ * inline 模式下它恰好在 index 0 只是当前实现的巧合，`unshift` 的项数将来可能
+ * 变。`instructions` 模式下前缀里本来就没有这类 item，这个函数返回空数组，
+ * 整条改动对该模式是 no-op。
+ *
+ * 只认 developer/system：user/assistant 是真历史，本来就该被压缩产物取代。
+ */
+function collectPrefixInstructionItems(items: CodexInputItem[]): CodexInputItem[] {
+  return items.filter((item) => (
+    "role" in item && (item.role === "developer" || item.role === "system")
+  ));
+}
+
 export function restoreOpaqueCompactInput(
   input: CodexInputItem[],
   marker: string,
@@ -438,7 +465,14 @@ export function restoreOpaqueCompactInput(
   preservedTail: CodexInputItem[] = [],
 ): CodexInputItem[] {
   const boundaryIndex = findOpaqueMarkerBoundaryIndex(input, marker);
-  if (boundaryIndex < 0) return [...output as CodexInputItem[], ...preservedTail];
+  if (boundaryIndex < 0) {
+    return [
+      ...collectPrefixInstructionItems(input),
+      ...output as CodexInputItem[],
+      ...preservedTail,
+    ];
+  }
+  const prefixInstructions = collectPrefixInstructionItems(input.slice(0, boundaryIndex));
 
   const retained: CodexInputItem[] = [];
   for (let index = boundaryIndex; index < input.length; index += 1) {
@@ -471,7 +505,8 @@ export function restoreOpaqueCompactInput(
     }
     if (content.length > 0) retained.push({ ...item, content } as CodexInputItem);
   }
-  return [...output as CodexInputItem[], ...preservedTail, ...retained];
+  // 本轮 inline 指令必须排在最前：它是「系统指令」，语义上先于压缩产物和历史。
+  return [...prefixInstructions, ...output as CodexInputItem[], ...preservedTail, ...retained];
 }
 
 const IGNORED_MARKER_PLACEHOLDER_TEXT =

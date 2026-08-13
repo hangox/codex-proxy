@@ -724,8 +724,17 @@ export class CodexApi {
       }
     }
 
+    // ★ 下面两处都是**协议违例**（上游把这次请求当成功处理了，只是内容不
+    // 符合 v2 约定），不是传输抖动——重放同样的请求只会得到同样的结果，
+    // 并且每一次重放都是一整轮真金白银的 compact。必须显式标成不可重试，
+    // 否则 `withRetry`（status 5xx 即重试）会把一次语义错误放大成 3 次付费
+    // 请求。传输层真正的 5xx 不带这个标记，正常重试行为不受影响。
     if (!sawCompleted) {
-      throw new CodexApiError(502, "Remote compact v2 stream closed before response.completed");
+      throw new CodexApiError(
+        502,
+        "Remote compact v2 stream closed before response.completed",
+        { retryable: false },
+      );
     }
 
     const outputItems = doneOutput.some(isCompactionItem) ? doneOutput : completedOutput;
@@ -734,6 +743,7 @@ export class CodexApi {
       throw new CodexApiError(
         502,
         `Remote compact v2 expected exactly one compaction output item, got ${compactions.length} from ${outputItems.length} output items`,
+        { retryable: false },
       );
     }
 

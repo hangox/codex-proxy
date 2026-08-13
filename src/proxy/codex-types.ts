@@ -199,9 +199,26 @@ export interface CodexUsageResponse {
 }
 
 export class CodexApiError extends Error {
+  /**
+   * 「重试也不会有不同结果」的显式标记，默认 `undefined`（= 沿用
+   * `withRetry` 按 status 判定的老行为，不改变任何既有调用方）。
+   *
+   * 为什么需要它：`withRetry` 只看 status 段（5xx 可重试），这在「上游/传输
+   * 真的抖了」时是对的，但**协议违例**（上游按 200 正常返回、内容却不符合
+   * 约定，比如 compaction item 数量不对、stream 没到 completed 就断）同样
+   * 被表达成 502，于是一次语义错误会被放大成 3 次完整的付费 compact。
+   *
+   * 判据是「重放这次请求有没有可能得到不同结果」，不是「错误码是几」——
+   * 所以标记打在**产生错误的那一处**（它才知道自己遇到的是抖动还是违例），
+   * 而不是在 `withRetry` 里堆 status/文案的特例分支。新增一种不可重试的
+   * 失败时只需在抛出处带上这个标记，重试逻辑本身不用动。
+   */
+  readonly retryable?: boolean;
+
   constructor(
     public readonly status: number,
     public readonly body: string,
+    options?: { retryable?: boolean },
   ) {
     let detail: string;
     try {
@@ -217,6 +234,7 @@ export class CodexApiError extends Error {
       detail = body;
     }
     super(`Codex API error (${status}): ${detail}`);
+    this.retryable = options?.retryable;
   }
 }
 

@@ -760,9 +760,13 @@ async function handleCompact(
 
   for (;;) {
     try {
+      // signal 必须传给 withRetry：只传给 createCompactResponse 的话，客户端
+      // 中断后正在跑的那一次会被取消，但 withRetry 自己的退避 sleep 醒来后
+      // 照样会发起下一次尝试——实测客户端在第一次请求时就 abort，上游仍被
+      // 打满 3 次。用户按了 Ctrl-C，账单照跑。
       const result = await withRetry(
         () => codexApi.createCompactResponse(compactRequest, c.req.raw.signal),
-        { tag: TAG },
+        { tag: TAG, signal: c.req.raw.signal },
       );
 
       releaseAccount(accountPool, entryId, compactImageFailedUsage, released);

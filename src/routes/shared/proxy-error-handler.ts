@@ -60,6 +60,20 @@ export type ErrorAction =
  * @param model         Requested model name
  * @param tag           Route tag for logging
  * @param modelRetried  Whether model-not-supported retry has already been attempted
+ * @param cookieJar     该账号的 cookie jar。**必须显式传**（可以传 undefined，
+ *                      顶层确实可能没有）——传 undefined 和「忘了传」在语义上
+ *                      完全不同，但在调用点长得一模一样，所以这里刻意去掉了
+ *                      `?`，让「忘了传」变成编译错误。
+ *                      漏传的后果不是报错而是**静默降级**：Cloudflare
+ *                      path-block 分支里是 `cookieJar?.clear(entryId)`，可选链
+ *                      会把它变成 no-op，而紧跟着的 "cleared cookies and
+ *                      retrying..." 日志照打——日志说清了、实际没清。
+ *                      `/v1/responses/compact` 就这么漏了很久。
+ * @param safeLog       是否按隐私合同抑制明文账号标识/邮箱。**必须显式传**，
+ *                      不给默认值：它不是「可有可无的开关」，而是一个需要
+ *                      调用方明确表态的合同。opaque compact 相关路径传 true；
+ *                      普通代理路由传 false（那是既有的正确行为，不要因为
+ *                      "看起来更安全" 就改成 true，会改变日志语义）。
  */
 export function handleCodexApiError(
   err: CodexApiError,
@@ -68,8 +82,8 @@ export function handleCodexApiError(
   model: string,
   tag: string,
   modelRetried: boolean,
-  cookieJar?: CookieJar,
-  safeLog = false,
+  cookieJar: CookieJar | undefined,
+  safeLog: boolean,
 ): ErrorAction {
   // safeLog 用于 opaque compact 等受隐私合同约束的调用方：这些路径的审计日志
   // 不得出现明文账号标识或邮箱。此前 safeLog 只隐藏 err.message，entryId/email

@@ -785,8 +785,13 @@ async function handleCompact(
       // "cleared cookies and retrying..." 的日志照打——「日志说清了、实际没清」，
       // 属于会把排查方向直接带偏的那类假象。实测 cookie jar 里的 __cf_bm 原样残留。
       // 同一个函数在 codex-compact-service.ts 的调用点是传了的，只有这条路由漏了。
+      // safeLog=false 是**刻意**的，不是漏传：safeLog 只给受隐私合同约束的
+      // opaque compact 路径用（见 proxy-error-handler.ts 的 @param 说明），
+      // 而 /v1/responses/compact 是普通代理路由，打明文账号标识是既有的正确
+      // 行为。不要因为「看起来更安全」把它改成 true——那会改变这条路由的
+      // 日志语义。
       const decision = handleCodexApiError(
-        err, accountPool, entryId, modelId, TAG, false, cookieJar,
+        err, accountPool, entryId, modelId, TAG, false, cookieJar, false,
       );
 
       if (decision.action === "respond") {

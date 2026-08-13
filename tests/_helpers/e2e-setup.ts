@@ -202,14 +202,41 @@ export function expectCompactionAtEndOfCompactOutput(input: unknown[]): number {
   }
   const index = input.findIndex(isCompactionItem);
   const before = input.slice(0, index);
-  const offenders = before.filter((item) => (
+
+  // ★ compaction 之前允许出现的东西有两类，顺序固定：
+  //   [0, k)  本轮 inline 系统指令（developer/system）——`system_prompt_strategy`
+  //           是 developer_inline / system_inline 时，恢复逻辑会把它们保留在
+  //           最前（见 opaque-compact-state.ts 的 collectPrefixInstructionItems）。
+  //   [k, i)  v2 客户端侧保留的 user 消息。
+  //
+  // 这段前缀**只在开头连续出现**才放行：一旦越过第一段非指令项，后面再出现
+  // developer/system 就说明它混在历史中间，仍然是违规。对历史项的严格程度没变。
+  //
+  // 为什么要专门写这条：判据原来是「compaction 之前只能是 user」，那是 F11
+  // 修复**之前**的形状。F11 修好之后，inline 模式下一个**完全正确**的恢复结果
+  // 会被判成违规。今天不发作只是因为用到这个 helper 的用例跑在默认的
+  // `instructions` 策略下（前缀里本来就没有指令项）——下一个人给 inline 补一条
+  // 用例就会撞上「产品是对的、断言是错的」，而那种失败最危险的走向是有人顺手
+  // 把断言放松回 toContainEqual，或者反过来怀疑 F11 的修复有问题。
+  const isInlineInstructionItem = (item: unknown): boolean => {
+    if (typeof item !== "object" || item === null) return false;
+    const role = (item as Record<string, unknown>).role;
+    return role === "developer" || role === "system";
+  };
+
+  let prefixEnd = 0;
+  while (prefixEnd < before.length && isInlineInstructionItem(before[prefixEnd])) prefixEnd += 1;
+
+  const offenders = before.slice(prefixEnd).filter((item) => (
     typeof item !== "object" || item === null
     || (item as Record<string, unknown>).role !== "user"
   ));
   if (offenders.length > 0) {
     throw new Error(
-      `compaction item must be the last item of the compact output segment; found `
-      + `${offenders.length} non-user item(s) before it: ${JSON.stringify(offenders).slice(0, 300)}`,
+      `compaction item must be the last item of the compact output segment `
+      + `(允许的前缀：开头连续的 developer/system 内联指令，其后只能是保留的 user 消息)；`
+      + `found ${offenders.length} offending item(s) before it: `
+      + JSON.stringify(offenders).slice(0, 300),
     );
   }
   return index;
@@ -282,6 +309,19 @@ vi.mock("@src/tls/transport.js", () => ({
   getTransport: vi.fn(() => mockTransport),
 }));
 
+/**
+ * 让当前测试用的替身在 WS 请求期间回放一批上游 rate limit 帧。
+ *
+ * 真实上游会在流里发 `codex.rate_limits`，`ws-transport` 把它变成
+ * `onRateLimits(...)` 回调。此前这个 mock 的签名**只有 5 个参数、根本没有
+ * onRateLimits 这一档**，于是「回调真的把配额写进账号池」这条缝在路由级完全
+ * 测不出来——两端（透传、写入）各自有单测，中间没有。
+ */
+let _wsRateLimits: unknown[] = [];
+export function setUpstreamRateLimits(frames: unknown[]): void {
+  _wsRateLimits = frames;
+}
+
 vi.mock("@src/proxy/ws-transport.js", () => ({
   createWebSocketResponse: vi.fn(async (
     wsUrl: string,
@@ -289,9 +329,12 @@ vi.mock("@src/proxy/ws-transport.js", () => ({
     request: unknown,
     signal?: AbortSignal,
     proxyUrl?: string | null,
+    onRateLimits?: (rateLimits: unknown) => void,
   ) => {
     const body = JSON.stringify(request);
     _lastTransportBody = body;
+    // 顺序刻意和真实传输一致：rate limit 帧先于响应体到达。
+    for (const frame of _wsRateLimits) onRateLimits?.(frame);
     const result = await _transportPost(wsUrl, headers, body, signal, undefined, proxyUrl);
     if (result.status < 200 || result.status >= 300) {
       const errorBody = await new Response(result.body as BodyInit).text();

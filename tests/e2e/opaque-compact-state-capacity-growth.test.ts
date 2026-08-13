@@ -34,8 +34,9 @@ import {
   setTransportPost,
   resetTransportState,
   makeTransportResponse,
-  makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -166,12 +167,10 @@ describe("opaque compact state — capacity growth under repeated recompact (tas
   it("每次 recompact 净增一条（predecessor 不删），持续超过 capacity 后行数被 LRU 收敛到 capacity 附近，请求全部优雅成功（不硬失败）", async () => {
     setupRuntime(8);
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `summary #${compactCallCount}` }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `summary #${compactCallCount}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });
@@ -216,12 +215,10 @@ describe("opaque compact state — capacity growth under repeated recompact (tas
   it("capacity 小于'受保护行数下限'（=2：当前写入行+它的 predecessor）时，recompact 真的会硬失败——确认客户端看到的是 409 而不是崩溃或静默丢数据", async () => {
     setupRuntime(1);
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `summary #${compactCallCount}` }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `summary #${compactCallCount}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

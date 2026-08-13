@@ -43,103 +43,6 @@ export type TransportPostFn = (
 let _transportPost: TransportPostFn;
 let _lastTransportBody: string | null = null;
 
-function parseRemoteCompactV2Body(body: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    if (!Array.isArray(parsed.input)) return null;
-    const last = parsed.input.at(-1);
-    if (
-      typeof last !== "object"
-      || last === null
-      || (last as Record<string, unknown>).type !== "compaction_trigger"
-    ) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function legacyCompactFixtureBody(v2Body: Record<string, unknown>): string {
-  const input = (v2Body.input as unknown[]).slice(0, -1);
-  const {
-    type: _type,
-    stream: _stream,
-    store: _store,
-    tool_choice: _toolChoice,
-    client_metadata: _clientMetadata,
-    ...fields
-  } = v2Body;
-  return JSON.stringify({ ...fields, input });
-}
-
-async function adaptLegacyCompactFixtureResponse(
-  response: TlsTransportResponse,
-): Promise<TlsTransportResponse> {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (response.status < 200 || response.status >= 300 || !contentType.includes("application/json")) {
-    return response;
-  }
-
-  const text = await new Response(response.body as BodyInit).text();
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return makeErrorTransportResponse(response.status, text);
-  }
-  if (!Array.isArray(parsed.output)) return makeErrorTransportResponse(response.status, text);
-
-  const encryptedContent = parsed.output.find((item) => (
-    typeof item === "object"
-    && item !== null
-    && typeof (item as Record<string, unknown>).encrypted_content === "string"
-  ));
-  const encrypted = encryptedContent
-    ? (encryptedContent as Record<string, unknown>).encrypted_content as string
-    : Buffer.from(JSON.stringify(parsed.output), "utf8").toString("base64");
-  const compaction = {
-    id: "cmp_e2e_v2",
-    type: "compaction",
-    encrypted_content: encrypted,
-  };
-  const usage = typeof parsed.usage === "object" && parsed.usage !== null
-    ? parsed.usage
-    : { input_tokens: 10, output_tokens: 2 };
-  return makeTransportResponse(
-    `event: response.output_item.done\ndata: ${JSON.stringify({ item: compaction })}\n\n`
-    + `event: response.completed\ndata: ${JSON.stringify({
-      response: { id: "resp_e2e_compact_v2", usage },
-    })}\n\n`,
-  );
-}
-
-/**
- * Keep legacy compact fixtures readable while production now speaks v2.
- * Unit tests assert the real /responses + compaction_trigger wire shape; E2E
- * route tests can continue describing only their intended compact payload.
- */
-async function invokeTransportPost(
-  url: string,
-  headers: Record<string, string>,
-  body: string,
-  signal?: AbortSignal,
-  timeoutSec?: number,
-  proxyUrl?: string | null,
-): Promise<TlsTransportResponse> {
-  const v2Body = parseRemoteCompactV2Body(body);
-  if (!v2Body) return _transportPost(url, headers, body, signal, timeoutSec, proxyUrl);
-
-  const result = await _transportPost(
-    `${url}/compact`,
-    headers,
-    legacyCompactFixtureBody(v2Body),
-    signal,
-    timeoutSec,
-    proxyUrl,
-  );
-  return adaptLegacyCompactFixtureResponse(result);
-}
-
 /** Override the transport.post behavior for the current test. */
 export function setTransportPost(fn: TransportPostFn): void {
   _transportPost = fn;
@@ -164,7 +67,7 @@ export function setClaudeCodeOpaqueCompactExperimental(enabled: boolean): void {
 const mockTransport: TlsTransport = {
   post: vi.fn((...args: Parameters<TlsTransport["post"]>) => {
     _lastTransportBody = args[2];
-    return invokeTransportPost(args[0], args[1], args[2], args[3], args[4], args[5]);
+    return _transportPost(args[0], args[1], args[2], args[3], args[4], args[5]);
   }),
   get: vi.fn(async () => ({ status: 200, body: "{}" })),
   simplePost: vi.fn(async () => ({ status: 200, body: "{}" })),
@@ -210,6 +113,146 @@ export function makeErrorTransportResponse(status: number, body: string): TlsTra
   };
 }
 
+// ── Remote compaction v2 fixtures ────────────────────────────────────
+//
+// Production speaks Responses compaction v2: the compact request is an ordinary
+// streaming POST to /codex/responses whose LAST input item is the sentinel
+// `{"type":"compaction_trigger"}`, and the reply is SSE carrying a single
+// `compaction` output item plus `response.completed` with usage.
+//
+// These helpers describe exactly that wire shape so E2E fixtures stay readable
+// WITHOUT rewriting what production actually sent. Never translate a v2 request
+// back into the legacy /responses/compact JSON call — that makes E2E assert a
+// protocol production no longer speaks, and silently voids all v2 coverage.
+
+/**
+ * True when `request` is a real remote-compaction-v2 request, i.e. the final
+ * `input` item is the `compaction_trigger` sentinel. This is the v2 replacement
+ * for the old `url.endsWith("/codex/responses/compact")` check — v2 compacts go
+ * to the ordinary /codex/responses endpoint, so the URL no longer distinguishes
+ * them; the trailing sentinel is what does.
+ *
+ * Accepts either the raw request body string (inside a transport fixture) or an
+ * already-parsed body object (in assertions over a captured `bodies` array), so
+ * there is exactly one definition of "this was a compact request".
+ */
+export function isCompactV2Request(request: string | unknown): boolean {
+  let parsed: unknown = request;
+  if (typeof request === "string") {
+    try {
+      parsed = JSON.parse(request);
+    } catch {
+      return false;
+    }
+  }
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const input = (parsed as Record<string, unknown>).input;
+  if (!Array.isArray(input)) return false;
+  const last: unknown = input.at(-1);
+  return typeof last === "object"
+    && last !== null
+    && (last as Record<string, unknown>).type === "compaction_trigger";
+}
+
+/** True when `item` is the opaque `compaction` item upstream returns under v2. */
+export function isCompactionItem(item: unknown): boolean {
+  return typeof item === "object"
+    && item !== null
+    && (item as Record<string, unknown>).type === "compaction"
+    && typeof (item as Record<string, unknown>).encrypted_content === "string";
+}
+
+/**
+ * Assert the core v2 layout invariant on a restored request `input`, and return
+ * the compaction item's index.
+ *
+ * `buildCompactV2Output` produces `[...保留的 user 消息, compaction]` —— compaction
+ * 是**压缩产物段的最后一项**。恢复时该段前置于 preservedTail 和新一轮消息，
+ * 所以在整个 replay input 里 compaction **不是**最后一项（最后一项是新消息），
+ * 但它前面只允许出现 v2 客户端侧保留的 user 消息。
+ *
+ * 用 `toContainEqual` 这种「只要数组里有就行」的断言会把这条不变式整个放掉：
+ * compaction 跑到哪个位置、前面混进了什么历史，都不会被发现。
+ */
+export function expectCompactionAtEndOfCompactOutput(input: unknown[]): number {
+  const compactions = input.filter(isCompactionItem);
+  if (compactions.length !== 1) {
+    throw new Error(`expected exactly 1 compaction item, got ${compactions.length}`);
+  }
+  const index = input.findIndex(isCompactionItem);
+  const before = input.slice(0, index);
+  const offenders = before.filter((item) => (
+    typeof item !== "object" || item === null
+    || (item as Record<string, unknown>).role !== "user"
+  ));
+  if (offenders.length > 0) {
+    throw new Error(
+      `compaction item must be the last item of the compact output segment; found `
+      + `${offenders.length} non-user item(s) before it: ${JSON.stringify(offenders).slice(0, 300)}`,
+    );
+  }
+  return index;
+}
+
+export interface CompactV2ResponseOptions {
+  /** Opaque payload upstream returns inside the single `compaction` item. */
+  encryptedContent?: string;
+  /** Id of the `compaction` output item. */
+  itemId?: string;
+  /** Id reported on `response.completed`. */
+  responseId?: string;
+  /** Raw upstream `usage` object; pass `null` to omit usage entirely. */
+  usage?: Record<string, unknown> | null;
+  /**
+   * Extra `response.output_item.done` items emitted BEFORE the compaction item.
+   * Real upstream v2 only returns the compaction item; use this only to test how
+   * production reacts to unexpected extra items.
+   */
+  extraDoneItems?: unknown[];
+  /** Emit no `compaction` item at all (upstream contract violation). */
+  omitCompactionItem?: boolean;
+}
+
+/**
+ * Build the real v2 compact SSE reply: `response.output_item.done` carrying the
+ * opaque `compaction` item, then `response.completed` carrying usage.
+ */
+export function makeCompactV2Response(options: CompactV2ResponseOptions = {}): TlsTransportResponse {
+  const {
+    encryptedContent = "opaque-e2e-compact",
+    itemId = "cmp_e2e_v2",
+    responseId = "resp_e2e_compact_v2",
+    usage = { input_tokens: 10, output_tokens: 2 },
+    extraDoneItems = [],
+    omitCompactionItem = false,
+  } = options;
+
+  const doneItems: unknown[] = [...extraDoneItems];
+  if (!omitCompactionItem) {
+    doneItems.push({ id: itemId, type: "compaction", encrypted_content: encryptedContent });
+  }
+
+  const sse = doneItems
+    .map((item) => `event: response.output_item.done\ndata: ${JSON.stringify({ item })}\n\n`)
+    .join("")
+    + `event: response.completed\ndata: ${JSON.stringify({
+      response: { id: responseId, ...(usage === null ? {} : { usage }) },
+    })}\n\n`;
+  return makeTransportResponse(sse);
+}
+
+/**
+ * Build a v2 compact SSE reply that terminates with an upstream `error` event
+ * instead of `response.completed`.
+ */
+export function makeCompactV2ErrorResponse(
+  error: { type?: string; code?: string; message: string },
+  event: "error" | "response.failed" = "error",
+): TlsTransportResponse {
+  const payload = event === "response.failed" ? { response: { error } } : { error };
+  return makeTransportResponse(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
 // ── vi.mock declarations (hoisted by vitest) ─────────────────────────
 
 vi.mock("@src/tls/transport.js", () => ({
@@ -228,7 +271,7 @@ vi.mock("@src/proxy/ws-transport.js", () => ({
   ) => {
     const body = JSON.stringify(request);
     _lastTransportBody = body;
-    const result = await invokeTransportPost(wsUrl, headers, body, signal, undefined, proxyUrl);
+    const result = await _transportPost(wsUrl, headers, body, signal, undefined, proxyUrl);
     if (result.status < 200 || result.status >= 300) {
       const errorBody = await new Response(result.body as BodyInit).text();
       const { CodexApiError } = await import("@src/proxy/codex-types.js");

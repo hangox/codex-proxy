@@ -35,8 +35,9 @@ import {
   setTransportPost,
   resetTransportState,
   makeTransportResponse,
-  makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -166,12 +167,10 @@ describe("opaque compact state — LRU fairness: idle-but-alive vs. busy churn (
     ctx = buildApp();
 
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `summary #${compactCallCount}` }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `summary #${compactCallCount}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

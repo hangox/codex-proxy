@@ -18,6 +18,10 @@ import {
   makeTransportResponse,
   makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
+  makeCompactV2ErrorResponse,
+  expectCompactionAtEndOfCompactOutput,
 } from "@helpers/e2e-setup.js";
 import {
   buildEmptyStreamChunks,
@@ -245,14 +249,14 @@ describe("E2E: POST /v1/messages", () => {
   it("opaque compact bridge: preserves a trailing tool chain outside upstream compact output", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
-      return url.endsWith("/codex/responses/compact")
-        ? makeErrorTransportResponse(200, JSON.stringify({
-            output: [{ type: "reasoning", encrypted_content: "opaque-mixed-block", summary: [] }],
-          }))
+      return isCompactV2Request(body)
+        ? makeCompactV2Response({ encryptedContent: "opaque-mixed-block" })
         : makeTransportResponse(buildTextStreamChunks("resume-mixed-block", "restored"));
     });
 
@@ -295,10 +299,18 @@ describe("E2E: POST /v1/messages", () => {
     expect(urls).toHaveLength(2);
     const replayInput = bodies[1]?.input as unknown[];
     const replayText = JSON.stringify(replayInput);
-    expect(replayInput).toContainEqual(expect.objectContaining({
+    // ★ 位置不变式：compaction 必须是压缩产物段的最后一项，前面只能是 v2
+    // 客户端侧保留的 user 消息。用 toContainEqual 会把这条整个放掉。
+    const compactionIndex = expectCompactionAtEndOfCompactOutput(replayInput);
+    expect(replayInput[compactionIndex]).toMatchObject({
       type: "compaction",
       encrypted_content: "opaque-mixed-block",
-    }));
+    });
+    // preservedTail 严格排在 compaction 之后，不能混进压缩产物段里。
+    expect(replayInput.findIndex((item) => (
+      typeof item === "object" && item !== null
+      && (item as Record<string, unknown>).type === "function_call_output"
+    ))).toBeGreaterThan(compactionIndex);
     expect(replayText).toContain("function_call_output");
     expect(replayText).toContain("preserved tool result");
     expect(replayText.match(/preserved tool result/g)).toHaveLength(1);
@@ -333,8 +345,10 @@ describe("E2E: POST /v1/messages", () => {
   ])("opaque compact bridge: does not match %s", async (_case, content) => {
     setClaudeCodeOpaqueCompactExperimental(true);
     const urls: string[] = [];
-    setTransportPost(async (url) => {
+    const requestBodies: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       return makeTransportResponse(buildTextStreamChunks("resp_not_compact", "ordinary response"));
     });
 
@@ -363,10 +377,10 @@ describe("E2E: POST /v1/messages", () => {
       ] as const)("opaque compact bridge: rejects %s marker state", async (_case, mutateMarker, expectedText, expectedStatus, expectShouldRetryFalse) => {
         setClaudeCodeOpaqueCompactExperimental(true);
         let upstreamCalls = 0;
-        setTransportPost(async (url) => {
+        setTransportPost(async (_url, _headers, body) => {
           upstreamCalls += 1;
-          return url.endsWith("/codex/responses/compact")
-            ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+          return isCompactV2Request(body)
+            ? makeCompactV2Response()
             : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
         });
 
@@ -405,21 +419,76 @@ describe("E2E: POST /v1/messages", () => {
         expect(upstreamCalls).toBe(1);
       });
 
+  it("opaque compact bridge: upstream rejecting compaction_trigger falls back to the legacy v1 /compact endpoint", async () => {
+    // v2 唯一还会真正用到 v1 端点的路径：上游明确说不认识 compaction_trigger
+    // （`isCompactV2Unavailable`），此时才降级打老的 JSON /responses/compact。
+    // 这条链路是这次 PR 新加的生产行为，之前 E2E 完全没有覆盖——而且它是
+    // 全仓库唯一一处 E2E 里 `/codex/responses/compact` 还应该出现的地方。
+    setClaudeCodeOpaqueCompactExperimental(true);
+    const urls: string[] = [];
+    const requestBodies: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      requestBodies.push(body);
+      bodies.push(JSON.parse(body) as Record<string, unknown>);
+      if (isCompactV2Request(body)) {
+        return makeCompactV2ErrorResponse({
+          type: "invalid_request_error",
+          code: "invalid_request_error",
+          message: "Unknown parameter: 'compaction_trigger'.",
+        });
+      }
+      if (url.endsWith("/codex/responses/compact")) {
+        return makeErrorTransportResponse(200, JSON.stringify({
+          output: [{ type: "reasoning", encrypted_content: "opaque-v1-fallback", summary: [] }],
+        }));
+      }
+      return makeTransportResponse(buildTextStreamChunks("resp_v1_fallback", "v1 fallback restored"));
+    });
+
+    const compactRes = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-v1-fallback" });
+    expect(compactRes.status).toBe(200);
+    const marker = extractMarkerFromResponse(await compactRes.text());
+    expect(marker).toContain("codex-opaque-state:v1");
+
+    // 先打 v2（带哨兵、走普通 /codex/responses），被拒之后才打 v1。
+    expect(urls).toHaveLength(2);
+    expect(isCompactV2Request(requestBodies[0])).toBe(true);
+    expect(urls[0]).not.toContain("/compact");
+    expect(urls[1]).toContain("/codex/responses/compact");
+    // 降级请求里不能再带哨兵——v1 端点不认识它。
+    expect(isCompactV2Request(requestBodies[1])).toBe(false);
+    expect(requestBodies[1]).not.toContain("compaction_trigger");
+
+    const replay = await messagesRequest(defaultBody({
+      stream: true,
+      messages: [
+        { role: "assistant", content: marker },
+        { role: "user", content: "continue" },
+      ],
+    }), { "x-claude-code-session-id": "session-v1-fallback" });
+
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toContain("v1 fallback restored");
+    expect(JSON.stringify(bodies[2]?.input)).toContain("opaque-v1-fallback");
+  });
+
   it("opaque compact bridge: restores a real Claude Code compact summary wrapper", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     const transcriptPath = "/tmp/claude-wrapper-e2e/session.jsonl";
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
-      if (url.endsWith("/codex/responses/compact")) {
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [
-            { type: "reasoning", encrypted_content: "opaque-wrapper-secret", summary: [] },
-            { type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] },
-          ],
-        }));
+      if (isCompactV2Request(body)) {
+        return makeCompactV2Response({ encryptedContent: "opaque-wrapper-secret" });
       }
       return makeTransportResponse(buildTextStreamChunks("resp_wrapper_resume", "wrapper restored"));
     });
@@ -443,13 +512,31 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("wrapper restored");
     expect(urls).toHaveLength(2);
-    expect(urls[0]).toContain("/codex/responses/compact");
-    expect(urls[1]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(true);
+    expect(isCompactV2Request(requestBodies[1])).toBe(false);
+
+    // ★ v2 线上真实形状的回归锁：compact 不再是一个独立的 /responses/compact
+    // JSON 端点，而是打普通的 /codex/responses、靠 input 末尾的
+    // compaction_trigger 哨兵来表达"这是一次压缩"。这三条断言合起来把 URL、
+    // 哨兵位置、以及 streaming 标志钉死——任何一条退回 v1 都会红。
+    expect(urls[0]).not.toContain("/compact");
+    expect(urls[0]).toContain("/codex/responses");
+    const compactInputItems = bodies[0].input as unknown[];
+    expect(compactInputItems.at(-1)).toEqual({ type: "compaction_trigger" });
+    // 哨兵只能出现在末尾一次，不能混在历史中间。
+    expect(compactInputItems.filter((item) => (
+      typeof item === "object" && item !== null
+      && (item as Record<string, unknown>).type === "compaction_trigger"
+    ))).toHaveLength(1);
+    expect(bodies[0].stream).toBe(true);
+    expect(bodies[0].store).toBe(false);
+
     const replayInput = bodies[1].input as unknown[];
-    expect(replayInput).toContainEqual(expect.objectContaining({
+    const wrapperCompactionIndex = expectCompactionAtEndOfCompactOutput(replayInput);
+    expect(replayInput[wrapperCompactionIndex]).toMatchObject({
       type: "compaction",
       encrypted_content: "opaque-wrapper-secret",
-    }));
+    });
     // v2 installs retained user messages client-side; assistant items from the
     // old v1 fixture are intentionally not part of the installed history.
     expect(JSON.stringify(replayInput)).toContain("history");
@@ -466,10 +553,8 @@ describe("E2E: POST /v1/messages", () => {
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       bodies.push(JSON.parse(body) as Record<string, unknown>);
-      if (url.endsWith("/codex/responses/compact")) {
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-metadata-session", summary: [] }],
-        }));
+      if (isCompactV2Request(body)) {
+        return makeCompactV2Response({ encryptedContent: "opaque-metadata-session" });
       }
       return makeTransportResponse(buildTextStreamChunks("resp_metadata_resume", "metadata restored"));
     });
@@ -503,10 +588,8 @@ describe("E2E: POST /v1/messages", () => {
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       bodies.push(JSON.parse(body) as Record<string, unknown>);
-      if (url.endsWith("/codex/responses/compact")) {
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-last-boundary", summary: [] }],
-        }));
+      if (isCompactV2Request(body)) {
+        return makeCompactV2Response({ encryptedContent: "opaque-last-boundary" });
       }
       return makeTransportResponse(buildTextStreamChunks("resp_last_boundary", "last boundary restored"));
     });
@@ -541,10 +624,8 @@ describe("E2E: POST /v1/messages", () => {
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       bodies.push(JSON.parse(body) as Record<string, unknown>);
-      if (url.endsWith("/codex/responses/compact")) {
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-raw-continuation", summary: [] }],
-        }));
+      if (isCompactV2Request(body)) {
+        return makeCompactV2Response({ encryptedContent: "opaque-raw-continuation" });
       }
       return makeTransportResponse(buildTextStreamChunks("resp_raw_continuation", "raw restored"));
     });
@@ -575,9 +656,11 @@ describe("E2E: POST /v1/messages", () => {
       "<summary>codex-opaque-state:v1:not-a-valid-token</summary>";
 
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("resp_malformed_passthrough", "malformed passthrough"));
     });
@@ -593,13 +676,13 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("malformed passthrough");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: a marker prefixed with explanatory text (not message-initial) is plain text, not 409 (matrix #4)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -609,9 +692,11 @@ describe("E2E: POST /v1/messages", () => {
     const marker = extractMarkerFromResponse(await compactRes.text());
 
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("mid_message_passthrough", "mid message passthrough"));
     });
@@ -629,7 +714,7 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("mid message passthrough");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   // Reviewer Finding #4（B7 覆盖不全）：三段（stateId 32 / compHash 43 /
@@ -642,8 +727,8 @@ describe("E2E: POST /v1/messages", () => {
     ["signature", 3] as const,
   ])("opaque compact bridge: a marker with a truncated %s segment is plain text, not 409 (matrix #5/B7)", async (_segmentName, groupIndex) => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -666,9 +751,11 @@ describe("E2E: POST /v1/messages", () => {
     expect(truncated).not.toBe(marker);
 
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("truncated_passthrough", "truncated passthrough"));
     });
@@ -687,7 +774,7 @@ describe("E2E: POST /v1/messages", () => {
     // "token 完整、只是绑定/开关层面被忽略"的那些 marker（见另外两条用例：
     // 关开关、绑定不匹配）。
     expect(JSON.stringify(bodies[0])).toContain("codex-opaque-state:v1");
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   // qa 覆盖率盘点发现的缺口：B5/B6/B8/B9/B10 此前零覆盖。这些不是同一种
@@ -708,8 +795,8 @@ describe("E2E: POST /v1/messages", () => {
   //     回归悄悄放过。
   it("opaque compact bridge: a marker wrapped in a code fence is plain text, not 409 (matrix B5)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -719,9 +806,11 @@ describe("E2E: POST /v1/messages", () => {
     const marker = extractMarkerFromResponse(await compactRes.text());
 
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("code_fence_passthrough", "code fence passthrough"));
     });
@@ -739,15 +828,13 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("code fence passthrough");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: a marker occupying its own second text block restores normally, not just avoids 409 (matrix B6)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
-      }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response({ encryptedContent: "retained context" })
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -757,8 +844,10 @@ describe("E2E: POST /v1/messages", () => {
     const marker = extractMarkerFromResponse(await compactRes.text());
 
     const urls: string[] = [];
-    setTransportPost(async (url) => {
+    const requestBodies: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       return makeTransportResponse(buildTextStreamChunks("resp_second_block", "second block restored"));
     });
 
@@ -783,13 +872,13 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("second block restored");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: a marker with a newline inserted inside a token segment is plain text, not 409 (matrix B8)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -810,9 +899,11 @@ describe("E2E: POST /v1/messages", () => {
     expect(damaged).not.toBe(marker);
 
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("newline_passthrough", "newline passthrough"));
     });
@@ -825,15 +916,13 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("newline passthrough");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: a marker with CRLF line endings restores normally, not just avoids 409 (matrix B9)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
-      }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response({ encryptedContent: "retained context" })
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -843,8 +932,10 @@ describe("E2E: POST /v1/messages", () => {
     const marker = extractMarkerFromResponse(await compactRes.text());
 
     const urls: string[] = [];
-    setTransportPost(async (url) => {
+    const requestBodies: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       return makeTransportResponse(buildTextStreamChunks("resp_crlf", "crlf restored"));
     });
 
@@ -866,15 +957,13 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("crlf restored");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: a marker with leading/trailing whitespace restores normally, not just avoids 409 (matrix B10)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
-      }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response({ encryptedContent: "retained context" })
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -884,8 +973,10 @@ describe("E2E: POST /v1/messages", () => {
     const marker = extractMarkerFromResponse(await compactRes.text());
 
     const urls: string[] = [];
-    setTransportPost(async (url) => {
+    const requestBodies: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       return makeTransportResponse(buildTextStreamChunks("resp_whitespace", "whitespace restored"));
     });
 
@@ -904,7 +995,7 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("whitespace restored");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: two markers across different messages resolve the last one, not the first (matrix B11)", async () => {
@@ -913,10 +1004,8 @@ describe("E2E: POST /v1/messages", () => {
     // 别处覆盖）——这里要构造两个不同 compact 产生的两个不同 marker，
     // 分别落在两条不同的 message 里，断言恢复的是后一条 message 里的那个。
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "first output" }] }],
-      }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response({ encryptedContent: "first output" })
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const firstCompactRes = await messagesRequest(defaultBody({
@@ -925,10 +1014,8 @@ describe("E2E: POST /v1/messages", () => {
     }), { "x-claude-code-session-id": "session-dual-marker" });
     const firstMarker = extractMarkerFromResponse(await firstCompactRes.text());
 
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "second output" }] }],
-      }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response({ encryptedContent: "second output" })
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const secondCompactRes = await messagesRequest(defaultBody({
@@ -942,8 +1029,10 @@ describe("E2E: POST /v1/messages", () => {
     expect(secondMarker).not.toBe(firstMarker);
 
     const urls: string[] = [];
-    setTransportPost(async (url) => {
+    const requestBodies: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       return makeTransportResponse(buildTextStreamChunks("resp_dual_marker", "resolved the later marker"));
     });
 
@@ -964,7 +1053,7 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("resolved the later marker");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
   });
 
   it("opaque compact bridge: self-heals an expired marker into a brand-new root compact when the request is /compact (8.1, matrix #1/#7)", async () => {
@@ -975,11 +1064,9 @@ describe("E2E: POST /v1/messages", () => {
     setClaudeCodeOpaqueCompactExperimental(true);
     const compactBodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
-      if (url.endsWith("/codex/responses/compact")) {
+      if (isCompactV2Request(body)) {
         compactBodies.push(JSON.parse(body) as Record<string, unknown>);
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-post-ttl-root", summary: [] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: "opaque-post-ttl-root" });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });
@@ -1035,12 +1122,12 @@ describe("E2E: POST /v1/messages", () => {
     opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore({ ttlMs, now: () => now });
     setClaudeCodeOpaqueCompactExperimental(true);
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
-      if (url.endsWith("/codex/responses/compact")) {
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "retained context" }] }],
-        }));
+      requestBodies.push(body);
+      if (isCompactV2Request(body)) {
+        return makeCompactV2Response({ encryptedContent: "retained context" });
       }
       return makeTransportResponse(buildTextStreamChunks("resp_ttl_boundary", "still valid at the boundary"));
     });
@@ -1069,15 +1156,15 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("still valid at the boundary");
     expect(urls).toHaveLength(2);
-    expect(urls[1]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[1])).toBe(false);
   });
 
   it("opaque compact bridge: an expired marker on an ordinary (non-compact) request 400s (not 409) with a non-retryable, actionable reason (matrix #2)", async () => {
     let now = 1_000_000;
     opaqueCompactStateStore = installInMemoryOpaqueCompactStateStore({ ttlMs: 30 * 60_000, now: () => now });
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -1111,8 +1198,8 @@ describe("E2E: POST /v1/messages", () => {
 
   it("opaque compact bridge: ignores a marker replayed under another session and replaces it with an explicit placeholder (family-B binding-mismatch ruling)", async () => {
     setClaudeCodeOpaqueCompactExperimental(true);
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response()
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const compactRes = await messagesRequest(defaultBody({
@@ -1122,9 +1209,11 @@ describe("E2E: POST /v1/messages", () => {
     const marker = extractMarkerFromResponse(await compactRes.text());
 
     const urls: string[] = [];
+    const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
       urls.push(url);
+      requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
       return makeTransportResponse(buildTextStreamChunks("resp_session_mismatch_passthrough", "session mismatch passthrough"));
     });
@@ -1140,15 +1229,15 @@ describe("E2E: POST /v1/messages", () => {
     expect(replay.status).toBe(200);
     expect(await replay.text()).toContain("session mismatch passthrough");
     expect(urls).toHaveLength(1);
-    expect(urls[0]).not.toContain("/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
     expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
     expect(JSON.stringify(bodies[0])).toContain("could not be restored");
   });
 
   it("opaque compact bridge: ignores a marker replayed with another model and replaces it with an explicit placeholder (team's family-B binding-mismatch ruling)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-          ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+        setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+          ? makeCompactV2Response()
           : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
         const compactRes = await messagesRequest(defaultBody({
@@ -1158,9 +1247,11 @@ describe("E2E: POST /v1/messages", () => {
         const marker = extractMarkerFromResponse(await compactRes.text());
 
         const urls: string[] = [];
+        const requestBodies: string[] = [];
         const bodies: Array<Record<string, unknown>> = [];
         setTransportPost(async (url, _headers, body) => {
           urls.push(url);
+          requestBodies.push(body);
           bodies.push(JSON.parse(body) as Record<string, unknown>);
           return makeTransportResponse(buildTextStreamChunks("resp_model_mismatch_passthrough", "model mismatch passthrough"));
         });
@@ -1179,7 +1270,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(replay.status).toBe(200);
         expect(await replay.text()).toContain("model mismatch passthrough");
         expect(urls).toHaveLength(1);
-        expect(urls[0]).not.toContain("/compact");
+        expect(isCompactV2Request(requestBodies[0])).toBe(false);
         expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
         expect(JSON.stringify(bodies[0])).toContain("could not be restored");
       });
@@ -1189,8 +1280,8 @@ describe("E2E: POST /v1/messages", () => {
         // variant_mismatch（服务端结构化日志有记录）——这不是纸面场景，是真实
         // 重试流量最先踩中的分支，优先级不低于 session/model 维度。
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-          ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+        setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+          ? makeCompactV2Response()
           : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
         const compactRes = await messagesRequest(defaultBody({
@@ -1205,9 +1296,11 @@ describe("E2E: POST /v1/messages", () => {
         const marker = extractMarkerFromResponse(await compactRes.text());
 
         const urls: string[] = [];
+        const requestBodies: string[] = [];
         const bodies: Array<Record<string, unknown>> = [];
         setTransportPost(async (url, _headers, body) => {
           urls.push(url);
+          requestBodies.push(body);
           bodies.push(JSON.parse(body) as Record<string, unknown>);
           return makeTransportResponse(buildTextStreamChunks("resp_variant_mismatch_passthrough", "variant mismatch passthrough"));
         });
@@ -1229,15 +1322,15 @@ describe("E2E: POST /v1/messages", () => {
         expect(replay.status).toBe(200);
         expect(await replay.text()).toContain("variant mismatch passthrough");
         expect(urls).toHaveLength(1);
-        expect(urls[0]).not.toContain("/compact");
+        expect(isCompactV2Request(requestBodies[0])).toBe(false);
         expect(JSON.stringify(bodies[0])).not.toContain("codex-opaque-state:v1");
         expect(JSON.stringify(bodies[0])).toContain("could not be restored");
       });
 
       it("opaque compact bridge: ignores a marker and continues normally after the experimental switch is disabled", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-          ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+        setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+          ? makeCompactV2Response()
           : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
         const compactRes = await messagesRequest(defaultBody({
@@ -1248,9 +1341,11 @@ describe("E2E: POST /v1/messages", () => {
         setClaudeCodeOpaqueCompactExperimental(false);
 
         const urls: string[] = [];
+        const requestBodies: string[] = [];
         const bodies: Array<Record<string, unknown>> = [];
         setTransportPost(async (url, _headers, body) => {
           urls.push(url);
+          requestBodies.push(body);
           bodies.push(JSON.parse(body) as Record<string, unknown>);
           return makeTransportResponse(buildTextStreamChunks("resp_disabled_passthrough", "disabled passthrough"));
         });
@@ -1266,7 +1361,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(replay.status).toBe(200);
         expect(await replay.text()).toContain("disabled passthrough");
         expect(urls).toHaveLength(1);
-        expect(urls[0]).not.toContain("/compact");
+        expect(isCompactV2Request(requestBodies[0])).toBe(false);
         // 开关关闭后不再尝试状态恢复，但也不能把原始签名文本原样转发给
         // 上游——那正是回滚事故里"静默上下文丢失"那一环（交接文档 1.2 环
         // 8）。必须用明示占位替换掉它，让降级本身可观测。
@@ -1277,8 +1372,10 @@ describe("E2E: POST /v1/messages", () => {
       it("opaque compact bridge: ordinary marker-like text is not treated as state", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
+          requestBodies.push(body);
           return makeTransportResponse(buildTextStreamChunks("ordinary_marker_text", "ordinary"));
         });
 
@@ -1288,24 +1385,24 @@ describe("E2E: POST /v1/messages", () => {
         }), { "x-claude-code-session-id": "session-ordinary-marker" });
         expect(res.status).toBe(200);
         expect(urls).toHaveLength(1);
-        expect(urls[0]).not.toContain("/compact");
+        expect(isCompactV2Request(requestBodies[0])).toBe(false);
       });
 
       it("opaque compact bridge: repeated compact deduplicates replayed tails and appends new chains", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
+        const requestBodies: string[] = [];
         const bodies: Array<Record<string, unknown>> = [];
         let compactCalls = 0;
         setTransportPost(async (url, _headers, body) => {
           urls.push(url);
+          requestBodies.push(body);
           bodies.push(JSON.parse(body) as Record<string, unknown>);
-          if (url.endsWith("/codex/responses/compact")) {
+          if (isCompactV2Request(body)) {
             compactCalls++;
-            return makeErrorTransportResponse(200, JSON.stringify({
-              output: compactCalls === 1
-                ? [{ type: "reasoning", encrypted_content: "opaque-generation-one", summary: [] }]
-                : [{ type: "reasoning", encrypted_content: "opaque-generation-two", summary: [] }],
-            }));
+            return makeCompactV2Response({
+              encryptedContent: compactCalls === 1 ? "opaque-generation-one" : "opaque-generation-two",
+            });
           }
           return makeTransportResponse(buildTextStreamChunks("repeat-resume", "repeat restored"));
         });
@@ -1351,8 +1448,8 @@ describe("E2E: POST /v1/messages", () => {
         expect(markerTwo).toContain("codex-opaque-state:v1:");
         expect(markerTwo).not.toBe(markerOne);
         expect(compactCalls).toBe(2);
-        expect(urls.slice(0, 2).every((url) => url.endsWith("/codex/responses/compact"))).toBe(true);
-        expect(urls[2]).not.toContain("/compact");
+        expect(requestBodies.slice(0, 2).every((b) => isCompactV2Request(b))).toBe(true);
+        expect(isCompactV2Request(requestBodies[2])).toBe(false);
         expect(JSON.stringify(bodies[0])).not.toContain("old-tool-canary");
         expect(JSON.stringify(bodies[1])).toContain("opaque-generation-one");
         expect(JSON.stringify(bodies[1])).toContain("continuation between preserved chains");
@@ -1370,11 +1467,11 @@ describe("E2E: POST /v1/messages", () => {
       it("opaque compact bridge: rejects conflicting replayed preserved tails", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          return makeErrorTransportResponse(200, JSON.stringify({
-            output: [{ type: "reasoning", encrypted_content: "opaque-conflict", summary: [] }],
-          }));
+          requestBodies.push(body);
+          return makeCompactV2Response({ encryptedContent: "opaque-conflict" });
         });
 
         const first = await messagesRequest(defaultBody({
@@ -1410,17 +1507,17 @@ describe("E2E: POST /v1/messages", () => {
         expect(conflictingBody).toContain("conflicted with another compact operation");
         expect(conflictingBody).not.toContain("could not be compacted on its original account");
         expect(urls).toHaveLength(1);
-        expect(urls[0]).toContain("/codex/responses/compact");
+        expect(isCompactV2Request(requestBodies[0])).toBe(true);
       });
 
       it("opaque compact bridge: rejects a partial replay of a preserved tail", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          return makeErrorTransportResponse(200, JSON.stringify({
-            output: [{ type: "reasoning", encrypted_content: "opaque-partial", summary: [] }],
-          }));
+          requestBodies.push(body);
+          return makeCompactV2Response({ encryptedContent: "opaque-partial" });
         });
 
         const first = await messagesRequest(defaultBody({
@@ -1450,15 +1547,17 @@ describe("E2E: POST /v1/messages", () => {
         expect(partialBody).toContain("conflicted with another compact operation");
         expect(partialBody).not.toContain("could not be compacted on its original account");
         expect(urls).toHaveLength(1);
-        expect(urls[0]).toContain("/codex/responses/compact");
+        expect(isCompactV2Request(requestBodies[0])).toBe(true);
       });
 
       it("opaque compact bridge: first compact failure safely falls back to the original messages path, and now leaves a structured trace of why (fallback-error-logging task)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          if (url.endsWith("/codex/responses/compact")) {
+          requestBodies.push(body);
+          if (isCompactV2Request(body)) {
             return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
           }
           return makeTransportResponse(buildTextStreamChunks("resp_opaque_fallback", "opaque fallback worked"));
@@ -1476,8 +1575,8 @@ describe("E2E: POST /v1/messages", () => {
           // 仍然正常回退到普通生成——这个任务只补日志，不改这条路径的行为。
           expect(res.status).toBe(200);
           expect(urls).toHaveLength(2);
-          expect(urls[0]).toContain("/compact");
-          expect(urls[1]).not.toContain("/compact");
+          expect(isCompactV2Request(requestBodies[0])).toBe(true);
+          expect(isCompactV2Request(requestBodies[1])).toBe(false);
           expect(JSON.stringify(parseAnthropicSSE(await res.text()))).toContain("opaque fallback worked");
 
           // 新增部分：19% 静默降级此前唯一的痕迹是一行只打印固定
@@ -1510,8 +1609,8 @@ describe("E2E: POST /v1/messages", () => {
 
       it("★ #108/#111: opaque failure that falls back to a fully-completed render records a second compact-outcome row with the REAL outcome (compact_path=fallback_render, outcome=render_completed, real duration_ms)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => {
-          if (url.endsWith("/codex/responses/compact")) {
+        setTransportPost(async (_url, _headers, body) => {
+          if (isCompactV2Request(body)) {
             return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
           }
           return makeTransportResponse(buildTextStreamChunks("resp_render_success", "render worked"));
@@ -1570,8 +1669,8 @@ describe("E2E: POST /v1/messages", () => {
         // 300ms 保持测试快，量级足够验证"没有被重复计入"这条结论，不需要
         // 真的等几十秒）。
         const OPAQUE_DELAY_MS = 300;
-        setTransportPost(async (url) => {
-          if (url.endsWith("/codex/responses/compact")) {
+        setTransportPost(async (_url, _headers, body) => {
+          if (isCompactV2Request(body)) {
             await new Promise((resolve) => setTimeout(resolve, OPAQUE_DELAY_MS));
             return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected slow opaque compact failure" } }));
           }
@@ -1604,8 +1703,8 @@ describe("E2E: POST /v1/messages", () => {
 
       it("★ #108/#111: opaque failure whose render retry is synchronously rejected before ever streaming records outcome=upstream_failed with a real httpStatus (case A: never entered handleStreaming)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => {
-          if (url.endsWith("/codex/responses/compact")) {
+        setTransportPost(async (_url, _headers, body) => {
+          if (isCompactV2Request(body)) {
             return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
           }
           // 换端点之后依然被拒——这个 400 在真正进入流式阶段之前就被
@@ -1657,8 +1756,8 @@ describe("E2E: POST /v1/messages", () => {
           sseChunk("response.created", { response: { id: "resp_premature_render" } }) +
           sseChunk("response.in_progress", { response: { id: "resp_premature_render" } }) +
           sseChunk("response.output_text.delta", { delta: "partial output before disconnect" });
-        setTransportPost(async (url) => {
-          if (url.endsWith("/codex/responses/compact")) {
+        setTransportPost(async (_url, _headers, body) => {
+          if (isCompactV2Request(body)) {
             return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
           }
           return makeTransportResponse(prematureSse);
@@ -1717,11 +1816,9 @@ describe("E2E: POST /v1/messages", () => {
 
       it("opaque compact bridge: successful compact does NOT set the fallback diagnostic header", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => {
-          return url.endsWith("/codex/responses/compact")
-            ? makeErrorTransportResponse(200, JSON.stringify({
-                output: [{ type: "reasoning", encrypted_content: "opaque-header-negative", summary: [] }],
-              }))
+        setTransportPost(async (_url, _headers, body) => {
+          return isCompactV2Request(body)
+            ? makeCompactV2Response({ encryptedContent: "opaque-header-negative" })
             : makeTransportResponse(buildTextStreamChunks("resp_opaque_no_fallback", "should not be reached"));
         });
 
@@ -1737,15 +1834,15 @@ describe("E2E: POST /v1/messages", () => {
       it("opaque compact bridge: recompact hitting a genuine upstream 'prompt too long' degrades to plain generation instead of 409 (task #25)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          if (url.endsWith("/codex/responses/compact")) {
-            const compactCallCount = urls.filter((u) => u.endsWith("/codex/responses/compact")).length;
+          requestBodies.push(body);
+          if (isCompactV2Request(body)) {
+            const compactCallCount = requestBodies.filter((b) => isCompactV2Request(b)).length;
             if (compactCallCount === 1) {
               // 第一次 root compact 成功，拿到一个真实 marker。
-              return makeErrorTransportResponse(200, JSON.stringify({
-                output: [{ type: "reasoning", encrypted_content: "opaque-recompact-overflow-seed", summary: [] }],
-              }));
+              return makeCompactV2Response({ encryptedContent: "opaque-recompact-overflow-seed" });
             }
             // 第二次（recompact）真实撞上上游 400 prompt-too-long——不是预算
             // 预判拦下来的，是真的打了上游、上游自己说太长了。
@@ -1777,18 +1874,18 @@ describe("E2E: POST /v1/messages", () => {
         expect(recompactRes.status).toBe(200);
         expect(JSON.stringify(parseAnthropicSSE(await recompactRes.text()))).toContain("recompact fallback worked");
         expect(recompactRes.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
-        expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(2);
+        expect(requestBodies.filter((b) => isCompactV2Request(b))).toHaveLength(2);
       });
 
       it("opaque compact bridge: recompact whose estimated size clearly exceeds budget skips the upstream compact call entirely (task #25 preflight)", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          if (url.endsWith("/codex/responses/compact")) {
-            return makeErrorTransportResponse(200, JSON.stringify({
-              output: [{ type: "reasoning", encrypted_content: "opaque-preflight-seed", summary: [] }],
-            }));
+          requestBodies.push(body);
+          if (isCompactV2Request(body)) {
+            return makeCompactV2Response({ encryptedContent: "opaque-preflight-seed" });
           }
           return makeTransportResponse(buildTextStreamChunks("resp_preflight_skip", "preflight fallback worked"));
         });
@@ -1835,9 +1932,10 @@ describe("E2E: POST /v1/messages", () => {
           expect(recompactRes.status).toBe(200);
           expect(JSON.stringify(parseAnthropicSSE(await recompactRes.text()))).toContain("preflight fallback worked");
           expect(recompactRes.headers.get("x-codex-proxy-compact-fallback")).toBe("1");
-          // 决定性断言：第二次请求从未打过 /codex/responses/compact——预算
+          // 决定性断言：第二次请求从未发出过 compact（v2 下判据是"请求体
+          // input 末尾没有 compaction_trigger 哨兵"，不再是 URL）——预算
           // 预判在发上游之前就拦下来了，日志里总共只有第一次成功的那次。
-          expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(1);
+          expect(requestBodies.filter((b) => isCompactV2Request(b))).toHaveLength(1);
 
           expect(fallbackLogSpy).toHaveBeenCalledTimes(1);
           const classification = fallbackLogSpy.mock.calls[0]![0].classification;
@@ -1863,12 +1961,12 @@ describe("E2E: POST /v1/messages", () => {
         // 让上游用真实结果裁决。
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          return url.endsWith("/codex/responses/compact")
-            ? makeErrorTransportResponse(200, JSON.stringify({
-                output: [{ type: "reasoning", encrypted_content: "opaque-cheap-loosened-seed", summary: [] }],
-              }))
+          requestBodies.push(body);
+          return isCompactV2Request(body)
+            ? makeCompactV2Response({ encryptedContent: "opaque-cheap-loosened-seed" })
             : makeTransportResponse(buildTextStreamChunks("resp_cheap_loosened", "should not be reached"));
         });
 
@@ -1896,7 +1994,7 @@ describe("E2E: POST /v1/messages", () => {
         expect(res.status).toBe(200);
         // 决定性断言：真的打了一次上游 compact 端点——#115 之前这个区间会
         // 在预算预判阶段就被拦下，urls 里不会出现这个端点。
-        expect(urls.filter((u) => u.endsWith("/codex/responses/compact"))).toHaveLength(1);
+        expect(requestBodies.filter((b) => isCompactV2Request(b))).toHaveLength(1);
         // 走的是 opaque 成功路径，不是降级——没有降级诊断 header。
         expect(res.headers.get("x-codex-proxy-compact-fallback")).toBeNull();
       });
@@ -1942,12 +2040,12 @@ describe("E2E: POST /v1/messages", () => {
       it("opaque compact bridge: hard-bound HTTP 429 does not retry another account", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          if (url.endsWith("/codex/responses/compact")) {
-            return makeErrorTransportResponse(200, JSON.stringify({
-              output: [{ type: "reasoning", encrypted_content: "opaque-hard-bound", summary: [] }],
-            }));
+          requestBodies.push(body);
+          if (isCompactV2Request(body)) {
+            return makeCompactV2Response({ encryptedContent: "opaque-hard-bound" });
           }
           return makeErrorTransportResponse(429, JSON.stringify({ error: { message: "rate limited" } }));
         });
@@ -1976,12 +2074,12 @@ describe("E2E: POST /v1/messages", () => {
       it("opaque compact bridge: hard-bound empty stream emits an error without retrying another account", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          if (url.endsWith("/codex/responses/compact")) {
-            return makeErrorTransportResponse(200, JSON.stringify({
-              output: [{ type: "reasoning", encrypted_content: "opaque-empty-bound", summary: [] }],
-            }));
+          requestBodies.push(body);
+          if (isCompactV2Request(body)) {
+            return makeCompactV2Response({ encryptedContent: "opaque-empty-bound" });
           }
           return makeTransportResponse(buildEmptyStreamChunks("resp_opaque_empty"));
         });
@@ -2010,12 +2108,12 @@ describe("E2E: POST /v1/messages", () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         const originalId = ctx.accountPool.getAllEntries()[0]!.id;
         const urls: string[] = [];
-        setTransportPost(async (url) => {
+        const requestBodies: string[] = [];
+        setTransportPost(async (url, _headers, body) => {
           urls.push(url);
-          if (url.endsWith("/codex/responses/compact")) {
-            return makeErrorTransportResponse(200, JSON.stringify({
-              output: [{ type: "reasoning", encrypted_content: "opaque-account-bound", summary: [] }],
-            }));
+          requestBodies.push(body);
+          if (isCompactV2Request(body)) {
+            return makeCompactV2Response({ encryptedContent: "opaque-account-bound" });
           }
           return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
         });
@@ -2046,11 +2144,9 @@ describe("E2E: POST /v1/messages", () => {
     const originalId = ctx.accountPool.getAllEntries()[0]!.id;
     const compactBodies: Array<Record<string, unknown>> = [];
     setTransportPost(async (url, _headers, body) => {
-      if (url.endsWith("/codex/responses/compact")) {
+      if (isCompactV2Request(body)) {
         compactBodies.push(JSON.parse(body) as Record<string, unknown>);
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-account-bound-recompact", summary: [] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: "opaque-account-bound-recompact" });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

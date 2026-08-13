@@ -31,8 +31,9 @@ import {
   setTransportPost,
   resetTransportState,
   makeTransportResponse,
-  makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -168,12 +169,10 @@ describe("opaque compact state byte_size — real-scale measurement (task #78)",
     // 记录实际字符数，供换算——不同分段拼接后长度会略超目标，如实记录。
     console.log(`[byte-size-measurement] generated summary length = ${summaryText.length} chars`);
 
-    setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-      ? makeErrorTransportResponse(200, JSON.stringify({
-          output: [
-            { type: "message", role: "assistant", content: [{ type: "output_text", text: summaryText }] },
-          ],
-        }))
+    // v2：整个压缩产物就是这一个 opaque compaction item，byte_size 由它的
+    // encrypted_content 长度决定——所以真实规模的那份文本要放在这里。
+    setTransportPost(async (_url, _headers, body) => isCompactV2Request(body)
+      ? makeCompactV2Response({ encryptedContent: summaryText })
       : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
 
     const res = await request({

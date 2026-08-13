@@ -26,6 +26,8 @@ import {
   makeTransportResponse,
   makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  isCompactV2Request,
+  makeCompactV2Response,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -139,15 +141,13 @@ afterEach(() => {
 describe("#88: compact-outcomes.jsonl 的耗时埋点真的接上了路由层", () => {
   it("真实成功压缩：duration_ms/upstream_ms 都是非零真实值，upstream_ms <= duration_ms", async () => {
     const UPSTREAM_DELAY_MS = 60;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         // 人工延迟，让 upstream_ms 有一个测试机器速度快慢都不会碰巧变成 0
         // 的、可靠的下界——不是在测"到底花了多少毫秒"这种脆弱的精确值，
         // 是在测"这个数字反映了真实等待时间，不是写死的占位符"。
         await new Promise((r) => setTimeout(r, UPSTREAM_DELAY_MS));
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "summary" }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: "summary" });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });
@@ -172,13 +172,11 @@ describe("#88: compact-outcomes.jsonl 的耗时埋点真的接上了路由层", 
 
   it("recompact 撞 429 被跨账号闸门拒绝：denied 事件带上真实 duration_ms/upstream_ms", async () => {
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
         if (compactCallCount === 1) {
-          return makeErrorTransportResponse(200, JSON.stringify({
-            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "summary" }] }],
-          }));
+          return makeCompactV2Response({ encryptedContent: "summary" });
         }
         await new Promise((r) => setTimeout(r, 30));
         return makeErrorTransportResponse(429, JSON.stringify({ error: { message: "rate limited" } }));
@@ -265,12 +263,10 @@ describe("#88: 幂等回放命中的耗时埋点（需要持久化 store）", ()
 
   it("幂等回放命中：只有 duration_ms（没有真正联系上游），upstream_ms 缺省", async () => {
     let compactCallCount = 0;
-    setTransportPost(async (url) => {
-      if (url.endsWith("/codex/responses/compact")) {
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
         compactCallCount += 1;
-        return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: `summary #${compactCallCount}` }] }],
-        }));
+        return makeCompactV2Response({ encryptedContent: `summary #${compactCallCount}` });
       }
       return makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
     });

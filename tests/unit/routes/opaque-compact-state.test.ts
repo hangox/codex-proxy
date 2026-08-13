@@ -503,3 +503,102 @@ describe("getOpaqueCompactStateCapacity（运行时 store 句柄，8.20 新增�
     }
   });
 });
+
+describe("restoreOpaqueCompactInput —— inline developer/system 指令不得被丢掉", () => {
+  const OUTPUT_ITEMS = [
+    { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
+  ] as const;
+
+  /** 造一个真实格式的 marker——伪造字符串不满足 markerBoundary，会走兜底分支。 */
+  function makeMarker(): string {
+    const store = new OpaqueCompactStateStore({ secret: Buffer.alloc(32, 7) });
+    return saveState(store, {
+      output: [...OUTPUT_ITEMS],
+      sessionId: "session-inline",
+      model: "gpt-5.4",
+      accountEntryId: "entry-inline",
+    }).marker;
+  }
+
+  const developerItem = {
+    role: "developer" as const,
+    content: [{ type: "input_text" as const, text: "你是一个严谨的工程师" }],
+  };
+
+  // system_prompt_strategy = developer_inline 时，anthropic-to-codex.ts 会把
+  // 用户 system prompt unshift 成 input 最前面的 {role:"developer"} item，
+  // 并且刻意让顶层 instructions 不含用户内容——**inline 模式下它只存在于这
+  // 一个地方**。恢复逻辑此前只保留 [boundaryIndex, end)，于是它被整个丢掉
+  // 且再没插回去：模型完全失去系统指令，且没有任何报错。
+  it("developer_inline：marker 之前的 developer 指令项被保留在最前", () => {
+    const marker = makeMarker();
+    const restored = restoreOpaqueCompactInput([
+      developerItem,
+      { role: "user", content: "很久以前的历史，应该被压缩产物取代" },
+      { role: "assistant", content: marker },
+      { role: "user", content: "continue" },
+    ], marker, [...OUTPUT_ITEMS]);
+
+    expect(restored[0]).toEqual(developerItem);
+    expect(restored).toEqual([
+      developerItem,
+      ...OUTPUT_ITEMS,
+      { role: "user", content: "continue" },
+    ]);
+    // 真历史仍然被丢掉——这条改动只救指令项，不是把 marker 之前的都留下。
+    expect(JSON.stringify(restored)).not.toContain("很久以前的历史");
+  });
+
+  it("system_inline：system 角色同样被保留", () => {
+    const marker = makeMarker();
+    const systemItem = {
+      role: "system" as const,
+      content: [{ type: "input_text" as const, text: "system 指令" }],
+    };
+    const restored = restoreOpaqueCompactInput([
+      systemItem,
+      { role: "assistant", content: marker },
+      { role: "user", content: "continue" },
+    ], marker, [...OUTPUT_ITEMS]);
+
+    expect(restored[0]).toEqual(systemItem);
+  });
+
+  // instructions 模式下前缀里本来就没有 developer/system item，这条改动必须是
+  // no-op——不能因为「修了 inline」而改变另一种 strategy 下的产出。
+  it("instructions 模式：前缀没有指令项时行为完全不变（no-op）", () => {
+    const marker = makeMarker();
+    const restored = restoreOpaqueCompactInput([
+      { role: "user", content: "旧历史" },
+      { role: "assistant", content: marker },
+      { role: "user", content: "continue" },
+    ], marker, [...OUTPUT_ITEMS]);
+
+    expect(restored).toEqual([
+      ...OUTPUT_ITEMS,
+      { role: "user", content: "continue" },
+    ]);
+  });
+
+  it("判据是 role 语义不是 index：指令项不在 index 0 也能保留", () => {
+    const marker = makeMarker();
+    const restored = restoreOpaqueCompactInput([
+      { role: "user", content: "更早的历史" },
+      developerItem,
+      { role: "assistant", content: marker },
+      { role: "user", content: "continue" },
+    ], marker, [...OUTPUT_ITEMS]);
+
+    expect(restored[0]).toEqual(developerItem);
+    expect(JSON.stringify(restored)).not.toContain("更早的历史");
+  });
+
+  it("找不到 marker 边界的兜底路径同样保留指令项", () => {
+    const restored = restoreOpaqueCompactInput([
+      developerItem,
+      { role: "user", content: "历史" },
+    ], "codex-opaque-state:v1:absent", [...OUTPUT_ITEMS]);
+
+    expect(restored[0]).toEqual(developerItem);
+  });
+});

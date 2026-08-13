@@ -12,6 +12,7 @@ import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
 import { withRetry } from "../../utils/retry.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError } from "./proxy-error-handler.js";
+import { applyParsedRateLimits } from "./proxy-rate-limit.js";
 import { buildCodexApi } from "./proxy-handler-utils.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
 import { auditAccountTag } from "./opaque-compact-audit.js";
@@ -1449,7 +1450,9 @@ export async function executeCompactOnly(options: CompactAccountLeaseOptions): P
           ` items=${compactRequest.input.length} bytes=${inputSize.totalBytes} by_kind=${inputSize.breakdown}`,
       );
       const compactResult = await withRetry(
-        () => api.createCompactResponse(compactRequest, signal),
+        () => api.createCompactResponse(compactRequest, signal, (rateLimits) => {
+          applyParsedRateLimits({ accountPool, entryId, rateLimits });
+        }),
         { tag, signal },
       );
       const compactLatencyMs = Date.now() - compactStarted;

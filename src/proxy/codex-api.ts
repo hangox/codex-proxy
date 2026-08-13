@@ -35,6 +35,7 @@ import {
   extractCodexError,
   parseNormalizedHostModelUsage,
 } from "../types/codex-events.js";
+import { codexApiErrorFromEvent } from "../translation/codex-api-error-from-event.js";
 import { fetchUsage } from "./codex-usage.js";
 import { fetchModels, probeEndpoint as probeEndpointFn } from "./codex-models.js";
 import type { CookieJar } from "./cookie-jar.js";
@@ -83,11 +84,20 @@ import {
 
 const REMOTE_COMPACTION_V2_RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
 
-class CompactV2UnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CompactV2UnavailableError";
-  }
+/** 官方客户端每次 compact 请求都会声明的 beta feature 名。 */
+const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
+
+/**
+ * 把 `feature` 并入逗号分隔的 betaFeatures 串，保持既有值和顺序、去重。
+ * 入站可能已经带了同名 feature（新版 codex 客户端直连时），不能重复追加。
+ */
+function mergeBetaFeatures(existing: string | undefined, feature: string): string {
+  const features = (existing ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!features.includes(feature)) features.push(feature);
+  return features.join(",");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -193,34 +203,6 @@ function buildCompactV2Output(
 
   retainedReversed.reverse();
   return [...retainedReversed, compaction];
-}
-
-function isCompactV2Unavailable(status: number, code: string, message: string): boolean {
-  if (status === 404 || status === 405 || status === 501) return true;
-  if (status !== 400) return false;
-  const detail = `${code} ${message}`.toLowerCase();
-  const namesTrigger = detail.includes("compaction_trigger") || detail.includes("compaction trigger");
-  const saysUnavailable = [
-    "unsupported",
-    "not supported",
-    "unknown",
-    "unrecognized",
-    "invalid",
-    "not allowed",
-    "not enabled",
-  ].some((needle) => detail.includes(needle));
-  return namesTrigger && saysUnavailable;
-}
-
-function streamErrorStatus(code: string, message: string): number {
-  const normalizedCode = code.toLowerCase();
-  if (["invalid_request_error", "invalid_value", "unsupported_value"].includes(normalizedCode)) return 400;
-  if (["usage_limit_reached", "rate_limit_exceeded", "rate_limit_reached"].includes(normalizedCode)) return 429;
-  if (["quota_exhausted", "payment_required"].includes(normalizedCode)) return 402;
-  if (["unauthorized", "token_invalid", "token_expired", "account_deactivated"].includes(normalizedCode)) return 401;
-  if (["forbidden", "account_banned", "banned"].includes(normalizedCode)) return 403;
-  if (normalizedCode === "context_length_exceeded" || isPromptTooLongLike(message)) return 400;
-  return 502;
 }
 
 function normalizePromptTooLongApiError(err: CodexApiError): CodexApiError {
@@ -630,23 +612,44 @@ export class CodexApi {
   }
 
   /**
-   * Compact conversation history with the current Responses compaction protocol.
+   * 按当前的 Responses compaction 协议压缩历史。
    *
-   * v2 sends a trailing `compaction_trigger` through the normal streaming
-   * /codex/responses endpoint. The legacy JSON /responses/compact endpoint is
-   * retained only as a compatibility fallback when v2 is explicitly unavailable.
+   * v2 走普通的流式 /codex/responses，靠 input 末尾的 `compaction_trigger`
+   * 哨兵表达「这是一次压缩」。走哪个协议由 `model.compact_protocol` 决定，
+   * **没有任何基于上游错误文案的自动回落**。
+   *
+   * 为什么不做自动回落（这条是刻意删掉的，不是漏了）：
+   *
+   * 1. 自动回落的目标端点（legacy JSON /responses/compact）**当前本身就是
+   *    404**。回落到一个确定失败的端点，期望价值不是「降级可用」而是负的：
+   *    白发一次请求，并且把真实失败原因替换成 v1 的 Not Found。
+   * 2. 判据只能来自上游的错误文案，而「从错误文案反推上游支不支持某能力」
+   *    本身就是错的抽象。实测过一条 `Invalid value for 'input':
+   *    compaction_trigger must be the last input item`——这是**位置放错**、
+   *    请求构造 bug，却同时命中 `invalid` 和 `compaction_trigger` 两个关键词
+   *    被判成「v2 不可用」，于是发起第二次请求，客户端最终看到的是 404，
+   *    而上游真实原因是 400 参数错。一个本该让人立刻看出请求写错了的错误，
+   *    被洗成了「上游把端点下掉了」。
+   * 3. 代价不对称：误判「不支持」= 白花一次 compact + 掩盖真因；误判
+   *    「支持」= 一次明确报错。后者便宜得多，所以默认方向应该是**不回落**。
+   *
+   * 还有一条更硬的：404 在这里根本不可能意味着「v2 不被支持」——
+   * `/codex/responses` 是所有普通请求都在打的端点。它返回空 body 404 的真实
+   * 含义是 Cloudflare path-block，`error-classification.ts` 的
+   * `isCfPathBlockError` 专门认这个形状，并接着一整套清 cookie / 计数 /
+   * 到阈值禁用账号的恢复逻辑。把它吞成「v2 不可用」会让这套自愈延迟一次
+   * 浪费请求才触发，且真因（指纹失配）被掩盖。
+   *
+   * 上游真回滚了怎么办：`model.compact_protocol: "v1"`，一个配置键的事，
+   * 不需要发版——这也是保留 `createCompactResponseV1` 的唯一理由。
    */
   async createCompactResponse(
     request: CodexCompactRequest,
     signal?: AbortSignal,
   ): Promise<CodexCompactResponse> {
-    try {
-      return await this.createCompactResponseV2(request, signal);
-    } catch (err) {
-      if (!(err instanceof CompactV2UnavailableError)) throw err;
-      console.warn(`[CodexApi] Remote compact v2 unavailable (${err.message}); falling back to v1`);
-      return this.createCompactResponseV1(request, signal);
-    }
+    return getConfig().model.compact_protocol === "v1"
+      ? this.createCompactResponseV1(request, signal)
+      : this.createCompactResponseV2(request, signal);
   }
 
   private async createCompactResponseV2(
@@ -671,25 +674,26 @@ export class CodexApi {
       ...(request.client_metadata ? { client_metadata: request.client_metadata } : {}),
       ...(request.turnState ? { turnState: request.turnState } : {}),
       ...(request.turnMetadata ? { turnMetadata: request.turnMetadata } : {}),
-      ...(request.betaFeatures ? { betaFeatures: request.betaFeatures } : {}),
+      // ★ 能力协商必须是**声明式**的，不能靠「服务端默认开着」。官方客户端
+      // （codex-rs `session/mod.rs`）对 Feature::RemoteCompactionV2 做了显式
+      // 特例：无条件进 x-codex-beta-features，每一次请求都带。
+      //
+      // proxy 这边此前只透传 request.betaFeatures，而它唯一来源是入站
+      // header；opaque compact bridge 的入站是 Claude Code 的 /v1/messages，
+      // 永远不带这个 header——也就是说所有 compact 请求都没有做过 feature
+      // 协商，现在能跑通只说明服务端默认打开。一旦服务端改成按 header 门禁，
+      // 会再次大面积失败，且形态和这次的 404 一模一样。
+      betaFeatures: mergeBetaFeatures(request.betaFeatures, REMOTE_COMPACTION_V2_FEATURE),
       ...(request.version ? { version: request.version } : {}),
       ...(request.includeTimingMetrics ? { includeTimingMetrics: request.includeTimingMetrics } : {}),
       ...(request.codexWindowId ? { codexWindowId: request.codexWindowId } : {}),
       ...(request.parentThreadId ? { parentThreadId: request.parentThreadId } : {}),
     };
 
-    let response: Response;
-    try {
-      response = await this.createResponse(v2Request, signal);
-    } catch (err) {
-      if (
-        err instanceof CodexApiError
-        && isCompactV2Unavailable(err.status, "", err.body || err.message)
-      ) {
-        throw new CompactV2UnavailableError(`HTTP ${err.status}: ${err.message}`);
-      }
-      throw err;
-    }
+    // 上游错误原样上抛：不再猜「这个错误是不是意味着 v2 不被支持」。
+    // 尤其是 404——它在这里几乎必然是 Cloudflare path-block，吞掉会让
+    // proxy-error-handler 的清 cookie / 计数 / 禁用账号整套自愈失效。
+    const response = await this.createResponse(v2Request, signal);
 
     let sawCompleted = false;
     let completedUsage: CodexCompactResponse["usage"];
@@ -711,16 +715,11 @@ export class CodexApi {
       }
 
       if (event.event === "error" || event.event === "response.failed") {
-        const upstream = extractCodexError(event.data);
-        const status = streamErrorStatus(upstream.code, upstream.message);
-        if (isCompactV2Unavailable(status, upstream.code, upstream.message)) {
-          throw new CompactV2UnavailableError(`${upstream.code}: ${upstream.message}`);
-        }
-        const errorBody = JSON.stringify({ error: upstream });
-        if (isPromptTooLongLike(upstream.message)) {
-          throw new CodexApiError(promptTooLongStatus(status), buildPromptTooLongErrorBody(errorBody));
-        }
-        throw new CodexApiError(status, errorBody);
+        // 流内错误的 code→status 映射复用既有的 codexApiErrorFromEvent（它的
+        // 文件头注释写明就是给非流式 collector 用的，v2 collector 正是这类
+        // 调用方）。此前这里自己写了第三份码表，且与既有实现分歧——例如
+        // code=not_found 在既有实现是 400、那份是 502。
+        throw codexApiErrorFromEvent(extractCodexError(event.data));
       }
     }
 
@@ -737,7 +736,19 @@ export class CodexApi {
       );
     }
 
-    const outputItems = doneOutput.some(isCompactionItem) ? doneOutput : completedOutput;
+    // 正常情况下 compaction item 从 response.output_item.done 流出来。取不到时
+    // 退而从 response.completed 的 output 里找——proxy 有 WS 和 HTTP-SSE 两条
+    // 通道，转发行为不保证完全一致，升级成硬 502 会把「传输抖动」变成一次
+    // 失败的付费 compact，所以这里保持宽松。但它是**非预期路径**，必须留痕，
+    // 否则将来只会看到「有时候好使」而查不出差异出在哪条通道。
+    const usedDoneOutput = doneOutput.some(isCompactionItem);
+    if (!usedDoneOutput) {
+      console.warn(
+        `[CodexApi] compaction recovered from response.completed; `
+        + `output_item.done had ${doneOutput.length} items, none of them compaction`,
+      );
+    }
+    const outputItems = usedDoneOutput ? doneOutput : completedOutput;
     const compactions = outputItems.filter(isCompactionItem);
     if (compactions.length !== 1) {
       throw new CodexApiError(

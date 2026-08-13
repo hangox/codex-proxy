@@ -156,6 +156,9 @@ export function createSettingsRoutes(): Hono {
       opaque_compact_state_capacity: getOpaqueCompactStateCapacity(),
       allow_client_system_prompt_strategy: config.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: config.model.system_prompt_strategy,
+      // 必须能读回：CLAUDE.md 记的「未知配置键被 Zod 静默丢弃」那条坑——
+      // 写错嵌套层级会出现「文件写了、容器起了、/health 200、开关其实没生效」。
+      compact_protocol: config.model.compact_protocol,
       default_model: config.model.default,
       default_reasoning_effort: config.model.default_reasoning_effort,
       model_aliases: config.model.aliases,
@@ -478,6 +481,7 @@ export function createSettingsRoutes(): Hono {
       opaque_compact_state_readiness: getOpaqueCompactStateReadiness(),
       allow_client_system_prompt_strategy: updated.model.allow_client_system_prompt_strategy,
       system_prompt_strategy: updated.model.system_prompt_strategy,
+      compact_protocol: updated.model.compact_protocol,
       default_model: updated.model.default,
       default_reasoning_effort: updated.model.default_reasoning_effort,
       model_aliases: updated.model.aliases,

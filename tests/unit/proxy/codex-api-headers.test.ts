@@ -15,6 +15,10 @@ vi.mock("@src/fingerprint/manager.js", () => ({
 vi.mock("@src/config.js", () => ({
   getConfig: () => ({
     api: { base_url: "https://test.example" },
+    // compact 走哪个协议由 model.compact_protocol 决定（auto = 纯 v2）。
+    // 真实 config 经 Zod 解析后这个字段一定有值（schema 有 default），
+    // 这里补上是因为这份 mock 只捡了当时用得到的字段。
+    model: { compact_protocol: "auto" },
   }),
 }));
 
@@ -249,7 +253,9 @@ describe("codex-api headers", () => {
         "x-codex-window-id": "compact-window",
         "x-codex-turn-state": "compact-turn-state",
         "x-codex-turn-metadata": "{\"source\":\"compact\"}",
-        "x-codex-beta-features": "compact-beta",
+        // v2 的 compact 请求必须**主动声明** remote_compaction_v2（官方客户端
+        // 每次都带），同时保留入站已有的 feature、按逗号拼接且不重复。
+        "x-codex-beta-features": "compact-beta,remote_compaction_v2",
         "x-responsesapi-include-timing-metrics": "true",
         Version: "26.7.25",
         "x-codex-parent-thread-id": "compact-parent",

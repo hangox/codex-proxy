@@ -28,7 +28,19 @@ export function codexApiErrorFromEvent(
 function statusForCode(code: string): number {
   const lower = code.toLowerCase();
   if (lower.includes("context_length")) return 400;
-  if (lower.includes("invalid_request") || lower.includes("not_found")) return 400;
+  // `invalid_value` / `unsupported_value` 是上游对**请求内容**的校验错误，
+  // 语义上就是 400。此前它们不在这张表里、落到兜底的 502——而 502 落在
+  // withRetry 的可重试区间，等于把一个「重发多少次都一样」的参数错误重试
+  // 3 次。这两个 code 是 Responses 流里真实会出现的形态（例如
+  // `Invalid value for 'input': ...`），不是假想的。
+  // 注意保持这一行在 invalid_api_key 判断之前不会误伤：那个 code 既不含
+  // invalid_request 也不含 invalid_value，仍然会正确落到 401。
+  if (
+    lower.includes("invalid_request")
+    || lower.includes("invalid_value")
+    || lower.includes("unsupported_value")
+    || lower.includes("not_found")
+  ) return 400;
   if (lower.includes("rate_limit") || lower.includes("usage_limit")) return 429;
   if (lower.includes("unauthorized") || lower.includes("invalid_api_key")) return 401;
   if (lower.includes("forbidden") || lower.includes("banned")) return 403;

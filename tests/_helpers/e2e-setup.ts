@@ -57,6 +57,15 @@ export function getLastTransportBody(): string | null {
 export function resetTransportState(): void {
   _lastTransportBody = null;
   mockConfig.model.claude_code_opaque_compact_experimental = false;
+  mockConfig.model.compact_protocol = "auto";
+}
+
+/**
+ * 切换 compact 协议开关（`auto` = 纯 v2 无回落，`v1` = 直接走 legacy 端点）。
+ * 记得在 resetTransportState 里会被重置回 auto。
+ */
+export function setCompactProtocol(protocol: "auto" | "v1" | "v2"): void {
+  mockConfig.model.compact_protocol = protocol;
 }
 
 /** Toggle the experimental opaque compact state bridge for route-level E2E tests. */

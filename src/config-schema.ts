@@ -102,6 +102,19 @@ export const ConfigSchema = z.object({
      * - `v1`：直接走 legacy 的 JSON /codex/responses/compact，不先试 v2。
      * - `v2`：同 auto。单独保留是为了让「我明确不要回落」可表达，也让 auto
      *   的语义将来可以演进而不破坏显式选择。
+     *
+     * ★ 不要和响应字段 `compaction_protocol` 搞混——**是两个东西，名字只差一个
+     * "ion"，刻意不统一**：
+     *
+     * - 本键 `compact_protocol`（配置，输入）：**用哪个协议**。跟配置侧既有
+     *   命名一致（`claude_code_compact_bridge`、
+     *   `claude_code_opaque_compact_experimental` 一律用 `compact`）。
+     * - `/v1/responses/compact` 响应里的 `compaction_protocol`（输出）：这份
+     *   `output` **产出自哪个协议**，供外部调用方判别形状。跟官方 codex 协议
+     *   术语一致（item type 就叫 `compaction`、哨兵叫 `compaction_trigger`）。
+     *
+     * 两侧各自都跟自己那边的惯例对齐，强行统一必然跟其中一侧冲突，所以保持
+     * 现状、把区别写在这里。
      */
     compact_protocol: z.enum(["auto", "v1", "v2"]).default("auto"),
   }),

@@ -115,6 +115,12 @@ export interface CodexCompactResponse {
    * `{type:"compaction"}` 反序列化成 `Other`，被同一个 filter 丢掉——整段
    * 历史静默消失。旧客户端可以据此判断，再配合 `model.compact_protocol: "v1"`
    * 钉死到自己能处理的形状。
+   *
+   * ★ 和配置键 `model.compact_protocol` 是两个东西，名字只差一个 "ion"，
+   * **刻意不统一**：本字段是**输出**（这份 output 产出自哪个协议），跟官方
+   * codex 协议术语一致（item type 就叫 `compaction`）；那个是**输入**（要用
+   * 哪个协议），跟配置侧既有命名一致（`claude_code_compact_bridge` 等一律用
+   * `compact`）。详见 `config-schema.ts` 里 `compact_protocol` 的注释。
    */
   compaction_protocol: "v1" | "v2";
   usage?: {

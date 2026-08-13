@@ -17,8 +17,13 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      // 抛出处可以用 `retryable: false` 显式否决重试——协议违例（上游正常
+      // 应答、内容不符合约定）重放多少次都是同样的结果，只会白花钱。默认
+      // 不带这个标记，仍然按 status 段判定，传输层 5xx 的正常重试不受影响。
       const isRetryable =
-        err instanceof CodexApiError && err.status >= 500 && err.status < 600;
+        err instanceof CodexApiError
+        && err.status >= 500 && err.status < 600
+        && err.retryable !== false;
       if (!isRetryable || attempt === maxRetries) {
         // 此前这个分支直接 throw，没有任何"为什么放弃"的痕迹——只有下面
         // "Retrying after..."那一行会打印，而它只在真的要重试时才执行。

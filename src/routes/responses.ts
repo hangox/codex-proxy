@@ -35,6 +35,7 @@ import type {
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
 import { handleCodexApiError } from "./shared/proxy-error-handler.js";
+import { applyParsedRateLimits } from "./shared/proxy-rate-limit.js";
 import {
   isPromptTooLongLike,
   normalizePromptTooLongMessage,
@@ -765,7 +766,9 @@ async function handleCompact(
       // 照样会发起下一次尝试——实测客户端在第一次请求时就 abort，上游仍被
       // 打满 3 次。用户按了 Ctrl-C，账单照跑。
       const result = await withRetry(
-        () => codexApi.createCompactResponse(compactRequest, c.req.raw.signal),
+        () => codexApi.createCompactResponse(compactRequest, c.req.raw.signal, (rateLimits) => {
+          applyParsedRateLimits({ accountPool, entryId, rateLimits });
+        }),
         { tag: TAG, signal: c.req.raw.signal },
       );
 

@@ -680,15 +680,17 @@ export class CodexApi {
   async createCompactResponse(
     request: CodexCompactRequest,
     signal?: AbortSignal,
+    onRateLimits?: (rl: ParsedRateLimit) => void,
   ): Promise<CodexCompactResponse> {
     return getConfig().model.compact_protocol === "v1"
       ? this.createCompactResponseV1(request, signal)
-      : this.createCompactResponseV2(request, signal);
+      : this.createCompactResponseV2(request, signal, onRateLimits);
   }
 
   private async createCompactResponseV2(
     request: CodexCompactRequest,
     signal?: AbortSignal,
+    onRateLimits?: (rl: ParsedRateLimit) => void,
   ): Promise<CodexCompactResponse> {
     const v2Request: CodexResponsesRequest = {
       model: request.model,
@@ -727,7 +729,10 @@ export class CodexApi {
     // 上游错误原样上抛：不再猜「这个错误是不是意味着 v2 不被支持」。
     // 尤其是 404——它在这里几乎必然是 Cloudflare path-block，吞掉会让
     // proxy-error-handler 的清 cookie / 计数 / 禁用账号整套自愈失效。
-    const response = await this.createResponse(v2Request, signal);
+    // onRateLimits 必须往下传：v2 的 compact 走的是和普通请求同一条 WS 通道，
+    // 上游会在流里发 `codex.rate_limits` 帧。不接这个回调的话这些帧被直接丢弃
+    // ——账号池的额度视图会漏掉所有 compact 消耗的配额，越用越偏。
+    const response = await this.createResponse(v2Request, signal, onRateLimits);
 
     let sawCompleted = false;
     let completedUsage: CodexCompactResponse["usage"];

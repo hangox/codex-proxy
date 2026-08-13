@@ -517,6 +517,31 @@ describe("CodexApi.createCompactResponse", () => {
     expect(transport.post).not.toHaveBeenCalled();
   });
 
+  // ★ F9：v2 的 compact 走的是和普通请求同一条 WS 通道，上游会在流里发
+  // `codex.rate_limits` 帧。此前 createCompactResponse 压根没有 onRateLimits
+  // 这个参数，这些帧被直接丢弃——账号池的额度视图漏掉所有 compact 消耗的
+  // 配额，用得越多偏得越远。
+  it("把上游的 rate limit 回调透传下去（compact 消耗的配额不能从账号池视图里消失）", async () => {
+    mockCreateWebSocketResponse.mockImplementation(
+      (_url: unknown, _headers: unknown, _req: unknown, _signal: unknown, _proxy: unknown,
+       onRateLimits?: (rl: unknown) => void) => {
+        onRateLimits?.({ primary: { usedPercent: 42 } });
+        return Promise.resolve(compactV2Stream());
+      },
+    );
+    const transport = makeMockTransport();
+    vi.mocked(getTransport).mockReturnValue(transport);
+
+    const seen: unknown[] = [];
+    await createApi().createCompactResponse(
+      { model: "gpt-5.4", instructions: "compact", input: [{ role: "user", content: "hi" }] },
+      undefined,
+      (rl) => seen.push(rl),
+    );
+
+    expect(seen).toEqual([{ primary: { usedPercent: 42 } }]);
+  });
+
   it("does not fall back after quota errors", async () => {
     mockCreateWebSocketResponse.mockRejectedValue(
       new CodexApiError(429, JSON.stringify({

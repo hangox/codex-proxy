@@ -21,6 +21,7 @@ import {
   makeTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
   setSystemPromptStrategy,
+  expectCompactionAtEndOfCompactOutput,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks, sseChunk } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -304,5 +305,58 @@ describe("QA-K F11：opaque compact 恢复后系统提示词是否丢失", () =>
     )}`);
 
     expect(inputHasSentinel || instructionsHasSentinel).toBe(true);
+  });
+});
+
+// ── 断言本身的回归测试（防止判据与产品形状再次脱节） ─────────────
+//
+// `expectCompactionAtEndOfCompactOutput` 的判据原来是「compaction 之前只能是
+// user」，那是 F11 修复**之前**的形状。F11 修好之后 inline 模式下一个完全正确
+// 的恢复结果（前缀有 developer/system 指令项）会被判成违规——而用到它的用例
+// 恰好都跑在默认的 instructions 策略下，所以不发作。
+//
+// 这类「断言绿着、但钉的位置是错的」没有任何机制会暴露，只能靠给断言本身写
+// 用例。下面同时钉住两个方向：该放行的放行、该拦住的仍然拦住。
+describe("expectCompactionAtEndOfCompactOutput 判据本身", () => {
+  const C = { type: "compaction", encrypted_content: "opaque" };
+
+  it("放行：inline 前缀指令 + 保留的 user 消息（F11 修好后的真实形状）", () => {
+    expect(expectCompactionAtEndOfCompactOutput([
+      { role: "developer", content: [{ type: "input_text", text: "指令" }] },
+      { role: "user", content: "history" },
+      C,
+      { role: "user", content: "continue" },
+    ])).toBe(2);
+    expect(expectCompactionAtEndOfCompactOutput([
+      { role: "system", content: [{ type: "input_text", text: "指令" }] },
+      { role: "user", content: "history" },
+      C,
+    ])).toBe(2);
+  });
+
+  it("放行：instructions 模式（前缀里没有指令项）", () => {
+    expect(expectCompactionAtEndOfCompactOutput([{ role: "user", content: "h" }, C])).toBe(1);
+  });
+
+  it("仍然拦住：指令项混在历史中间（不是开头连续的前缀）", () => {
+    expect(() => expectCompactionAtEndOfCompactOutput([
+      { role: "user", content: "h" },
+      { role: "developer", content: "混在中间" },
+      { role: "user", content: "h2" },
+      C,
+    ])).toThrow();
+  });
+
+  it("仍然拦住：assistant 历史出现在 compaction 之前", () => {
+    expect(() => expectCompactionAtEndOfCompactOutput([
+      { role: "user", content: "h" },
+      { role: "assistant", content: "不该在这" },
+      C,
+    ])).toThrow();
+  });
+
+  it("仍然拦住：compaction 数量不是 1", () => {
+    expect(() => expectCompactionAtEndOfCompactOutput([{ role: "user", content: "h" }])).toThrow();
+    expect(() => expectCompactionAtEndOfCompactOutput([C, C])).toThrow();
   });
 });

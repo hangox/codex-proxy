@@ -15,6 +15,7 @@ import {
   makeTransportResponse,
   makeErrorTransportResponse,
   setClaudeCodeOpaqueCompactExperimental,
+  setUpstreamRateLimits,
 } from "@helpers/e2e-setup.js";
 import { buildTextStreamChunks, sseChunk } from "@helpers/sse.js";
 import { createValidJwt } from "@helpers/jwt.js";
@@ -419,5 +420,67 @@ describe("QA-J CF path-block（空 body 404）不该被吞成 v2 unavailable", (
     // 对比：codex-compact-service.ts:1487 是传了 cookieJar 的，/v1/messages 那条路没问题。
     console.log(`[QA-J3] cookie jar 残留=${JSON.stringify(ctx.cookieJar.get(ctx.entryId))}`);
     expect(ctx.cookieJar.get(ctx.entryId)).toBeNull();
+  });
+});
+
+// ── QA-M：F9 那条缝（回调透传 → 真的写进账号池） ──────────────────
+//
+// F9 的两端各自有覆盖：codex-api 单测验「onRateLimits 被透传出去」、
+// proxy-rate-limit 单测验「applyParsedRateLimits 会写进账号池」。**中间那道缝
+// 没有端到端验证**——回调有没有真的接到写入侧。此前根本测不了，因为 e2e 的
+// ws mock 签名只有 5 个参数、没有 onRateLimits 这一档（已补第 6 个参数）。
+//
+// 「两端有覆盖、中间没有」正是这轮反复在修的形状，所以这条缝要有自己的用例。
+describe("QA-M compact 的上游配额帧真的写进账号池（F9 端到端）", () => {
+  it("QA-M1 v2 compact 期间上游发的 rate limit 帧 → 账号池 cachedQuota 被更新", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    // 先确认起点是「没有配额信息」，否则断言可能被上一条用例的残留喂饱。
+    expect(ctx.accountPool.getEntry(ctx.entryId)?.cachedQuota ?? null).toBeNull();
+
+    setUpstreamRateLimits([{
+      primary: { used_percent: 73.5, window_minutes: 300, reset_at: null },
+      secondary: null,
+    }]);
+    recordAndReply(() => makeTransportResponse(v2CompactStream("opaque-qa-m1")));
+
+    const res = await ctx.app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-claude-code-session-id": "session-qa-m1" },
+      body: JSON.stringify({
+        model: "codex", max_tokens: 1024, stream: true,
+        messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const quota = ctx.accountPool.getEntry(ctx.entryId)?.cachedQuota;
+    console.log(`[QA-M1] compact 之后 cachedQuota.rate_limit = ${JSON.stringify(quota?.rate_limit)}`);
+    // 决定性断言：配额真的落到了账号池，不只是回调被调用过。
+    expect(quota).toBeTruthy();
+    expect(quota?.rate_limit?.used_percent).toBe(73.5);
+    expect(quota?.rate_limit?.limit_window_seconds).toBe(300 * 60);
+    // 只发生了一次上游请求，配额不是被别的请求顺带写进去的。
+    expect(calls).toHaveLength(1);
+  });
+
+  it("QA-M2 对照组：上游没发 rate limit 帧时不会凭空写出配额", async () => {
+    setClaudeCodeOpaqueCompactExperimental(true);
+    setUpstreamRateLimits([]);
+    recordAndReply(() => makeTransportResponse(v2CompactStream("opaque-qa-m2")));
+
+    const res = await ctx.app.request("/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-claude-code-session-id": "session-qa-m2" },
+      body: JSON.stringify({
+        model: "codex", max_tokens: 1024, stream: true,
+        messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    // 没有帧就不该有配额——防止实现里塞了个「反正写个默认值」的兜底。
+    expect(ctx.accountPool.getEntry(ctx.entryId)?.cachedQuota ?? null).toBeNull();
   });
 });

@@ -435,6 +435,10 @@ describe("CodexApi.createCompactResponse", () => {
         { role: "user", content: "latest user" },
         { id: "cmp_1", type: "compaction", encrypted_content: "opaque-v2" },
       ],
+      // 对外自描述字段：v1/v2 的 output 语义不同而端点和字段名都没变，
+      // 外部调用方只能靠它判别形状（旧客户端会把 {type:"compaction"} 当成
+      // Other 丢掉，整段历史静默消失）。
+      compaction_protocol: "v2",
       usage: {
         input_tokens: 47,
         output_tokens: 39,

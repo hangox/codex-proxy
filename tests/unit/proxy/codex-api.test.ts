@@ -530,6 +530,47 @@ describe("CodexApi.createCompactResponse", () => {
     expect(transport.post).not.toHaveBeenCalled();
   });
 
+  // ★ F5：本地装配永远不许抛 TypeError。
+  //
+  // `responses.ts` 的 `input: Array.isArray(body.input) ? ... : []` 只保证 input
+  // 是数组，元素形状完全没校验——TS 类型在这条链路上是一厢情愿的。下面三种形状
+  // 都是能真的打进来的，改之前实测分别抛：
+  //   {"role":"user"}                     → Cannot read properties of undefined
+  //   {"role":"user","content":123}       → item.content.reduce is not a function
+  //   [{"type":"input_audio"}, 超预算文本] → Buffer.byteLength 的 "string" 参数断言
+  //
+  // 时机是最差的：这些都发生在 buildCompactV2Output 里，也就是**上游 compaction
+  // 已成功返回、token 已经花掉之后**；抛的又是 TypeError 不是 CodexApiError，
+  // 于是被 responses.ts 直接 rethrow 成未处理 500——compact 结果丢失、无分类、
+  // 无 outcome 记录。v1 时代这个 body 只是原样转发给上游判 400。
+  describe("非法 input 形状不得让本地装配崩掉（F5）", () => {
+    const MALFORMED_INPUTS: ReadonlyArray<readonly [string, unknown[]]> = [
+      ["user item 完全没有 content", [{ role: "user" }]],
+      ["content 是数字不是 string/数组", [{ role: "user", content: 123 }]],
+      ["未知 part 没有 text 字段，且同条消息超出保留预算", [{
+        role: "user",
+        content: [{ type: "input_audio" }, { type: "input_text", text: "x".repeat(300_000) }],
+      }]],
+    ];
+
+    for (const [name, input] of MALFORMED_INPUTS) {
+      it(name, async () => {
+        mockCreateWebSocketResponse.mockResolvedValue(compactV2Stream());
+        const transport = makeMockTransport();
+        vi.mocked(getTransport).mockReturnValue(transport);
+
+        const result = await createApi().createCompactResponse({
+          model: "gpt-5.4",
+          instructions: "compact",
+          input: input as never,
+        });
+
+        // 不崩、且 compaction item 仍然是压缩产物段的最后一项。
+        expect(result.output.at(-1)).toMatchObject({ type: "compaction" });
+      });
+    }
+  });
+
   it("auto 下 HTTP 404 原样上抛，不吞成「v2 不可用」——CF path-block 的自愈依赖它", async () => {
     // /codex/responses 是所有普通请求都在打的端点，它返回空 body 404 的真实
     // 含义是 Cloudflare path-block，不可能是「v2 不被支持」。吞掉会让

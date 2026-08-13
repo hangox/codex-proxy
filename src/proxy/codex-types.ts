@@ -123,7 +123,16 @@ export type CodexInputItem =
   // can be delivered as an inline input item (system_prompt_strategy).
   | { role: "system" | "developer"; content: string | CodexContentPart[] }
   | { type: "function_call"; id?: string; call_id: string; name: string; arguments: string }
-  | { type: "function_call_output"; call_id: string; output: string };
+  | { type: "function_call_output"; call_id: string; output: string }
+  /** Remote compaction v2 request sentinel, sent as the final /responses input item. */
+  | { type: "compaction_trigger" }
+  /** Opaque remote compaction result, valid as input on the next turn. */
+  | {
+      type: "compaction";
+      id?: string;
+      encrypted_content: string;
+      internal_chat_message_metadata_passthrough?: unknown;
+    };
 
 /** Parsed SSE event from the Codex Responses stream */
 export interface CodexSSEEvent {

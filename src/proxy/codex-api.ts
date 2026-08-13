@@ -31,7 +31,10 @@ import {
 
 export type { WsPoolContext };
 import { parseSSEBlock, parseSSEStream } from "./codex-sse.js";
-import { parseNormalizedHostModelUsage } from "../types/codex-events.js";
+import {
+  extractCodexError,
+  parseNormalizedHostModelUsage,
+} from "../types/codex-events.js";
 import { fetchUsage } from "./codex-usage.js";
 import { fetchModels, probeEndpoint as probeEndpointFn } from "./codex-models.js";
 import type { CookieJar } from "./cookie-jar.js";
@@ -73,9 +76,152 @@ import {
   type CodexResponsesRequest,
   type CodexCompactRequest,
   type CodexCompactResponse,
+  type CodexInputItem,
   type CodexSSEEvent,
   type CodexUsageResponse,
 } from "./codex-types.js";
+
+const REMOTE_COMPACTION_V2_RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
+
+class CompactV2UnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CompactV2UnavailableError";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCompactionItem(value: unknown): value is Extract<CodexInputItem, { type: "compaction" }> {
+  return isRecord(value)
+    && value.type === "compaction"
+    && typeof value.encrypted_content === "string";
+}
+
+function approximateTextTokens(text: string): number {
+  return Math.ceil(Buffer.byteLength(text, "utf8") / 4);
+}
+
+function truncateUtf8TextToApproxTokens(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return "";
+  const maxBytes = maxTokens * 4;
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+
+  const chars = [...text];
+  let low = 0;
+  let high = chars.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(chars.slice(0, mid).join(""), "utf8") <= maxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return chars.slice(0, low).join("");
+}
+
+function userMessageApproxTokens(
+  item: Extract<CodexInputItem, { role: "user" }>,
+): number {
+  if (typeof item.content === "string") return approximateTextTokens(item.content);
+  return item.content.reduce((total, part) => {
+    if (part.type === "input_text" || part.type === "output_text") {
+      return total + approximateTextTokens(part.text);
+    }
+    return total;
+  }, 0);
+}
+
+function truncateUserMessageToApproxTokens(
+  item: Extract<CodexInputItem, { role: "user" }>,
+  maxTokens: number,
+): Extract<CodexInputItem, { role: "user" }> | null {
+  if (maxTokens <= 0) return null;
+  if (typeof item.content === "string") {
+    const content = truncateUtf8TextToApproxTokens(item.content, maxTokens);
+    return content ? { ...item, content } : null;
+  }
+
+  let remaining = maxTokens;
+  const content = item.content.flatMap((part): typeof item.content => {
+    if (part.type === "input_image") return [part];
+    if (remaining <= 0) return [];
+    const tokens = approximateTextTokens(part.text);
+    if (tokens <= remaining) {
+      remaining -= tokens;
+      return [part];
+    }
+    const text = truncateUtf8TextToApproxTokens(part.text, remaining);
+    remaining = 0;
+    return text ? [{ ...part, text }] : [];
+  });
+  return content.length > 0 ? { ...item, content } : null;
+}
+
+/**
+ * Remote compaction v2 returns only the opaque compaction item. Match Codex's
+ * client-side installation shape by retaining real user messages, newest first,
+ * within the same 64K retained-message budget, then appending the opaque item.
+ *
+ * This proxy's compact input does not carry Codex's harness metadata sidecar, so
+ * every role=user item is conservatively treated as a real user message. Keeping
+ * an occasional wrapper is safer than dropping a genuine user instruction.
+ */
+function buildCompactV2Output(
+  input: CodexInputItem[],
+  compaction: Extract<CodexInputItem, { type: "compaction" }>,
+): unknown[] {
+  let remaining = REMOTE_COMPACTION_V2_RETAINED_MESSAGE_TOKEN_BUDGET;
+  const retainedReversed: Array<Extract<CodexInputItem, { role: "user" }>> = [];
+
+  for (let index = input.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const item = input[index];
+    if (!("role" in item) || item.role !== "user") continue;
+    const tokens = Math.max(userMessageApproxTokens(item), 1);
+    if (tokens <= remaining) {
+      retainedReversed.push(item);
+      remaining -= tokens;
+      continue;
+    }
+    const truncated = truncateUserMessageToApproxTokens(item, remaining);
+    if (truncated) retainedReversed.push(truncated);
+    remaining = 0;
+  }
+
+  retainedReversed.reverse();
+  return [...retainedReversed, compaction];
+}
+
+function isCompactV2Unavailable(status: number, code: string, message: string): boolean {
+  if (status === 404 || status === 405 || status === 501) return true;
+  if (status !== 400) return false;
+  const detail = `${code} ${message}`.toLowerCase();
+  const namesTrigger = detail.includes("compaction_trigger") || detail.includes("compaction trigger");
+  const saysUnavailable = [
+    "unsupported",
+    "not supported",
+    "unknown",
+    "unrecognized",
+    "invalid",
+    "not allowed",
+    "not enabled",
+  ].some((needle) => detail.includes(needle));
+  return namesTrigger && saysUnavailable;
+}
+
+function streamErrorStatus(code: string, message: string): number {
+  const normalizedCode = code.toLowerCase();
+  if (["invalid_request_error", "invalid_value", "unsupported_value"].includes(normalizedCode)) return 400;
+  if (["usage_limit_reached", "rate_limit_exceeded", "rate_limit_reached"].includes(normalizedCode)) return 429;
+  if (["quota_exhausted", "payment_required"].includes(normalizedCode)) return 402;
+  if (["unauthorized", "token_invalid", "token_expired", "account_deactivated"].includes(normalizedCode)) return 401;
+  if (["forbidden", "account_banned", "banned"].includes(normalizedCode)) return 403;
+  if (normalizedCode === "context_length_exceeded" || isPromptTooLongLike(message)) return 400;
+  return 502;
+}
 
 function normalizePromptTooLongApiError(err: CodexApiError): CodexApiError {
   if (!isPromptTooLongLike(err.body) && !isPromptTooLongLike(err.message)) {
@@ -98,6 +244,11 @@ function getConnectPhaseErrorMeta(err: unknown): { phase: "pre-connect" | "mid-s
       : "unknown",
     recoverable: rec.recoverable === true,
   };
+}
+
+function isAbortLikeError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return err instanceof Error && err.name === "AbortError";
 }
 
 export class CodexApi {
@@ -298,6 +449,10 @@ export class CodexApi {
       try {
         return await this.createResponseViaWebSocket(request, signal, onRateLimits, poolCtx);
       } catch (err) {
+        // Cancellation is a terminal caller decision. Falling back to HTTP here
+        // starts a second request with an already-aborted signal; transports that
+        // only subscribe for future abort events can then hang indefinitely.
+        if (isAbortLikeError(err, signal)) throw err;
         // Real upstream API errors classified by ws-transport (e.g.
         // usage_limit_reached → CodexApiError(429)) must reach the
         // proxy-handler's rotation flow on the SAME account, not retry
@@ -475,11 +630,121 @@ export class CodexApi {
   }
 
   /**
-   * Compact conversation history (non-streaming JSON).
-   * POST /codex/responses/compact → { output: ResponseItem[] }.
-   * codex-rs uses this for server-side context compaction (session.execute, not stream).
+   * Compact conversation history with the current Responses compaction protocol.
+   *
+   * v2 sends a trailing `compaction_trigger` through the normal streaming
+   * /codex/responses endpoint. The legacy JSON /responses/compact endpoint is
+   * retained only as a compatibility fallback when v2 is explicitly unavailable.
    */
   async createCompactResponse(
+    request: CodexCompactRequest,
+    signal?: AbortSignal,
+  ): Promise<CodexCompactResponse> {
+    try {
+      return await this.createCompactResponseV2(request, signal);
+    } catch (err) {
+      if (!(err instanceof CompactV2UnavailableError)) throw err;
+      console.warn(`[CodexApi] Remote compact v2 unavailable (${err.message}); falling back to v1`);
+      return this.createCompactResponseV1(request, signal);
+    }
+  }
+
+  private async createCompactResponseV2(
+    request: CodexCompactRequest,
+    signal?: AbortSignal,
+  ): Promise<CodexCompactResponse> {
+    const v2Request: CodexResponsesRequest = {
+      model: request.model,
+      instructions: request.instructions,
+      input: [...request.input, { type: "compaction_trigger" }],
+      stream: true,
+      store: false,
+      useWebSocket: true,
+      ...(request.tools?.length ? { tools: request.tools } : {}),
+      ...(request.parallel_tool_calls !== undefined
+        ? { parallel_tool_calls: request.parallel_tool_calls }
+        : {}),
+      ...(request.reasoning ? { reasoning: request.reasoning } : {}),
+      ...(request.text ? { text: request.text } : {}),
+      ...(request.service_tier ? { service_tier: request.service_tier } : {}),
+      ...(request.prompt_cache_key ? { prompt_cache_key: request.prompt_cache_key } : {}),
+      ...(request.client_metadata ? { client_metadata: request.client_metadata } : {}),
+      ...(request.turnState ? { turnState: request.turnState } : {}),
+      ...(request.turnMetadata ? { turnMetadata: request.turnMetadata } : {}),
+      ...(request.betaFeatures ? { betaFeatures: request.betaFeatures } : {}),
+      ...(request.version ? { version: request.version } : {}),
+      ...(request.includeTimingMetrics ? { includeTimingMetrics: request.includeTimingMetrics } : {}),
+      ...(request.codexWindowId ? { codexWindowId: request.codexWindowId } : {}),
+      ...(request.parentThreadId ? { parentThreadId: request.parentThreadId } : {}),
+    };
+
+    let response: Response;
+    try {
+      response = await this.createResponse(v2Request, signal);
+    } catch (err) {
+      if (
+        err instanceof CodexApiError
+        && isCompactV2Unavailable(err.status, "", err.body || err.message)
+      ) {
+        throw new CompactV2UnavailableError(`HTTP ${err.status}: ${err.message}`);
+      }
+      throw err;
+    }
+
+    let sawCompleted = false;
+    let completedUsage: CodexCompactResponse["usage"];
+    const completedOutput: unknown[] = [];
+    const doneOutput: unknown[] = [];
+
+    for await (const event of this.parseStream(response)) {
+      if (event.event === "response.output_item.done" && isRecord(event.data)) {
+        if (isRecord(event.data.item)) doneOutput.push(event.data.item);
+        continue;
+      }
+
+      if (event.event === "response.completed" && isRecord(event.data) && isRecord(event.data.response)) {
+        sawCompleted = true;
+        const rawOutput = event.data.response.output;
+        if (Array.isArray(rawOutput)) completedOutput.push(...rawOutput);
+        completedUsage = parseNormalizedHostModelUsage(event.data.response.usage);
+        break;
+      }
+
+      if (event.event === "error" || event.event === "response.failed") {
+        const upstream = extractCodexError(event.data);
+        const status = streamErrorStatus(upstream.code, upstream.message);
+        if (isCompactV2Unavailable(status, upstream.code, upstream.message)) {
+          throw new CompactV2UnavailableError(`${upstream.code}: ${upstream.message}`);
+        }
+        const errorBody = JSON.stringify({ error: upstream });
+        if (isPromptTooLongLike(upstream.message)) {
+          throw new CodexApiError(promptTooLongStatus(status), buildPromptTooLongErrorBody(errorBody));
+        }
+        throw new CodexApiError(status, errorBody);
+      }
+    }
+
+    if (!sawCompleted) {
+      throw new CodexApiError(502, "Remote compact v2 stream closed before response.completed");
+    }
+
+    const outputItems = doneOutput.some(isCompactionItem) ? doneOutput : completedOutput;
+    const compactions = outputItems.filter(isCompactionItem);
+    if (compactions.length !== 1) {
+      throw new CodexApiError(
+        502,
+        `Remote compact v2 expected exactly one compaction output item, got ${compactions.length} from ${outputItems.length} output items`,
+      );
+    }
+
+    return {
+      output: buildCompactV2Output(request.input, compactions[0]),
+      ...(completedUsage ? { usage: completedUsage } : {}),
+    };
+  }
+
+  /** Legacy non-streaming JSON compact endpoint (v1 compatibility fallback). */
+  private async createCompactResponseV1(
     request: CodexCompactRequest,
     signal?: AbortSignal,
   ): Promise<CodexCompactResponse> {

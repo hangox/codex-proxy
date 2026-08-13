@@ -76,6 +76,16 @@ function makeRequest(overrides?: Partial<CodexResponsesRequest>): CodexResponses
   };
 }
 
+function makeCompactV2Response(): Response {
+  const item = { id: "cmp_headers", type: "compaction", encrypted_content: "opaque" };
+  const body =
+    `event: response.output_item.done\ndata: ${JSON.stringify({ item })}\n\n` +
+    `event: response.completed\ndata: ${JSON.stringify({
+      response: { id: "resp_headers", usage: { input_tokens: 10, output_tokens: 2 } },
+    })}\n\n`;
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 describe("codex-api headers", () => {
   let transport: ReturnType<typeof makeTransport>;
 
@@ -208,6 +218,7 @@ describe("codex-api headers", () => {
 
   describe("Compact path", () => {
     it("forwards identity, context headers, metadata, and strips internal fields", async () => {
+      mockCreateWebSocketResponse.mockResolvedValue(makeCompactV2Response());
       const api = await createApi();
       const request: CodexCompactRequest = {
         model: "gpt-5.4",
@@ -227,7 +238,12 @@ describe("codex-api headers", () => {
 
       await api.createCompactResponse(request);
 
-      expect(transport.lastHeaders).toMatchObject({
+      expect(mockCreateWebSocketResponse).toHaveBeenCalledOnce();
+      const wsUrl = mockCreateWebSocketResponse.mock.calls[0][0] as string;
+      const headers = mockCreateWebSocketResponse.mock.calls[0][1] as Record<string, string>;
+      const body = mockCreateWebSocketResponse.mock.calls[0][2] as Record<string, unknown>;
+      expect(wsUrl).toBe("wss://test.example/codex/responses");
+      expect(headers).toMatchObject({
         "x-client-request-id": "compact-thread",
         session_id: "compact-thread",
         "x-codex-window-id": "compact-window",
@@ -239,19 +255,30 @@ describe("codex-api headers", () => {
         "x-codex-parent-thread-id": "compact-parent",
         "x-codex-installation-id": "11111111-2222-3333-4444-555555555555",
       });
-      const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
       expect(body.service_tier).toBe("priority");
       expect(body.prompt_cache_key).toBe("compact-thread");
-      expect(body.client_metadata).toBeUndefined();
+      expect(body.input).toEqual([
+        { role: "user", content: "history" },
+        { type: "compaction_trigger" },
+      ]);
+      expect(body.client_metadata).toMatchObject({
+        "x-custom": "compact",
+        "x-codex-installation-id": "11111111-2222-3333-4444-555555555555",
+        "x-codex-turn-metadata": "{\"source\":\"compact\"}",
+        "x-codex-window-id": "compact-window",
+        "x-codex-parent-thread-id": "compact-parent",
+      });
       for (const internal of [
         "turnState", "turnMetadata", "betaFeatures", "version",
-        "includeTimingMetrics", "codexWindowId", "parentThreadId", "client_metadata",
+        "includeTimingMetrics", "codexWindowId", "parentThreadId",
       ]) {
         expect(body[internal]).toBeUndefined();
       }
+      expect(transport.post).not.toHaveBeenCalled();
     });
 
     it("derives the default compact window identity from prompt_cache_key", async () => {
+      mockCreateWebSocketResponse.mockResolvedValue(makeCompactV2Response());
       const api = await createApi();
       await api.createCompactResponse({
         model: "gpt-5.4",
@@ -260,9 +287,13 @@ describe("codex-api headers", () => {
         prompt_cache_key: "compact-default-window",
       });
 
-      expect(transport.lastHeaders!["x-codex-window-id"]).toBe("compact-default-window:0");
-      const body = JSON.parse(transport.lastBody!) as Record<string, unknown>;
-      expect(body.client_metadata).toBeUndefined();
+      const headers = mockCreateWebSocketResponse.mock.calls[0][1] as Record<string, string>;
+      const body = mockCreateWebSocketResponse.mock.calls[0][2] as {
+        client_metadata?: Record<string, string>;
+      };
+      expect(headers["x-codex-window-id"]).toBe("compact-default-window:0");
+      expect(body.client_metadata?.["x-codex-window-id"]).toBe("compact-default-window:0");
+      expect(transport.post).not.toHaveBeenCalled();
     });
   });
 

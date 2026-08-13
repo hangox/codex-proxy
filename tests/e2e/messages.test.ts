@@ -295,7 +295,10 @@ describe("E2E: POST /v1/messages", () => {
     expect(urls).toHaveLength(2);
     const replayInput = bodies[1]?.input as unknown[];
     const replayText = JSON.stringify(replayInput);
-    expect(replayInput[0]).toMatchObject({ encrypted_content: "opaque-mixed-block" });
+    expect(replayInput).toContainEqual(expect.objectContaining({
+      type: "compaction",
+      encrypted_content: "opaque-mixed-block",
+    }));
     expect(replayText).toContain("function_call_output");
     expect(replayText).toContain("preserved tool result");
     expect(replayText.match(/preserved tool result/g)).toHaveLength(1);
@@ -359,9 +362,13 @@ describe("E2E: POST /v1/messages", () => {
         }, "no need to /clear", 400, true],
       ] as const)("opaque compact bridge: rejects %s marker state", async (_case, mutateMarker, expectedText, expectedStatus, expectShouldRetryFalse) => {
         setClaudeCodeOpaqueCompactExperimental(true);
-        setTransportPost(async (url) => url.endsWith("/codex/responses/compact")
-          ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
-          : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected")));
+        let upstreamCalls = 0;
+        setTransportPost(async (url) => {
+          upstreamCalls += 1;
+          return url.endsWith("/codex/responses/compact")
+            ? makeErrorTransportResponse(200, JSON.stringify({ output: [{ type: "message", role: "assistant", content: [] }] }))
+            : makeTransportResponse(buildTextStreamChunks("unexpected", "unexpected"));
+        });
 
         const compactRes = await messagesRequest(defaultBody({
           stream: true,
@@ -393,7 +400,9 @@ describe("E2E: POST /v1/messages", () => {
         expect(replay.status).toBe(expectedStatus);
         expect(replay.headers.get("x-should-retry")).toBe(expectShouldRetryFalse ? "false" : null);
         expect(await replay.text()).toContain(expectedText);
-        expect(getMockTransport().post).toHaveBeenCalledTimes(1);
+        // The root compact used one WebSocket v2 request; the rejected replay
+        // must not contact upstream again.
+        expect(upstreamCalls).toBe(1);
       });
 
   it("opaque compact bridge: restores a real Claude Code compact summary wrapper", async () => {
@@ -437,8 +446,14 @@ describe("E2E: POST /v1/messages", () => {
     expect(urls[0]).toContain("/codex/responses/compact");
     expect(urls[1]).not.toContain("/compact");
     const replayInput = bodies[1].input as unknown[];
-    expect(replayInput[0]).toMatchObject({ encrypted_content: "opaque-wrapper-secret" });
-    expect(JSON.stringify(replayInput)).toContain("retained context");
+    expect(replayInput).toContainEqual(expect.objectContaining({
+      type: "compaction",
+      encrypted_content: "opaque-wrapper-secret",
+    }));
+    // v2 installs retained user messages client-side; assistant items from the
+    // old v1 fixture are intentionally not part of the installed history.
+    expect(JSON.stringify(replayInput)).toContain("history");
+    expect(JSON.stringify(replayInput)).not.toContain("retained context");
     expect(JSON.stringify(replayInput)).toContain("same-message continuation");
     expect(JSON.stringify(replayInput)).not.toContain("old history that must not be replayed");
     expect(JSON.stringify(replayInput)).not.toContain("codex-opaque-state:v1");
@@ -1889,9 +1904,11 @@ describe("E2E: POST /v1/messages", () => {
       it("opaque compact bridge: client abort cancels compact without saving state or falling back", async () => {
         setClaudeCodeOpaqueCompactExperimental(true);
         let upstreamSignal: AbortSignal | undefined;
+        let upstreamCalls = 0;
         let signalReady: (() => void) | undefined;
         const ready = new Promise<void>((resolve) => { signalReady = resolve; });
         setTransportPost(async (_url, _headers, _body, signal) => {
+          upstreamCalls += 1;
           upstreamSignal = signal;
           signalReady?.();
           return await new Promise((_, reject) => {
@@ -1918,7 +1935,7 @@ describe("E2E: POST /v1/messages", () => {
         await responsePromise;
 
         expect(upstreamSignal?.aborted).toBe(true);
-        expect(getMockTransport().post).toHaveBeenCalledTimes(1);
+        expect(upstreamCalls).toBe(1);
         expect(opaqueCompactStateStore.size()).toBe(0);
       });
 

@@ -25,9 +25,17 @@ vi.mock("@src/fingerprint/manager.js", () => ({
   buildHeadersWithContentType: vi.fn(() => ({ "Content-Type": "application/json" })),
 }));
 
+const { mockCreateWebSocketResponse } = vi.hoisted(() => ({
+  mockCreateWebSocketResponse: vi.fn(),
+}));
+
+vi.mock("@src/proxy/ws-transport.js", () => ({
+  createWebSocketResponse: mockCreateWebSocketResponse,
+}));
+
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CodexApi, CodexApiError, type CodexSSEEvent } from "@src/proxy/codex-api.js";
-import { mockResponse } from "@helpers/sse.js";
+import { mockResponse, sseChunk } from "@helpers/sse.js";
 import { getTransport } from "@src/tls/transport.js";
 import type { TlsTransport, TlsTransportResponse } from "@src/tls/transport.js";
 
@@ -42,6 +50,34 @@ async function collectEvents(api: CodexApi, response: Response): Promise<CodexSS
 
 function createApi(): CodexApi {
   return new CodexApi("test-token", null);
+}
+
+function compactV2Stream(
+  item: Record<string, unknown> = {
+    id: "cmp_1",
+    type: "compaction",
+    encrypted_content: "opaque-v2",
+  },
+): Response {
+  return mockResponse(
+    sseChunk("response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: 0,
+      item,
+    }) +
+    sseChunk("response.completed", {
+      type: "response.completed",
+      response: {
+        id: "resp_compact_1",
+        usage: {
+          input_tokens: 47,
+          input_tokens_details: { cached_tokens: 11 },
+          output_tokens: 39,
+          output_tokens_details: { reasoning_tokens: 7 },
+        },
+      },
+    }),
+  );
 }
 
 describe("CodexApi.parseStream", () => {
@@ -338,6 +374,138 @@ describe("CodexApi.createResponse", () => {
       // Body should be capped at 1MB
       expect(err.body.length).toBeLessThanOrEqual(1024 * 1024);
     }
+  });
+});
+
+// ── createCompactResponse v2 ─────────────────────────────────────
+
+describe("CodexApi.createCompactResponse", () => {
+  function makeMockTransport(overrides: Partial<TlsTransport> = {}): TlsTransport {
+    return {
+      post: vi.fn(),
+      get: vi.fn(),
+      simplePost: vi.fn(),
+      isImpersonate: vi.fn(() => false),
+      ...overrides,
+    } as unknown as TlsTransport;
+  }
+
+  beforeEach(() => {
+    mockCreateWebSocketResponse.mockReset();
+  });
+
+  it("prefers /responses v2, appends the trigger, retains user messages, and normalizes usage", async () => {
+    mockCreateWebSocketResponse.mockResolvedValue(compactV2Stream());
+    const transport = makeMockTransport();
+    vi.mocked(getTransport).mockReturnValue(transport);
+    const api = createApi();
+
+    const result = await api.createCompactResponse({
+      model: "gpt-5.4",
+      instructions: "compact",
+      input: [
+        { role: "system", content: "system" },
+        { role: "user", content: "first user" },
+        { role: "assistant", content: "assistant" },
+        { type: "function_call", call_id: "call_1", name: "run", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: "ok" },
+        { role: "user", content: "latest user" },
+      ],
+      service_tier: "fast",
+      prompt_cache_key: "compact-thread",
+    });
+
+    expect(mockCreateWebSocketResponse).toHaveBeenCalledOnce();
+    const wsUrl = mockCreateWebSocketResponse.mock.calls[0][0] as string;
+    const wsRequest = mockCreateWebSocketResponse.mock.calls[0][2] as {
+      input: unknown[];
+      service_tier?: string;
+    };
+    expect(wsUrl).toBe("wss://chatgpt.com/backend-api/codex/responses");
+    expect(wsRequest.input.at(-1)).toEqual({ type: "compaction_trigger" });
+    expect(wsRequest.service_tier).toBe("priority");
+    expect(transport.post).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      output: [
+        { role: "user", content: "first user" },
+        { role: "user", content: "latest user" },
+        { id: "cmp_1", type: "compaction", encrypted_content: "opaque-v2" },
+      ],
+      usage: {
+        input_tokens: 47,
+        output_tokens: 39,
+        cached_tokens: 11,
+        reasoning_tokens: 7,
+      },
+    });
+  });
+
+  it("falls back to legacy /responses/compact only when the trigger is explicitly unsupported", async () => {
+    mockCreateWebSocketResponse.mockRejectedValue(
+      new CodexApiError(400, JSON.stringify({
+        error: { code: "invalid_value", message: "Invalid value: compaction_trigger is not supported" },
+      })),
+    );
+    const transport = makeMockTransport({
+      post: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        body: mockResponse(JSON.stringify({
+          output: [{ type: "reasoning", encrypted_content: "legacy" }],
+        })).body!,
+        setCookieHeaders: [],
+      } satisfies TlsTransportResponse),
+    });
+    vi.mocked(getTransport).mockReturnValue(transport);
+
+    const result = await createApi().createCompactResponse({
+      model: "gpt-5.4",
+      instructions: "compact",
+      input: [{ role: "user", content: "history" }],
+    });
+
+    expect(mockCreateWebSocketResponse).toHaveBeenCalledOnce();
+    expect(transport.post).toHaveBeenCalledOnce();
+    expect(vi.mocked(transport.post).mock.calls[0][0]).toBe(
+      "https://chatgpt.com/backend-api/codex/responses/compact",
+    );
+    expect(result.output).toEqual([{ type: "reasoning", encrypted_content: "legacy" }]);
+  });
+
+  it("does not fall back after quota errors", async () => {
+    mockCreateWebSocketResponse.mockRejectedValue(
+      new CodexApiError(429, JSON.stringify({
+        error: { code: "usage_limit_reached", message: "Limit reached" },
+      })),
+    );
+    const transport = makeMockTransport();
+    vi.mocked(getTransport).mockReturnValue(transport);
+
+    await expect(createApi().createCompactResponse({
+      model: "gpt-5.4",
+      instructions: "compact",
+      input: [],
+    })).rejects.toMatchObject({ status: 429 });
+    expect(transport.post).not.toHaveBeenCalled();
+  });
+
+  it("rejects a completed v2 response without a compaction item instead of spending again on v1", async () => {
+    mockCreateWebSocketResponse.mockResolvedValue(mockResponse(
+      sseChunk("response.output_item.done", {
+        item: { type: "message", role: "assistant", content: [] },
+      }) + sseChunk("response.completed", {
+        response: { id: "resp_bad", usage: { input_tokens: 4, output_tokens: 2 } },
+      }),
+    ));
+    const transport = makeMockTransport();
+    vi.mocked(getTransport).mockReturnValue(transport);
+
+    await expect(createApi().createCompactResponse({
+      model: "gpt-5.4",
+      instructions: "compact",
+      input: [],
+    })).rejects.toMatchObject({ status: 502 });
+    expect(transport.post).not.toHaveBeenCalled();
   });
 });
 

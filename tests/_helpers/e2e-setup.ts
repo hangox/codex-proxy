@@ -43,6 +43,103 @@ export type TransportPostFn = (
 let _transportPost: TransportPostFn;
 let _lastTransportBody: string | null = null;
 
+function parseRemoteCompactV2Body(body: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (!Array.isArray(parsed.input)) return null;
+    const last = parsed.input.at(-1);
+    if (
+      typeof last !== "object"
+      || last === null
+      || (last as Record<string, unknown>).type !== "compaction_trigger"
+    ) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function legacyCompactFixtureBody(v2Body: Record<string, unknown>): string {
+  const input = (v2Body.input as unknown[]).slice(0, -1);
+  const {
+    type: _type,
+    stream: _stream,
+    store: _store,
+    tool_choice: _toolChoice,
+    client_metadata: _clientMetadata,
+    ...fields
+  } = v2Body;
+  return JSON.stringify({ ...fields, input });
+}
+
+async function adaptLegacyCompactFixtureResponse(
+  response: TlsTransportResponse,
+): Promise<TlsTransportResponse> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (response.status < 200 || response.status >= 300 || !contentType.includes("application/json")) {
+    return response;
+  }
+
+  const text = await new Response(response.body as BodyInit).text();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return makeErrorTransportResponse(response.status, text);
+  }
+  if (!Array.isArray(parsed.output)) return makeErrorTransportResponse(response.status, text);
+
+  const encryptedContent = parsed.output.find((item) => (
+    typeof item === "object"
+    && item !== null
+    && typeof (item as Record<string, unknown>).encrypted_content === "string"
+  ));
+  const encrypted = encryptedContent
+    ? (encryptedContent as Record<string, unknown>).encrypted_content as string
+    : Buffer.from(JSON.stringify(parsed.output), "utf8").toString("base64");
+  const compaction = {
+    id: "cmp_e2e_v2",
+    type: "compaction",
+    encrypted_content: encrypted,
+  };
+  const usage = typeof parsed.usage === "object" && parsed.usage !== null
+    ? parsed.usage
+    : { input_tokens: 10, output_tokens: 2 };
+  return makeTransportResponse(
+    `event: response.output_item.done\ndata: ${JSON.stringify({ item: compaction })}\n\n`
+    + `event: response.completed\ndata: ${JSON.stringify({
+      response: { id: "resp_e2e_compact_v2", usage },
+    })}\n\n`,
+  );
+}
+
+/**
+ * Keep legacy compact fixtures readable while production now speaks v2.
+ * Unit tests assert the real /responses + compaction_trigger wire shape; E2E
+ * route tests can continue describing only their intended compact payload.
+ */
+async function invokeTransportPost(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  signal?: AbortSignal,
+  timeoutSec?: number,
+  proxyUrl?: string | null,
+): Promise<TlsTransportResponse> {
+  const v2Body = parseRemoteCompactV2Body(body);
+  if (!v2Body) return _transportPost(url, headers, body, signal, timeoutSec, proxyUrl);
+
+  const result = await _transportPost(
+    `${url}/compact`,
+    headers,
+    legacyCompactFixtureBody(v2Body),
+    signal,
+    timeoutSec,
+    proxyUrl,
+  );
+  return adaptLegacyCompactFixtureResponse(result);
+}
+
 /** Override the transport.post behavior for the current test. */
 export function setTransportPost(fn: TransportPostFn): void {
   _transportPost = fn;
@@ -67,7 +164,7 @@ export function setClaudeCodeOpaqueCompactExperimental(enabled: boolean): void {
 const mockTransport: TlsTransport = {
   post: vi.fn((...args: Parameters<TlsTransport["post"]>) => {
     _lastTransportBody = args[2];
-    return _transportPost(args[0], args[1], args[2], args[3], args[4], args[5]);
+    return invokeTransportPost(args[0], args[1], args[2], args[3], args[4], args[5]);
   }),
   get: vi.fn(async () => ({ status: 200, body: "{}" })),
   simplePost: vi.fn(async () => ({ status: 200, body: "{}" })),
@@ -131,7 +228,7 @@ vi.mock("@src/proxy/ws-transport.js", () => ({
   ) => {
     const body = JSON.stringify(request);
     _lastTransportBody = body;
-    const result = await _transportPost(wsUrl, headers, body, signal, undefined, proxyUrl);
+    const result = await invokeTransportPost(wsUrl, headers, body, signal, undefined, proxyUrl);
     if (result.status < 200 || result.status >= 300) {
       const errorBody = await new Response(result.body as BodyInit).text();
       const { CodexApiError } = await import("@src/proxy/codex-types.js");

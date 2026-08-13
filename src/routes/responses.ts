@@ -777,8 +777,13 @@ async function handleCompact(
         throw err;
       }
 
+      // cookieJar 必须传：Cloudflare path-block 分支里是 `cookieJar?.clear(entryId)`，
+      // 不传的话可选链把它静默变成 no-op，而紧跟着那句
+      // "cleared cookies and retrying..." 的日志照打——「日志说清了、实际没清」，
+      // 属于会把排查方向直接带偏的那类假象。实测 cookie jar 里的 __cf_bm 原样残留。
+      // 同一个函数在 codex-compact-service.ts 的调用点是传了的，只有这条路由漏了。
       const decision = handleCodexApiError(
-        err, accountPool, entryId, modelId, TAG, false,
+        err, accountPool, entryId, modelId, TAG, false, cookieJar,
       );
 
       if (decision.action === "respond") {

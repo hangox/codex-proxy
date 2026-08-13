@@ -102,6 +102,21 @@ export interface CodexCompactRequest {
  */
 export interface CodexCompactResponse {
   output: unknown[];
+  /**
+   * 产出这份 `output` 的协议版本，供 `/v1/responses/compact` 的**外部**调用方
+   * 判别形状——两个版本的 `output` 语义不同，而端点、字段名、类型都没变，
+   * 没有这个字段的话客户端无从分辨，也不会有任何地方报错：
+   *
+   * - `"v1"`：上游返回的压缩后 transcript（reasoning / assistant item 等）
+   * - `"v2"`：proxy 自己装配的 `[...保留的 user 消息, {type:"compaction"}]`
+   *
+   * 为什么必须能判别：新版 codex 的 `should_keep_compacted_history_item` 对
+   * Compaction 变体是 `=> true`（保留），但**早于该变体的旧客户端**会把
+   * `{type:"compaction"}` 反序列化成 `Other`，被同一个 filter 丢掉——整段
+   * 历史静默消失。旧客户端可以据此判断，再配合 `model.compact_protocol: "v1"`
+   * 钉死到自己能处理的形状。
+   */
+  compaction_protocol: "v1" | "v2";
   usage?: {
     input_tokens: number;
     output_tokens: number;

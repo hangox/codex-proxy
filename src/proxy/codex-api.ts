@@ -790,6 +790,7 @@ export class CodexApi {
 
     return {
       output: buildCompactV2Output(request.input, compactions[0]),
+      compaction_protocol: "v2",
       ...(completedUsage ? { usage: completedUsage } : {}),
     };
   }
@@ -881,7 +882,9 @@ export class CodexApi {
       // 不对）时返回 undefined，不是 0——调用方（codex-compact-service.ts）
       // 必须能区分"这次真的没有 usage"和"usage 是 0"，不能替上游瞎猜。
       const usage = parseNormalizedHostModelUsage((parsed as { usage?: unknown }).usage);
-      return usage ? { ...parsed, usage } : parsed;
+      // compaction_protocol 由 proxy 盖章，不信上游 body 里可能带的同名字段。
+      const withProtocol: CodexCompactResponse = { ...parsed, compaction_protocol: "v1" };
+      return usage ? { ...withProtocol, usage } : withProtocol;
     } catch {
       throw new CodexApiError(502, `Compact response is not valid JSON: ${responseBody.slice(0, 200)}`);
     }

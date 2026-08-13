@@ -134,12 +134,15 @@ function truncateUtf8TextToApproxTokens(text: string, maxTokens: number): string
   return chars.slice(0, low).join("");
 }
 
+type TextualContentPart = Extract<CodexContentPart, { text: string }>;
+
 /**
- * 取出一个 content part 里的文本；拿不到可信文本时返回 null。
+ * 判断一个 content part 是否真的带可用的文本。
  *
- * ★ 这里的入参是**未经校验的客户端 body**：`responses.ts` 的
+ * ★ 为什么需要运行时判断而不是直接信类型：这条链路上的入参是**未经校验的
+ * 客户端 body**。`responses.ts` 的
  * `input: Array.isArray(body.input) ? ... : []` 只保证它是个数组，元素形状
- * 完全没有约束。TS 类型在这条链路上是一厢情愿的，不是运行时保证——
+ * 完全没有约束——TS 类型在这里是一厢情愿，不是运行时保证。
  * `{"role":"user"}`（没有 content）、`{"role":"user","content":123}`、
  * `{"type":"input_audio"}`（没有 text）都是能真的打进来的形状，实测三种
  * 都会抛 TypeError。
@@ -150,10 +153,8 @@ function truncateUtf8TextToApproxTokens(text: string, maxTokens: number): string
  * 无 outcome 记录。v1 时代这个 body 只是原样转发给上游判 400。
  *
  * 判据：本地装配永远不许抛 TypeError。非法形状按「没有文本」处理（计 0 /
- * 跳过），把该报错的责任留给上游。
+ * 原样保留不参与截断），把该报错的责任留给上游。
  */
-type TextualContentPart = Extract<CodexContentPart, { text: string }>;
-
 function isTextualPart(part: unknown): part is TextualContentPart {
   return typeof part === "object"
     && part !== null
@@ -202,13 +203,16 @@ function truncateUserMessageToApproxTokens(
 }
 
 /**
- * Remote compaction v2 returns only the opaque compaction item. Match Codex's
- * client-side installation shape by retaining real user messages, newest first,
- * within the same 64K retained-message budget, then appending the opaque item.
+ * v2 的上游只返回一个 opaque compaction item，历史是**客户端侧**装配的。
+ * 这里对齐官方客户端的装配形状：在同一个 64K 保留预算内，从新到旧保留真实的
+ * user 消息，最后把 opaque item 接在末尾。
  *
- * This proxy's compact input does not carry Codex's harness metadata sidecar, so
- * every role=user item is conservatively treated as a real user message. Keeping
- * an occasional wrapper is safer than dropping a genuine user instruction.
+ * 注意 compaction 必须是最后一项——恢复时这一段会整体前置于 preservedTail 和
+ * 新一轮消息，顺序错了会让上游把压缩产物当成历史中间的一条普通消息。
+ *
+ * 本 proxy 的 compact input 不带官方 harness 的 metadata sidecar，无法区分
+ * 「真实用户指令」和「harness 包装」，所以对 role=user 的 item 一律保守地当成
+ * 真实用户消息：偶尔多留一条包装，比丢掉一条真实用户指令安全。
  */
 function buildCompactV2Output(
   input: CodexInputItem[],
@@ -461,9 +465,9 @@ export class CodexApi {
       try {
         return await this.createResponseViaWebSocket(request, signal, onRateLimits, poolCtx);
       } catch (err) {
-        // Cancellation is a terminal caller decision. Falling back to HTTP here
-        // starts a second request with an already-aborted signal; transports that
-        // only subscribe for future abort events can then hang indefinitely.
+        // 取消是调用方的终态决定，不是可恢复的失败。在这里降级到 HTTP 会用
+        // 一个**已经 abort 的 signal** 发起第二次请求；只订阅「将来的 abort
+        // 事件」而不检查当前状态的传输实现会因此永远挂住。
         if (isAbortLikeError(err, signal)) throw err;
         // Real upstream API errors classified by ws-transport (e.g.
         // usage_limit_reached → CodexApiError(429)) must reach the
@@ -795,7 +799,13 @@ export class CodexApi {
     };
   }
 
-  /** Legacy non-streaming JSON compact endpoint (v1 compatibility fallback). */
+  /**
+   * legacy 的非流式 JSON compact 端点。
+   *
+   * 保留它的唯一理由是「上游回滚时不被焊死」——由 `model.compact_protocol: "v1"`
+   * 显式选择进入，**不存在任何自动回落到这里的路径**（原因见
+   * createCompactResponse 的注释）。
+   */
   private async createCompactResponseV1(
     request: CodexCompactRequest,
     signal?: AbortSignal,

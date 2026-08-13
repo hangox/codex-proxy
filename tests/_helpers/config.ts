@@ -45,6 +45,7 @@ export function createMockConfig(overrides?: MockConfigOverrides): AppConfig {
       suppress_desktop_directives: true,
       claude_code_compact_bridge: false,
       claude_code_opaque_compact_experimental: false,
+      compact_protocol: "auto",
     },
     auth: {
       jwt_token: null,

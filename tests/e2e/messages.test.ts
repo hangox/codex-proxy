@@ -22,6 +22,7 @@ import {
   makeCompactV2Response,
   makeCompactV2ErrorResponse,
   expectCompactionAtEndOfCompactOutput,
+  setCompactProtocol,
 } from "@helpers/e2e-setup.js";
 import {
   buildEmptyStreamChunks,
@@ -419,12 +420,13 @@ describe("E2E: POST /v1/messages", () => {
         expect(upstreamCalls).toBe(1);
       });
 
-  it("opaque compact bridge: upstream rejecting compaction_trigger falls back to the legacy v1 /compact endpoint", async () => {
-    // v2 唯一还会真正用到 v1 端点的路径：上游明确说不认识 compaction_trigger
-    // （`isCompactV2Unavailable`），此时才降级打老的 JSON /responses/compact。
-    // 这条链路是这次 PR 新加的生产行为，之前 E2E 完全没有覆盖——而且它是
-    // 全仓库唯一一处 E2E 里 `/codex/responses/compact` 还应该出现的地方。
+  it("opaque compact bridge: compact_protocol=\"v1\" 时全链路走 legacy 端点，且不先试 v2", async () => {
+    // 这是**唯一**还会打 legacy /codex/responses/compact 的路径：显式配置，
+    // 不是从上游错误文案里猜出来的自动回落（那条已经整个删掉了，原因见
+    // codex-api.ts createCompactResponse 的注释）。也因此这是全仓库 E2E 里
+    // 现在唯一还该出现 `/codex/responses/compact` 的地方。
     setClaudeCodeOpaqueCompactExperimental(true);
+    setCompactProtocol("v1");
     const urls: string[] = [];
     const requestBodies: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
@@ -432,37 +434,28 @@ describe("E2E: POST /v1/messages", () => {
       urls.push(url);
       requestBodies.push(body);
       bodies.push(JSON.parse(body) as Record<string, unknown>);
-      if (isCompactV2Request(body)) {
-        return makeCompactV2ErrorResponse({
-          type: "invalid_request_error",
-          code: "invalid_request_error",
-          message: "Unknown parameter: 'compaction_trigger'.",
-        });
-      }
       if (url.endsWith("/codex/responses/compact")) {
         return makeErrorTransportResponse(200, JSON.stringify({
-          output: [{ type: "reasoning", encrypted_content: "opaque-v1-fallback", summary: [] }],
+          output: [{ type: "reasoning", encrypted_content: "opaque-v1-protocol", summary: [] }],
         }));
       }
-      return makeTransportResponse(buildTextStreamChunks("resp_v1_fallback", "v1 fallback restored"));
+      return makeTransportResponse(buildTextStreamChunks("resp_v1_protocol", "v1 protocol restored"));
     });
 
     const compactRes = await messagesRequest(defaultBody({
       stream: true,
       messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
-    }), { "x-claude-code-session-id": "session-v1-fallback" });
+    }), { "x-claude-code-session-id": "session-v1-protocol" });
     expect(compactRes.status).toBe(200);
     const marker = extractMarkerFromResponse(await compactRes.text());
     expect(marker).toContain("codex-opaque-state:v1");
 
-    // 先打 v2（带哨兵、走普通 /codex/responses），被拒之后才打 v1。
-    expect(urls).toHaveLength(2);
-    expect(isCompactV2Request(requestBodies[0])).toBe(true);
-    expect(urls[0]).not.toContain("/compact");
-    expect(urls[1]).toContain("/codex/responses/compact");
-    // 降级请求里不能再带哨兵——v1 端点不认识它。
-    expect(isCompactV2Request(requestBodies[1])).toBe(false);
-    expect(requestBodies[1]).not.toContain("compaction_trigger");
+    // 决定性断言：只有一次 compact 上游请求，且它就是 legacy 端点——
+    // 没有「先打一次 v2 再回落」。
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain("/codex/responses/compact");
+    expect(isCompactV2Request(requestBodies[0])).toBe(false);
+    expect(requestBodies[0]).not.toContain("compaction_trigger");
 
     const replay = await messagesRequest(defaultBody({
       stream: true,
@@ -470,11 +463,41 @@ describe("E2E: POST /v1/messages", () => {
         { role: "assistant", content: marker },
         { role: "user", content: "continue" },
       ],
-    }), { "x-claude-code-session-id": "session-v1-fallback" });
+    }), { "x-claude-code-session-id": "session-v1-protocol" });
 
     expect(replay.status).toBe(200);
-    expect(await replay.text()).toContain("v1 fallback restored");
-    expect(JSON.stringify(bodies[2]?.input)).toContain("opaque-v1-fallback");
+    expect(await replay.text()).toContain("v1 protocol restored");
+    expect(JSON.stringify(bodies[1]?.input)).toContain("opaque-v1-protocol");
+  });
+
+  it("opaque compact bridge: auto（默认）下上游拒绝 compaction_trigger 也不会二次请求 legacy", async () => {
+    // 自动回落删除后的关键回归：上游的错误原样传给调用方，不再白发一次
+    // 注定失败的 v1 请求、也不再把真因换成 v1 的 Not Found。
+    setClaudeCodeOpaqueCompactExperimental(true);
+    const urls: string[] = [];
+    const requestBodies: string[] = [];
+    setTransportPost(async (url, _headers, body) => {
+      urls.push(url);
+      requestBodies.push(body);
+      if (isCompactV2Request(body)) {
+        return makeCompactV2ErrorResponse({
+          type: "invalid_request_error",
+          code: "invalid_request_error",
+          message: "Unknown parameter: 'compaction_trigger'.",
+        });
+      }
+      // compact 失败后路由会降级成一次普通生成——那是既有行为，不是回落 v1。
+      return makeTransportResponse(buildTextStreamChunks("resp_degraded", "degraded"));
+    });
+
+    await messagesRequest(defaultBody({
+      stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }), { "x-claude-code-session-id": "session-no-autofallback" });
+
+    // 决定性断言：legacy compact 端点一次都没被打过，且只发起过一次 compact。
+    expect(urls.filter((u) => u.includes("/codex/responses/compact"))).toHaveLength(0);
+    expect(requestBodies.filter((b) => isCompactV2Request(b))).toHaveLength(1);
   });
 
   it("opaque compact bridge: restores a real Claude Code compact summary wrapper", async () => {

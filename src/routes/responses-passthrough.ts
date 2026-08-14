@@ -9,6 +9,10 @@ import { randomUUID } from "crypto";
 import type { UpstreamAdapter } from "../proxy/upstream-adapter.js";
 import type { CodexSSEEvent } from "../proxy/codex-api.js";
 import { EmptyResponseError } from "../translation/codex-event-extractor.js";
+import {
+  isPromptTooLongLike,
+  normalizePromptTooLongMessage,
+} from "../proxy/prompt-too-long-error.js";
 import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { extractCodexError } from "../types/codex-events.js";
 import { recordStreamCloseEvent } from "../logs/stream-close-event.js";
@@ -372,12 +376,16 @@ export async function collectPassthrough(
   response: Response,
   _model: string,
   tupleSchema?: Record<string, unknown> | null,
-  onResponseMetadata?: (metadata: ResponseMetadata) => void,
+  usageHintOrOnResponseMetadata?: unknown,
+  legacyOnResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<{
   response: unknown;
   usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number };
   responseId: string | null;
 }> {
+  const onResponseMetadata = typeof usageHintOrOnResponseMetadata === "function"
+    ? usageHintOrOnResponseMetadata as (metadata: ResponseMetadata) => void
+    : legacyOnResponseMetadata;
   let finalResponse: unknown = null;
   let usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number } = { input_tokens: 0, output_tokens: 0 };
   let responseId: string | null = null;
@@ -496,6 +504,27 @@ export async function collectPassthrough(
 
 // ── Format adapter ────────────────────────────────────────────────
 
+function formatResponsesError(status: number, msg: string): unknown {
+  if (isPromptTooLongLike(msg)) {
+    return {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        code: "context_length_exceeded",
+        message: normalizePromptTooLongMessage(msg),
+      },
+    };
+  }
+  return {
+    type: "error",
+    error: {
+      type: status >= 400 && status < 500 ? "invalid_request_error" : "server_error",
+      code: "codex_api_error",
+      message: msg,
+    },
+  };
+}
+
 export const PASSTHROUGH_FORMAT: FormatAdapter = {
   tag: "Responses",
   noAccountStatus: 503,
@@ -508,14 +537,7 @@ export const PASSTHROUGH_FORMAT: FormatAdapter = {
       message: msg,
     },
   }),
-  formatError: (_status, msg) => ({
-    type: "error",
-    error: {
-      type: "server_error",
-      code: "codex_api_error",
-      message: msg,
-    },
-  }),
+  formatError: (status, msg) => formatResponsesError(status, msg),
   formatStreamError: (status, msg) => buildResponsesStreamError(status, msg),
   streamTranslator: ({ api, response, model, onUsage, onResponseId, onResponseCompleted, tupleSchema, streamContext, onResponseMetadata }) => {
     if (!(response instanceof Response)) {

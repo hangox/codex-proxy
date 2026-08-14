@@ -8,10 +8,18 @@
 
 ## [Unreleased]
 
+## [2.0.100] - 2026-08-14
+
 ### Merged from upstream/master
 
 - 吸收 icebear0828 至 2.0.77 的未发布改动：WS 连接池保活、reasoning replay cache、CF challenge cooldown、SQLite 账号持久化、GPT-5.6 / image generation、dashboard auth 统一、healthcheck 硬化等。本仓 compact v2 / opaque compact / `retryable` / abort 不回落 HTTP 保持不变。上游把 `non-streaming-*.ts` 收拢进 helpers 的重构**没有**整段采纳——独立文件里有 opaque 隐私合同，helpers 改为 re-export。
 
+### Fixed
+
+- **流式 `image_generation` 不再被 preflight 当成空响应。** 翻译器已能把 `image_generation_call` 转成 OpenAI `tool_calls`，但 `isContentfulEvent` 不认 `imageGenerationDone`，流式预检在 `response.completed` 把它丢掉并重试。非流式不走 preflight，所以一直绿。
+- **`/v1/responses` passthrough 的 4xx 错误分类补回。** 合入后接线到 `PASSTHROUGH_FORMAT.formatError` 一度把 400/429 打成 `server_error`；现恢复 `invalid_request_error`，prompt-too-long 仍归一为 `context_length_exceeded`。
+
+## [2.0.99] - 2026-08-13
 
 ### Changed
 

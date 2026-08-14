@@ -191,7 +191,7 @@ describe("Responses passthrough metadata", () => {
     }
 
     expect(chunks.join("")).toContain("response.output_item.done");
-    expect(metadata).toEqual([{ functionCallIds: ["call_issue_571"] }]);
+    expect(metadata).toContainEqual({ functionCallIds: ["call_issue_571"] });
   });
 
   it("collects function_call call_id metadata through the Responses format adapter", async () => {

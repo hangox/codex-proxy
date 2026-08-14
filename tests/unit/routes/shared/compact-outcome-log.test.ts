@@ -727,6 +727,34 @@ describe("★ #108/#111 recordCompactFallbackRenderOutcome", () => {
     expect("failure_stage" in entry).toBe(false);
   });
 
+  it("降级压缩只把真实上游区间写入 upstream_ms，不把本地收尾时间算进去", async () => {
+    const {
+      markCompactFallbackUpstreamEnd,
+      markCompactFallbackUpstreamStart,
+      recordCompactFallbackRenderOutcome,
+      readCompactOutcomeLog,
+    } = await importModule();
+    let now = 1_000;
+    const req = {
+      compactFallbackRender: { requestId: "rid-render-upstream", startedAt: 900 },
+      model: "gpt-5.4",
+      clientConversationId: "s1",
+    };
+    markCompactFallbackUpstreamStart(req, () => now);
+    now = 1_240;
+    markCompactFallbackUpstreamEnd(req, () => now);
+    now = 1_500;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      recordCompactFallbackRenderOutcome(req, true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    const [entry] = readCompactOutcomeLog();
+    expect(entry.duration_ms).toBe(600);
+    expect(entry.upstream_ms).toBe(240);
+  });
+
   it("completed=false + failureStage='pre_stream'——从未进流式阶段就被拒绝，带真实 httpStatus", async () => {
     const { recordCompactFallbackRenderOutcome, readCompactOutcomeLog } = await importModule();
     recordCompactFallbackRenderOutcome(

@@ -215,6 +215,31 @@ describe("#88: compact-outcomes.jsonl 的耗时埋点真的接上了路由层", 
     expect(entry.duration_ms as number).toBeGreaterThanOrEqual(30);
     expect(entry.upstream_ms as number).toBeGreaterThanOrEqual(30);
   });
+
+  it("root fallback_render：upstream_ms 只覆盖降级后普通生成上游失败", async () => {
+    const UPSTREAM_DELAY_MS = 50;
+    setTransportPost(async (_url, _headers, body) => {
+      if (isCompactV2Request(body)) {
+        return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected opaque compact failure" } }));
+      }
+      await new Promise((r) => setTimeout(r, UPSTREAM_DELAY_MS));
+      return makeErrorTransportResponse(400, JSON.stringify({ error: { message: "injected fallback render failure" } }));
+    });
+
+    const res = await messagesRequest({
+      model: "codex", max_tokens: 1024, stream: true,
+      messages: [{ role: "user", content: "history" }, { role: "user", content: compactPrompt }],
+    }, { "x-claude-code-session-id": "session-duration-fallback-render" });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const render = readRealOutcomeLines().find((entry) => entry.compact_path === "fallback_render");
+    expect(render).toBeDefined();
+    expect(render!.outcome).toBe("upstream_failed");
+    expect(render!.failure_stage).toBe("pre_stream");
+    expect(render!.upstream_ms as number).toBeGreaterThanOrEqual(UPSTREAM_DELAY_MS);
+    expect(render!.duration_ms as number).toBeGreaterThanOrEqual(render!.upstream_ms as number);
+  });
 });
 
 // ★ 幂等回放（successor_replay/edge 命中）只在**持久化**模式下存在——

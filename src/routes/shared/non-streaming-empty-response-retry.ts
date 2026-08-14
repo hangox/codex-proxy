@@ -8,6 +8,10 @@ import { withRetry } from "../../utils/retry.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { toErrorStatus } from "./proxy-error-handler.js";
 import { recordProxyEgressLog } from "./proxy-egress-log.js";
+import {
+  markCompactFallbackUpstreamEnd,
+  markCompactFallbackUpstreamStart,
+} from "./compact-outcome-log.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome, buildCodexApi } from "./proxy-handler-utils.js";
 import { formatAccount } from "./opaque-compact-audit.js";
@@ -102,7 +106,16 @@ export async function retryNonStreamingEmptyResponse(
   const retryStartMs = nowMs();
   try {
     const rawResponse = await withRetry(
-      () => nextApi.createResponse(req.codexRequest, abortSignal, undefined, buildPoolCtx?.(acquired.entryId)),
+      async () => {
+        // 空响应重试也只统计真实普通生成上游区间；本地换账号与退避不计入。
+        markCompactFallbackUpstreamStart(req);
+        try {
+          return await nextApi.createResponse(req.codexRequest, abortSignal, undefined, buildPoolCtx?.(acquired.entryId));
+        } catch (error) {
+          markCompactFallbackUpstreamEnd(req);
+          throw error;
+        }
+      },
       { tag },
     );
     recordProxyEgressLog({

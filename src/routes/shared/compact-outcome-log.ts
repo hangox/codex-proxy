@@ -199,12 +199,15 @@ export interface CompactOutcomeEvent {
    */
   duration_ms?: number;
   /**
-   * ★ #88：仅当这次尝试真的发起了上游 compact 调用时才有值（`success`
-   * 的非 `replayed` 分支、`upstream_failed`）——`upstream_ms` 是
-   * `duration_ms` 的一个子集，用来回答"慢在上游还是慢在我们自己这边
-   * （restore/preserved tail 合并/预算裁剪/save）"这个问题。`replayed`
-   * 命中幂等短路、`budget_exceeded`、`denied` 都没有真正联系上游，这个
-   * 字段应该缺省（不是 0）。
+   * ★ #88：仅当这次尝试真的发起了上游调用时才有值：opaque compact 的
+   * `success`（非 `replayed`）/`upstream_failed`，以及降级后的
+   * `fallback_render` 普通生成调用。它是 `duration_ms` 的一个子集，用来
+   * 回答"慢在上游还是慢在我们自己这边"。
+   *
+   * `fallback_render` 的 `upstream_ms` 从发起普通生成上游请求开始，覆盖到
+   * 流式结果结束或同步拒绝；账号获取、节流和其它本地准备不计入。幂等重放、
+   * `budget_exceeded`、没有真正发起上游请求的 `denied`/pre-stream 失败都
+   * 缺省这个字段（不是 0）。
    */
   upstream_ms?: number;
   /**
@@ -426,9 +429,49 @@ export function recordCompactOutcome(input: RecordCompactOutcomeInput): void {
  * 反向依赖 `proxy-handler-types.ts` 这个代理路由专属类型，两者本来就该
  * 是单向依赖。
  */
+type CompactFallbackRenderRequest = {
+  compactFallbackRender?: {
+    requestId: string;
+    startedAt: number;
+    upstreamStartedAt?: number;
+    upstreamMs?: number;
+  };
+};
+
+function finishCompactFallbackUpstreamAttempt(
+  ctx: NonNullable<CompactFallbackRenderRequest["compactFallbackRender"]>,
+  nowMs: () => number,
+): void {
+  if (ctx.upstreamStartedAt === undefined) return;
+  ctx.upstreamMs = (ctx.upstreamMs ?? 0) + Math.max(0, nowMs() - ctx.upstreamStartedAt);
+  ctx.upstreamStartedAt = undefined;
+}
+
+/** 标记降级后普通生成端点的一次真实上游尝试开始。 */
+export function markCompactFallbackUpstreamStart(
+  req: CompactFallbackRenderRequest,
+  nowMs: () => number = Date.now,
+): void {
+  const ctx = req.compactFallbackRender;
+  if (!ctx) return;
+  const startedAt = nowMs();
+  // 重试前先封口上一段，避免把本地退避/节流时间算进上游耗时。
+  finishCompactFallbackUpstreamAttempt(ctx, () => startedAt);
+  ctx.upstreamStartedAt = startedAt;
+}
+
+/** 封口当前降级上游尝试；没有上下文或没有真实尝试时严格 no-op。 */
+export function markCompactFallbackUpstreamEnd(
+  req: CompactFallbackRenderRequest,
+  nowMs: () => number = Date.now,
+): void {
+  const ctx = req.compactFallbackRender;
+  if (!ctx) return;
+  finishCompactFallbackUpstreamAttempt(ctx, nowMs);
+}
+
 export function recordCompactFallbackRenderOutcome(
-  req: {
-    compactFallbackRender?: { requestId: string; startedAt: number };
+  req: CompactFallbackRenderRequest & {
     clientConversationId?: string;
     model: string;
   },
@@ -438,6 +481,7 @@ export function recordCompactFallbackRenderOutcome(
   const ctx = req.compactFallbackRender;
   if (!ctx) return;
   try {
+    markCompactFallbackUpstreamEnd(req);
     recordCompactOutcome({
       requestId: ctx.requestId,
       clientConversationId: req.clientConversationId ?? null,
@@ -445,6 +489,7 @@ export function recordCompactFallbackRenderOutcome(
       compactPath: "fallback_render",
       outcome: completed ? "render_completed" : "upstream_failed",
       durationMs: Date.now() - ctx.startedAt,
+      upstreamMs: ctx.upstreamMs,
       httpStatus: extra?.httpStatus,
       failureStage: completed ? undefined : extra?.failureStage,
     });

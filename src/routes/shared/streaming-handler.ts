@@ -11,7 +11,10 @@ import { EmptyResponseError, type UsageInfo } from "../../translation/codex-even
 import { releaseAccount } from "./account-acquisition.js";
 import type { FormatAdapter, ProxyRequest, UsageHint } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
-import { recordCompactFallbackRenderOutcome } from "./compact-outcome-log.js";
+import {
+  markCompactFallbackUpstreamEnd,
+  recordCompactFallbackRenderOutcome,
+} from "./compact-outcome-log.js";
 import { streamResponse } from "./response-processor.js";
 import { createResponseMetadataCollector } from "./response-metadata-collector.js";
 import { logProxyUsage } from "./proxy-usage-log.js";
@@ -212,6 +215,9 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
             return;
           }
 
+          // 初次上游已因空响应结束；先封口，换账号与后续退避属于本地处理，
+          // 不应算进 fallback_render 的真实上游耗时。
+          markCompactFallbackUpstreamEnd(req);
           const retry = await retryNonStreamingEmptyResponse({
             accountPool,
             currentEntryId,

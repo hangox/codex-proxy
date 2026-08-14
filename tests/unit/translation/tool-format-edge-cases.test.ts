@@ -100,9 +100,9 @@ describe("anthropicToolsToCodex additional edge cases", () => {
       { name: "tool_c" },
     ]);
     expect(result).toHaveLength(3);
-    expect(result[0]).toEqual({ type: "function", name: "tool_a", description: "A" });
+    expect(result[0]).toEqual({ type: "function", name: "tool_a", description: "A", strict: false });
     expect(result[1].parameters).toEqual({ type: "object", properties: {} });
-    expect(result[2]).toEqual({ type: "function", name: "tool_c" });
+    expect(result[2]).toEqual({ type: "function", name: "tool_c", strict: false });
   });
 
   it("normalizes nested object schemas in Anthropic tools", () => {
@@ -311,7 +311,7 @@ describe("hosted web_search tool conversion", () => {
 
     expect(anthropicToolsToCodex(tools)).toEqual([
       { type: "web_search" },
-      { type: "function", name: "read_file", parameters: { type: "object", properties: {} } },
+      { type: "function", name: "read_file", strict: false, parameters: { type: "object", properties: {} } },
     ]);
   });
 
@@ -344,6 +344,7 @@ describe("hosted web_search tool conversion", () => {
         name: "WebSearch",
         description: "Project-local lookup implementation",
         parameters: { type: "object", properties: { query: { type: "string" } } },
+        strict: false,
       },
     ]);
   });
@@ -363,6 +364,7 @@ describe("hosted web_search tool conversion", () => {
         name: "web_search",
         description: "Project-local search implementation",
         parameters: { type: "object", properties: { query: { type: "string" } } },
+        strict: false,
       },
     ]);
   });
@@ -382,6 +384,7 @@ describe("hosted web_search tool conversion", () => {
         name: "Bash",
         description: "Run shell commands",
         parameters: { type: "object", properties: { command: { type: "string" } } },
+        strict: false,
       },
     ]);
   });

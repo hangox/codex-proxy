@@ -275,7 +275,6 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
   it("rejects missing tool output errors as CodexApiError(400)", async () => {
     const promise = createWebSocketResponse("wss://test/ws", {}, {
       ...BASE_REQUEST,
-      previous_response_id: "resp_prev",
     });
     promise.catch(() => { /* asserted below */ });
     const ws = await waitForOpen();
@@ -373,7 +372,7 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
       throw new Error("expected rejection");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toContain("WebSocket closed before terminal event");
+      expect((err as Error).message).toContain("WebSocket closed before any data");
       expect((err as Error).message).toContain("code=1006");
     }
   });

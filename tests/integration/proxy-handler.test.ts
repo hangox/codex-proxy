@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import type { FormatCollectTranslatorOptions, ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 import type { WsPoolContext } from "@src/proxy/codex-api.js";
@@ -333,8 +334,11 @@ describe("proxy-handler integration", () => {
     const affinityMap = getSessionAffinityMap();
     expect(affinityMap.lookup("resp_meta")).toBe("e1");
     expect(affinityMap.lookupConversationId("resp_meta")).toBe("thread-collect");
-    expect(affinityMap.lookupTurnState("resp_meta")).toBe("turn-success");
-    expect(affinityMap.lookupInstructions("resp_meta")).toBe("You are helpful");
+    // turnState 只属于当前 turn，不从跨 turn affinity 恢复。
+    expect(affinityMap.lookupTurnState("resp_meta")).toBeNull();
+    expect(affinityMap.lookupInstructionsHash("resp_meta")).toBe(
+      createHash("sha256").update("You are helpful").digest("hex"),
+    );
     expect(affinityMap.lookupInputTokens("resp_meta")).toBe(33);
     expect(affinityMap.lookupFunctionCallIds("resp_meta")).toEqual(["call_a", "call_b"]);
     expect(affinityMap.lookupLatestResponseIdByConversationId(
@@ -1124,12 +1128,10 @@ describe("proxy-handler integration", () => {
     expect(accountPool.acquire).toHaveBeenCalledTimes(1);
   });
 
-  // 17. previous_response_not_found: should strip previous_response_id and retry
-  // Reproduces the bug: when upstream returns previous_response_not_found
-  // (because the response was created on a different account or is unknown to
-  // this account), the proxy currently passes the error straight through with
-  // no recovery. Desired behavior: strip previous_response_id and replay.
-  it("recovers from previous_response_not_found by stripping ID and retrying", async () => {
+  // 17. Explicit previous_response_id continuations fail closed when upstream
+  // rejects the ID; the request may contain only a delta and cannot be replayed
+  // safely without silently losing server-side history.
+  it("fails closed for explicit previous_response_not_found", async () => {
     const notFoundBody = JSON.stringify({
       error: {
         type: "invalid_request_error",
@@ -1170,12 +1172,9 @@ describe("proxy-handler integration", () => {
     const { app } = buildTestApp({ accountPool, fmt, req });
     const res = await app.request("/test", { method: "POST" });
 
-    // Desired: proxy retries after stripping previous_response_id, returns 200
-    expect(res.status).toBe(200);
-    // Desired: 2 upstream calls — first with the stale ID, second without it
-    expect(createCount).toBe(2);
-    expect(seenPrevIds[0]).toBe("resp_0e2e6e7917486cfd0069eec8532d988194a3da6379c70abe68");
-    expect(seenPrevIds[1]).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(createCount).toBe(1);
+    expect(seenPrevIds).toEqual(["resp_0e2e6e7917486cfd0069eec8532d988194a3da6379c70abe68"]);
   });
 
   it("keeps hard-bound opaque state isolated from previous-response and implicit-resume chains", async () => {
@@ -1304,7 +1303,7 @@ describe("proxy-handler integration", () => {
       {
         input: [{ role: "user", content: "continue" }],
         previousResponseId: "resp_implicit_ws",
-        turnState: "turn-implicit",
+        turnState: "turn-original",
         useWebSocket: true,
       },
       {
@@ -1315,7 +1314,7 @@ describe("proxy-handler integration", () => {
         ],
         previousResponseId: undefined,
         turnState: "turn-original",
-        useWebSocket: false,
+        useWebSocket: true,
       },
     ]);
     expect(accountPool.acquire).toHaveBeenCalledTimes(1);
@@ -1325,7 +1324,7 @@ describe("proxy-handler integration", () => {
     });
   });
 
-  it("recovers when collectTranslator raises previous_response_not_found", async () => {
+  it("fails closed when collectTranslator raises previous_response_not_found", async () => {
     const notFoundBody = JSON.stringify({
       error: {
         type: "invalid_request_error",
@@ -1366,20 +1365,16 @@ describe("proxy-handler integration", () => {
     const { app } = buildTestApp({ accountPool, fmt, req });
 
     const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
 
-    expect(createCount).toBe(2);
-    expect(collectCount).toBe(2);
-    expect(seenPrevIds[0]).toBe("resp_collect_stale");
-    expect(seenPrevIds[1]).toBeUndefined();
+    expect(createCount).toBe(1);
+    expect(collectCount).toBe(1);
+    expect(seenPrevIds).toEqual(["resp_collect_stale"]);
     expect(accountPool.release).toHaveBeenCalledTimes(1);
-    expect(accountPool.release).toHaveBeenCalledWith("e1", {
-      input_tokens: 7,
-      output_tokens: 3,
-    });
+    expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 
-  // 17b. previous_response_not_found loop guard — only retry once
+  // 17b. Explicit previous_response_not_found remains fail-closed without replay.
   it("does not loop forever when previous_response_not_found persists after strip", async () => {
     const notFoundBody = JSON.stringify({
       error: { type: "invalid_request_error", code: "previous_response_not_found",
@@ -1405,15 +1400,13 @@ describe("proxy-handler integration", () => {
     const res = await app.request("/test", { method: "POST" });
     // After the strip+retry attempt also fails, fall through to generic error
     expect(res.status).toBe(400);
-    // Exactly 2 upstream calls — strip-retry happens once, no further retries
-    expect(createCount).toBe(2);
+    // Explicit continuations fail closed without a replay attempt.
+    expect(createCount).toBe(1);
   });
 
-  // 17c. unanswered function_call: upstream "No tool output found for function
-  // call call_X" means a stored function_call from the previous response was
-  // not answered. Recovery: strip previous_response_id, retry once on the same
-  // account (full input replay covers the missing context).
-  it("recovers from unanswered function_call by stripping ID and retrying", async () => {
+  // 17c. Explicit unanswered function_call cannot be replayed safely when the
+  // request may contain only a delta, so it fails closed without stripping the ID.
+  it("fails closed for explicit unanswered function_call", async () => {
     const unansweredBody = JSON.stringify({
       error: {
         type: "invalid_request_error",
@@ -1442,10 +1435,9 @@ describe("proxy-handler integration", () => {
     const { app } = buildTestApp({ accountPool, fmt, req });
     const res = await app.request("/test", { method: "POST" });
 
-    expect(res.status).toBe(200);
-    expect(createCount).toBe(2);
-    expect(seenPrevIds[0]).toBe("resp_unanswered_chain");
-    expect(seenPrevIds[1]).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(createCount).toBe(1);
+    expect(seenPrevIds).toEqual(["resp_unanswered_chain"]);
   });
 
   // 18. 403 ban with mixed pool states → descriptive error

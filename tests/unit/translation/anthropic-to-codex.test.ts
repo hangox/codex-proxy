@@ -31,6 +31,8 @@ const REASONING_EFFORT_RANK: Record<string, number> = {
 };
 vi.mock("@src/translation/shared-utils.js", () => ({
   buildInstructions: vi.fn((text: string) => text),
+  isRecord: (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value),
   budgetToEffort: vi.fn((budget: number | undefined) => {
     if (!budget || budget <= 0) return undefined;
     if (budget < 2000) return "low";

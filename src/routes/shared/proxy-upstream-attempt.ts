@@ -4,6 +4,10 @@ import type { ParsedRateLimit } from "../../proxy/rate-limit-headers.js";
 import { withRetry } from "../../utils/retry.js";
 import { dumpProxyRequest } from "./proxy-debug-dump.js";
 import { recordProxyEgressLog } from "./proxy-egress-log.js";
+import {
+  markCompactFallbackUpstreamEnd,
+  markCompactFallbackUpstreamStart,
+} from "./compact-outcome-log.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import {
   applyParsedRateLimits,
@@ -82,7 +86,17 @@ export async function sendProxyUpstreamAttempt(
     });
   }
   const rawResponse = await withRetry(
-    () => api.createResponse(request.codexRequest, abortSignal, applyRateLimits, buildPoolCtx()),
+    async () => {
+      // 只计真正发起普通生成上游请求的区间；withRetry 的本地退避不属于
+      // fallback_render 的实际压缩耗时，失败尝试在这里先封口。
+      markCompactFallbackUpstreamStart(request);
+      try {
+        return await api.createResponse(request.codexRequest, abortSignal, applyRateLimits, buildPoolCtx());
+      } catch (error) {
+        markCompactFallbackUpstreamEnd(request);
+        throw error;
+      }
+    },
     { tag, ...retryOptions },
   );
   recordProxyEgressLog({

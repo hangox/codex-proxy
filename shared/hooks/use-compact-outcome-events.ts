@@ -167,11 +167,10 @@ export interface CompactOutcomeEvent {
   duration_ms?: number;
   /**
    * ★ #88：这次尝试里确定花在联系上游的那一段耗时（毫秒），是
-   * `duration_ms` 的子集。只有真的发起过上游 compact 调用才有值——
-   * `success` 的幂等回放分支、`budget_exceeded`、大多数 `denied` 都没有
-   * 这个概念，缺省不代表异常。`fallback_render` 记录同样没有这个字段
-   * （`recordCompactFallbackRenderOutcome` 不区分"联系上游"这一段耗时，
-   * 只记总耗时）。
+   * `duration_ms` 的子集。opaque compact 与 `fallback_render` 的普通生成
+   * 调用都可携带这个字段；降级行从发起普通生成上游请求开始计，到流式结果
+   * 结束或同步拒绝为止。幂等回放、`budget_exceeded`、没有真正发起上游请求
+   * 的 pre-stream 失败缺省该字段，不代表异常。
    */
   upstream_ms?: number;
   /**

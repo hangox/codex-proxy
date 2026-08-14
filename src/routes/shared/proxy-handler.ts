@@ -41,7 +41,10 @@ import {
   respondWithProxyError,
 } from "./proxy-error-response.js";
 import { applyProxyErrorRetryTransition } from "./proxy-error-retry-transition.js";
-import { recordCompactFallbackRenderOutcome } from "./compact-outcome-log.js";
+import {
+  markCompactFallbackUpstreamEnd,
+  recordCompactFallbackRenderOutcome,
+} from "./compact-outcome-log.js";
 import { createImplicitResumeLifecycle } from "./proxy-implicit-resume-lifecycle.js";
 import { captureImplicitResumeRequestState } from "./proxy-implicit-resume-request.js";
 import {
@@ -370,6 +373,9 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
         chainAdvanceTicket,
       });
     } catch (err) {
+      // sendProxyUpstreamAttempt 之外的异常（例如 egress/rate-limit 记录失败）
+      // 也要封口，避免把后续本地错误处理时间算进真实上游耗时。
+      markCompactFallbackUpstreamEnd(req);
       invalidateRejectedPreviousResponse({
         err,
         previousResponseId: req.codexRequest.previous_response_id,

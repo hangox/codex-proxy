@@ -207,8 +207,20 @@ describe("CompactDetailPage — 列表", () => {
       makeEventsState({ events: [makeEvent({ duration_ms: 1234, upstream_ms: 980 })] }),
     );
     renderPage();
-    // 列表列只显示总耗时的秒/毫秒格式化值，不含"（upstream ...）"括注。
+    // 普通 opaque 行继续显示总耗时，不含上游括注。
     expect(screen.getByText("1.2s")).toBeTruthy();
+  });
+
+  it("降级压缩行优先显示真正上游耗时，不显示包含本地收尾的总耗时", () => {
+    mockStats.useCompactOutcomeStats.mockReturnValue(makeStatsState());
+    mockEvents.useCompactOutcomeEvents.mockReturnValue(
+      makeEventsState({
+        events: [makeEvent({ compact_path: "fallback_render", outcome: "render_completed", duration_ms: 5300, upstream_ms: 1300 })],
+      }),
+    );
+    renderPage();
+    expect(screen.getByText("1.3s")).toBeTruthy();
+    expect(screen.queryByText("5.3s")).toBeNull();
   });
 
   it("★ #88：duration_ms 缺省（旧版本落盘的历史行）时列表显示 '—'，不是 '0ms'", () => {

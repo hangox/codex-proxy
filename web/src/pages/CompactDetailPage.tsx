@@ -250,6 +250,12 @@ function formatDurationMs(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
+/** 列表显示值：降级压缩行优先显示真正普通生成上游耗时，旧行回退总耗时。 */
+function listDurationMs(e: CompactOutcomeEvent): number | undefined {
+  if (e.compact_path === "fallback_render") return e.upstream_ms ?? e.duration_ms;
+  return e.duration_ms;
+}
+
 /**
  * 列表/详情共用的耗时摘要——`upstream_ms` 存在时括注上游耗时，方便一眼看出
  * "慢在上游还是慢在我们自己"（restore/preservedTail 合并/预算裁剪/save），
@@ -635,6 +641,7 @@ export function CompactDetailPage() {
                       </div>
                       <div class="max-h-[480px] overflow-y-auto">
                         {eventsState.events.map((e) => {
+                          const durationMs = listDurationMs(e);
                           // ★ task #109：`rid` 不再唯一（同一次请求的 opaque/
                           // render 两条记录共享同一个 rid），选中态判断和
                           // `selectEvent` 调用都必须带上 `ts` 才能精确定位到
@@ -656,10 +663,12 @@ export function CompactDetailPage() {
                                 <PathBadge path={e.compact_path} t={t} />
                               </div>
                               <div class="col-span-2 truncate font-mono text-slate-600 dark:text-text-dim">{e.model}</div>
-                              {/* 列表这一列只显示总耗时（简洁，跟其它列一样是单值截断展示）；
-                                  总耗时 vs 上游耗时的对比放在详情面板那一行，那里有更宽的空间。 */}
+                              {/* 普通路径继续显示总耗时；降级压缩行优先显示真正打
+                                  普通生成上游的耗时，避免把降级决定后的本地收尾时间误当成
+                                  压缩本身耗时。旧版本 fallback_render 没有 upstream_ms 时
+                                  回退到 duration_ms，历史记录仍可读。 */}
                               <div class="col-span-2 truncate font-mono text-slate-600 dark:text-text-dim">
-                                {e.duration_ms !== undefined ? formatDurationMs(e.duration_ms) : "—"}
+                                {durationMs !== undefined ? formatDurationMs(durationMs) : "—"}
                               </div>
                               <div class="col-span-4 truncate text-slate-600 dark:text-text-dim">{keyInfoLine(e, t)}</div>
                             </button>

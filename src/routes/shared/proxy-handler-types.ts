@@ -53,8 +53,18 @@ export interface ProxyRequest {
    * 忽略，但如果 opaque 是被上游拖到超时才失败（数十秒量级），render 的
    * 耗时会严重失真，而这正是最需要看清"降级之后到底花了多久"的场景
    * （用户会把 opaque 那条和 render 那条并排对比，两条不能重叠计时）。
+   *
+   * `upstreamStartedAt`/`upstreamMs` 只覆盖降级后普通生成端点的真实尝试：
+   * 从发起上游请求开始，到流式结果结束或上游同步拒绝为止。账号获取、
+   * 节流、预算预判等本地耗时不计入；没有真正发起上游请求的 pre-stream
+   * 失败不写 `upstream_ms`。
    */
-  compactFallbackRender?: { requestId: string; startedAt: number };
+  compactFallbackRender?: {
+    requestId: string;
+    startedAt: number;
+    upstreamStartedAt?: number;
+    upstreamMs?: number;
+  };
 }
 
 export interface UsageHint {

@@ -613,4 +613,31 @@ describe("iterateCodexEvents — unregistered item_id fallback", () => {
 
     expect(preflight.buffered.at(-1)?.textDelta).toBe("contentful");
   });
+
+  it("lets preflight pass when the only content is an image_generation_call", async () => {
+    const sse =
+      sseChunk("response.created", { response: { id: "resp_preflight_img" } }) +
+      sseChunk("response.output_item.done", {
+        outputIndex: 0,
+        item: {
+          type: "image_generation_call",
+          id: "item_img_1",
+          result: "fake_b64",
+          revised_prompt: "a circle",
+        },
+      }) +
+      sseChunk("response.completed", { response: { id: "resp_preflight_img" } });
+
+    const api = new CodexApi("test-token", null);
+    const response = mockResponse(sse);
+
+    const preflight = await preflightContentfulStream(iterateCodexEvents(api, response));
+    const imgEvt = preflight.buffered.find((evt) => evt.imageGenerationDone);
+
+    expect(imgEvt?.imageGenerationDone).toEqual({
+      id: "item_img_1",
+      result: "fake_b64",
+      revised_prompt: "a circle",
+    });
+  });
 });

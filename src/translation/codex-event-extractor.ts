@@ -122,6 +122,9 @@ export function isContentfulEvent(
   if (evt.functionCallStart) return true;
   if (evt.functionCallDelta) return true;
   if (evt.functionCallDone) return true;
+  // image_generation_call 没有 textDelta，但对流式客户端就是一次有效产出。
+  // 漏掉这一支，preflight 会在 response.completed 把它当成空响应丢掉。
+  if (evt.imageGenerationDone) return true;
   if (options.includeReasoning && evt.reasoningDelta && evt.reasoningDelta.length > 0) return true;
   return false;
 }

@@ -172,6 +172,7 @@ describe("Responses passthrough metadata", () => {
 
     expect(chunks.join("")).toContain("response.output_item.done");
     expect(metadata).toContainEqual({ functionCallIds: ["call_issue_571"] });
+    expect(metadata.filter((item) => item.functionCallIds?.includes("call_issue_571"))).toHaveLength(1);
   });
 
   it("streams function_call metadata when completed output is empty", async () => {
@@ -192,6 +193,7 @@ describe("Responses passthrough metadata", () => {
 
     expect(chunks.join("")).toContain("response.output_item.done");
     expect(metadata).toContainEqual({ functionCallIds: ["call_issue_571"] });
+    expect(metadata.filter((item) => item.functionCallIds?.includes("call_issue_571"))).toHaveLength(1);
   });
 
   it("collects function_call call_id metadata through the Responses format adapter", async () => {
@@ -207,6 +209,7 @@ describe("Responses passthrough metadata", () => {
 
     expect(result.responseId).toBe("resp_issue_571");
     expect(metadata).toContainEqual({ functionCallIds: ["call_issue_571"] });
+    expect(metadata.filter((item) => item.functionCallIds?.includes("call_issue_571"))).toHaveLength(1);
   });
 
   it("streams sanitized reasoning replay artifacts through metadata", async () => {

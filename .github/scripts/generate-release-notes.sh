@@ -7,31 +7,21 @@ if [ -z "$TAG" ]; then
   exit 2
 fi
 
-release_notes_filter='^(chore|docs|ci)(\(.*\))?:'
+# Mirrors SKIP_RELEASE_PATTERN in bump-electron(-beta).yml so the notes never
+# list commits that wouldn't have triggered a release on their own.
+release_notes_filter='^(chore|docs|ci|test|refactor|style)(\(.*\))?:'
 promotion_filter='^(fix: promote dev release fixes to master|chore: promote dev to master)'
 
 find_previous_tag() {
   if [[ "$TAG" == *-* ]]; then
-    git tag --sort=-v:refname \
-      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-' \
-      | grep -v "^${TAG}$" \
-      | head -1 \
-      || true
+    git describe --tags --abbrev=0 --match "v[0-9]*.[0-9]*.[0-9]*-*" "${TAG}^" 2>/dev/null || true
   else
-    git tag --sort=-v:refname \
-      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-      | grep -v "^${TAG}$" \
-      | head -1 \
-      || true
+    git describe --tags --abbrev=0 --exclude "*-*" --match "v[0-9]*.[0-9]*.[0-9]*" "${TAG}^" 2>/dev/null || true
   fi
 }
 
 find_stable_fallback_tag() {
-  git tag --sort=-v:refname \
-    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-    | grep -v "^${TAG}$" \
-    | head -1 \
-    || true
+  git describe --tags --abbrev=0 --exclude "*-*" --match "v[0-9]*.[0-9]*.[0-9]*" "${TAG}^" 2>/dev/null || true
 }
 
 PREV_TAG="$(find_previous_tag)"
@@ -78,4 +68,13 @@ if [ -z "$BODY" ]; then
   BODY="Bug fixes and improvements"
 fi
 
-printf '%s\n' "$BODY"
+# Notes must never block a release: if node itself dies (missing binary,
+# OOM, import-time error), fall back to the raw commit list instead of
+# letting pipefail propagate a non-zero exit into release.yml.
+if NOTES="$(printf '%s\n' "$BODY" | node "$(dirname "$0")/summarize-release-notes.mjs" "$TAG")"; then
+  printf '%s\n' "$NOTES"
+else
+  echo "warning: summarize-release-notes.mjs failed, emitting raw commit list" >&2
+  printf '%s\n' "$BODY"
+fi
+

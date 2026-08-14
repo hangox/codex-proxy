@@ -12,6 +12,8 @@ export interface BuildWsPoolContextOptions {
   variantHash: string;
   requestId: string;
   tag: string;
+  /** Distinguishes a continuity-recovery WS from a busy canonical chain. */
+  poolKeySuffix?: string;
 }
 
 export interface BuildWsPoolContextDeps {
@@ -23,6 +25,11 @@ const defaultDeps: BuildWsPoolContextDeps = {
   getWsPool,
   log: (line) => console.log(line),
 };
+
+/** Remove a response-to-physical-WS owner through the pool boundary. */
+export function forgetWsResponseOwner(responseId: string): void {
+  getWsPool().forgetResponseOwner(responseId);
+}
 
 /** Build a per-request WS pool context only when the WS path has a stable chain id. */
 export function buildWsPoolContext(
@@ -36,7 +43,14 @@ export function buildWsPoolContext(
   const entryId = options.entryId;
   return {
     pool: (deps.getWsPool ?? defaultDeps.getWsPool)(),
-    poolKey: `${entryId}:${options.conversationId}:${options.variantHash}`,
+    // Full-input chains are isolated by variant. Explicit continuations do
+    // not use this key; response-owner lookup selects their physical WS.
+    poolKey: [
+      entryId,
+      options.conversationId,
+      options.variantHash,
+      options.poolKeySuffix,
+    ].filter((part): part is string => Boolean(part)).join(":"),
     entryId,
     onDecision: (decision) => {
       const ridShort = options.requestId.slice(0, 8);

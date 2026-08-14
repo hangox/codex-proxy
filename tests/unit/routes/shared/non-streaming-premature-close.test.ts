@@ -1,5 +1,5 @@
 import type { AccountPool } from "@src/auth/account-pool.js";
-import { handleNonStreamingPrematureClose } from "@src/routes/shared/non-streaming-premature-close.js";
+import { handleNonStreamingPrematureClose } from "@src/routes/shared/non-streaming-helpers.js";
 import type { ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 import { UpstreamPrematureCloseError } from "@src/translation/codex-event-extractor.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";

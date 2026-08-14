@@ -90,6 +90,43 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     }
   });
 
+  it("preserves custom native wires when routing api-key pool models", () => {
+    pool.add({
+      provider: "custom",
+      model: "claude-custom",
+      apiKey: "custom-ant",
+      baseUrl: "https://anthropic.example.com/v1",
+      wire: "anthropic",
+    });
+    pool.add({
+      provider: "custom",
+      model: "gemini-custom",
+      apiKey: "custom-gem",
+      baseUrl: "https://gemini.example.com/v1beta",
+      wire: "gemini",
+    });
+
+    const adapters = new Map<string, UpstreamAdapter>();
+    adapters.set("codex", mockAdapter("codex"));
+
+    const router = new UpstreamRouter(adapters, {}, "codex");
+    router.setApiKeyPool(pool, mockFactory);
+
+    const anthropicMatch = router.resolveMatch("claude-custom");
+    const geminiMatch = router.resolveMatch("gemini-custom");
+
+    expect(anthropicMatch.kind).toBe("api-key");
+    if (anthropicMatch.kind === "api-key") {
+      expect(anthropicMatch.entry.wire).toBe("anthropic");
+      expect(anthropicMatch.adapter.tag).toBe("dynamic-custom-claude-custom");
+    }
+    expect(geminiMatch.kind).toBe("api-key");
+    if (geminiMatch.kind === "api-key") {
+      expect(geminiMatch.entry.wire).toBe("gemini");
+      expect(geminiMatch.adapter.tag).toBe("dynamic-custom-gemini-custom");
+    }
+  });
+
   it("classifies known codex models explicitly", () => {
     const adapters = new Map<string, UpstreamAdapter>();
     adapters.set("codex", mockAdapter("codex"));

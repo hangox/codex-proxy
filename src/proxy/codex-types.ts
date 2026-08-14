@@ -137,6 +137,33 @@ export type CodexContentPart =
   | { type: "output_text"; text: string }
   | { type: "input_image"; image_url: string };
 
+export type CodexReasoningStatus = "in_progress" | "completed" | "incomplete";
+
+export interface CodexReasoningSummaryPart {
+  type: "summary_text";
+  text: string;
+}
+
+export interface CodexReasoningTextPart {
+  type: "reasoning_text";
+  text: string;
+}
+
+export interface CodexReasoningItem {
+  type: "reasoning";
+  id: string;
+  status?: CodexReasoningStatus;
+  encrypted_content?: string;
+  summary: CodexReasoningSummaryPart[];
+  content?: CodexReasoningTextPart[];
+}
+
+export interface CodexCompactionItem {
+  type: "compaction";
+  id?: string;
+  encrypted_content: string;
+}
+
 export type CodexInputItem =
   | { role: "user"; content: string | CodexContentPart[] }
   | { role: "assistant"; content: string | CodexContentPart[] }
@@ -145,6 +172,8 @@ export type CodexInputItem =
   | { role: "system" | "developer"; content: string | CodexContentPart[] }
   | { type: "function_call"; id?: string; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string }
+  | { type: "custom_tool_call"; id?: string; call_id: string; name: string; input: string; status?: string }
+  | { type: "custom_tool_call_output"; call_id: string; output: string }
   /** Remote compaction v2 request sentinel, sent as the final /responses input item. */
   | { type: "compaction_trigger" }
   /** Opaque remote compaction result, valid as input on the next turn. */
@@ -153,7 +182,9 @@ export type CodexInputItem =
       id?: string;
       encrypted_content: string;
       internal_chat_message_metadata_passthrough?: unknown;
-    };
+    }
+  | CodexReasoningItem
+  | CodexCompactionItem;
 
 /** Parsed SSE event from the Codex Responses stream */
 export interface CodexSSEEvent {
@@ -219,6 +250,11 @@ export interface CodexUsageResponse {
   promo?: unknown;
 }
 
+export type CodexApiErrorOptions = {
+  retryable?: boolean;
+  headers?: Headers;
+};
+
 export class CodexApiError extends Error {
   /**
    * 「重试也不会有不同结果」的显式标记，默认 `undefined`（= 沿用
@@ -235,11 +271,12 @@ export class CodexApiError extends Error {
    * 失败时只需在抛出处带上这个标记，重试逻辑本身不用动。
    */
   readonly retryable?: boolean;
+  public readonly headers: Headers | undefined;
 
   constructor(
     public readonly status: number,
     public readonly body: string,
-    options?: { retryable?: boolean },
+    optionsOrHeaders?: CodexApiErrorOptions | Headers,
   ) {
     let detail: string;
     try {
@@ -255,20 +292,43 @@ export class CodexApiError extends Error {
       detail = body;
     }
     super(`Codex API error (${status}): ${detail}`);
-    this.retryable = options?.retryable;
+    if (optionsOrHeaders instanceof Headers) {
+      this.headers = new Headers(optionsOrHeaders);
+    } else {
+      this.retryable = optionsOrHeaders?.retryable;
+      this.headers = optionsOrHeaders?.headers ? new Headers(optionsOrHeaders.headers) : undefined;
+    }
   }
 }
 
 export type WebSocketFailurePhase = "pre-connect" | "mid-stream" | "unknown";
 
+export type PreviousResponseContinuityReason =
+  | "busy"
+  | "dead"
+  | "expired"
+  | "missing_owner"
+  | "account_mismatch"
+  | "disabled"
+  | "no_key"
+  | "no_context"
+  | "transport";
+
+export type PreviousResponseWebSocketErrorOptions = {
+  phase?: WebSocketFailurePhase;
+  recoverable?: boolean;
+  continuityReason?: PreviousResponseContinuityReason;
+};
+
 /** previous_response_id 只能通过 WebSocket 安全续链，失败后不能降级为 HTTP delta-only。 */
 export class PreviousResponseWebSocketError extends CodexApiError {
   public readonly phase: WebSocketFailurePhase;
   public readonly recoverable: boolean;
+  public readonly continuityReason?: PreviousResponseContinuityReason;
 
   constructor(
     public readonly causeMessage: string,
-    opts: { phase?: WebSocketFailurePhase; recoverable?: boolean } = {},
+    opts: PreviousResponseWebSocketErrorOptions | PreviousResponseContinuityReason = {},
   ) {
     super(
       0,
@@ -281,7 +341,14 @@ export class PreviousResponseWebSocketError extends CodexApiError {
       }),
     );
     this.name = "PreviousResponseWebSocketError";
-    this.phase = opts.phase ?? "unknown";
-    this.recoverable = opts.recoverable ?? false;
+    if (typeof opts === "string") {
+      this.phase = "unknown";
+      this.recoverable = false;
+      this.continuityReason = opts;
+    } else {
+      this.phase = opts.phase ?? "unknown";
+      this.recoverable = opts.recoverable ?? false;
+      this.continuityReason = opts.continuityReason;
+    }
   }
 }

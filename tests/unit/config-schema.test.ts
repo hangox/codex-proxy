@@ -36,12 +36,13 @@ describe("ConfigSchema", () => {
     expect(result.auth.refresh_concurrency).toBe(2);
     expect(result.auth.max_concurrent_per_account).toBe(3);
     expect(result.auth.request_interval_ms).toBe(50);
-    expect(result.model.default).toBe("gpt-5.4");
+    expect(result.model.default).toBe("gpt-5.6-sol");
     expect(result.model.default_reasoning_effort).toBeNull();
     expect(result.model.aliases).toEqual({});
     expect(result.model.custom_models).toEqual([]);
     expect(result.model.allow_client_system_prompt_strategy).toBe(false);
     expect(result.tls.force_http11).toBe(false);
+    expect(result.tls.health_check_url).toBe("https://api.ipify.org?format=json");
     expect(result.usage_stats.snapshot_interval_minutes).toBe(5);
     expect(result.usage_stats.history_retention_days).toBeNull();
     expect(result.usage_stats.credits_per_usd).toBe(25);
@@ -109,7 +110,12 @@ describe("ConfigSchema", () => {
       auth: { rotation_strategy: "round_robin", max_concurrent_per_account: null },
       server: { port: 3000, proxy_api_key: "sk-test" },
       session: { ttl_minutes: 120 },
-      tls: { force_http11: true },
+      tls: { force_http11: true, health_check_url: "https://my-health.org" },
+      providers: {
+        openai: { api_key: "sk-openai-key" },
+        anthropic: { api_key: "sk-anthropic-key", base_url: "https://my-anthropic.com/v1" },
+        gemini: { api_key: "sk-gemini-key", base_url: "https://my-gemini.com" },
+      },
       quota: { skip_exhausted: false },
       update: { auto_update: false, show_update_dialog: true, allow_prerelease: true },
       ollama: {
@@ -157,6 +163,9 @@ describe("ConfigSchema", () => {
     expect(result.server.port).toBe(3000);
     expect(result.server.proxy_api_key).toBe("sk-test");
     expect(result.tls.force_http11).toBe(true);
+    expect(result.tls.health_check_url).toBe("https://my-health.org");
+    expect(result.providers?.anthropic?.base_url).toBe("https://my-anthropic.com/v1");
+    expect(result.providers?.gemini?.base_url).toBe("https://my-gemini.com");
     expect(result.quota.skip_exhausted).toBe(false);
     expect(result.update.auto_update).toBe(false);
     expect(result.update.show_update_dialog).toBe(true);

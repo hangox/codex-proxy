@@ -56,7 +56,7 @@ function buildApp(accountCount: number): TestContext {
   }
   const app = new Hono();
   app.use("*", requestId);
-  app.use("*", errorHandler);
+  app.onError(errorHandler);
   app.route("/", createChatRoutes(accountPool, cookieJar, proxyPool));
   app.route("/", createModelRoutes());
   app.route("/", createWebRoutes(accountPool));

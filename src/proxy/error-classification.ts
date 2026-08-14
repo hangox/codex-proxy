@@ -11,12 +11,22 @@ interface CodexLikeError {
   status: number;
   body: string;
   message: string;
+  headers?: unknown;
 }
 
 function isCodexLike(err: unknown): err is CodexLikeError {
   if (!(err instanceof Error)) return false;
   const rec = err as unknown as Record<string, unknown>;
   return typeof rec.status === "number" && typeof rec.body === "string";
+}
+
+function headersToLowerHaystack(headers: unknown): string {
+  if (!(headers instanceof Headers)) return "";
+  const parts: string[] = [];
+  headers.forEach((value, key) => {
+    parts.push(key, value);
+  });
+  return parts.join(" ").toLowerCase();
 }
 
 /** Extract the rate-limit reset duration from a 429 error body, if available. */
@@ -42,12 +52,28 @@ export function isQuotaExhaustedError(err: unknown): boolean {
   return err.status === 402;
 }
 
+/** Check if a 403 body is a Cloudflare challenge rather than an account ban. */
+export function isCfChallengeError(err: unknown): boolean {
+  if (!isCodexLike(err)) return false;
+  if (err.status !== 403) return false;
+  const haystack = `${err.body.toLowerCase()} ${headersToLowerHaystack(err.headers)}`;
+  return (
+    haystack.includes("cf-mitigated") ||
+    haystack.includes("cf-chl-bypass") ||
+    haystack.includes("_cf_chl") ||
+    haystack.includes("cf_chl") ||
+    haystack.includes("attention required") ||
+    haystack.includes("just a moment")
+  );
+}
+
 /** Check if an error indicates the account is banned/suspended (non-CF 403). */
 export function isBanError(err: unknown): boolean {
   if (!isCodexLike(err)) return false;
   if (err.status !== 403) return false;
+  if (isCfChallengeError(err)) return false;
   const body = err.body.toLowerCase();
-  if (body.includes("cf_chl") || body.includes("<!doctype") || body.includes("<html")) return false;
+  if (body.includes("<!doctype") || body.includes("<html")) return false;
   return true;
 }
 

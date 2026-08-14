@@ -20,10 +20,8 @@ import type { CodexResponsesRequest, CodexSSEEvent } from "./codex-types.js";
 import { CodexApiError } from "./codex-types.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToAnthropicRequest } from "../translation/codex-request-to-anthropic.js";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+import { withFetchDispatcher } from "./fetch-dispatcher.js";
+import { isRecord } from "../translation/shared-utils.js";
 
 function extractModelId(model: string): string {
   const colon = model.indexOf(":");
@@ -33,9 +31,11 @@ function extractModelId(model: string): string {
 export class AnthropicUpstream implements UpstreamAdapter {
   readonly tag = "anthropic" as const;
   private apiKey: string;
+  readonly baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl = "https://api.anthropic.com/v1") {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   async createResponse(
@@ -45,7 +45,7 @@ export class AnthropicUpstream implements UpstreamAdapter {
     const modelId = extractModelId(req.model);
     const body = translateCodexToAnthropicRequest(req, modelId);
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch(`${this.baseUrl}/messages`, withFetchDispatcher({
       method: "POST",
       headers: {
         "x-api-key": this.apiKey,
@@ -55,11 +55,11 @@ export class AnthropicUpstream implements UpstreamAdapter {
       },
       body: JSON.stringify(body),
       signal,
-    });
+    }));
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-      throw new CodexApiError(response.status, errorText);
+      throw new CodexApiError(response.status, errorText, response.headers);
     }
 
     return response;

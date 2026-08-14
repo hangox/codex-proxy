@@ -9,7 +9,7 @@ const EGRESS_LOG_MODULE = "src/routes/shared/proxy-egress-log.ts";
 const UPSTREAM_ATTEMPT_MODULE = "src/routes/shared/proxy-upstream-attempt.ts";
 const PROXY_HANDLER_MODULE = "src/routes/shared/proxy-handler.ts";
 const NON_STREAMING_HANDLER_MODULE = "src/routes/shared/non-streaming-handler.ts";
-const NON_STREAMING_EMPTY_RESPONSE_RETRY_MODULE = "src/routes/shared/non-streaming-empty-response-retry.ts";
+const NON_STREAMING_EMPTY_RESPONSE_RETRY_MODULE = "src/routes/shared/non-streaming-helpers.ts";
 
 function source(path: string): string {
   return readFileSync(resolve(ROOT, path), "utf-8");
@@ -73,7 +73,7 @@ describe("proxy egress log boundary", () => {
 
     expect(importsNamedBinding(
       nonStreamingHandler,
-      "non-streaming-empty-response-retry.js",
+      "non-streaming-helpers.js",
       "retryNonStreamingEmptyResponse",
       NON_STREAMING_HANDLER_MODULE,
     )).toBe(true);

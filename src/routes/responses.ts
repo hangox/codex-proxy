@@ -13,6 +13,7 @@ import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { CodexApi, CodexApiError } from "../proxy/codex-api.js";
 import type { CodexResponsesRequest, CodexCompactRequest, CodexInputItem, CodexSSEEvent } from "../proxy/codex-api.js";
+import { sanitizeCodexInputItems } from "../proxy/reasoning-input-sanitizer.js";
 import { enqueueLogEntry } from "../logs/entry.js";
 import { recordStreamCloseEvent } from "../logs/stream-close-event.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
@@ -20,7 +21,7 @@ import { getRealClientIp } from "../utils/get-real-client-ip.js";
 import { randomUUID } from "crypto";
 import type { UpstreamAdapter } from "../proxy/upstream-adapter.js";
 import { getConfig } from "../config.js";
-import { prepareSchema } from "../translation/shared-utils.js";
+import { prepareSchema, isRecord } from "../translation/shared-utils.js";
 import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { parseModelName, resolveModelId, getModelInfo, buildDisplayModelName } from "../models/model-store.js";
 import { EmptyResponseError, type UsageInfo, type ExtractedEvent } from "../translation/codex-event-extractor.js";
@@ -48,6 +49,8 @@ import {
   OPENAI_SUBAGENT_HEADER,
   sanitizeClientMetadata,
 } from "../proxy/openai-subagent.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const X_CODEX_TURN_STATE_HEADER = "x-codex-turn-state";
 const X_CODEX_TURN_METADATA_HEADER = "x-codex-turn-metadata";
@@ -56,11 +59,7 @@ const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER = "x-responsesapi-include-tim
 const X_CODEX_PARENT_THREAD_ID_HEADER = "x-codex-parent-thread-id";
 const X_CODEX_WINDOW_ID_HEADER = "x-codex-window-id";
 
-// ── Helpers ────────────────────────────────────────────────────────
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+// ── Helpers ───────────────────────────────────────────────────────
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -591,23 +590,6 @@ function checkAuth(
       },
     });
   }
-
-  const config = getConfig();
-  if (config.server.proxy_api_key) {
-    const authHeader = c.req.header("Authorization");
-    const providedKey = authHeader?.replace("Bearer ", "");
-    if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-      c.status(401);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_api_key",
-          message: "Invalid proxy API key",
-        },
-      });
-    }
-  }
   return null;
 }
 
@@ -677,7 +659,7 @@ async function handleCompact(
   // Build CodexCompactRequest — matches codex-rs CompactionInput
   const compactRequest: CodexCompactRequest = {
     model: modelId,
-    input: Array.isArray(body.input) ? (body.input as CodexInputItem[]) : [],
+    input: Array.isArray(body.input) ? sanitizeCodexInputItems(body.input) : [],
     instructions: typeof body.instructions === "string" ? body.instructions : "",
   };
   if (Array.isArray(body.tools) && body.tools.length > 0) {
@@ -840,24 +822,12 @@ export function createResponsesRoutes(
   upstreamRouter?: UpstreamRouter,
 ): Hono {
   const app = new Hono();
-
-  // ── POST /v1/responses — streaming SSE passthrough ──
+  // Register errorHandler locally so that when testing this router in isolation (e.g. unit tests),
+  // uncaught errors are still handled and formatted appropriately.
+  app.onError(errorHandler);
 
   const responsesHandler = async (c: Context) => {
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_json",
-          message: "Malformed JSON request body",
-        },
-      });
-    }
+    const rawBody = await c.req.json();
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
@@ -872,12 +842,11 @@ export function createResponsesRoutes(
     const parsed = parseModelName(rawModel);
     const modelId = resolveModelId(parsed.modelId);
     const displayModel = buildDisplayModelName(parsed);
-    const modelInfo = getModelInfo(modelId);
 
     const codexRequest: CodexResponsesRequest = {
       model: modelId,
       instructions: typeof body.instructions === "string" ? body.instructions : "",
-      input: Array.isArray(body.input) ? (body.input as CodexInputItem[]) : [],
+      input: Array.isArray(body.input) ? sanitizeCodexInputItems(body.input) : [],
       stream: true,
       store: false,
     };
@@ -964,9 +933,6 @@ export function createResponsesRoutes(
       codexRequest.parallel_tool_calls = body.parallel_tool_calls;
     }
 
-    // Detect image_generation tool at request time so we can classify the
-    // outcome on release (success / failed / silently stripped) regardless
-    // of whether the response actually arrived.
     const expectsImageGen = Array.isArray(body.tools)
       && body.tools.some((t): t is Record<string, unknown> => isRecord(t) && t.type === "image_generation");
 
@@ -1029,23 +995,8 @@ export function createResponsesRoutes(
     return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
   };
 
-  // ── POST /v1/responses/compact — non-streaming JSON proxy ──
-
   const compactHandler = async (c: Context) => {
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          code: "invalid_json",
-          message: "Malformed JSON request body",
-        },
-      });
-    }
+    const rawBody = await c.req.json();
 
     const body = parseBody(c, rawBody);
     if (body instanceof Response) return body;
@@ -1073,11 +1024,11 @@ export function createResponsesRoutes(
     return handleCompact(c, accountPool, cookieJar, proxyPool, body, upstreamRouter);
   };
 
-  app.post("/v1/responses", responsesHandler);
-  app.post("/v1/responses/review", responsesHandler);
-  app.post("/responses", responsesHandler);
-  app.post("/responses/review", responsesHandler);
-  app.post("/v1/responses/compact", compactHandler);
+  app.post("/v1/responses", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/v1/responses/review", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/responses", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/responses/review", apiKeyAuth(accountPool), responsesHandler);
+  app.post("/v1/responses/compact", apiKeyAuth(accountPool), compactHandler);
 
   return app;
 }

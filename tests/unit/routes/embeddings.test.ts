@@ -155,6 +155,29 @@ describe("embeddings routes", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects custom native-wire keys for OpenAI-compatible embeddings", async () => {
+    pool.add({
+      provider: "custom",
+      model: "custom-embed",
+      apiKey: "custom-gem",
+      baseUrl: "https://gemini.example.com/v1beta",
+      capabilities: ["embeddings"],
+      wire: "gemini",
+    });
+
+    const app = createEmbeddingsRoutes(createAccountPool(), pool);
+    const res = await app.request("/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "custom-embed", input: "hello" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("unsupported_provider");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed embedding requests", async () => {
     const app = createEmbeddingsRoutes(createAccountPool(), pool);
     const res = await app.request("/v1/embeddings", {

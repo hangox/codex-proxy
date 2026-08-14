@@ -53,7 +53,7 @@ describe("model cache writes to data/, not config/", () => {
 
     expect(writeFile).toHaveBeenCalledOnce();
     const writePath = vi.mocked(writeFile).mock.calls[0][0] as string;
-    expect(writePath).toContain("/fake/data/models-cache.yaml");
+    expect(writePath.replaceAll("\\", "/")).toContain("/fake/data/models-cache.yaml");
   });
 
   it("syncStaticModels never writes to config/models.yaml", () => {

@@ -128,6 +128,8 @@ export interface CodexOutputItemDoneEvent {
     arguments?: string;
     content?: unknown[];
     actions?: unknown[];
+    result?: string;
+    revised_prompt?: string;
     [key: string]: unknown;
   };
 }
@@ -524,6 +526,8 @@ export function parseCodexEvent(evt: CodexSSEEvent): TypedCodexEvent {
             ...(typeof data.item.arguments === "string" ? { arguments: data.item.arguments } : {}),
             ...(Array.isArray(data.item.content) ? { content: data.item.content } : {}),
             ...(Array.isArray(data.item.actions) ? { actions: data.item.actions } : {}),
+            ...(typeof data.item.result === "string" ? { result: data.item.result } : {}),
+            ...(typeof data.item.revised_prompt === "string" ? { revised_prompt: data.item.revised_prompt } : {}),
           },
         };
       }

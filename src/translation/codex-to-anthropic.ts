@@ -24,6 +24,7 @@ import {
   type UsageInfo,
   type ExtractedEvent,
 } from "./codex-event-extractor.js";
+import { isRecord } from "./shared-utils.js";
 import { codexApiErrorFromEvent } from "./codex-api-error-from-event.js";
 
 interface CacheUsageHint {
@@ -32,10 +33,6 @@ interface CacheUsageHint {
 
 interface ResponseMetadata {
   functionCallIds?: string[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sanitizeToolInput(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
@@ -115,6 +112,11 @@ export async function* streamCodexToAnthropic(
   const functionCallIds = new Set<string>();
   const callIdsWithForwardedDeltas = new Set<string>();
   const functionCallNames = new Map<string, string>();
+  // callId → assigned Anthropic content block index. Multiple tool_use blocks
+  // can be open at once (openai-upstream defers every *.done to end of stream),
+  // so each call must own a distinct index — a shared index collides their
+  // deltas and drops later tool calls.
+  const toolBlockIndex = new Map<string, number>();
 
   const publishFunctionCallId = (callId: string): void => {
     if (functionCallIds.has(callId)) return;
@@ -223,10 +225,15 @@ export async function* streamCodexToAnthropic(
       yield* closeThinkingIfOpen();
       yield* closeTextIfOpen();
 
+      // Assign this tool_use its own content block index, then advance so the
+      // next block (text or another concurrent tool_use) gets a fresh one.
+      const blockIndex = contentIndex++;
+      toolBlockIndex.set(evt.functionCallStart.callId, blockIndex);
+
       // Start tool_use block
       yield formatSSE("content_block_start", {
         type: "content_block_start",
-        index: contentIndex,
+        index: blockIndex,
         content_block: {
           type: "tool_use",
           id: evt.functionCallStart.callId,
@@ -245,10 +252,12 @@ export async function* streamCodexToAnthropic(
         continue;
       }
 
+      const deltaBlockIndex = toolBlockIndex.get(evt.functionCallDelta.callId);
+      if (deltaBlockIndex === undefined) continue;
       callIdsWithForwardedDeltas.add(evt.functionCallDelta.callId);
       yield formatSSE("content_block_delta", {
         type: "content_block_delta",
-        index: contentIndex,
+        index: deltaBlockIndex,
         delta: { type: "input_json_delta", partial_json: evt.functionCallDelta.delta },
       });
       continue;
@@ -256,11 +265,35 @@ export async function* streamCodexToAnthropic(
 
     if (evt.functionCallDone) {
       publishFunctionCallId(evt.functionCallDone.callId);
+      // Resolve the index assigned at functionCallStart. Defensive fallback:
+      // if a done arrives without a preceding start, open the block now.
+      let doneBlockIndex = toolBlockIndex.get(evt.functionCallDone.callId);
+      if (doneBlockIndex === undefined) {
+        // No preceding functionCallStart — mark tool-call state so the final
+        // message_delta reports stop_reason "tool_use" (not "end_turn") and the
+        // empty-response guard does not misfire.
+        hasToolCalls = true;
+        hasContent = true;
+        yield* closeThinkingIfOpen();
+        yield* closeTextIfOpen();
+        doneBlockIndex = contentIndex++;
+        toolBlockIndex.set(evt.functionCallDone.callId, doneBlockIndex);
+        yield formatSSE("content_block_start", {
+          type: "content_block_start",
+          index: doneBlockIndex,
+          content_block: {
+            type: "tool_use",
+            id: evt.functionCallDone.callId,
+            name: evt.functionCallDone.name,
+            input: {},
+          },
+        });
+      }
       // Emit full arguments if no deltas were streamed
       if (!callIdsWithForwardedDeltas.has(evt.functionCallDone.callId)) {
         yield formatSSE("content_block_delta", {
           type: "content_block_delta",
-          index: contentIndex,
+          index: doneBlockIndex,
           delta: {
             type: "input_json_delta",
             partial_json: sanitizeFunctionCallArguments(
@@ -273,9 +306,8 @@ export async function* streamCodexToAnthropic(
       // Close this tool_use block
       yield formatSSE("content_block_stop", {
         type: "content_block_stop",
-        index: contentIndex,
+        index: doneBlockIndex,
       });
-      contentIndex++;
       continue;
     }
 

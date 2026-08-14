@@ -2354,7 +2354,9 @@ describe("E2E: POST /v1/messages", () => {
     }
 
     const upstreamRequest = JSON.parse(transportBody) as { prompt_cache_key?: unknown };
-    expect(upstreamRequest.prompt_cache_key).toBe("claude-code-session-123");
+    // 上游把 client conversation id 做成账号作用域 hash（cp_<32hex>），
+    // 不再把 Claude Code session id 原文转发给 chatgpt.com。
+    expect(upstreamRequest.prompt_cache_key).toMatch(/^cp_[0-9a-f]{32}$/);
   });
 
   // ── Anthropic error format ─────────────────────────────────────

@@ -144,12 +144,14 @@ describe("SessionAffinityMap", () => {
     expect(map.lookupLatestResponseIdByConversationId("conv_same", undefined, "vh_main")).toBe("resp_old_main");
   });
 
-  it("looks up the latest instructions by conversation ID", () => {
+  it("looks up the latest instructions hash by conversation ID", () => {
     map = new SessionAffinityMap();
     map.record("resp_1", "entry_1", "conv_same", undefined, "old instructions");
     map.record("resp_2", "entry_1", "conv_same", undefined, "sticky instructions");
-    expect(map.lookupLatestInstructionsByConversationId("conv_same")).toBe("sticky instructions");
-    expect(map.lookupLatestInstructionsByConversationId("conv_missing")).toBeNull();
+    const hash = map.lookupLatestInstructionsHashByConversationId("conv_same");
+    expect(hash).toHaveLength(64); // SHA-256 hex
+    expect(hash).not.toBeNull();
+    expect(map.lookupLatestInstructionsHashByConversationId("conv_missing")).toBeNull();
   });
 
   it("looks up stored input tokens for a response", () => {
@@ -169,11 +171,13 @@ describe("SessionAffinityMap", () => {
     expect(map.lookupFunctionCallIds("resp_missing")).toEqual([]);
   });
 
-  it("looks up stored instructions for a response", () => {
+  it("looks up stored instructions hash for a response", () => {
     map = new SessionAffinityMap();
     map.record("resp_1", "entry_1", "conv_same", undefined, "system prompt");
-    expect(map.lookupInstructions("resp_1")).toBe("system prompt");
-    expect(map.lookupInstructions("resp_missing")).toBeNull();
+    const hash = map.lookupInstructionsHash("resp_1");
+    expect(hash).toHaveLength(64); // SHA-256 hex
+    expect(hash).not.toBeNull();
+    expect(map.lookupInstructionsHash("resp_missing")).toBeNull();
   });
 
   it("conversation ID is inherited across response chain", () => {
@@ -199,37 +203,98 @@ describe("SessionAffinityMap", () => {
     expect(map.lookupConversationId("resp_abc")).toBeNull();
   });
 
-  // turnState tracking
-  describe("turnState tracking", () => {
-    it("lookupTurnState returns recorded turnState", () => {
+  // forgetConversation — 静默断流后整链失效
+  describe("forgetConversation", () => {
+    it("drops every entry of the conversation so lookup cannot fall back to an older dead id", () => {
       map = new SessionAffinityMap();
-      map.record("resp_1", "entry_1", "conv_1", "ts_abc");
-      expect(map.lookupTurnState("resp_1")).toBe("ts_abc");
+      map.record("resp_1", "entry_1", "conv_a");
+      map.record("resp_2", "entry_1", "conv_a");
+      map.record("resp_other", "entry_1", "conv_b");
+
+      expect(map.forgetConversation("conv_a")).toBe(2);
+      expect(map.lookupLatestResponseIdByConversationId("conv_a")).toBeNull();
+      // 其它会话不受影响
+      expect(map.lookupLatestResponseIdByConversationId("conv_b")).toBe("resp_other");
     });
 
-    it("lookupTurnState returns null when no turnState was recorded", () => {
+    it("scopes to variantHash when provided (主对话失效不殃及 subagent 链)", () => {
       map = new SessionAffinityMap();
-      map.record("resp_1", "entry_1", "conv_1");
+      map.record("resp_main", "entry_1", "conv_a", undefined, undefined, undefined, undefined, "vh_main");
+      map.record("resp_sub", "entry_1", "conv_a", undefined, undefined, undefined, undefined, "vh_sub");
+
+      expect(map.forgetConversation("conv_a", "vh_main")).toBe(1);
+      expect(map.lookupLatestResponseIdByConversationId("conv_a", undefined, "vh_main")).toBeNull();
+      expect(map.lookupLatestResponseIdByConversationId("conv_a", undefined, "vh_sub")).toBe("resp_sub");
+    });
+
+    it("returns 0 for unknown conversations", () => {
+      map = new SessionAffinityMap();
+      expect(map.forgetConversation("conv_missing")).toBe(0);
+    });
+  });
+
+  describe("concurrent chain advancement", () => {
+    it("keeps the first completed sibling as head when an older branch finishes late", () => {
+      map = new SessionAffinityMap();
+      map.record("resp_parent", "entry_1", "conv_1", undefined, "system", 10, [], "vh");
+
+      const ticketA = map.captureChainAdvance("conv_1", "vh", "resp_parent");
+      const ticketB = map.captureChainAdvance("conv_1", "vh", "resp_parent");
+
+      expect(map.record(
+        "resp_B", "entry_1", "conv_1", undefined, "system", 10, [], "vh", ticketB,
+      )).toBe(true);
+      expect(map.record(
+        "resp_A", "entry_1", "conv_1", undefined, "system", 10, [], "vh", ticketA,
+      )).toBe(false);
+
+      expect(map.lookup("resp_A")).toBe("entry_1");
+      expect(map.lookup("resp_B")).toBe("entry_1");
+      expect(map.lookupLatestResponseIdByConversationId("conv_1", undefined, "vh")).toBe("resp_B");
+    });
+
+    it("advances different variants independently", () => {
+      map = new SessionAffinityMap();
+      const mainTicket = map.captureChainAdvance("conv_1", "main");
+      const subTicket = map.captureChainAdvance("conv_1", "sub");
+
+      expect(map.record(
+        "resp_main", "entry_1", "conv_1", undefined, "system", 10, [], "main", mainTicket,
+      )).toBe(true);
+      expect(map.record(
+        "resp_sub", "entry_1", "conv_1", undefined, "system", 10, [], "sub", subTicket,
+      )).toBe(true);
+
+      expect(map.lookupLatestResponseIdByConversationId("conv_1", undefined, "main")).toBe("resp_main");
+      expect(map.lookupLatestResponseIdByConversationId("conv_1", undefined, "sub")).toBe("resp_sub");
+    });
+
+    it("invalidates an outstanding ticket when the parent is forgotten", () => {
+      map = new SessionAffinityMap();
+      map.record("resp_parent", "entry_1", "conv_1", undefined, "system", 10, [], "vh");
+      const ticket = map.captureChainAdvance("conv_1", "vh", "resp_parent");
+
+      map.forget("resp_parent");
+      expect(map.record(
+        "resp_late", "entry_1", "conv_1", undefined, "system", 10, [], "vh", ticket,
+      )).toBe(false);
+      expect(map.lookup("resp_late")).toBe("entry_1");
+      expect(map.lookupLatestResponseIdByConversationId("conv_1", undefined, "vh")).toBeNull();
+    });
+  });
+
+  describe("turnState isolation", () => {
+    it("never returns a turnState recorded by a previous user turn", () => {
+      map = new SessionAffinityMap();
+      map.record("resp_1", "entry_1", "conv_1", "ts_abc");
       expect(map.lookupTurnState("resp_1")).toBeNull();
     });
 
-    it("turnState expires along with entry", () => {
-      map = new SessionAffinityMap(50);
-      map.record("resp_1", "entry_1", "conv_1", "ts_abc");
-      expect(map.lookupTurnState("resp_1")).toBe("ts_abc");
-
-      const start = Date.now();
-      while (Date.now() - start < 60) {
-        // busy wait
-      }
-      expect(map.lookupTurnState("resp_1")).toBeNull();
-    });
-
-    it("turnState is updated on re-record", () => {
+    it("remains null after re-recording a response", () => {
       map = new SessionAffinityMap();
       map.record("resp_1", "entry_1", "conv_1", "ts_old");
       map.record("resp_1", "entry_1", "conv_1", "ts_new");
-      expect(map.lookupTurnState("resp_1")).toBe("ts_new");
+      expect(map.lookupTurnState("resp_1")).toBeNull();
     });
   });
 });

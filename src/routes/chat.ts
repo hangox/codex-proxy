@@ -5,6 +5,7 @@ import type { AccountPool } from "../auth/account-pool.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { translateToCodexRequest } from "../translation/openai-to-codex.js";
+import { isRecord } from "../translation/shared-utils.js";
 import {
   streamCodexToOpenAI,
   collectCodexResponse,
@@ -25,6 +26,7 @@ import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { FormatAdapter, ProxyRequest } from "./shared/proxy-handler-types.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
@@ -71,27 +73,6 @@ function formatModelNotFound(model: string) {
   };
 }
 
-function checkProxyApiKey(c: Context, accountPool: AccountPool) {
-  const config = getConfig();
-  if (!config.server.proxy_api_key) return null;
-
-  const authHeader = c.req.header("Authorization");
-  const providedKey = authHeader?.replace("Bearer ", "");
-  if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-    c.status(401);
-    return c.json({
-      error: {
-        message: "Invalid proxy API key",
-        type: "invalid_request_error",
-        param: null,
-        code: "invalid_api_key",
-      },
-    });
-  }
-
-  return null;
-}
-
 export function createChatRoutes(
   accountPool: AccountPool,
   cookieJar?: CookieJar,
@@ -100,22 +81,9 @@ export function createChatRoutes(
 ): Hono {
   const app = new Hono();
 
-  app.post("/v1/chat/completions", async (c) => {
+  app.post("/v1/chat/completions", apiKeyAuth(accountPool), async (c) => {
     // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json({
-        error: {
-          message: "Malformed JSON request body",
-          type: "invalid_request_error",
-          param: null,
-          code: "invalid_json",
-        },
-      });
-    }
+    const body = await c.req.json();
     const parsed = ChatCompletionRequestSchema.safeParse(body);
     if (!parsed.success) {
       c.status(400);
@@ -138,9 +106,12 @@ export function createChatRoutes(
       return c.json(formatModelNotFound(req.model));
     }
 
-    const wantReasoning = !!req.reasoning_effort;
-    const fmt = makeOpenAIFormat(wantReasoning);
     const { codexRequest, tupleSchema } = translateToCodexRequest(req);
+    const expectsImageGen = Array.isArray(codexRequest.tools)
+      && codexRequest.tools.some((t): t is Record<string, unknown> => isRecord(t) && t.type === "image_generation");
+    // Check after translation so suffix-parsed and config-default effort are included.
+    const wantReasoning = !!codexRequest.reasoning?.effort;
+    const fmt = makeOpenAIFormat(wantReasoning);
     const displayModel = buildDisplayModelName(parseModelName(req.model));
     const proxyReq: ProxyRequest = {
       codexRequest,
@@ -148,6 +119,7 @@ export function createChatRoutes(
       isStreaming: req.stream ?? false,
       clientConversationId: req.user,
       tupleSchema,
+      expectsImageGen,
     };
 
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
@@ -165,8 +137,6 @@ export function createChatRoutes(
     });
 
     if (routeMatch.kind === "api-key" || routeMatch.kind === "adapter") {
-      const authError = checkProxyApiKey(c, accountPool);
-      if (authError) return authError;
 
       const directModel = routeMatch.resolvedModel ?? req.model;
       const directReq = {
@@ -194,9 +164,6 @@ export function createChatRoutes(
     if (summary.active === 0) {
       return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
     }
-
-    const authError = checkProxyApiKey(c, accountPool);
-    if (authError) return authError;
 
     return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
   });

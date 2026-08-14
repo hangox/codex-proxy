@@ -5,12 +5,9 @@
  * Request side:  convertTupleSchemas() rewrites prefixItems → properties with numeric keys
  * Response side: reconvertTupleValues() restores {"0":…,"1":…} back to […,…]
  */
+import { isRecord } from "./shared-utils.js";
 
 type Schema = Record<string, unknown>;
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 // ── Detection ──────────────────────────────────────────────────────
 

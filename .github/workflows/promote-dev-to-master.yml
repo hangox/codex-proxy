@@ -69,58 +69,72 @@ jobs:
             exit 1
           fi
 
-      - name: Check soak (>= 24h since latest dev commit)
+      - name: Select promotion candidates (soak >= 24h, starvation-proof)
         id: soak
         if: steps.ff.outputs.ok == 'true'
+        env:
+          FORCE: ${{ inputs.force_skip_soak }}
         run: |
-          DEV_TS=$(git log -1 origin/dev --format=%ct)
-          NOW=$(date +%s)
-          AGE=$(( NOW - DEV_TS ))
-          MIN_AGE=86400
-          echo "dev HEAD age: ${AGE}s (need >= ${MIN_AGE}s)"
-          if [ "${{ inputs.force_skip_soak }}" = "true" ]; then
-            echo "::notice::Soak skipped via workflow_dispatch input (age=${AGE}s)"
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          elif [ "$AGE" -lt "$MIN_AGE" ]; then
-            REMAIN=$(( MIN_AGE - AGE ))
-            echo "::notice::Soak: ${REMAIN}s remaining before dev is eligible for promotion"
+          # Old rule required dev HEAD itself to be >= 24h old; during active
+          # weeks every push reset the clock and master starved. The script
+          # instead emits the newest first-parent dev commits older than 24h
+          # (newest first) — fresh commits keep soaking and ride tomorrow.
+          CANDIDATES=$(bash .github/scripts/select-promote-candidate.sh)
+          if [ -z "$CANDIDATES" ]; then
+            echo "::notice::Soak: no dev commit is older than the 24h window yet"
             echo "ok=false" >> "$GITHUB_OUTPUT"
           else
+            echo "Candidates (newest eligible first):"
+            echo "$CANDIDATES"
             echo "ok=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "candidates<<EOF"
+              echo "$CANDIDATES"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check CI status on dev HEAD
+      - name: Pick first CI-green candidate
         id: ci
         if: steps.soak.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATES: ${{ steps.soak.outputs.candidates }}
         run: |
-          DEV_SHA=$(git rev-parse origin/dev)
-          echo "Checking check-runs for $DEV_SHA"
-
           # Exclude this workflow's own checks (promote-dev) and bump workflows from the gate.
           # (?i) makes the regex case-insensitive so we catch "promote"/"Promote", "bump-beta"/etc.
-          STATUS=$(gh api "repos/${{ github.repository }}/commits/${DEV_SHA}/check-runs" \
-            --jq '
-              [.check_runs[]
-               | select(.name | test("(?i)promote|bump") | not)
-              ] as $relevant
-              | if ($relevant | length) == 0
-                then "missing-checks"
-                else
-                  if all($relevant[]; .conclusion == "success" or .conclusion == "skipped")
-                  then "green"
-                  else "not-green"
+          PICKED=""
+          while read -r SHA; do
+            [ -z "$SHA" ] && continue
+            # `|| STATUS=api-error`: a transient gh/API failure must skip the
+            # candidate (like missing-checks), not abort the job — an abort
+            # here would fire the ff-failure issue/webhook with a wrong cause.
+            STATUS=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
+              --jq '
+                [.check_runs[]
+                 | select(.name | test("(?i)promote|bump") | not)
+                ] as $relevant
+                | if ($relevant | length) == 0
+                  then "missing-checks"
+                  else
+                    if all($relevant[]; .conclusion == "success" or .conclusion == "skipped")
+                    then "green"
+                    else "not-green"
+                    end
                   end
-                end
-            ')
+              ') || STATUS="api-error"
+            echo "$SHA → $STATUS"
+            if [ "$STATUS" = "green" ]; then
+              PICKED="$SHA"
+              break
+            fi
+          done <<< "$CANDIDATES"
 
-          echo "status=$STATUS"
-          if [ "$STATUS" = "green" ]; then
+          if [ -n "$PICKED" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
-            echo "dev_sha=$DEV_SHA" >> "$GITHUB_OUTPUT"
+            echo "dev_sha=$PICKED" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::CI on dev is not green (status=$STATUS), skipping promotion"
+            echo "::notice::No soaked candidate has green CI, skipping promotion"
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -134,6 +148,14 @@ jobs:
           git push origin "${DEV_SHA}:refs/heads/master"
           echo "::notice::Promoted dev ($DEV_SHA) to master. bump-electron.yml will pick it up on the next 16:00 UTC tick."
 
+      - name: Notify promotion
+        if: steps.ci.outputs.ok == 'true'
+        env:
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+        run: |
+          bash .github/scripts/notify-webhook.sh \
+            "🚀 Promoted dev (${{ steps.ci.outputs.dev_sha }}) to master — stable bump at 16:00 UTC"
+
       - name: Trigger docker publish
         # GITHUB_TOKEN-driven pushes do not fire downstream workflows (anti-recursion
         # guard), so docker-publish.yml's `on: push: branches: [master]` would
@@ -143,3 +165,50 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run docker-publish.yml --ref master
+
+  # If the promote job fails (most commonly the ff-precondition check exiting 1
+  # because master drifted ahead of dev), open a tracking issue so the breakage
+  # is visible instead of silently piling up for weeks. Soak/CI-not-green are
+  # normal skips that keep the job green, so they do not trigger this.
+  notify-ff-failure:
+    needs: promote
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      # job-level permissions reset everything else to none; checkout (for
+      # notify-webhook.sh) needs explicit read even on a public repo clone
+      # via the default token.
+      contents: read
+    steps:
+      - name: Checkout (scripts only)
+        uses: actions/checkout@v4
+
+      - name: Notify promote failure
+        env:
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash .github/scripts/notify-webhook.sh "❌ promote dev→master job failed: $RUN_URL"
+
+      - name: Open tracking issue on promote failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="⚠️ promote-dev→master 卡住：fast-forward 前提被破坏"
+          EXISTING=$(gh issue list --repo "$REPO" --state open \
+            --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Already tracked in #$EXISTING, not duplicating"
+            exit 0
+          fi
+          gh issue create --repo "$REPO" --title "$TITLE" --body \
+          "\`promote-dev-to-master.yml\` 失败：master 有 dev 没有的提交，ff-promote 链路中断，dev 无法晋升到 master。
+
+          常见近因：master 侧自动产物（changelog→README sync、version bump、promote merge commit）未回流 dev，逐周漂移。
+
+          恢复方法：\`git merge -s ours origin/master\` 把 master 记为已合并（树取 dev），走 PR 进 dev，即可恢复 ff 前提。
+
+          失败 run：$RUN_URL"

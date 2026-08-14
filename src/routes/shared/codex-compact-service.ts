@@ -238,14 +238,20 @@ function jsonText(value: unknown): string {
  * 重算），只是不会再被新请求复用回放——影响与 8.6 那次 variant hash 公式调整
  * 完全同构：具体分析见 `opaqueCompactVariantHash` 头部注释。
  */
+function asCodexMessageRole(role: string): "user" | "assistant" | "system" | "developer" {
+  if (role === "assistant" || role === "system" || role === "developer") return role;
+  return "user";
+}
+
 export function anthropicHistoryToCompactCodexInput(
   messages: AnthropicMessagesRequest["messages"],
 ): CodexInputItem[] {
   const input: CodexInputItem[] = [];
   for (const message of messages) {
+    const role = asCodexMessageRole(message.role);
     if (typeof message.content === "string") {
       input.push({
-        role: message.role,
+        role,
         content: [{
           type: message.role === "assistant" ? "output_text" : "input_text",
           text: message.content,
@@ -261,7 +267,7 @@ export function anthropicHistoryToCompactCodexInput(
       }
       if (block.type === "text" && typeof block.text === "string") {
         input.push({
-          role: message.role,
+          role,
           content: [{
             type: message.role === "assistant" ? "output_text" : "input_text",
             text: block.text,
@@ -298,7 +304,7 @@ export function anthropicHistoryToCompactCodexInput(
       }
 
       input.push({
-        role: message.role,
+        role,
         content: [{
           type: message.role === "assistant" ? "output_text" : "input_text",
           text: jsonText({ anthropic_content_block: block }),

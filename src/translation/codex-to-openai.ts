@@ -99,6 +99,58 @@ export async function* streamCodexToOpenAI(
       throw codexApiErrorFromEvent(evt.error);
     }
 
+    if (evt.imageGenerationDone) {
+      hasToolCalls = true;
+      hasContent = true;
+      const idx = nextToolCallIndex++;
+      const argsJson = JSON.stringify({
+        result: evt.imageGenerationDone.result,
+        ...(evt.imageGenerationDone.revised_prompt !== undefined
+          ? { revised_prompt: evt.imageGenerationDone.revised_prompt }
+          : {}),
+      });
+      // Start chunk: id + type + name (arguments empty per OpenAI streaming spec)
+      yield formatSSE({
+        id: chunkId,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: idx,
+                  id: evt.imageGenerationDone.id,
+                  type: "function",
+                  function: { name: "image_generation", arguments: "" },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      // Arguments chunk: arguments content (no id/type per OpenAI streaming spec)
+      yield formatSSE({
+        id: chunkId,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: idx, function: { arguments: argsJson } }],
+            },
+            finish_reason: null,
+          },
+        ],
+      });
+      continue;
+    }
+
     // Handle function call events
     if (evt.functionCallStart) {
       hasToolCalls = true;
@@ -403,6 +455,21 @@ export async function collectCodexResponse(
         function: {
           name: evt.functionCallDone.name,
           arguments: evt.functionCallDone.arguments,
+        },
+      });
+    }
+    if (evt.imageGenerationDone) {
+      toolCalls.push({
+        id: evt.imageGenerationDone.id,
+        type: "function",
+        function: {
+          name: "image_generation",
+          arguments: JSON.stringify({
+            result: evt.imageGenerationDone.result,
+            ...(evt.imageGenerationDone.revised_prompt !== undefined
+              ? { revised_prompt: evt.imageGenerationDone.revised_prompt }
+              : {}),
+          }),
         },
       });
     }

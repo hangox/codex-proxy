@@ -47,9 +47,7 @@ function isAuthorized(authHeader: string | undefined, expectedKey: string | null
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../translation/shared-utils.js";
 
 function parseStartThread(body: unknown): StartThreadParams {
   if (!isRecord(body)) return {};

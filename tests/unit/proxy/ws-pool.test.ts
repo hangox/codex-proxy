@@ -117,7 +117,7 @@ describe("PersistentWs", () => {
     await expect(promise).rejects.not.toBeInstanceOf(WsReusedConnectionError);
   });
 
-  it("send resolves Response on first non-internal frame and streams subsequent events", async () => {
+  it("send resolves Response on first non-metadata frame and flushes early metadata", async () => {
     const { ws, persistent } = newPersistentWs();
     persistent.tryAcquire();
     const promise = persistent.send({
@@ -128,10 +128,10 @@ describe("PersistentWs", () => {
     });
     await nextTick();
     ws.pushMessage({ type: "response.created", id: "r1" });
+    ws.pushMessage({ type: "response.output_text.delta", delta: "hi" });
     const resp = await promise;
     expect(resp.status).toBe(200);
     expect(resp.headers.get("content-type")).toBe("text/event-stream");
-    ws.pushMessage({ type: "response.output_text.delta", delta: "hi" });
     ws.pushMessage({ type: "response.completed" });
     const text = await resp.text();
     expect(text).toContain("event: response.created");
@@ -139,7 +139,98 @@ describe("PersistentWs", () => {
     expect(text).toContain("event: response.completed");
   });
 
-  it("errors the response stream when the WS closes after first frame without terminal event", async () => {
+  it("send rejects before resolving when the WS closes after only metadata", async () => {
+    const { ws, persistent, onDead } = newPersistentWs();
+    persistent.tryAcquire();
+    const promise = persistent.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: true,
+    });
+    await nextTick();
+    ws.pushMessage({ type: "response.created", response: { id: "resp_mid" } });
+    ws.pushClose(1000, "");
+
+    await expect(promise).rejects.toBeInstanceOf(WsReusedConnectionError);
+    expect(persistent.isAlive()).toBe(false);
+    expect(onDead).toHaveBeenCalled();
+  });
+
+  describe("response start timeout", () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("rejects and evicts when upstream sends only provisional metadata", async () => {
+      const { ws, persistent, onDead } = newPersistentWs({ pingIntervalMs: 0 });
+      persistent.tryAcquire();
+      const promise = persistent.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: false,
+        responseStartTimeoutMs: 1_000,
+      });
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      ws.pushMessage({ type: "response.created", response: { id: "resp_waiting" } });
+      ws.pushMessage({ type: "codex.response.metadata", headers: { "x-test": "1" } });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).rejects.toThrow("WebSocket response start timeout after 1000ms");
+      expect(persistent.isAlive()).toBe(false);
+      expect(ws.closeReason).toBe("response start timeout");
+      expect(onDead).toHaveBeenCalledTimes(1);
+    });
+
+    it("classifies a continuation timeout as a reused-connection failure", async () => {
+      const { ws, persistent } = newPersistentWs({ pingIntervalMs: 0 });
+      persistent.tryAcquire();
+      const promise = persistent.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: true,
+        responseStartTimeoutMs: 1_000,
+      });
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      ws.pushMessage({ type: "response.created", response: { id: "resp_waiting" } });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).rejects.toMatchObject({
+        name: "WsReusedConnectionError",
+        message: "WebSocket response start timeout after 1000ms",
+      });
+      expect(persistent.isAlive()).toBe(false);
+    });
+
+    it("clears the deadline after the first client-visible event", async () => {
+      const { ws, persistent } = newPersistentWs({ pingIntervalMs: 0 });
+      persistent.tryAcquire();
+      const promise = persistent.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: false,
+        responseStartTimeoutMs: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      ws.pushMessage({ type: "response.created", response: { id: "resp_started" } });
+      ws.pushMessage({ type: "response.output_text.delta", delta: "started" });
+      const response = await promise;
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(persistent.isAlive()).toBe(true);
+      ws.pushMessage({ type: "response.completed", response: { id: "resp_started" } });
+      await expect(response.text()).resolves.toContain("response.completed");
+    });
+  });
+
+  it("errors the response stream when the WS closes after a visible frame without terminal event", async () => {
     const { ws, persistent, onDead } = newPersistentWs();
     persistent.tryAcquire();
     const promise = persistent.send({
@@ -150,6 +241,7 @@ describe("PersistentWs", () => {
     });
     await nextTick();
     ws.pushMessage({ type: "response.created", response: { id: "resp_mid" } });
+    ws.pushMessage({ type: "response.output_text.delta", delta: "partial" });
     const resp = await promise;
     ws.pushClose(1006, "tcp rst");
 
@@ -195,8 +287,8 @@ describe("PersistentWs", () => {
     });
     expect(onRateLimits).toHaveBeenCalledTimes(1);
     ws.pushMessage({ type: "response.created" });
-    const resp = await promise;
     ws.pushMessage({ type: "response.completed" });
+    const resp = await promise;
     const text = await resp.text();
     expect(text).not.toContain("codex.rate_limits");
   });
@@ -290,6 +382,7 @@ describe("PersistentWs", () => {
     });
     await nextTick();
     ws.pushMessage({ type: "response.created" });
+    ws.pushMessage({ type: "response.output_text.delta", delta: "partial" });
     const resp = await promise;
     persistent.closeGracefully();
     expect(onDead).not.toHaveBeenCalled(); // still busy
@@ -334,6 +427,7 @@ describe("PersistentWs", () => {
     });
     await nextTick();
     ws.pushMessage({ type: "response.created" });
+    ws.pushMessage({ type: "response.completed" });
     const resp = await promise;
     expect(resp.headers.get("x-codex-primary-used-percent")).toBe("42");
   });
@@ -386,8 +480,11 @@ describe("PersistentWs", () => {
       expect(ws.pingCount).toBe(1);
     });
 
-    it("skips ping while a request is in-flight (active stream keeps the LB alive)", async () => {
-      const { ws, persistent } = newPersistentWs({ pingIntervalMs: 1_000 });
+    it("continues pinging while a request is in-flight", async () => {
+      const { ws, persistent } = newPersistentWs({
+        pingIntervalMs: 1_000,
+        livenessTimeoutMs: 0,
+      });
       persistent.tryAcquire();
       void persistent.send({
         request: { type: "response.create", model: "m", instructions: "", input: [] },
@@ -397,7 +494,7 @@ describe("PersistentWs", () => {
       });
       await vi.advanceTimersByTimeAsync(0); // let send() start
       vi.advanceTimersByTime(3_500);
-      expect(ws.pingCount).toBe(0); // busy → no pings while streaming
+      expect(ws.pingCount).toBe(3);
     });
   });
 
@@ -552,6 +649,51 @@ describe("WsConnectionPool", () => {
     await capped.shutdown();
   });
 
+  it("counts pending factories against the per-account cap", async () => {
+    const capped = new WsConnectionPool({ maxPerAccount: 1 }, { startGc: false });
+    let resolveFactory: ((ws: PersistentWs) => void) | undefined;
+    const factory = vi.fn((deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) =>
+      new Promise<PersistentWs>((resolve) => {
+        resolveFactory = resolve;
+      }),
+    );
+
+    const firstPromise = capped.acquire("entry-A", "entry-A:conv-1", factory);
+    await nextTick();
+    const second = await capped.acquire("entry-A", "entry-A:conv-2", factory);
+
+    expect(second).toEqual({ bypass: "cap" });
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    const firstDeps = factory.mock.calls[0][0];
+    resolveFactory?.(new PersistentWs({
+      ws: new MockWs(),
+      entryId: firstDeps.entryId,
+      poolKey: firstDeps.poolKey,
+      hooks: firstDeps.hooks,
+    }));
+    await expect(firstPromise).resolves.toMatchObject({ reused: false });
+    expect(capped.countByEntryId("entry-A")).toBe(1);
+    await capped.shutdown();
+  });
+
+  it("releases pending capacity when a factory fails", async () => {
+    const capped = new WsConnectionPool({ maxPerAccount: 1 }, { startGc: false });
+    const failedFactory = vi.fn(async () => {
+      throw new Error("connect failed");
+    });
+    await expect(
+      capped.acquire("entry-A", "entry-A:conv-failed", failedFactory),
+    ).rejects.toThrow("connect failed");
+
+    const { factory } = makeFactory();
+    await expect(
+      capped.acquire("entry-A", "entry-A:conv-retry", factory),
+    ).resolves.toMatchObject({ reused: false });
+    expect(factory).toHaveBeenCalledTimes(1);
+    await capped.shutdown();
+  });
+
   it("dead connection is treated as a miss on next acquire", async () => {
     const factories: MockWs[] = [];
     const factory = vi.fn(async (deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) => {
@@ -565,6 +707,147 @@ describe("WsConnectionPool", () => {
     const second = await pool.acquire("entry-A", "entry-A:conv-1", factory);
     expect(second).toMatchObject({ reused: false });
     expect(factory).toHaveBeenCalledTimes(2);
+  });
+
+  it("registers a response owner only after response.completed", async () => {
+    const { factory, created } = makeFactory();
+    const acquired = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in acquired)) throw new Error("expected acquire success");
+    const send = acquired.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: false,
+    });
+    const mock = created[0]["ws"] as unknown as MockWs;
+    mock.pushMessage({ type: "response.created", response: { id: "resp_A" } });
+    expect(pool.ownerWsId("resp_A")).toBeNull();
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_A" } });
+    await send;
+    expect(pool.ownerWsId("resp_A")).toBe(acquired.ws.id);
+  });
+
+  it("keeps only the most recent response owner per physical WS", async () => {
+    const { factory, created } = makeFactory();
+    const first = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in first)) throw new Error("expected acquire success");
+    const mock = created[0]["ws"] as unknown as MockWs;
+    const firstSend = first.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: false,
+    });
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_A" } });
+    await firstSend;
+    await nextTick();
+
+    const second = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in second)) throw new Error("expected acquire success");
+    const secondSend = second.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: true,
+    });
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_B" } });
+    await secondSend;
+
+    expect(pool.ownerWsId("resp_A")).toBeNull();
+    expect(pool.ownerWsId("resp_B")).toBe(second.ws.id);
+  });
+
+  it("acquireForResponse fails closed on missing, busy, dead, and account-mismatched owners", async () => {
+    const { factory, created } = makeFactory();
+    expect(pool.acquireForResponse("entry-A", "resp_missing")).toEqual({ bypass: "missing_owner" });
+
+    const acquired = await pool.acquire("entry-A", "entry-A:conv-1:variant-A", factory);
+    if (!("ws" in acquired)) throw new Error("expected acquire success");
+    const mock = created[0]["ws"] as unknown as MockWs;
+    const send = acquired.ws.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: false,
+    });
+    mock.pushMessage({ type: "response.completed", response: { id: "resp_A" } });
+    await send;
+    await nextTick();
+
+    expect(pool.acquireForResponse("entry-B", "resp_A")).toEqual({ bypass: "account_mismatch" });
+    const owner = pool.acquireForResponse("entry-A", "resp_A");
+    expect("ws" in owner).toBe(true);
+    expect(pool.acquireForResponse("entry-A", "resp_A")).toEqual({ bypass: "busy" });
+    mock.pushClose(1006, "gone");
+    expect(pool.acquireForResponse("entry-A", "resp_A")).toEqual({ bypass: "missing_owner" });
+  });
+
+  it("does not let a discarded same-key factory loser remove the winning connection", async () => {
+    const pending: Array<{
+      deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks };
+      resolve: (ws: PersistentWs) => void;
+    }> = [];
+    const factory = vi.fn((deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) =>
+      new Promise<PersistentWs>((resolve) => pending.push({ deps, resolve })),
+    );
+
+    const firstPromise = pool.acquire("entry-A", "entry-A:conv-race", factory);
+    const secondPromise = pool.acquire("entry-A", "entry-A:conv-race", factory);
+    await nextTick();
+    expect(pending).toHaveLength(2);
+
+    const winner = new PersistentWs({
+      ws: new MockWs(),
+      entryId: pending[1].deps.entryId,
+      poolKey: pending[1].deps.poolKey,
+      hooks: pending[1].deps.hooks,
+    });
+    pending[1].resolve(winner);
+    const second = await secondPromise;
+    expect("ws" in second && second.ws).toBe(winner);
+
+    const loser = new PersistentWs({
+      ws: new MockWs(),
+      entryId: pending[0].deps.entryId,
+      poolKey: pending[0].deps.poolKey,
+      hooks: pending[0].deps.hooks,
+    });
+    pending[0].resolve(loser);
+    expect(await firstPromise).toEqual({ bypass: "busy" });
+    await nextTick();
+
+    expect(pool.size()).toBe(1);
+    expect(pool.countByEntryId("entry-A")).toBe(1);
+  });
+
+  it("expires a response owner before allowing continuation", async () => {
+    let now = 0;
+    const expiringPool = new WsConnectionPool({ maxAgeMs: 100 }, { startGc: false });
+    const mock = new MockWs();
+    const factory = vi.fn(async (deps: { entryId: string; poolKey: string; hooks: PersistentWsHooks }) =>
+      new PersistentWs({ ...deps, ws: mock, now: () => now }),
+    );
+    try {
+      const acquired = await expiringPool.acquire("entry-A", "entry-A:conv-expire", factory);
+      if (!("ws" in acquired)) throw new Error("expected acquire success");
+      const sent = acquired.ws.send({
+        request: { type: "response.create", model: "m", instructions: "", input: [] },
+        signal: undefined,
+        onRateLimits: undefined,
+        reused: false,
+      });
+      mock.pushMessage({ type: "response.completed", response: { id: "resp_expired" } });
+      await sent;
+      await nextTick();
+      expect(expiringPool.ownerWsId("resp_expired")).toBe(acquired.ws.id);
+
+      now = 101;
+      expect(expiringPool.acquireForResponse("entry-A", "resp_expired")).toEqual({ bypass: "expired" });
+      expect(expiringPool.ownerWsId("resp_expired")).toBeNull();
+      expect(expiringPool.size()).toBe(0);
+    } finally {
+      await expiringPool.shutdown();
+    }
   });
 
   it("evictByEntryId closes all connections for that entry and frees the cap", async () => {

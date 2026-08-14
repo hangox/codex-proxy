@@ -29,11 +29,9 @@ function makeProxyRequest(): ProxyRequest {
 }
 
 function makeAffinityLookup(options: {
-  turnState?: string | null;
   inputTokens?: number | null;
 } = {}): ImplicitResumeAffinityLookup {
   return {
-    lookupTurnState: vi.fn(() => options.turnState ?? null),
     lookupInputTokens: vi.fn(() => options.inputTokens ?? null),
   };
 }
@@ -57,7 +55,7 @@ describe("implicit resume lifecycle", () => {
         inputLength: 3,
         preferredEntryId: "entry-1",
         currentInstructions: "system-a",
-        storedInstructions: "system-a",
+        storedInstructionsHash: "c38ad4c6a125984c19638a6db37117192367b6cec1e73825a9f1c09d60a59a92",
         requiredFunctionCallOutputIds: ["call_a"],
         storedFunctionCallIds: ["call_b", "call_c"],
       },
@@ -97,7 +95,7 @@ describe("implicit resume lifecycle", () => {
         inputLength: 3,
         preferredEntryId: "entry-1",
         currentInstructions: "system-a",
-        storedInstructions: "system-a",
+        storedInstructionsHash: "c38ad4c6a125984c19638a6db37117192367b6cec1e73825a9f1c09d60a59a92",
         requiredFunctionCallOutputIds: ["call_a"],
         storedFunctionCallIds: ["call_a", "call_b", "call_c"],
       },
@@ -122,7 +120,7 @@ describe("implicit resume lifecycle", () => {
     const lifecycle = createImplicitResumeLifecycle({
       request,
       snapshot,
-      affinityMap: makeAffinityLookup({ turnState: "turn-implicit", inputTokens: 123 }),
+      affinityMap: makeAffinityLookup({ inputTokens: 123 }),
       tag: "Test",
       implicitPrevRespId: "resp_implicit",
       continuationInputStart: 2,
@@ -132,7 +130,7 @@ describe("implicit resume lifecycle", () => {
         inputLength: 3,
         preferredEntryId: "entry-1",
         currentInstructions: "system-a",
-        storedInstructions: "system-a",
+        storedInstructionsHash: "c38ad4c6a125984c19638a6db37117192367b6cec1e73825a9f1c09d60a59a92",
         requiredFunctionCallOutputIds: [],
         storedFunctionCallIds: [],
       },
@@ -146,7 +144,7 @@ describe("implicit resume lifecycle", () => {
     expect(lifecycle.resumeReasonForAttempt()).toBeNull();
     expect(lifecycle.getUsageHint()).toEqual({ reusedInputTokensUpperBound: 123 });
     expect(request.codexRequest.previous_response_id).toBe("resp_implicit");
-    expect(request.codexRequest.turnState).toBe("turn-implicit");
+    expect(request.codexRequest.turnState).toBe("turn-original");
     expect(request.codexRequest.useWebSocket).toBe(true);
     expect(request.codexRequest.input).toEqual([{ role: "user", content: "continue" }]);
 
@@ -169,7 +167,7 @@ describe("implicit resume lifecycle", () => {
     const lifecycle = createImplicitResumeLifecycle({
       request,
       snapshot,
-      affinityMap: makeAffinityLookup({ turnState: "turn-implicit", inputTokens: 123 }),
+      affinityMap: makeAffinityLookup({ inputTokens: 123 }),
       tag: "Test",
       implicitPrevRespId: "resp_implicit",
       continuationInputStart: 2,
@@ -179,7 +177,7 @@ describe("implicit resume lifecycle", () => {
         inputLength: 3,
         preferredEntryId: "entry-1",
         currentInstructions: "system-a",
-        storedInstructions: "system-a",
+        storedInstructionsHash: "c38ad4c6a125984c19638a6db37117192367b6cec1e73825a9f1c09d60a59a92",
       },
       acquiredEntryId: "entry-1",
       warn,
@@ -192,9 +190,9 @@ describe("implicit resume lifecycle", () => {
     expect(warn).toHaveBeenCalledWith("[Test] 隐式续链 WebSocket 失败，回退为完整历史重放：ws down");
     expect(lifecycle.isActive()).toBe(false);
     expect(lifecycle.getUsageHint()).toBeUndefined();
-    expect(request.codexRequest.previous_response_id).toBe("explicit-prev");
+    expect(request.codexRequest.previous_response_id).toBeUndefined();
     expect(request.codexRequest.turnState).toBe("turn-original");
-    expect(request.codexRequest.useWebSocket).toBe(false);
+    expect(request.codexRequest.useWebSocket).toBe(true);
     expect(request.codexRequest.input).toBe(snapshot.input);
   });
 
@@ -213,7 +211,7 @@ describe("implicit resume lifecycle", () => {
         inputLength: 3,
         preferredEntryId: "entry-1",
         currentInstructions: "system-a",
-        storedInstructions: "system-a",
+        storedInstructionsHash: "c38ad4c6a125984c19638a6db37117192367b6cec1e73825a9f1c09d60a59a92",
       },
       acquiredEntryId: "entry-2",
     });

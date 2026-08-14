@@ -18,8 +18,12 @@ import { tryAcquireRefreshLock, releaseRefreshLock } from "./refresh-lock.js";
 import type { AccountPool } from "./account-pool.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 
-/** Errors that indicate the refresh token itself is invalid (permanent failure). */
-const PERMANENT_ERRORS = ["invalid_grant", "invalid_token", "access_denied", "refresh_token_expired", "refresh_token_reused", "account has been deactivated"];
+/** Errors indicating the account was banned/deactivated upstream (mark as "banned"). */
+const BAN_ERRORS = ["account has been deactivated", "refresh_token_reused"];
+/** Errors indicating the refresh token is invalid but not necessarily a ban (mark as "expired"). */
+const EXPIRED_ERRORS = ["invalid_grant", "invalid_token", "access_denied", "refresh_token_expired"];
+/** All permanent errors (union of ban + expired). */
+const PERMANENT_ERRORS = [...BAN_ERRORS, ...EXPIRED_ERRORS];
 
 const MAX_ATTEMPTS = 5;
 const BASE_DELAY_MS = 5_000;
@@ -38,6 +42,8 @@ export class RefreshScheduler {
   private _queue: Array<() => void> = [];
   /** Accounts currently being refreshed (prevents concurrent refresh of same account). */
   private _inFlight: Set<string> = new Set();
+  /** Set after destroy() to prevent queued waiters from proceeding. */
+  private _destroyed = false;
 
   /** Check if an account is currently being refreshed. Used by health-check to avoid racing. */
   isRefreshing(entryId: string): boolean {
@@ -150,12 +156,13 @@ export class RefreshScheduler {
 
   /** Cancel all timers and drain the semaphore queue. */
   destroy(): void {
+    this._destroyed = true;
     for (const timer of this.timers.values()) {
       clearTimeout(timer);
     }
     this.timers.clear();
-    // Unblock any waiters so their promises resolve (doRefresh will
-    // bail out via getEntry returning null or scheduler being dead).
+    // Unblock any waiters so their promises resolve — acquireSlot
+    // checks _destroyed after wakeup and bails.
     for (const resolve of this._queue) resolve();
     this._queue.length = 0;
     this._running = 0;
@@ -164,14 +171,16 @@ export class RefreshScheduler {
 
   // ── Internal ────────────────────────────────────────────────────
 
-  /** Acquire a semaphore slot, waiting if at capacity. */
+  /** Acquire a semaphore slot, waiting if at capacity. Throws if destroyed while waiting. */
   private async acquireSlot(): Promise<void> {
+    if (this._destroyed) throw new Error("scheduler destroyed");
     const limit = getConfig().auth.refresh_concurrency;
     if (this._running < limit) {
       this._running++;
       return;
     }
     await new Promise<void>((resolve) => this._queue.push(resolve));
+    if (this._destroyed) throw new Error("scheduler destroyed");
     this._running++;
   }
 
@@ -263,13 +272,16 @@ export class RefreshScheduler {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
 
-        // Track consecutive permanent errors — only mark expired after threshold
-        const isPermanent = PERMANENT_ERRORS.some((e) => msg.toLowerCase().includes(e));
+        // Track consecutive permanent errors — only mark after threshold
+        const lower = msg.toLowerCase();
+        const isPermanent = PERMANENT_ERRORS.some((e) => lower.includes(e));
         if (isPermanent) {
           permanentHits++;
           if (permanentHits >= PERMANENT_THRESHOLD) {
-            console.error(`[RefreshScheduler] Permanent failure (${permanentHits}x) for ${entryId}: ${msg}`);
-            this.pool.markStatus(entryId, "expired");
+            const isBan = BAN_ERRORS.some((e) => lower.includes(e));
+            const newStatus = isBan ? "banned" : "expired";
+            console.error(`[RefreshScheduler] Permanent failure (${permanentHits}x) for ${entryId}: ${msg} → ${newStatus}`);
+            this.pool.markStatus(entryId, newStatus);
             return;
           }
           console.warn(`[RefreshScheduler] Permanent error (${permanentHits}/${PERMANENT_THRESHOLD}) for ${entryId}: ${msg}, retrying...`);

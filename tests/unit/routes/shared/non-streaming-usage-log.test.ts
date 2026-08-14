@@ -1,4 +1,4 @@
-import { logNonStreamingUsage } from "@src/routes/shared/non-streaming-usage-log.js";
+import { logNonStreamingUsage } from "@src/routes/shared/non-streaming-helpers.js";
 import { describe, expect, it, vi } from "vitest";
 
 describe("logNonStreamingUsage", () => {

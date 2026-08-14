@@ -25,6 +25,16 @@ export type ApiKeyStatus = "active" | "disabled" | "error";
 export const API_KEY_CAPABILITIES = ["chat", "embeddings"] as const;
 export type ApiKeyCapability = typeof API_KEY_CAPABILITIES[number];
 
+/**
+ * Upstream wire protocol for runtime API-key providers.
+ * "chat" → OpenAI-compatible POST /chat/completions.
+ * "responses" → OpenAI-compatible POST /responses.
+ * "anthropic" → Anthropic Messages API POST /messages.
+ * "gemini" → Gemini streamGenerateContent API.
+ */
+export const API_KEY_WIRES = ["chat", "responses", "anthropic", "gemini"] as const;
+export type ApiKeyWire = typeof API_KEY_WIRES[number];
+
 export interface ApiKeyEntry {
   id: string;
   provider: ApiKeyProvider;
@@ -33,13 +43,15 @@ export interface ApiKeyEntry {
   baseUrl: string;
   label: string | null;
   capabilities: ApiKeyCapability[];
+  wire: ApiKeyWire;
   status: ApiKeyStatus;
   addedAt: string;
   lastUsedAt: string | null;
 }
 
-export type PersistedApiKeyEntry = Omit<ApiKeyEntry, "capabilities"> & {
+export type PersistedApiKeyEntry = Omit<ApiKeyEntry, "capabilities" | "wire"> & {
   capabilities?: ApiKeyCapability[];
+  wire?: ApiKeyWire;
 };
 
 interface ApiKeysFile {
@@ -154,9 +166,11 @@ export class ApiKeyPool {
     baseUrl?: string;
     label?: string | null;
     capabilities?: ApiKeyCapability[];
+    wire?: ApiKeyWire;
   }): ApiKeyEntry {
-    const baseUrl = input.baseUrl
-      ?? (isBuiltinProvider(input.provider) ? PROVIDER_CATALOG[input.provider].defaultBaseUrl : "");
+    const baseUrl = isBuiltinProvider(input.provider)
+      ? PROVIDER_CATALOG[input.provider].defaultBaseUrl
+      : input.baseUrl ?? "";
 
     const entry: ApiKeyEntry = {
       id: randomBytes(8).toString("hex"),
@@ -166,6 +180,7 @@ export class ApiKeyPool {
       baseUrl,
       label: input.label ?? null,
       capabilities: normalizeCapabilities(input.capabilities),
+      wire: normalizeWireForProvider(input.provider, input.wire),
       status: "active",
       addedAt: new Date().toISOString(),
       lastUsedAt: null,
@@ -215,6 +230,7 @@ export class ApiKeyPool {
     baseUrl?: string;
     label?: string | null;
     capabilities?: ApiKeyCapability[];
+    wire?: ApiKeyWire;
   }>): { added: number; failed: number; errors: string[] } {
     let added = 0;
     const errors: string[] = [];
@@ -244,17 +260,19 @@ export class ApiKeyPool {
     provider: ApiKeyProvider;
     model: string;
     apiKey: string;
-    baseUrl: string;
+    baseUrl?: string;
     label: string | null;
     capabilities: ApiKeyCapability[];
+    wire: ApiKeyWire;
   }> {
     return this.entries.map((e) => ({
       provider: e.provider,
       model: e.model,
       apiKey: e.apiKey,
-      baseUrl: e.baseUrl,
+      ...(e.provider === "custom" ? { baseUrl: e.baseUrl } : {}),
       label: e.label,
       capabilities: e.capabilities,
+      wire: e.wire,
     }));
   }
 
@@ -285,10 +303,34 @@ function normalizeCapabilities(value: unknown): ApiKeyCapability[] {
   return deduped.length > 0 ? deduped : ["chat"];
 }
 
+function isApiKeyWire(value: unknown): value is ApiKeyWire {
+  return value === "chat" || value === "responses" || value === "anthropic" || value === "gemini";
+}
+
+function normalizeWire(value: unknown): ApiKeyWire {
+  return isApiKeyWire(value) ? value : "chat";
+}
+
+function normalizeWireForProvider(provider: ApiKeyProvider, value: unknown): ApiKeyWire {
+  const wire = normalizeWire(value);
+  if (provider === "custom") return wire;
+  if (provider === "openai" || provider === "openrouter") {
+    return wire === "responses" ? "responses" : "chat";
+  }
+  if (provider === "anthropic") return "anthropic";
+  if (provider === "gemini") return "gemini";
+  return "chat";
+}
+
 function normalizeEntry(entry: PersistedApiKeyEntry): ApiKeyEntry {
+  const baseUrl = isBuiltinProvider(entry.provider)
+    ? PROVIDER_CATALOG[entry.provider].defaultBaseUrl
+    : entry.baseUrl;
   return {
     ...entry,
+    baseUrl,
     capabilities: normalizeCapabilities(entry.capabilities),
+    wire: normalizeWireForProvider(entry.provider, entry.wire),
   };
 }
 

@@ -20,9 +20,11 @@
 import type { CodexInputItem } from "./codex-api.js";
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
-import { CodexApiError, type WebSocketFailurePhase } from "./codex-types.js";
+import { CodexApiError, PreviousResponseWebSocketError, type WebSocketFailurePhase } from "./codex-types.js";
 import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
+import { isPreviousResponseNotFoundError } from "./error-classification.js";
 import {
+  DEFAULT_WS_RESPONSE_START_TIMEOUT_MS,
   PersistentWs,
   WsReusedConnectionError,
   type PersistentWsHooks,
@@ -107,6 +109,18 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } 
 function isTerminalWsEvent(type: string): boolean {
   return type === "response.completed" || type === "response.failed" || type === "error";
 }
+
+function isEarlyMetadataWsEvent(type: string): boolean {
+  return type === "response.created" ||
+    type === "response.in_progress" ||
+    type === "response.metadata" ||
+    type === "codex.response.metadata";
+}
+
+const WS_CONNECTING = 0;
+const WS_CLOSING = 2;
+const WS_CLOSED = 3;
+const WS_CLOSED_BEFORE_OPEN_MESSAGE = "WebSocket was closed before the connection was established";
 
 /** Cached ws module — loaded once on first use. */
 let _WS: typeof import("ws").default | undefined;
@@ -294,9 +308,41 @@ export async function createWebSocketResponse(
   onRateLimits?: (rl: ParsedRateLimit) => void,
   poolCtx?: WsPoolContext,
 ): Promise<Response> {
-  if (poolCtx) {
+  const previousResponseId = request.previous_response_id;
+
+  if (previousResponseId) {
+    if (!poolCtx) {
+      throw new PreviousResponseWebSocketError(
+        "No pooled WebSocket context is available for previous_response_id",
+        "no_context",
+      );
+    }
+    const acquired = poolCtx.pool.acquireForResponse(poolCtx.entryId, previousResponseId);
+    if (!("ws" in acquired)) {
+      poolCtx.onDecision?.({ kind: "bypass", reason: acquired.bypass });
+      throw new PreviousResponseWebSocketError(
+        `Owning WebSocket is unavailable (${acquired.bypass})`,
+        acquired.bypass,
+      );
+    }
+    poolCtx.onDecision?.({ kind: "reuse", wsId: acquired.ws.id });
     try {
-      const acquired = await poolCtx.pool.acquire(
+      return await acquired.ws.send({ request, signal, onRateLimits, reused: true });
+    } catch (err) {
+      if (isPreviousResponseNotFoundError(err)) {
+        poolCtx.pool.forgetResponseOwner(previousResponseId);
+      }
+      if (err instanceof WsReusedConnectionError) {
+        throw new PreviousResponseWebSocketError(err.message, "transport");
+      }
+      throw err;
+    }
+  }
+
+  if (poolCtx) {
+    let acquired;
+    try {
+      acquired = await poolCtx.pool.acquire(
         poolCtx.entryId,
         poolCtx.poolKey,
         (deps) =>
@@ -309,33 +355,36 @@ export async function createWebSocketResponse(
             hooks: deps.hooks,
           }),
       );
-      if ("ws" in acquired) {
-        poolCtx.onDecision?.({
-          kind: acquired.reused ? "reuse" : "new",
-          wsId: acquired.ws.id,
-        });
-        try {
-          return await acquired.ws.send({ request, signal, onRateLimits, reused: acquired.reused });
-        } catch (err) {
-          if (err instanceof WsReusedConnectionError) {
-            // Stale-reuse: open a fresh one-shot WS for this single request.
-            // The pool's onDead hook has already evicted the dead entry.
-            poolCtx.onDecision?.({ kind: "retry-after-stale-reuse", wsId: acquired.ws.id });
-            return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
-          }
-          throw err;
-        }
-      }
-      // Bypass (busy / cap / dead / no_key / disabled) → fall through to one-shot.
-      poolCtx.onDecision?.({ kind: "bypass", reason: acquired.bypass });
     } catch (err) {
-      // Pool itself failed (e.g. factory could not connect). Don't punish the
-      // caller — fall back to the legacy one-shot path. The error is still
-      // visible in the one-shot path if the underlying issue persists.
+      // Only connection construction/acquisition errors reach this fallback.
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[ws-pool] acquire failed, using one-shot fallback: ${msg}`);
       poolCtx.onDecision?.({ kind: "bypass", reason: "factory_error" });
+      return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
     }
+
+    if ("ws" in acquired) {
+      poolCtx.onDecision?.({
+        kind: acquired.reused ? "reuse" : "new",
+        wsId: acquired.ws.id,
+      });
+      try {
+        return await acquired.ws.send({ request, signal, onRateLimits, reused: acquired.reused });
+      } catch (err) {
+        // With full input and no previous_response_id, a pre-response failure
+        // on a reused WS is safe to replay once on a fresh one-shot.
+        if (err instanceof WsReusedConnectionError) {
+          poolCtx.onDecision?.({ kind: "retry-after-stale-reuse", wsId: acquired.ws.id });
+          return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
+        }
+        // Real upstream errors must propagate. They are not pool acquisition
+        // failures and must never trigger a cross-WS replay.
+        throw err;
+      }
+    }
+
+    // No previous_response_id: a full-input one-shot is safe on pool bypass.
+    poolCtx.onDecision?.({ kind: "bypass", reason: acquired.bypass });
   }
 
   return openOneShotWs(wsUrl, headers, request, signal, proxyUrl, onRateLimits);
@@ -353,23 +402,63 @@ async function openOneShotWs(
   const wsOpts = await buildWsConstructorOpts(WS, headers, proxyUrl);
 
   return new Promise<Response>((resolve, reject) => {
+    const encoder = new TextEncoder();
     if (signal?.aborted) {
       reject(new WebSocketConnectPhaseError("Aborted before WebSocket connect"));
       return;
     }
 
     const ws = new WS(wsUrl, wsOpts);
-    const encoder = new TextEncoder();
     let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
     let streamClosed = false;
-    // Flips the first time we either resolve(Response) or reject(...).
-    // Internal `codex.rate_limits` frames do NOT flip this — we keep waiting
-    // for a real first frame so we can detect early upstream errors and
-    // route them through the existing CodexApiError → rotation path.
     let earlyDecisionMade = false;
     let sawTerminalEvent = false;
+    let abortRequested = false;
+    let expectedCloseBeforeOpen = false;
+    const earlyMetadataChunks: Uint8Array[] = [];
+    let pingTimer: ReturnType<typeof setInterval> | undefined;
+    let responseStartTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // Open timeout: if the WS handshake never completes, reject after 20s.
+    const openTimer = setTimeout(() => {
+      if (!earlyDecisionMade) {
+        earlyDecisionMade = true;
+        cleanupTimers();
+        closeWs(1000, "open timeout", true);
+        reject(new Error("WebSocket open timeout (20s)"));
+      }
+    }, 20_000);
+
+    function clearResponseStartTimer() {
+      if (!responseStartTimer) return;
+      clearTimeout(responseStartTimer);
+      responseStartTimer = undefined;
+    }
+
+    function cleanupTimers() {
+      clearTimeout(openTimer);
+      clearResponseStartTimer();
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = undefined;
+      }
+    }
+
+    function cleanupAbortListener() {
+      signal?.removeEventListener("abort", onAbort);
+    }
+
+    function closeWs(code?: number, reason?: string, expectCloseBeforeOpen = false) {
+      if (expectCloseBeforeOpen && ws.readyState === WS_CONNECTING) {
+        expectedCloseBeforeOpen = true;
+      }
+      if (ws.readyState === WS_CLOSING || ws.readyState === WS_CLOSED) return;
+      try { ws.close(code, reason); } catch { /* already closing */ }
+    }
 
     function closeStream() {
+      cleanupTimers();
+      cleanupAbortListener();
       if (!streamClosed && controller) {
         streamClosed = true;
         try { controller.close(); } catch { /* already closed */ }
@@ -377,21 +466,47 @@ async function openOneShotWs(
     }
 
     function errorStream(err: Error) {
+      cleanupTimers();
+      cleanupAbortListener();
       if (!streamClosed && controller) {
         streamClosed = true;
         try { controller.error(err); } catch { /* already closed */ }
       }
     }
 
+    function enqueueChunk(chunk: Uint8Array) {
+      if (!streamClosed && controller) {
+        controller.enqueue(chunk);
+      }
+    }
+
+    function resolveResponse() {
+      if (earlyDecisionMade) return;
+      earlyDecisionMade = true;
+      clearResponseStartTimer();
+      resolve(buildResponse());
+      for (const chunk of earlyMetadataChunks.splice(0)) {
+        enqueueChunk(chunk);
+      }
+    }
+
     // Abort signal handling
     const onAbort = () => {
-      try { ws.close(1000, "aborted"); } catch { /* already closing */ }
+      abortRequested = true;
+      cleanupTimers();
+      cleanupAbortListener();
+      closeWs(1000, "aborted", true);
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
         reject(new WebSocketConnectPhaseError("Aborted during WebSocket connect"));
+      } else {
+        errorStream(new Error("aborted"));
       }
     };
-    signal?.addEventListener("abort", onAbort, { once: true });
+
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
@@ -410,7 +525,7 @@ async function openOneShotWs(
 
     function buildResponse(): Response {
       const responseHeaders = new Headers({ "content-type": "text/event-stream" });
-      for (const [key, value] of Object.entries(upgradeHeaders)) {
+      for (const [key, value] of Array.from(Object.entries(upgradeHeaders))) {
         const v = Array.isArray(value) ? value[0] : value;
         if (v != null) responseHeaders.set(key, v);
       }
@@ -418,17 +533,29 @@ async function openOneShotWs(
     }
 
     ws.on("open", () => {
+      console.log(`[WS-Open] 🟢 WebSocket successfully opened for request. wsUrl: ${wsUrl}`);
+      clearTimeout(openTimer);
       ws.send(JSON.stringify(request));
-      // resolve() is deferred until the first non-internal frame arrives in
-      // ws.on("message"). This lets us classify early upstream errors (e.g.
-      // usage_limit_reached) and reject with a CodexApiError so the
-      // proxy-handler's existing rotation flow takes over instead of the
-      // error being passed through mid-stream to the client.
+      responseStartTimer = setTimeout(() => {
+        if (earlyDecisionMade) return;
+        const timeoutError = new Error(
+          `WebSocket response start timeout after ${DEFAULT_WS_RESPONSE_START_TIMEOUT_MS}ms`,
+        );
+        earlyDecisionMade = true;
+        errorStream(timeoutError);
+        closeWs(1000, "response start timeout");
+        reject(timeoutError);
+      }, DEFAULT_WS_RESPONSE_START_TIMEOUT_MS);
+      responseStartTimer.unref?.();
+      pingTimer = setInterval(() => {
+        try { ws.ping(); } catch { /* ws already closed */ }
+      }, 25_000);
     });
 
     ws.on("message", (data: Buffer | string) => {
       if (streamClosed) return;
       const raw = typeof data === "string" ? data : data.toString("utf-8");
+      console.log(`[WS-Message] 📥 Frame received. Raw length: ${raw.length}, snippet: ${raw.slice(0, 120)}`);
 
       let msg: Record<string, unknown> | null = null;
       let type = "unknown";
@@ -439,53 +566,57 @@ async function openOneShotWs(
         // Non-JSON message — handled below as raw data.
       }
 
-      // Internal rate-limit frames are observed via `onRateLimits` but not
-      // streamed, and they don't flip the early-decision flag — we keep
-      // waiting for a real frame so we can detect early upstream errors.
-      // If no callback is provided (test-only path), fall through and
-      // forward the frame as SSE like any other event.
-      if (msg && type === "codex.rate_limits" && onRateLimits) {
+      if (msg && type === "codex.rate_limits") {
         const rl = parseRateLimitsEvent(msg);
-        if (rl) onRateLimits(rl);
+        if (rl) onRateLimits?.(rl);
         return;
       }
 
       if (!earlyDecisionMade) {
-        earlyDecisionMade = true;
         if (msg) {
           const classified = classifyWsErrorEvent(msg);
           if (classified) {
+            cleanupTimers();
+            earlyDecisionMade = true;
             reject(new CodexApiError(classified.status, JSON.stringify(msg)));
-            try { ws.close(1000, "early upstream error"); } catch { /* already closing */ }
+            closeWs(1000, "early upstream error", true);
+            return;
+          }
+          if (isEarlyMetadataWsEvent(type)) {
+            clearTimeout(openTimer);
+            earlyMetadataChunks.push(encoder.encode(`event: ${type}\ndata: ${raw}\n\n`));
             return;
           }
         }
-        resolve(buildResponse());
-        // fall through to enqueue this first frame
+        resolveResponse();
       }
 
       if (msg) {
-        // Re-encode as SSE: event: <type>\ndata: <full json>\n\n
         const sse = `event: ${type}\ndata: ${raw}\n\n`;
-        controller!.enqueue(encoder.encode(sse));
+        enqueueChunk(encoder.encode(sse));
 
-        // Close stream after response.completed, response.failed, or error
         if (isTerminalWsEvent(type)) {
           sawTerminalEvent = true;
           queueMicrotask(() => {
             closeStream();
-            ws.close(1000);
+            closeWs(1000);
           });
         }
       } else {
-        // Non-JSON message — emit as raw data
         const sse = `data: ${raw}\n\n`;
-        controller!.enqueue(encoder.encode(sse));
+        enqueueChunk(encoder.encode(sse));
       }
     });
 
     ws.on("error", (err: Error) => {
-      signal?.removeEventListener("abort", onAbort);
+      if (expectedCloseBeforeOpen && err.message === WS_CLOSED_BEFORE_OPEN_MESSAGE) {
+        cleanupTimers();
+        cleanupAbortListener();
+        return;
+      }
+      console.error(`[WS-Error] ❌ WebSocket error for request:`, err.message);
+      cleanupTimers();
+      cleanupAbortListener();
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
         reject(new WebSocketConnectPhaseError(err.message));
@@ -495,10 +626,15 @@ async function openOneShotWs(
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
-      signal?.removeEventListener("abort", onAbort);
+      const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
+      console.log(`[WS-Close] 🔴 WebSocket closed. Code: ${code}, Reason: ${reasonStr}`);
+      cleanupTimers();
+      cleanupAbortListener();
+      if (abortRequested) {
+        return;
+      }
       if (!earlyDecisionMade) {
         earlyDecisionMade = true;
-        const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
         reject(new WebSocketConnectPhaseError(
           `WebSocket closed before any data: code=${code}` +
             (reasonStr ? ` reason=${reasonStr}` : ""),
@@ -506,7 +642,6 @@ async function openOneShotWs(
         return;
       }
       if (earlyDecisionMade && !sawTerminalEvent) {
-        const reasonStr = reason && reason.length ? reason.toString("utf-8") : "";
         errorStream(new Error(
           `WebSocket closed before terminal event: code=${code}` +
             (reasonStr ? ` reason=${reasonStr}` : ""),

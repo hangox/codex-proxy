@@ -20,6 +20,7 @@ import {
   collectCodexToGeminiResponse,
 } from "../translation/codex-to-gemini.js";
 import { getConfig } from "../config.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { getModelCatalog } from "../models/model-store.js";
 import {
   handleProxyRequest,
@@ -87,7 +88,7 @@ export function createGeminiRoutes(
   const app = new Hono();
 
   // Handle both generateContent and streamGenerateContent
-  app.post("/v1beta/models/:modelAction", async (c) => {
+  app.post("/v1beta/models/:modelAction", apiKeyAuth(accountPool), async (c) => {
     const modelActionParam = c.req.param("modelAction");
     const parsed = parseModelAction(modelActionParam);
 
@@ -111,13 +112,7 @@ export function createGeminiRoutes(
       c.req.query("alt") === "sse";
 
     // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json(makeError(400, "Invalid JSON in request body"));
-    }
+    const body = await c.req.json();
     const validationResult = GeminiGenerateContentRequestSchema.safeParse(body);
     if (!validationResult.success) {
       c.status(400);
@@ -138,20 +133,7 @@ export function createGeminiRoutes(
       );
     }
 
-    // API key check: query param ?key= or header x-goog-api-key
-    const config = getConfig();
-    if (config.server.proxy_api_key) {
-      const queryKey = c.req.query("key");
-      const headerKey = c.req.header("x-goog-api-key");
-      const authHeader = c.req.header("Authorization");
-      const bearerKey = authHeader?.replace("Bearer ", "");
-      const providedKey = queryKey ?? headerKey ?? bearerKey;
 
-      if (!providedKey || !accountPool.validateProxyApiKey(providedKey)) {
-        c.status(401);
-        return c.json(makeError(401, "Invalid API key"));
-      }
-    }
 
     const { codexRequest, tupleSchema } = translateGeminiToCodexRequest(
       req,
@@ -184,7 +166,7 @@ export function createGeminiRoutes(
   });
 
   // List available models (Gemini format)
-  app.get("/v1beta/models", (c) => {
+  app.get("/v1beta/models", apiKeyAuth(accountPool), (c) => {
     const catalog = getModelCatalog();
     const models = catalog.map((m) => ({
       name: `models/${m.id}`,

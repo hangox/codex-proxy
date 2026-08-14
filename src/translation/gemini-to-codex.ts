@@ -119,12 +119,6 @@ function partsToInputItems(
   return items;
 }
 
-/**
- * Extract text from Gemini content parts (for session hashing).
- */
-function flattenParts(parts: GeminiPart[]): string {
-  return extractTextFromParts(parts);
-}
 
 /**
  * Convert Gemini contents to SessionManager-compatible message format.
@@ -138,13 +132,13 @@ export function geminiContentsToMessages(
   if (systemInstruction) {
     messages.push({
       role: "system",
-      content: flattenParts(systemInstruction.parts),
+      content: extractTextFromParts(systemInstruction.parts),
     });
   }
 
   for (const c of contents) {
     const role = c.role === "model" ? "assistant" : c.role ?? "user";
-    messages.push({ role, content: flattenParts(c.parts) });
+    messages.push({ role, content: extractTextFromParts(c.parts) });
   }
 
   return messages;
@@ -172,7 +166,7 @@ export function translateGeminiToCodexRequest(
   // Extract system instructions
   let userInstructions: string;
   if (req.systemInstruction) {
-    userInstructions = flattenParts(req.systemInstruction.parts);
+    userInstructions = extractTextFromParts(req.systemInstruction.parts);
   } else {
     userInstructions = "You are a helpful assistant.";
   }

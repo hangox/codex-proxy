@@ -1,5 +1,5 @@
 import { SessionAffinityMap } from "@src/auth/session-affinity.js";
-import { recordNonStreamingSuccessAffinity } from "@src/routes/shared/non-streaming-affinity.js";
+import { recordNonStreamingSuccessAffinity } from "@src/routes/shared/non-streaming-helpers.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 describe("recordNonStreamingSuccessAffinity", () => {
@@ -29,8 +29,9 @@ describe("recordNonStreamingSuccessAffinity", () => {
     expect(recorded).toBe(true);
     expect(affinityMap.lookup("resp-ns")).toBe("entry-1");
     expect(affinityMap.lookupConversationId("resp-ns")).toBe("conversation-1");
-    expect(affinityMap.lookupTurnState("resp-ns")).toBe("turn-1");
-    expect(affinityMap.lookupInstructions("resp-ns")).toBeNull();
+    expect(affinityMap.lookupTurnState("resp-ns")).toBeNull();
+    // null instructions → hash of empty string (sha256(""))
+    expect(affinityMap.lookupInstructionsHash("resp-ns")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     expect(affinityMap.lookupInputTokens("resp-ns")).toBe(0);
     expect(affinityMap.lookupFunctionCallIds("resp-ns")).toEqual(["call-a", "call-b"]);
     expect(affinityMap.lookupLatestResponseIdByConversationId(

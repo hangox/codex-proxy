@@ -7,6 +7,10 @@ import { handleStreaming } from "@src/routes/shared/streaming-handler.js";
 import type { ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 import type { FormatStreamTranslatorOptions } from "@src/routes/shared/proxy-handler-types.js";
 import { createMockFormatAdapter } from "@helpers/format-adapter.js";
+import {
+  getReasoningReplayCache,
+  resetReasoningReplayCacheForTests,
+} from "@src/proxy/reasoning-replay-cache.js";
 
 function createMockAccountPool(): { pool: AccountPool; release: ReturnType<typeof vi.fn> } {
   const release = vi.fn();
@@ -35,13 +39,14 @@ describe("handleStreaming", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    resetReasoningReplayCacheForTests();
     for (const affinityMap of affinityMaps) {
       affinityMap.dispose();
     }
     affinityMaps.length = 0;
   });
 
-  it("records response affinity, aborts upstream, and releases with annotated usage", async () => {
+  it("records response affinity and releases with annotated usage without aborting upstream on success", async () => {
     const { pool, release } = createMockAccountPool();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -59,7 +64,15 @@ describe("handleStreaming", () => {
           image_output_tokens: 4,
         });
         options.onResponseId("resp_stream");
-        options.onResponseMetadata?.({ functionCallIds: ["call_stream"] });
+        options.onResponseMetadata?.({
+          functionCallIds: ["call_stream"],
+          reasoningReplayItems: [{
+            type: "reasoning",
+            id: "rs_stream",
+            summary: [],
+            encrypted_content: "encrypted-stream",
+          }],
+        });
         options.onResponseCompleted?.("resp_stream");
         yield "event: response.completed\ndata: {}\n\n";
       }),
@@ -89,7 +102,7 @@ describe("handleStreaming", () => {
 
     expect(res.headers.get("Content-Type")).toContain("text/event-stream");
     expect(text).toContain("event: response.completed");
-    expect(abortController.signal.aborted).toBe(true);
+    expect(abortController.signal.aborted).toBe(false);
     expect(release).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledWith("entry-stream", {
       input_tokens: 10_001,
@@ -103,8 +116,8 @@ describe("handleStreaming", () => {
     });
     expect(affinityMap.lookup("resp_stream")).toBe("entry-stream");
     expect(affinityMap.lookupConversationId("resp_stream")).toBe("conversation-stream");
-    expect(affinityMap.lookupTurnState("resp_stream")).toBe("turn-stream");
-    expect(affinityMap.lookupInstructions("resp_stream")).toBe("You are helpful");
+    expect(affinityMap.lookupTurnState("resp_stream")).toBeNull();
+    expect(affinityMap.lookupInstructionsHash("resp_stream")).toBe("58d0189aa8572b25a2e4ba09928df2c3d924d07f53de9aeb94ffe7f6f2a1de2b");
     expect(affinityMap.lookupInputTokens("resp_stream")).toBe(10_001);
     expect(affinityMap.lookupFunctionCallIds("resp_stream")).toEqual(["call_stream"]);
     expect(affinityMap.lookupLatestResponseIdByConversationId(
@@ -112,6 +125,17 @@ describe("handleStreaming", () => {
       undefined,
       "variant-stream",
     )).toBe("resp_stream");
+    expect(getReasoningReplayCache().lookup({
+      responseId: "resp_stream",
+      entryId: "entry-stream",
+      conversationId: "conversation-stream",
+      variantHash: "variant-stream",
+    })).toEqual([{
+      type: "reasoning",
+      id: "rs_stream",
+      summary: [],
+      encrypted_content: "encrypted-stream",
+    }]);
     expect(logSpy).toHaveBeenCalledWith(
       "[Test] Account entry-stream | rid=request- | Usage: in=10001 (cached=10 uncached=9991) out=7 reasoning=5 image=3/4 | hit=0.1%",
     );
@@ -131,6 +155,43 @@ describe("handleStreaming", () => {
       accountEntryId: "entry-stream",
       variantHash: "variant-stream",
     });
+  });
+
+  it("aborts upstream when stream processing fails", async () => {
+    const { pool, release } = createMockAccountPool();
+    const affinityMap = new SessionAffinityMap();
+    affinityMaps.push(affinityMap);
+    const abortController = new AbortController();
+    const fmt = createMockFormatAdapter({
+      streamTranslator: vi.fn(async function* () {
+        yield "event: response.created\ndata: {}\n\n";
+        throw new Error("upstream stream failed");
+      }),
+    });
+    const app = new Hono();
+
+    app.get("/stream", (c) => handleStreaming({
+      c,
+      accountPool: pool,
+      req: createStreamingRequest(),
+      fmt,
+      api: {} as unknown as CodexApi,
+      response: new Response(""),
+      entryId: "entry-stream",
+      abortController,
+      released: new Set<string>(),
+      requestId: "request-stream-123",
+      affinityMap,
+      conversationId: "conversation-stream",
+      variantHash: "variant-stream",
+    }));
+
+    const res = await app.request("/stream");
+    const text = await res.text();
+
+    expect(text).toContain("event: response.failed");
+    expect(text).toContain("upstream stream failed");
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("does not record response affinity before upstream completion", async () => {

@@ -9,6 +9,7 @@
  */
 
 import type { CodexInputItem, CodexContentPart, CodexResponsesRequest } from "../proxy/codex-types.js";
+import { REASONING_EFFORT_BUDGET } from "./shared-utils.js";
 
 interface GeminiTextPart { text: string }
 interface GeminiInlineDataPart { inlineData: { mimeType: string; data: string } }
@@ -118,12 +119,6 @@ function convertToolsToGemini(tools: unknown[]): GeminiTool[] {
   return declarations.length ? [{ functionDeclarations: declarations }] : [];
 }
 
-const REASONING_BUDGET: Record<string, number> = {
-  low: 1024,
-  medium: 8192,
-  high: 16000,
-  xhigh: 32000,
-};
 
 export function translateCodexToGeminiRequest(
   req: CodexResponsesRequest,
@@ -149,7 +144,7 @@ export function translateCodexToGeminiRequest(
       body.generationConfig.responseSchema = req.text.format.schema;
     }
     if (req.reasoning?.effort) {
-      const budget = REASONING_BUDGET[req.reasoning.effort] ?? 8192;
+      const budget = REASONING_EFFORT_BUDGET[req.reasoning.effort] ?? 8192;
       body.generationConfig.thinkingConfig = { thinkingBudget: budget };
     }
   }

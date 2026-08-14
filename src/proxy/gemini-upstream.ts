@@ -19,10 +19,7 @@ import { CodexApiError } from "./codex-types.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToGeminiRequest } from "../translation/codex-request-to-gemini.js";
 import { withFetchDispatcher } from "./fetch-dispatcher.js";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+import { isRecord } from "../translation/shared-utils.js";
 
 function extractModelId(model: string): string {
   const colon = model.indexOf(":");
@@ -32,9 +29,11 @@ function extractModelId(model: string): string {
 export class GeminiUpstream implements UpstreamAdapter {
   readonly tag = "gemini" as const;
   private apiKey: string;
+  readonly baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl = "https://generativelanguage.googleapis.com/v1beta") {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
   async createResponse(
@@ -45,7 +44,7 @@ export class GeminiUpstream implements UpstreamAdapter {
     const body = translateCodexToGeminiRequest(req);
 
     // Always use streaming endpoint; non-streaming requests also use it for simplicity
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
+    const url = `${this.baseUrl}/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
 
     const response = await fetch(url, withFetchDispatcher({
       method: "POST",
@@ -59,7 +58,7 @@ export class GeminiUpstream implements UpstreamAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-      throw new CodexApiError(response.status, errorText);
+      throw new CodexApiError(response.status, errorText, response.headers);
     }
 
     return response;

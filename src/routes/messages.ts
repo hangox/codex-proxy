@@ -16,6 +16,7 @@ import {
   collectCodexToAnthropicResponse,
 } from "../translation/codex-to-anthropic.js";
 import { getConfig } from "../config.js";
+import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
 import { enqueueLogEntry } from "../logs/entry.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
@@ -469,17 +470,9 @@ export function createMessagesRoutes(
     return c.json({ input_tokens: estimateCountTokens(parsed.data) });
   });
 
-  app.post("/v1/messages", async (c) => {
+  app.post("/v1/messages", apiKeyAuth(accountPool), async (c) => {
     // Parse request
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      c.status(400);
-      return c.json(
-        makeError("invalid_request_error", "Invalid JSON in request body"),
-      );
-    }
+    const body = await c.req.json();
     const parsed = AnthropicMessagesRequestSchema.safeParse(body);
     if (!parsed.success) {
       c.status(400);

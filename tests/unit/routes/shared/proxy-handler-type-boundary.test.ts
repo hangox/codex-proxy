@@ -29,7 +29,7 @@ function tsFiles(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(absoluteDir)) {
     const absolutePath = join(absoluteDir, entry);
-    const relativePath = absolutePath.slice(ROOT.length + 1);
+    const relativePath = absolutePath.slice(ROOT.length + 1).replaceAll("\\", "/");
     const stat = statSync(absolutePath);
     if (stat.isDirectory()) {
       files.push(...tsFiles(relativePath));

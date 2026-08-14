@@ -15,9 +15,7 @@ interface OllamaSettingsBody {
   disable_vision?: boolean;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
+import { isRecord } from "../../translation/shared-utils.js";
 
 function validateBody(body: OllamaSettingsBody): string | null {
   if (body.host !== undefined) {

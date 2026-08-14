@@ -93,8 +93,7 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
     if (contentType.includes("text/plain")) {
       entries = parseAccountImportText(await c.req.text());
     } else {
-      let body: unknown;
-      try { body = await c.req.json(); } catch { c.status(400); return c.json({ error: "Malformed JSON request body" }); }
+      const body = await c.req.json();
       entries = parseAccountImportPayload(body);
     }
     if (entries.length === 0) {
@@ -105,16 +104,14 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
   });
 
   app.post("/auth/accounts/batch-delete", async (c) => {
-    let body: unknown;
-    try { body = await c.req.json(); } catch { c.status(400); return c.json({ error: "Malformed JSON request body" }); }
+    const body = await c.req.json();
     const parsed = BatchIdsSchema.safeParse(body);
     if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
     return c.json({ success: true, ...mutationSvc.deleteBatch(parsed.data.ids) });
   });
 
   app.post("/auth/accounts/batch-status", async (c) => {
-    let body: unknown;
-    try { body = await c.req.json(); } catch { c.status(400); return c.json({ error: "Malformed JSON request body" }); }
+    const body = await c.req.json();
     const parsed = BatchStatusSchema.safeParse(body);
     if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
     return c.json({ success: true, ...mutationSvc.setStatusBatch(parsed.data.ids, parsed.data.status) });
@@ -155,8 +152,7 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
   });
 
   app.patch("/auth/accounts/:id/label", async (c) => {
-    let body: unknown;
-    try { body = await c.req.json(); } catch { c.status(400); return c.json({ error: "Malformed JSON request body" }); }
+    const body = await c.req.json();
     const parsed = LabelSchema.safeParse(body);
     if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
     if (!pool.setLabel(c.req.param("id"), parsed.data.label)) { c.status(404); return c.json({ error: "Account not found" }); }

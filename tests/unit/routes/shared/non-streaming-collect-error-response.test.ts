@@ -1,4 +1,4 @@
-import { planNonStreamingCollectErrorResponse } from "@src/routes/shared/non-streaming-collect-error-response.js";
+import { planNonStreamingCollectErrorResponse } from "@src/routes/shared/non-streaming-helpers.js";
 import { describe, expect, it } from "vitest";
 
 describe("planNonStreamingCollectErrorResponse", () => {

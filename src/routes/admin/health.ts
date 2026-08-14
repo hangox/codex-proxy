@@ -34,6 +34,8 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
       status: "ok",
       version: proxyInfo.version,
       authenticated,
+      // 容量数字不放在免鉴权 /health：匿名可读，运营信息可被侦察。
+      // 容量见受鉴权的 GET /admin/general-settings。
       pool: { total: poolSummary.total, active: poolSummary.active },
       // opaque state readiness。reason 与 Admin、路由 409 三处同名同义，
       // 且只含封闭枚举值——不含 session/account/stateId/路径等可识别信息。

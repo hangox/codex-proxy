@@ -201,3 +201,35 @@ export function buildMultiToolCallStreamChunks(
 
   return sse;
 }
+
+/** Build an image generation SSE stream. */
+export function buildImageGenStreamChunks(
+  responseId: string,
+  itemId: string,
+  result: string,
+  revisedPrompt: string,
+  usage?: { input_tokens: number; output_tokens: number },
+): string {
+  return (
+    sseChunk("response.created", { response: { id: responseId } }) +
+    sseChunk("response.in_progress", { response: { id: responseId } }) +
+    sseChunk("response.output_item.done", {
+      outputIndex: 0,
+      item: {
+        type: "image_generation_call",
+        id: itemId,
+        result,
+        revised_prompt: revisedPrompt,
+      },
+    }) +
+    sseChunk("response.completed", {
+      response: {
+        id: responseId,
+        usage: usage ?? { input_tokens: 10, output_tokens: 10 },
+        tool_usage: {
+          image_gen: { input_tokens: 1, output_tokens: 1 }
+        }
+      },
+    })
+  );
+}

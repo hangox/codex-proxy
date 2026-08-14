@@ -101,7 +101,7 @@ describe("ws-transport close behavior", () => {
       { Authorization: "Bearer test" },
       { type: "response.create", model: "test", instructions: "", input: [] },
     )).rejects.toThrow(
-      "WebSocket closed before terminal event",
+      "WebSocket closed before any data",
     );
   });
 });

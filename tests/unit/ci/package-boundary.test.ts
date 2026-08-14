@@ -127,19 +127,17 @@ describe("root package boundary", () => {
     expect(asarLockPackage.dev).toBeUndefined();
   });
 
-  it("keeps the stable release bump workflow tag-only (no version commit onto master)", () => {
+  it("keeps the stable release bump workflow syncing package metadata before tagging", () => {
     const workflow = readFileSync(resolve(ROOT, ".github/workflows/bump-electron.yml"), "utf-8");
-    // Tag-only contract: bump must NOT commit a version bump or push master.
-    // A version-bump commit on master can't FF back to an always-ahead dev,
-    // which kept breaking promote and regressed package.json on the next
-    // dev→master reconcile. Version ships from the tag (release.yml
-    // extraMetadata.version), mirroring bump-electron-beta.yml.
-    expect(workflow).not.toContain('git commit -m "chore: bump version');
-    expect(workflow).not.toContain("git push origin master");
-    expect(workflow).not.toContain("Sync bump commit back to dev");
-    // It must still create and push the release tag.
+    // 本仓库保留稳定版 bump workflow 的 master 提交与 dev 同步路径；
+    // 这里锁住版本元数据同步和 tag/release 的真实契约，不把它误改成上游的 tag-only 变体。
+    expect(workflow).toContain("lock.version = NEW_VERSION");
+    expect(workflow).toContain("lock.packages[''].version = NEW_VERSION");
+    expect(workflow).toContain("lock.packages['packages/electron'].version = NEW_VERSION");
+    expect(workflow).toContain("git add package.json packages/electron/package.json package-lock.json");
+    expect(workflow).toContain('git commit -m "chore: bump version');
+    expect(workflow).toContain("git push origin master --follow-tags");
     expect(workflow).toContain('git tag -a "$NEW_TAG"');
-    expect(workflow).toContain('git push origin "$NEW_TAG"');
   });
 
   it("keeps release-note workflow fixes from triggering app releases", () => {

@@ -259,7 +259,7 @@ describe("createWebSocketResponse", () => {
 
     await expect(
       createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, controller.signal),
-    ).rejects.toThrow("aborted");
+    ).rejects.toThrow("Aborted before WebSocket connect");
   });
 
   it("rejects before returning a Response when WS closes after only metadata", async () => {
@@ -268,7 +268,7 @@ describe("createWebSocketResponse", () => {
     ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_early" } }));
     ws.emit("close", 1000, Buffer.from(""));
 
-    await expect(promise).rejects.toThrow("WebSocket closed before terminal event");
+    await expect(promise).rejects.toThrow("WebSocket closed before any data");
   });
 
   it("rejects, detaches abort handling, and closes a metadata-only one-shot WS", async () => {

@@ -11,6 +11,7 @@ import { createFsPersistence } from "./account-persistence.js";
 import { AccountRegistry } from "./account-registry.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import type { AccountPersistence, PersistenceLoadHealth } from "./account-persistence.js";
+import type { AccountCapacitySummary } from "./account-lifecycle.js";
 import type { RotationStrategyName } from "./rotation-strategy.js";
 import type { AcquireFailureDiagnosis } from "./account-lifecycle.js";
 import type {
@@ -62,7 +63,7 @@ export class AccountPool {
       // Default to assuming quarantine succeeded if the persistence
       // implementation didn't report — older/mocked impls predate the
       // health field. The file-based createFsPersistence always reports.
-      this.persistenceHealth = loaded.health ?? { quarantined: true, backupPath: null };
+      this.persistenceHealth = loaded.health ?? { quarantined: true, backupPath: null, store: "accounts.json" };
     }
     this.registry = new AccountRegistry(persistence, loaded.entries, {
       persistDisabled: loaded.loadFailed === true,
@@ -138,6 +139,15 @@ export class AccountPool {
 
   addAccount(token: string, refreshToken?: string | null): string {
     return this.registry.addAccount(token, refreshToken);
+  }
+
+  async withPersistenceBatch<T>(fn: () => Promise<T>): Promise<T> {
+    this.registry.beginPersistenceBatch();
+    try {
+      return await fn();
+    } finally {
+      this.registry.endPersistenceBatch();
+    }
   }
 
   removeAccount(id: string): boolean {
@@ -287,6 +297,10 @@ export class AccountPool {
     return this.registry.getPoolSummary();
   }
 
+  getCapacitySummary(): AccountCapacitySummary {
+    return this.lifecycle.getCapacitySummary();
+  }
+
   // ── Persistence ───────────────────────────────────────────────────
 
   persistNow(): void {
@@ -294,7 +308,7 @@ export class AccountPool {
   }
 
   /**
-   * True when the on-disk `accounts.json` failed to load at startup and
+   * True when account persistence failed to load at startup and
    * was quarantined. While disabled, all schedulePersist/persistNow calls
    * are no-ops — in-memory CRUD still works for the running session, but
    * nothing reaches disk until the user restores a healthy file and
@@ -315,6 +329,7 @@ export class AccountPool {
   getPersistenceHealth(): PersistenceHealth {
     if (!this.isPersistDisabled()) return { ok: true };
     const health = this.persistenceHealth;
+    const store = health?.store ?? "accounts.json";
     if (health?.quarantined === false) {
       return {
         ok: false,
@@ -322,8 +337,8 @@ export class AccountPool {
         quarantined: false,
         backupPath: null,
         message:
-          "accounts.json failed to load at startup. The proxy tried to move it aside but the rename failed — the original file is still on disk. " +
-          "Auto-save is paused for this session. Inspect data/accounts.json manually and restart the app once it parses cleanly.",
+          `${store} failed to load at startup. The proxy tried to move it aside but the rename failed — the original file is still on disk. ` +
+          `Auto-save is paused for this session. Inspect data/${store} manually and restart the app once it parses cleanly.`,
       };
     }
     return {
@@ -332,13 +347,13 @@ export class AccountPool {
       quarantined: true,
       backupPath: health?.backupPath ?? null,
       message:
-        "accounts.json failed to load at startup and was quarantined (see data/ for accounts.json.corrupt-*.bak). " +
+        `${store} failed to load at startup and was quarantined (see data/ for ${store}.corrupt-*.bak). ` +
         "Auto-save is paused until you restore the file and restart the app. Imports in this session live in memory only.",
     };
   }
 
   /**
-   * Read a single account's refresh token directly from disk (accounts.json).
+   * Read a single account's refresh token directly from the active persistence backend.
    * Used by RefreshScheduler to detect cross-process RT updates before refreshing.
    * Returns null if not found or on read error.
    */

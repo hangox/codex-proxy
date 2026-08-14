@@ -1,5 +1,5 @@
 import type { CodexApi } from "@src/proxy/codex-api.js";
-import { collectNonStreamingResponse } from "@src/routes/shared/non-streaming-collect-response.js";
+import { collectNonStreamingResponse } from "@src/routes/shared/non-streaming-helpers.js";
 import type { FormatCollectTranslatorOptions, ProxyRequest } from "@src/routes/shared/proxy-handler-types.js";
 import { createMockFormatAdapter } from "@helpers/format-adapter.js";
 import { describe, expect, it, vi } from "vitest";
@@ -73,5 +73,29 @@ describe("collectNonStreamingResponse", () => {
       rawResponse: new Response("ok"),
       req: makeRequest(),
     })).rejects.toBe(err);
+  });
+
+  it("forwards response metadata to the caller as it is collected", async () => {
+    const onResponseMetadata = vi.fn();
+    const fmt = createMockFormatAdapter({
+      collectTranslator: vi.fn(async (options: FormatCollectTranslatorOptions) => {
+        options.onResponseMetadata?.({ invalidReasoningReplay: true });
+        return {
+          response: { id: "resp_1" },
+          usage: { input_tokens: 1, output_tokens: 2 },
+          responseId: "resp_1",
+        };
+      }),
+    });
+
+    await collectNonStreamingResponse({
+      fmt,
+      api: {} as unknown as CodexApi,
+      rawResponse: new Response("ok"),
+      req: makeRequest(),
+      onResponseMetadata,
+    });
+
+    expect(onResponseMetadata).toHaveBeenCalledWith({ invalidReasoningReplay: true });
   });
 });

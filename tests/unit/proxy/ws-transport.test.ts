@@ -104,8 +104,8 @@ async function waitForOpen(): Promise<void> {
  * promise + the MockWs so tests can drive the message sequence.
  *
  * `createWebSocketResponse` no longer resolves on `open` — it waits for the
- * first non-internal frame so it can detect early upstream errors and reject
- * with a `CodexApiError` instead of streaming the error to the client.
+ * first non-internal, non-metadata frame so it can still retry/reject if a WS
+ * dies after `response.created` but before any client-visible work.
  */
 async function startConnect(
   req: WsCreateRequest = BASE_REQUEST,
@@ -121,13 +121,14 @@ async function startConnect(
   return { promise, ws: lastWs() };
 }
 
-/** Drive a normal connect: emit `response.created` to unblock resolve. */
+/** Drive a normal connect: emit metadata plus one visible frame to unblock resolve. */
 async function connect(
   req: WsCreateRequest = BASE_REQUEST,
   headers: Record<string, string> = {},
 ): Promise<{ response: Response; ws: MockWs }> {
   const { promise, ws } = await startConnect(req, headers);
   ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_init" } }));
+  ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "Hello" }));
   const response = await promise;
   return { response, ws };
 }
@@ -159,8 +160,8 @@ describe("createWebSocketResponse", () => {
     expect(ws.sentMessages).toHaveLength(1);
     expect(JSON.parse(ws.sentMessages[0])).toEqual(BASE_REQUEST);
 
-    // Unblock resolve and verify the Response is HTTP 200.
     ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "hi" }));
     const response = await promise;
     expect(response.status).toBe(200);
 
@@ -203,9 +204,9 @@ describe("createWebSocketResponse", () => {
     const { promise, ws } = await startConnect();
 
     ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_123" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "Hello" }));
     const response = await promise;
 
-    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "Hello" }));
     ws.emit("message", JSON.stringify({
       type: "response.completed",
       response: { id: "resp_123", usage: { input_tokens: 10, output_tokens: 5 } },
@@ -258,31 +259,124 @@ describe("createWebSocketResponse", () => {
 
     await expect(
       createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, controller.signal),
-    ).rejects.toThrow("Aborted");
+    ).rejects.toThrow("aborted");
   });
 
-  it("passes previous_response_id without store/stream fields", async () => {
+  it("rejects before returning a Response when WS closes after only metadata", async () => {
+    const { promise, ws } = await startConnect();
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_early" } }));
+    ws.emit("close", 1000, Buffer.from(""));
+
+    await expect(promise).rejects.toThrow("WebSocket closed before terminal event");
+  });
+
+  it("rejects, detaches abort handling, and closes a metadata-only one-shot WS", async () => {
+    vi.useFakeTimers();
+    try {
+      const abortController = new AbortController();
+      const removeAbortListener = vi.spyOn(abortController.signal, "removeEventListener");
+      const promise = createWebSocketResponse(
+        "wss://test/ws",
+        {},
+        BASE_REQUEST,
+        abortController.signal,
+      );
+      promise.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = lastWs();
+      ws.emit("message", JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_waiting" },
+      }));
+      ws.emit("message", JSON.stringify({
+        type: "codex.response.metadata",
+        headers: { "x-test": "1" },
+      }));
+
+      vi.advanceTimersByTime(180_000);
+
+      expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
+      await expect(promise).rejects.toThrow("WebSocket response start timeout after 180000ms");
+      expect(ws.readyState).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the one-shot deadline after the first client-visible event", async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = lastWs();
+      ws.emit("message", JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_started" },
+      }));
+      ws.emit("message", JSON.stringify({
+        type: "response.output_text.delta",
+        delta: "started",
+      }));
+      const response = await promise;
+
+      await vi.advanceTimersByTimeAsync(360_000);
+
+      expect(ws.readyState).toBe(1);
+      ws.emit("message", JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_started" },
+      }));
+      await expect(readStream(response)).resolves.toContain("response.completed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores codex.rate_limits for early response resolution", async () => {
+    let rateLimitCalled = false;
+    const onRateLimits = () => { rateLimitCalled = true; };
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST, undefined, undefined, onRateLimits);
+    await waitForOpen();
+    const ws = lastWs();
+
+    ws.emit("message", JSON.stringify({
+      type: "codex.rate_limits",
+      rate_limits: {
+        primary: { used_percent: 55.0, window_minutes: 300, reset_at: 1700000000 },
+      }
+    }));
+
+    expect(rateLimitCalled).toBe(true);
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "hi" }));
+    const response = await promise;
+    expect(response.status).toBe(200);
+
+    ws.close();
+  });
+
+  it("fails closed before opening a one-shot when previous_response_id has no pool owner", async () => {
     const req: WsCreateRequest = {
       ...BASE_REQUEST,
       previous_response_id: "resp_prev_123",
     };
 
-    const { ws } = await startConnect(req);
-    const sent = JSON.parse(ws.sentMessages[0]);
-    expect(sent.previous_response_id).toBe("resp_prev_123");
-    expect(sent.store).toBeUndefined();
-    expect(sent.stream).toBeUndefined();
-
-    ws.close();
+    await expect(createWebSocketResponse("wss://test/ws", {}, req)).rejects.toMatchObject({
+      name: "PreviousResponseWebSocketError",
+    });
+    expect(wsInstances).toHaveLength(0);
   });
 
   it("preserves message ordering", async () => {
     const { promise, ws } = await startConnect();
 
     ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "chunk0" }));
     const response = await promise;
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 1; i < 5; i++) {
       ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: `chunk${i}` }));
     }
     ws.emit("message", JSON.stringify({ type: "response.completed", response: { id: "resp_1" } }));
@@ -305,7 +399,6 @@ describe("createWebSocketResponse", () => {
 
     const { response, ws } = await connect();
 
-    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "Hello" }));
     ws.emit("message", JSON.stringify({
       type: "response.completed",
       response: { id: "resp_init", usage: { input_tokens: 10, output_tokens: 5 } },

@@ -22,7 +22,8 @@
  *   - non-streaming-handler.ts — collect / retry response lifecycle
  */
 
-import { CodexApiError } from "../../proxy/codex-api.js";
+import { CodexApi, CodexApiError, PreviousResponseWebSocketError } from "../../proxy/codex-api.js";
+import { toQuota } from "../../auth/quota-utils.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError } from "./proxy-error-handler.js";
 import { handleStreaming } from "./streaming-handler.js";
@@ -54,12 +55,19 @@ import {
 } from "./proxy-request-diagnostics.js";
 import {
   applyProxyRetryRecoveryDecision,
+  applyCascadingBanDefense,
   buildProxyRetryRecoveryDecision,
+  invalidateRejectedPreviousResponse,
 } from "./proxy-retry-recovery.js";
+import { classifyRetryAction } from "./proxy-retry-classifier.js";
 import { buildProxySessionContext } from "./proxy-session-context.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
 import { sendProxyUpstreamAttempt } from "./proxy-upstream-attempt.js";
-import { buildWsPoolContext } from "./proxy-ws-context.js";
+import { buildWsPoolContext, forgetWsResponseOwner } from "./proxy-ws-context.js";
+import {
+  containsInvalidEncryptedContentSignal,
+  getReasoningReplayCache,
+} from "../../proxy/reasoning-replay-cache.js";
 
 export async function handleProxyRequest(options: HandleProxyRequestOptions): Promise<Response> {
   const { c, accountPool, cookieJar, req, fmt, proxyPool } = options;
@@ -71,18 +79,23 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   const originalRequestState = captureImplicitResumeRequestState(req);
   const hardBoundOpaqueState = isolateHardBoundOpaqueState(req);
   const sessionContext = buildProxySessionContext({ request: req, affinityMap });
+  let chainAdvanceTicket = sessionContext.chainAdvanceTicket;
+  let recoveryWsKeySuffix: string | undefined;
+  let continuityRecoveryCount = 0;
 
   // Opaque state already contains the authoritative compacted chain. Never attach
   // stale response/turn state or implicit-resume state from the pre-compact history.
   applyProxyRequestForwardingDefaults({
     request: req,
     promptCacheKey: sessionContext.promptCacheKey,
-    explicitTurnState: hardBoundOpaqueState ? null : sessionContext.explicitTurnState,
   });
+
+  const released = new Set<string>();
+  const verifiedExcludeIds: string[] = [];
 
   // Single acquire call — preferredEntryId is a hint, not a hard requirement
   const preferredEntryId = req.requiredAccountEntryId ?? sessionContext.preferredEntryId ?? undefined;
-  const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, preferredEntryId);
+  let acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, preferredEntryId);
   if (!acquired) {
     // ★ #108/#111：这次请求从未拿到账号、更谈不上进入流式阶段——
     // `streaming-handler.ts` 的 finally 钩子看不到这一类终止点，必须在这里
@@ -102,13 +115,87 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
     });
   }
 
+  // ── Drift-Defense & Verification Loop ──
+  // Caps the number of upstream /usage checks per request to avoid amplification
+  // when many accounts are simultaneously dirty.
+  const MAX_VERIFY_ATTEMPTS = 5;
+  let verifyAttempts = 0;
+  for (;;) {
+    if (!acquired) return respondWithNoAccount({ c, req, fmt, pool: accountPool });
+    const entry = accountPool.getEntry(acquired.entryId);
+    if (entry?.quotaVerifyRequired) {
+      const verifyingEntryId = acquired.entryId;
+      console.log(`[${fmt.tag}] 🔍 Account ${verifyingEntryId} (${entry.email ?? "?"}) requires quota verification due to local reset. Syncing with upstream...`);
+      try {
+        const usage = await new CodexApi(
+          acquired.token,
+          acquired.accountId,
+          cookieJar,
+          acquired.entryId,
+          proxyPool?.resolveProxyUrl(acquired.entryId),
+        ).getUsage();
+        
+        const quota = toQuota(usage);
+        accountPool.updateCachedQuota(acquired.entryId, quota);
+
+        if (quota.rate_limit.limit_reached) {
+          console.warn(`[${fmt.tag}] 🚫 Upstream reports account ${acquired.entryId} is still limit_reached. Releasing and retrying another...`);
+          releaseAccount(accountPool, acquired.entryId, undefined, released);
+          verifiedExcludeIds.push(acquired.entryId);
+
+          verifyAttempts++;
+          if (verifyAttempts >= MAX_VERIFY_ATTEMPTS) {
+            console.warn(`[${fmt.tag}] ⚠️ Drift-defense hit MAX_VERIFY_ATTEMPTS (${MAX_VERIFY_ATTEMPTS}). Giving up to avoid excess upstream calls.`);
+            return respondWithNoAccount({ c, req, fmt, pool: accountPool });
+          }
+
+          acquired = acquireAccount(accountPool, req.codexRequest.model, verifiedExcludeIds, fmt.tag, sessionContext.preferredEntryId ?? undefined);
+          if (!acquired) {
+            return respondWithNoAccount({ c, req, fmt, pool: accountPool });
+          }
+          continue; // Loop back to check the newly acquired account
+        }
+      } catch (err) {
+        console.warn(`[${fmt.tag}] ⚠️ Failed to verify dirty quota for ${verifyingEntryId}:`, err);
+        // Keep quotaVerifyRequired=true so the flag isn't silently cleared on transient network errors.
+        // The ActiveQuotaRefresher or the next request will retry. This avoids promoting a still-limited
+        // account to "clean" just because the upstream check temporarily failed.
+      }
+    }
+    break; // Verified or no verification required, proceed!
+  }
+
+  if (!acquired) return respondWithNoAccount({ c, req, fmt, pool: accountPool });
   let { entryId } = acquired;
+
+  // ── Session Affinity Fallback Defense (Cascading Ban Prevention) ──
+  // Only strip session identifiers when the preferred account is banned/disabled.
+  // Quota exhaustion is normal rotation — no ban propagation risk.
+  if (sessionContext.preferredEntryId && sessionContext.preferredEntryId !== entryId) {
+    const preferredEntry = accountPool.getEntry(sessionContext.preferredEntryId);
+    applyCascadingBanDefense({
+      request: req,
+      affinityMap,
+      preferredEntryId: sessionContext.preferredEntryId,
+      acquiredEntryId: entryId,
+      preferredStatus: preferredEntry?.status,
+      explicitPrevRespId: sessionContext.explicitPrevRespId,
+      tag: fmt.tag,
+    });
+  }
   let codexApi = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
   const triedEntryIds: string[] = [entryId];
   let modelRetried = false;
   let stripAndRetryDone = false;
-  // Idempotent-release guard: prevents double-release across retry branches
-  const released = new Set<string>();
+  const reasoningReplayCache = getReasoningReplayCache();
+  const reasoningReplayItems = sessionContext.implicitPrevRespId
+    ? reasoningReplayCache.lookup({
+        responseId: sessionContext.implicitPrevRespId,
+        entryId,
+        conversationId: sessionContext.chainConversationId,
+        variantHash: sessionContext.variantHash,
+      })
+    : [];
 
   const implicitResume = createImplicitResumeLifecycle({
     request: req,
@@ -117,6 +204,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
     tag: fmt.tag,
     implicitPrevRespId: hardBoundOpaqueState ? null : sessionContext.implicitPrevRespId,
     continuationInputStart: hardBoundOpaqueState ? 0 : sessionContext.continuationInputStart,
+    reasoningReplayItems: hardBoundOpaqueState ? [] : reasoningReplayItems,
     resumeEvaluationInput: hardBoundOpaqueState
       ? {
           ...sessionContext.resumeEvaluationInput,
@@ -203,6 +291,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       variantHash: sessionContext.variantHash,
       requestId,
       tag: fmt.tag,
+      poolKeySuffix: recoveryWsKeySuffix,
     });
 
   for (;;) {
@@ -247,6 +336,8 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
             codexApi = nextApi;
             if (!triedEntryIds.includes(nextEntryId)) triedEntryIds.push(nextEntryId);
           },
+          chainAdvanceTicket,
+          implicitResumeActive: implicitResume.isActive(),
         });
       }
 
@@ -276,94 +367,145 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           if (!triedEntryIds.includes(nextEntryId)) triedEntryIds.push(nextEntryId);
         },
         variantHash: sessionContext.variantHash,
+        chainAdvanceTicket,
       });
     } catch (err) {
-      if (!(err instanceof CodexApiError)) {
-        releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
-        // ★ #108/#111：这里没有产出 HTTP 响应（异常继续往上抛，由更外层的
-        // error handler 处理），但对这次 render 尝试而言依然是一次确定性
-        // 失败——不记的话这次尝试会在 compact-outcome-log 里彻底消失。
-        recordCompactFallbackRenderOutcome(req, false, { failureStage: "pre_stream" });
-        throw err;
-      }
-
-      if (implicitResume.replayFullInputAfterError(err)) {
-        continue;
-      }
-
-      const retryRecovery = buildProxyRetryRecoveryDecision({
-        sensitive: req.requiredAccountEntryId !== undefined,
+      invalidateRejectedPreviousResponse({
         err,
-        tag: fmt.tag,
-        entryId,
-        stripAndRetryDone,
         previousResponseId: req.codexRequest.previous_response_id,
+        affinityMap,
+        forgetResponseOwner: forgetWsResponseOwner,
       });
-      if (retryRecovery.action === "retry") {
-        stripAndRetryDone = true;
-        applyProxyRetryRecoveryDecision({
-          decision: retryRecovery,
-          request: req,
-          affinityMap,
-          restoreImplicitResumeRequest: implicitResume.restore,
+      if (containsInvalidEncryptedContentSignal(err)) {
+        reasoningReplayCache.evictByIdentity({
+          entryId,
+          conversationId: sessionContext.chainConversationId,
+          variantHash: sessionContext.variantHash,
         });
-        continue;
       }
-
-      // opaque restore 之后的 continuation 也走这条路径。safeLog 必须跟随
-      // hard-bound 标志，否则 429/401/403/CF 等分支仍会打印明文账号与邮箱，
-      // 并写进持久化 error log。
-      const decision = handleCodexApiError(
-        err, accountPool, entryId, req.codexRequest.model, fmt.tag, modelRetried, cookieJar,
-        req.requiredAccountEntryId !== undefined,
+      const retryAction = classifyRetryAction(
+        err,
+        {
+          stripAndRetryDone,
+          modelRetried,
+          implicitResumeActive: implicitResume.isActive(),
+          previousResponseId: req.codexRequest.previous_response_id,
+          explicitPreviousResponseId: Boolean(sessionContext.explicitPrevRespId),
+        },
+        (e) => implicitResume.canReplayAfterError(e),
       );
-      if (req.requiredAccountEntryId !== undefined && decision.action === "retry") {
-        releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
-        recordCompactFallbackRenderOutcome(req, false, { httpStatus: decision.status, failureStage: "pre_stream" });
-        return respondWithProxyError({
-          c,
-          req,
-          fmt,
-          status: decision.status,
-          message: "The compact state account failed and cross-account retry is disabled.",
-          ...(decision.useFormat429 ? { useFormat429: true } : {}),
-        });
-      }
 
-      const errorRetryTransition = applyProxyErrorRetryTransition({
-        accountPool,
-        entryId,
-        model: req.codexRequest.model,
-        triedEntryIds,
-        tag: fmt.tag,
-        decision,
-        released,
-        restoreImplicitResumeRequest: implicitResume.restore,
-        modelRetried,
-        expectsImageGen: req.expectsImageGen,
-        cookieJar,
-        proxyPool,
-      });
-      if (errorRetryTransition.action === "respond") {
-        // ★ #108/#111：多账号重试全部耗尽、最终放弃的终止点——这是最常见
-        // 的"换端点之后依然被拒"（比如 prompt 还是太长）落点。
-        recordCompactFallbackRenderOutcome(req, false, { httpStatus: errorRetryTransition.status, failureStage: "pre_stream" });
-        return respondWithProxyError({
-          c,
-          req,
-          fmt,
-          status: errorRetryTransition.status,
-          message: errorRetryTransition.message,
-          ...(errorRetryTransition.useFormat429 ? { useFormat429: true } : {}),
-        });
-      }
+      switch (retryAction.type) {
+        case "not_codex_error":
+          releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+          // ★ #108/#111：这里没有产出 HTTP 响应（异常继续往上抛，由更外层的
+          // error handler 处理），但对这次 render 尝试而言依然是一次确定性
+          // 失败——不记的话这次尝试会在 compact-outcome-log 里彻底消失。
+          recordCompactFallbackRenderOutcome(req, false, { failureStage: "pre_stream" });
+          throw err;
 
-      modelRetried = errorRetryTransition.modelRetried;
-      entryId = errorRetryTransition.entryId;
-      triedEntryIds.push(errorRetryTransition.entryId);
-      codexApi = errorRetryTransition.api;
-      await staggerIfNeeded(errorRetryTransition.prevSlotMs);
-      continue;
+        case "implicit_resume_replay": {
+          if (!implicitResume.replayFullInputAfterError(err)) throw err;
+          stripAndRetryDone = true;
+          const staleId = sessionContext.implicitPrevRespId;
+          const continuityReason = err instanceof PreviousResponseWebSocketError
+            ? err.continuityReason
+            : undefined;
+
+          // A busy owner is a live sibling branch. Keep the parent head and
+          // original ticket so only the first sibling completion advances it.
+          // Missing/dead owners are stale: invalidate and rebuild from a root.
+          if (staleId && continuityReason !== "busy") {
+            affinityMap.forget(staleId);
+            forgetWsResponseOwner(staleId);
+            chainAdvanceTicket = affinityMap.captureChainAdvance(
+              sessionContext.chainConversationId,
+              sessionContext.variantHash,
+              null,
+            );
+          }
+
+          // A unique pooled key avoids both the busy canonical connection and
+          // one-shot fallback while establishing a new response owner.
+          recoveryWsKeySuffix =
+            `recovery-${requestId.slice(0, 8)}-${++continuityRecoveryCount}`;
+          continue;
+        }
+
+        case "strip_and_retry": {
+          stripAndRetryDone = true;
+          const decision = buildProxyRetryRecoveryDecision({
+            err, tag: fmt.tag, entryId, stripAndRetryDone: false,
+            previousResponseId: req.codexRequest.previous_response_id,
+          });
+          applyProxyRetryRecoveryDecision({
+            decision,
+            request: req,
+            affinityMap,
+            restoreImplicitResumeRequest: implicitResume.restore,
+          });
+          if (decision.action === "retry" && decision.staleId) {
+            forgetWsResponseOwner(decision.staleId);
+            chainAdvanceTicket = affinityMap.captureChainAdvance(
+              sessionContext.chainConversationId,
+              sessionContext.variantHash,
+              null,
+            );
+            recoveryWsKeySuffix =
+              `recovery-${requestId.slice(0, 8)}-${++continuityRecoveryCount}`;
+          }
+          continue;
+        }
+
+        case "error_handler_decides": {
+          // opaque restore 之后的 continuation 也走这条路径。safeLog 必须跟随
+          // hard-bound 标志，否则 429/401/403/CF 等分支仍会打印明文账号与邮箱，
+          // 并写进持久化 error log。
+          const decision = handleCodexApiError(
+            err as CodexApiError, accountPool, entryId, req.codexRequest.model, fmt.tag, modelRetried, cookieJar,
+            req.requiredAccountEntryId !== undefined,
+          );
+          if (req.requiredAccountEntryId !== undefined && decision.action === "retry") {
+            releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+            recordCompactFallbackRenderOutcome(req, false, { httpStatus: decision.status, failureStage: "pre_stream" });
+            return respondWithProxyError({
+              c,
+              req,
+              fmt,
+              status: decision.status,
+              message: "The compact state account failed and cross-account retry is disabled.",
+              ...(decision.useFormat429 ? { useFormat429: true } : {}),
+            });
+          }
+
+          const errorRetryTransition = applyProxyErrorRetryTransition({
+            accountPool, entryId,
+            model: req.codexRequest.model,
+            triedEntryIds, tag: fmt.tag,
+            decision, released,
+            restoreImplicitResumeRequest: implicitResume.restore,
+            modelRetried,
+            expectsImageGen: req.expectsImageGen,
+            cookieJar, proxyPool,
+          });
+          if (errorRetryTransition.action === "respond") {
+            recordCompactFallbackRenderOutcome(req, false, { httpStatus: errorRetryTransition.status, failureStage: "pre_stream" });
+            return respondWithProxyError({
+              c, req, fmt,
+              status: errorRetryTransition.status,
+              message: errorRetryTransition.message,
+              ...(errorRetryTransition.useFormat429 ? { useFormat429: true } : {}),
+            });
+          }
+
+          modelRetried = errorRetryTransition.modelRetried;
+          entryId = errorRetryTransition.entryId;
+          triedEntryIds.push(errorRetryTransition.entryId);
+          codexApi = errorRetryTransition.api;
+          await staggerIfNeeded(errorRetryTransition.prevSlotMs);
+          continue;
+        }
+      }
     }
   }
 }

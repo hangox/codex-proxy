@@ -317,6 +317,57 @@ describe("streamPassthrough premature close handling", () => {
     ]);
   });
 
+  it("logs and flags upstream terminal failure frames (error / response.failed) instead of passing them silently", async () => {
+    const metadataCalls: Array<Record<string, unknown>> = [];
+    const api = createMockApi([
+      { event: "response.created", data: { response: { id: "resp_term_fail" } } },
+      {
+        event: "response.failed",
+        data: {
+          type: "response.failed",
+          response: {
+            id: "resp_term_fail",
+            status: "failed",
+            error: { code: "context_length_exceeded", message: "input exceeds context window" },
+          },
+        },
+      },
+    ]);
+
+    for await (const _chunk of streamPassthrough(
+      api as never,
+      new Response("ok"),
+      "test-model",
+      () => {},
+      () => {},
+      undefined,
+      {
+        requestId: "rid-term-fail",
+        tag: "Responses",
+        model: "gpt-5.6",
+        accountEntryId: "e-9",
+        variantHash: "vh-term",
+      },
+      undefined,
+      (metadata) => metadataCalls.push(metadata as Record<string, unknown>),
+    )) {
+      // Drain the generator.
+    }
+
+    expect(metadataCalls.some((m) => m.terminalFailure === true)).toBe(true);
+    expect(recordedCloseEvents).toHaveLength(1);
+    expect(recordedCloseEvents[0]).toMatchObject({
+      kind: "upstream-error",
+      requestId: "rid-term-fail",
+      tag: "Responses",
+      model: "gpt-5.6",
+      accountEntryId: "e-9",
+      variantHash: "vh-term",
+      responseId: "resp_term_fail",
+    });
+    expect(recordedCloseEvents[0].detail).toMatch(/context_length_exceeded/);
+  });
+
   it("propagates local callback errors instead of synthesizing response.failed", async () => {
     const api = createMockApi([
       { event: "response.created", data: { response: { id: "resp_callback" } } },
@@ -509,6 +560,56 @@ describe("collectPassthrough premature close handling", () => {
 
     expect(response.output[0].content[0].text).toBe("{\"point\":[42,\"hello\"]}");
     expect(response.output_text).toBe("{\"point\":[42,\"hello\"]}");
+  });
+
+  it("backfills from output_item.done when response.output is missing entirely", async () => {
+    const api = createMockApi([
+      { event: "response.created", data: { response: { id: "resp_no_output" } } },
+      {
+        event: "response.output_item.done",
+        data: {
+          output_index: 0,
+          item: { id: "msg_1", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello" }] },
+        },
+      },
+      {
+        event: "response.completed",
+        data: {
+          response: {
+            id: "resp_no_output",
+            usage: { input_tokens: 5, output_tokens: 10 },
+          },
+        },
+      },
+    ]);
+
+    const result = await collectPassthrough(api as never, new Response("ok"), "test-model");
+    const response = result.response as { output: unknown[]; output_text?: string };
+    expect(response.output).toHaveLength(1);
+    expect(response.output[0]).toMatchObject({ type: "message" });
+    expect(response.output_text).toBe("hello");
+  });
+
+  it("backfills from text deltas when response.output is missing entirely and no output items", async () => {
+    const api = createMockApi([
+      { event: "response.created", data: { response: { id: "resp_delta_no_output" } } },
+      { event: "response.output_text.delta", data: { delta: "こんに" } },
+      { event: "response.output_text.delta", data: { delta: "ちは" } },
+      {
+        event: "response.completed",
+        data: {
+          response: {
+            id: "resp_delta_no_output",
+            usage: { input_tokens: 2, output_tokens: 3 },
+          },
+        },
+      },
+    ]);
+
+    const result = await collectPassthrough(api as never, new Response("ok"), "test-model");
+    const response = result.response as { output: Array<{ content: Array<{ text: string }> }>; output_text?: string };
+    expect(response.output[0].content[0].text).toBe("こんにちは");
+    expect(response.output_text).toBe("こんにちは");
   });
 
   it("rethrows original error if response.completed was already received", async () => {

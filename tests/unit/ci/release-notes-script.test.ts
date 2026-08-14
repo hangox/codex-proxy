@@ -11,6 +11,17 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+function hasBash(): boolean {
+  try {
+    execFileSync("bash", ["-c", "exit 0"], { stdio: "ignore", timeout: 1000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const describeIfBash = hasBash() ? describe : describe.skip;
+
 function runNotes(cwd: string, tag: string): string {
   return execFileSync("bash", [SCRIPT, tag], {
     cwd,
@@ -58,6 +69,13 @@ describe("generate-release-notes.sh", () => {
     expect(workflow).toContain("bash .github/scripts/generate-release-notes.sh \"$TAG\" > /tmp/release-notes.md");
   });
 
+});
+
+describeIfBash("generate-release-notes.sh bash behavior", () => {
+  beforeAll(() => {
+    expect(existsSync(SCRIPT), `script missing: ${SCRIPT}`).toBe(true);
+  });
+
   it("uses normal stable tag history when the release tag contains the real commits", () => {
     const cwd = createRepo();
     writeText(cwd, "src/app.txt", "direct fix\n");
@@ -68,8 +86,8 @@ describe("generate-release-notes.sh", () => {
 
     const notes = runNotes(cwd, "v1.0.1");
 
-    expect(notes).toContain("- fix: direct stable fix (#1)");
-    expect(notes).not.toContain("docs: update readme");
+    expect(notes).toContain("direct stable fix (#1)");
+    expect(notes).not.toContain("update readme");
   });
 
   it("falls back to dev history when a stable tag only contains a squash promotion", () => {
@@ -78,7 +96,7 @@ describe("generate-release-notes.sh", () => {
     writeText(cwd, "src/app.txt", "real fix\n");
     commitAll(cwd, "fix: real user-facing fix (#10)");
     writeText(cwd, "src/helper.txt", "cleanup\n");
-    commitAll(cwd, "refactor: internal helper cleanup (#11)");
+    commitAll(cwd, "feat: user-visible helper feature (#11)");
     git(cwd, ["update-ref", "refs/remotes/origin/dev", "dev"]);
 
     git(cwd, ["checkout", "master"]);
@@ -93,8 +111,91 @@ describe("generate-release-notes.sh", () => {
 
     const notes = runNotes(cwd, "v1.0.1");
 
-    expect(notes).toContain("- fix: real user-facing fix (#10)");
-    expect(notes).toContain("- refactor: internal helper cleanup (#11)");
+    expect(notes).toContain("real user-facing fix (#10)");
+    expect(notes).toContain("user-visible helper feature (#11)");
     expect(notes).not.toContain("promote dev release fixes");
   });
+
+  it("uses topological sorting (git describe) rather than semver sorting to avoid pulling in old history from unrelated higher-version tags", () => {
+    const cwd = createRepo(); // v1.0.0 is created here (commit C1)
+
+    // Make an intermediary stable fix and tag it v1.0.1 (commit C2)
+    writeText(cwd, "src/app.txt", "v1.0.1 fix\n");
+    commitAll(cwd, "fix: intermediary stable fix (#50)");
+    git(cwd, ["tag", "v1.0.1"]);
+
+    // Create a higher-version beta tag v2.0.0-beta.1 branch off v1.0.0 (contains C1, but not C2)
+    git(cwd, ["checkout", "-b", "feature-v2", "v1.0.0"]);
+    writeText(cwd, "src/app.txt", "v2 base\n");
+    commitAll(cwd, "feat: v2 feature work");
+    git(cwd, ["tag", "v2.0.0-beta.1"]);
+
+    // Go back to master (which is at v1.0.1) and make a new commit for v1.0.2-beta.1
+    git(cwd, ["checkout", "master"]);
+    writeText(cwd, "src/app.txt", "v1.0.2 fix\n");
+    commitAll(cwd, "fix: critical v1.0.2 bugfix (#100)");
+    git(cwd, ["tag", "v1.0.2-beta.1"]);
+
+    const notes = runNotes(cwd, "v1.0.2-beta.1");
+
+    // The release notes should only contain the commits since the last release (v1.0.1)
+    expect(notes).toContain("critical v1.0.2 bugfix (#100)");
+    expect(notes).not.toContain("intermediary stable fix (#50)");
+  });
+
+  it("filters refactor/test/style commits in line with the bump trigger filter", () => {
+    const cwd = createRepo();
+    writeText(cwd, "src/app.txt", "fix\n");
+    commitAll(cwd, "fix: user-facing fix (#1)");
+    writeText(cwd, "src/r.txt", "r\n");
+    commitAll(cwd, "refactor: internal cleanup (#2)");
+    writeText(cwd, "src/t.txt", "t\n");
+    commitAll(cwd, "test: add coverage (#3)");
+    git(cwd, ["tag", "v1.0.1"]);
+
+    const notes = runNotes(cwd, "v1.0.1");
+
+    expect(notes).toContain("user-facing fix (#1)");
+    expect(notes).not.toContain("internal cleanup");
+    expect(notes).not.toContain("add coverage");
+  });
+
+  it("falls back to the raw commit list when node itself dies (notes must never block a release)", () => {
+    const cwd = createRepo();
+    writeText(cwd, "src/app.txt", "fix\n");
+    commitAll(cwd, "fix: survives node crash (#1)");
+    git(cwd, ["tag", "v1.0.1"]);
+
+    // fake `node` that always fails, first on PATH
+    const shimDir = join(cwd, "shim");
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(join(shimDir, "node"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    const notes = execFileSync("bash", [SCRIPT, "v1.0.1"], {
+      cwd,
+      encoding: "utf-8",
+      env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    expect(notes).toContain("- fix: survives node crash (#1)");
+  });
+
+  it("produces grouped English fallback (not dictionary word salad) without LLM env", () => {
+    const cwd = createRepo();
+    writeText(cwd, "src/app.txt", "translation fix\n");
+    commitAll(cwd, "fix(translation): preserve anthropic message roles (#1)");
+    git(cwd, ["tag", "v1.0.1"]);
+
+    const notes = runNotes(cwd, "v1.0.1");
+
+    expect(notes).toContain("### Fixes");
+    expect(notes).toContain("preserve anthropic message roles (#1)");
+    // the dictionary translator and its headers are gone
+    expect(notes).not.toContain("中文版 (翻译)");
+    expect(notes).not.toContain("修复(翻译)");
+  });
 });
+
+
+

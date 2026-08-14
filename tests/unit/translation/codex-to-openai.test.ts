@@ -341,3 +341,61 @@ describe("streamCodexToOpenAI — onResponseId callback", () => {
     expect(receivedId).toBe("resp_1");
   });
 });
+
+describe("image generation translation", () => {
+  const imgEvents: ExtractedEvent[] = [
+    createCreated("resp_img"),
+    createInProgress("resp_img"),
+    {
+      typed: {
+        type: "response.output_item.done",
+        outputIndex: 0,
+        item: {
+          type: "image_generation_call",
+          id: "item_img_123",
+          result: "fake_base64_image_content",
+          revised_prompt: "a beautiful red circle on white background",
+        }
+      },
+      imageGenerationDone: {
+        id: "item_img_123",
+        result: "fake_base64_image_content",
+        revised_prompt: "a beautiful red circle on white background",
+      }
+    },
+    createCompleted("resp_img", { input_tokens: 10, output_tokens: 10 }),
+  ];
+
+  it("streamCodexToOpenAI translates imageGenerationDone event into tool_calls", async () => {
+    const chunks = await collectStreamOutput(imgEvents);
+    const parsedChunks = chunks
+      .filter((c) => c.startsWith("data: {"))
+      .map((c) => JSON.parse(c.replace("data: ", "")));
+    const toolCallChunks = parsedChunks.filter((p) => p.choices[0].delta?.tool_calls);
+    // Per OpenAI streaming spec: start chunk (id+name+empty args) + arguments chunk
+    expect(toolCallChunks).toHaveLength(2);
+
+    const startTc = toolCallChunks[0].choices[0].delta.tool_calls[0];
+    expect(startTc.id).toBe("item_img_123");
+    expect(startTc.type).toBe("function");
+    expect(startTc.function.name).toBe("image_generation");
+    expect(startTc.function.arguments).toBe("");
+
+    const argsTc = toolCallChunks[1].choices[0].delta.tool_calls[0];
+    expect(argsTc.id).toBeUndefined();
+    const args = JSON.parse(argsTc.function.arguments);
+    expect(args.result).toBe("fake_base64_image_content");
+    expect(args.revised_prompt).toBe("a beautiful red circle on white background");
+  });
+
+  it("collectCodexResponse translates imageGenerationDone event into tool_calls", async () => {
+    mockEvents = imgEvents;
+    const { response } = await collectCodexResponse(fakeCodexApi, fakeResponse, "gpt-5.4");
+    expect(response.choices[0].message.tool_calls).toBeDefined();
+    const toolCall = response.choices[0].message.tool_calls![0];
+    expect(toolCall.function.name).toBe("image_generation");
+    const args = JSON.parse(toolCall.function.arguments);
+    expect(args.result).toBe("fake_base64_image_content");
+    expect(args.revised_prompt).toBe("a beautiful red circle on white background");
+  });
+});

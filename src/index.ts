@@ -35,6 +35,7 @@ import { initTransport, getTransport } from "./tls/transport.js";
 import { loadStaticModels } from "./models/model-store.js";
 import { startModelRefresh, stopModelRefresh } from "./models/model-fetcher.js";
 import { startQuotaRefresh, stopQuotaRefresh } from "./auth/usage-refresher.js";
+import { ActiveQuotaRefresher } from "./auth/active-quota-refresher.js";
 import { UsageStatsStore } from "./auth/usage-stats.js";
 import { startSessionCleanup, stopSessionCleanup } from "./auth/dashboard-session.js";
 import { createDashboardAuthRoutes } from "./routes/dashboard-login.js";
@@ -43,6 +44,7 @@ import { AnthropicUpstream } from "./proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "./proxy/gemini-upstream.js";
 import { ApiKeyPool } from "./auth/api-key-pool.js";
 import { createApiKeyRoutes } from "./routes/api-keys.js";
+import { ApiKeyModelCache } from "./auth/api-key-model-cache.js";
 import { createEmbeddingsRoutes } from "./routes/embeddings.js";
 import { createRuntimeUpstreamRouter } from "./proxy/upstream-router-bootstrap.js";
 import { startOllamaBridge, stopOllamaBridge } from "./ollama/server.js";
@@ -122,7 +124,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.use("*", cors);
   app.use("*", requestId);
   app.use("*", logger);
-  app.use("*", errorHandler);
+  app.onError(errorHandler);
   app.use("*", dashboardAuth);
   app.use("*", logCapture);
 
@@ -146,11 +148,11 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     console.log("[Init] OpenAI upstream configured");
   }
   if (cfg.providers.anthropic) {
-    adapters.set("anthropic", new AnthropicUpstream(cfg.providers.anthropic.api_key));
+    adapters.set("anthropic", new AnthropicUpstream(cfg.providers.anthropic.api_key, cfg.providers.anthropic.base_url));
     console.log("[Init] Anthropic upstream configured");
   }
   if (cfg.providers.gemini) {
-    adapters.set("gemini", new GeminiUpstream(cfg.providers.gemini.api_key));
+    adapters.set("gemini", new GeminiUpstream(cfg.providers.gemini.api_key, cfg.providers.gemini.base_url));
     console.log("[Init] Gemini upstream configured");
   }
   for (const [name, provider] of Object.entries(cfg.providers.custom)) {
@@ -173,6 +175,9 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   // opaque compact 服务，而不是与第一个实例竞争 generation。
   startOpaqueCompactRuntime(buildOpaqueCompactRuntimeConfig(cfg));
 
+  // Create a single model cache instance shared across all routes.
+  const apiKeyModelCache = new ApiKeyModelCache();
+
   // Mount routes
   const authRoutes = createAuthRoutes(accountPool, refreshScheduler);
   const accountRoutes = createAccountRoutes(accountPool, refreshScheduler, cookieJar, proxyPool);
@@ -180,7 +185,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const messagesRoutes = createMessagesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
   const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
   const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
-  const apiKeyRoutes = createApiKeyRoutes(apiKeyPool);
+  const apiKeyRoutes = createApiKeyRoutes(apiKeyPool, apiKeyModelCache);
   const embeddingsRoutes = createEmbeddingsRoutes(accountPool, apiKeyPool);
   const proxyRoutes = createProxyRoutes(proxyPool, accountPool);
   const usageStats = new UsageStatsStore();
@@ -248,6 +253,10 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   // Start usage stats snapshot timer (no upstream requests — quota is collected passively)
   startQuotaRefresh(accountPool, usageStats);
 
+  // Start active quota refresher — proactively syncs limit_reached / dirty accounts
+  const activeQuotaRefresher = new ActiveQuotaRefresher(accountPool, { cookieJar, proxyPool });
+  activeQuotaRefresher.start();
+
   // Start proxy health check timer (if proxies exist)
   proxyPool.startHealthCheckTimer();
 
@@ -282,6 +291,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
         stopProxyUpdateChecker();
         stopModelRefresh();
         stopQuotaRefresh();
+        activeQuotaRefresher.stop();
         stopSessionCleanup();
         refreshScheduler.destroy();
         proxyPool.destroy();

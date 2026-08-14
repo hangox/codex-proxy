@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### Merged from upstream/master
+
+- 吸收 icebear0828 至 2.0.77 的未发布改动：WS 连接池保活、reasoning replay cache、CF challenge cooldown、SQLite 账号持久化、GPT-5.6 / image generation、dashboard auth 统一、healthcheck 硬化等。本仓 compact v2 / opaque compact / `retryable` / abort 不回落 HTTP 保持不变。上游把 `non-streaming-*.ts` 收拢进 helpers 的重构**没有**整段采纳——独立文件里有 opaque 隐私合同，helpers 改为 re-export。
+
+
 ### Changed
 
 - **★ 上游返回 `invalid_value` / `unsupported_value` 时，客户端收到的状态码从 502 改为 400——影响所有 API 面，不只是压缩。** 这两个 code 此前不在 `codexApiErrorFromEvent` 的码表里，落到兜底的 502，而 502 落在 `withRetry` 的可重试区间：一个「重发多少次都一样」的**参数校验错误**会被无谓重试 3 次。改成 400 之后重试不再发生。**这个函数不是压缩专用的**，`/v1/messages`、`/v1/chat/completions`、gemini 三条客户端翻译链共用它，所以这是全 API 面的状态码语义变更；受控 A/B 实测（同一个非压缩的普通 `/v1/messages` 请求）：master 返回 502、改动后返回 400，上游请求次数都是 1。**对客户端的实际影响需要注意**：4xx 和 5xx 对客户端不是同义词，很多客户端（Claude Code 就是）把 5xx 当可重试的临时故障、把 4xx 当永久失败——同一个上游状况，这类错误现在会**直接呈现给用户**而不是被静默自动重试。这是预期行为（参数错误重试没有意义，且重试会掩盖真实原因），不是回归。

@@ -55,17 +55,16 @@ describe("proxy request preparation", () => {
     expect(isolateHardBoundOpaqueState(ordinary)).toBe(false);
   });
 
-  it("applies prompt cache key and explicit turn state for upstream forwarding", () => {
+  it("applies the prompt cache key without synthesizing cross-turn state", () => {
     const request = makeProxyRequest();
 
     applyProxyRequestForwardingDefaults({
       request,
       promptCacheKey: "cache-key-1",
-      explicitTurnState: "turn-explicit",
     });
 
     expect(request.codexRequest.prompt_cache_key).toBe("cache-key-1");
-    expect(request.codexRequest.turnState).toBe("turn-explicit");
+    expect(request.codexRequest.turnState).toBeUndefined();
   });
 
   it("does not clear an existing turn state when no explicit turn state is available", () => {
@@ -75,7 +74,6 @@ describe("proxy request preparation", () => {
     applyProxyRequestForwardingDefaults({
       request,
       promptCacheKey: "cache-key-1",
-      explicitTurnState: null,
     });
 
     expect(request.codexRequest.turnState).toBe("turn-existing");
@@ -88,7 +86,6 @@ describe("proxy request preparation", () => {
     applyProxyRequestForwardingDefaults({
       request,
       promptCacheKey: "cache-key-1",
-      explicitTurnState: null,
     });
 
     expect(request.codexRequest.include).toEqual(["reasoning.encrypted_content"]);
@@ -102,7 +99,6 @@ describe("proxy request preparation", () => {
     applyProxyRequestForwardingDefaults({
       request,
       promptCacheKey: "cache-key-1",
-      explicitTurnState: null,
     });
 
     expect(request.codexRequest.include).toEqual(["custom.include"]);

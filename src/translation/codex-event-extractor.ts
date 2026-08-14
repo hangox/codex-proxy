@@ -95,6 +95,11 @@ export interface ExtractedEvent {
   functionCallStart?: FunctionCallStart;
   functionCallDelta?: FunctionCallDelta;
   functionCallDone?: FunctionCallDone;
+  imageGenerationDone?: {
+    id: string;
+    result: string;
+    revised_prompt?: string;
+  };
 }
 
 export type CodexEventSource = AsyncIterable<ExtractedEvent>;
@@ -387,6 +392,13 @@ export async function* iterateCodexEvents(
       }
 
       case "response.output_item.done": {
+        if (typed.item.type === "image_generation_call") {
+          extracted.imageGenerationDone = {
+            id: typed.item.id || "",
+            result: typed.item.result || "",
+            revised_prompt: typed.item.revised_prompt,
+          };
+        }
         if (!emittedText) {
           const text = extractTextFromOutputItem(typed.item);
           if (text.length > 0) {

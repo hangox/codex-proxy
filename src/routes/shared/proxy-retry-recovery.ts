@@ -20,6 +20,24 @@ export type ProxyRetryRecoveryDecision =
   }
   | { action: "none" };
 
+export interface InvalidateRejectedPreviousResponseOptions {
+  err: unknown;
+  previousResponseId: string | undefined;
+  affinityMap: Pick<SessionAffinityMap, "forget">;
+  forgetResponseOwner: (responseId: string) => void;
+}
+
+/** Clear both logical and physical ownership after upstream explicitly rejects an ID. */
+export function invalidateRejectedPreviousResponse(
+  options: InvalidateRejectedPreviousResponseOptions,
+): boolean {
+  const { err, previousResponseId, affinityMap, forgetResponseOwner } = options;
+  if (!previousResponseId || !isPreviousResponseNotFoundError(err)) return false;
+  forgetResponseOwner(previousResponseId);
+  affinityMap.forget(previousResponseId);
+  return true;
+}
+
 export interface BuildProxyRetryRecoveryDecisionOptions {
   err: unknown;
   tag: string;
@@ -98,5 +116,74 @@ export function applyProxyRetryRecoveryDecision(
   restoreImplicitResumeRequest();
   request.codexRequest.previous_response_id = undefined;
   request.codexRequest.turnState = undefined;
+  // This path now applies only to an implicit chain, for which the proxy owns
+  // a full request snapshot. Rebuild an owner on WebSocket when possible.
+  request.codexRequest.useWebSocket = true;
   return true;
 }
+
+export interface ApplyCascadingBanDefenseOptions {
+  request: ProxyRequest;
+  affinityMap: Pick<SessionAffinityMap, "forget">;
+  preferredEntryId: string;
+  acquiredEntryId: string;
+  preferredStatus: string | undefined;
+  explicitPrevRespId: string | undefined;
+  tag: string;
+}
+
+/** Statuses that indicate a potentially compromised account (ban propagation risk). */
+const BAN_RISK_STATUSES = new Set(["banned", "disabled"]);
+
+/**
+ * Cross-account session isolation guard (Cascading Ban Defense).
+ *
+ * Only strips `previous_response_id` / `turnState` when the preferred account
+ * is in a ban-risk state (banned / disabled). Normal rotation due to quota
+ * exhaustion does NOT trigger stripping — the `previous_response_id` won't
+ * work cross-account anyway, but carrying it is harmless and the upstream will
+ * simply return a "not found" error that the retry path already handles.
+ */
+export function applyCascadingBanDefense({
+  request,
+  affinityMap,
+  preferredEntryId,
+  acquiredEntryId,
+  preferredStatus,
+  explicitPrevRespId,
+  tag,
+}: ApplyCascadingBanDefenseOptions): boolean {
+  if (
+    acquiredEntryId === preferredEntryId ||
+    (!request.codexRequest.previous_response_id && !request.codexRequest.turnState)
+  ) {
+    return false;
+  }
+
+  // An explicit Responses continuation may contain only the current delta.
+  // Keep the ID intact: the physical-owner guard will fail closed before any
+  // cross-account WebSocket send instead of silently dropping history.
+  if (explicitPrevRespId) {
+    console.warn(
+      `[${tag}] Account switched from explicit response owner ${preferredEntryId} to ${acquiredEntryId}; ` +
+      `preserving previous_response_id for fail-closed continuity enforcement`,
+    );
+    return false;
+  }
+
+  if (!preferredStatus || !BAN_RISK_STATUSES.has(preferredStatus)) {
+    return false;
+  }
+
+  console.warn(
+    `[${tag}] ⚠️ Account switched from preferred ${preferredEntryId} (${preferredStatus}) to ${acquiredEntryId}. ` +
+    `Stripping previous_response_id (${request.codexRequest.previous_response_id}) and turnState to prevent upstream cascading ban.`,
+  );
+  request.codexRequest.previous_response_id = undefined;
+  request.codexRequest.turnState = undefined;
+  if (explicitPrevRespId) {
+    affinityMap.forget(explicitPrevRespId);
+  }
+  return true;
+}
+

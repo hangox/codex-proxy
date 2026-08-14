@@ -323,6 +323,13 @@ function walkSchema(node: Record<string, unknown>, seen: Set<object>): Record<st
   return node;
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
+export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+
+export const REASONING_EFFORT_BUDGET: Record<string, number> = {
+  low: 1024,
+  medium: 8192,
+  high: 16000,
+  xhigh: 32000,
+};

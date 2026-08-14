@@ -126,7 +126,7 @@ const AnthropicContentSchema = z.union([
 ]);
 
 const AnthropicMessageSchema = z.object({
-  role: z.enum(["user", "assistant"]),
+  role: z.string().min(1),
   content: AnthropicContentSchema,
 });
 
@@ -215,6 +215,8 @@ export type AnthropicMessagesRequest = z.infer<
   typeof AnthropicMessagesRequestSchema
 >;
 
+// MessagesRequestSchema 是 ZodEffects（preprocess），没有 .shape。
+// count_tokens 必须自己重复字段，不能引用 .shape.tools。
 export const AnthropicCountTokensRequestSchema = z.preprocess(normalizeInlineSystemMessages, z.object({
   model: z.string(),
   messages: z.array(AnthropicMessageSchema).min(1),

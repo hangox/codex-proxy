@@ -62,7 +62,7 @@ describe("buildWsPoolContext", () => {
     }
   });
 
-  it("builds a pool context keyed by entry id, chain conversation id, and variant hash", () => {
+  it("builds a pool context keyed by entry id and chain conversation id", () => {
     const pool = createPool();
     const deps = createDeps(pool);
 
@@ -73,6 +73,35 @@ describe("buildWsPoolContext", () => {
     expect(context?.entryId).toBe("entry-A");
     expect(context?.poolKey).toBe("entry-A:conv-1:vh-123");
     expect(deps.getPoolCalls).toBe(1);
+  });
+
+  it("isolates full-input variants on different physical WebSocket keys", () => {
+    const deps = createDeps();
+
+    const main = buildWsPoolContext(
+      { ...baseOptions(), variantHash: "main-turn" },
+      deps.deps,
+    );
+    const subagent = buildWsPoolContext(
+      { ...baseOptions(), variantHash: "changed-instructions" },
+      deps.deps,
+    );
+
+    expect(main?.poolKey).toBe("entry-A:conv-1:main-turn");
+    expect(subagent?.poolKey).toBe("entry-A:conv-1:changed-instructions");
+    expect(subagent?.poolKey).not.toBe(main?.poolKey);
+  });
+
+  it("uses a distinct pooled key for a full-replay continuity recovery", () => {
+    const deps = createDeps();
+    const canonical = buildWsPoolContext(baseOptions(), deps.deps);
+    const recovery = buildWsPoolContext(
+      { ...baseOptions(), poolKeySuffix: "recovery-rid-1" },
+      deps.deps,
+    );
+
+    expect(canonical?.poolKey).toBe("entry-A:conv-1:vh-123");
+    expect(recovery?.poolKey).toBe("entry-A:conv-1:vh-123:recovery-rid-1");
   });
 
   it("logs pool decisions with the route tag and shortened request id", () => {

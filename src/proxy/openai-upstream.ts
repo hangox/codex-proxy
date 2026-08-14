@@ -14,10 +14,7 @@ import { CodexApiError } from "./codex-types.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToOpenAIRequest } from "../translation/codex-request-to-openai.js";
 import { withFetchDispatcher } from "./fetch-dispatcher.js";
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+import { isRecord } from "../translation/shared-utils.js";
 
 function extractModelId(model: string): string {
   const colon = model.indexOf(":");
@@ -55,7 +52,7 @@ export class OpenAIUpstream implements UpstreamAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-      throw new CodexApiError(response.status, errorText);
+      throw new CodexApiError(response.status, errorText, response.headers);
     }
 
     return response;

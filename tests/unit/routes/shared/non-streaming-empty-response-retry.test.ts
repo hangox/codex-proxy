@@ -24,7 +24,7 @@ vi.mock("@src/utils/retry.js", () => ({
 const proxyHandlerUtils = await import("@src/routes/shared/proxy-handler-utils.js");
 const proxyEgressLog = await import("@src/routes/shared/proxy-egress-log.js");
 const retryModule = await import("@src/utils/retry.js");
-const { retryNonStreamingEmptyResponse } = await import("@src/routes/shared/non-streaming-empty-response-retry.js");
+const { retryNonStreamingEmptyResponse } = await import("@src/routes/shared/non-streaming-helpers.js");
 
 const buildCodexApiMock = vi.mocked(proxyHandlerUtils.buildCodexApi);
 const recordProxyEgressLogMock = vi.mocked(proxyEgressLog.recordProxyEgressLog);

@@ -247,7 +247,7 @@ claude
 
 > Copy env vars from the **Anthropic SDK Setup** card in the dashboard (includes Opus / Sonnet / Haiku tier model config).
 >
-> Recommended models: Opus → `gpt-5.4`, Sonnet → `gpt-5.3-codex`, Haiku → `gpt-5.4-mini`.
+> Recommended models: Opus → `gpt-5.5`, Sonnet → `gpt-5.4`, Haiku → `gpt-5.3-codex`.
 
 ### Codex CLI
 
@@ -455,6 +455,23 @@ for await (const chunk of stream) {
 ## ⚙️ Configuration
 
 All configuration in `config/default.yaml`:
+
+### CORS Allowed Hosts
+
+Configure allowed CORS origins via the `CORS_ALLOWED_HOSTS` environment variable, which maps to the `server.cors` field in the config file. Separate multiple hosts with commas:
+
+```bash
+export CORS_ALLOWED_HOSTS="example.com,another-domain.com"
+```
+
+Or in `data/local.yaml`:
+
+```yaml
+server:
+  cors:
+    - "https://example.com"
+    - "https://another-domain.com"
+```
 
 | Section | Key Settings | Description |
 |---------|-------------|-------------|
@@ -737,7 +754,7 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 
 Codex Proxy is primarily maintained by one person, but it has been improved by a lot of community help. Special thanks to these contributors who submitted code, documentation, fixes, or PRs:
 
-[@SsuJojo](https://github.com/SsuJojo) · [@TutuchanXD](https://github.com/TutuchanXD) · [@kanweiwei](https://github.com/kanweiwei) · [@et2010](https://github.com/et2010) · [@d-demand-priv](https://github.com/d-demand-priv) · [@hangox](https://github.com/hangox) · [@jarvisluk](https://github.com/jarvisluk) · [@jeasonstudio](https://github.com/jeasonstudio) · [@JPClaw12](https://github.com/JPClaw12) · [@lezi-fun](https://github.com/lezi-fun) · [@lookvincent](https://github.com/lookvincent) · [@pocper1](https://github.com/pocper1) · [@woai66](https://github.com/woai66) · [@xsShuang](https://github.com/xsShuang) · [@yuwei5380](https://github.com/yuwei5380)
+[@SsuJojo](https://github.com/SsuJojo) · [@TutuchanXD](https://github.com/TutuchanXD) · [@kanweiwei](https://github.com/kanweiwei) · [@et2010](https://github.com/et2010) · [@d-demand-priv](https://github.com/d-demand-priv) · [@hangox](https://github.com/hangox) · [@jarvisluk](https://github.com/jarvisluk) · [@jeasonstudio](https://github.com/jeasonstudio) · [@JPClaw12](https://github.com/JPClaw12) · [@lezi-fun](https://github.com/lezi-fun) · [@lookvincent](https://github.com/lookvincent) · [@pocper1](https://github.com/pocper1) · [@woai66](https://github.com/woai66) · [@xsShuang](https://github.com/xsShuang) · [@yuwei5380](https://github.com/yuwei5380) · [@aeltorio](https://github.com/aeltorio) · [@williamjameshandley](https://github.com/williamjameshandley) · [@FlavienKlr](https://github.com/FlavienKlr)
 
 Thanks as well to everyone who opened [Issues](https://github.com/icebear0828/codex-proxy/issues) with bug reproductions, logs, compatibility reports, and feature suggestions. Those reports directly shaped account rotation, proxy compatibility, the Dashboard, Ollama Bridge, model compatibility, and error observability.
 

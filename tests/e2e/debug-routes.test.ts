@@ -175,6 +175,17 @@ describe("GET /health", () => {
       ["status", "version", "authenticated", "pool", "opaque_compact_state", "timestamp"].sort(),
     );
   });
+
+  it("pool 只暴露 total/active，不把容量数字放到免鉴权 /health", async () => {
+    const res = await app.request("/health");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { pool: Record<string, unknown> };
+    expect(Object.keys(body.pool).sort()).toEqual(["active", "total"]);
+    expect(body.pool).not.toHaveProperty("max_concurrent_per_account");
+    expect(body.pool).not.toHaveProperty("total_slots");
+    expect(body.pool).not.toHaveProperty("used_slots");
+    expect(body.pool).not.toHaveProperty("available_slots");
+  });
 });
 
 describe("GET /debug/fingerprint", () => {

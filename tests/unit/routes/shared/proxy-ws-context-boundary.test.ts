@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { buildWsPoolContext } from "@src/routes/shared/proxy-ws-context.js";
+import {
+  buildWsPoolContext,
+  forgetWsResponseOwner,
+} from "@src/routes/shared/proxy-ws-context.js";
 
 const ROOT = process.cwd();
 const WS_CONTEXT_MODULE = "src/routes/shared/proxy-ws-context.ts";
@@ -48,6 +51,7 @@ function importsNamedBinding(content: string, moduleSuffix: string, bindingName:
 describe("proxy websocket context boundary", () => {
   it("exports websocket pool context construction from its own module", () => {
     expect(buildWsPoolContext).toBeTypeOf("function");
+    expect(forgetWsResponseOwner).toBeTypeOf("function");
     const wsContext = source(WS_CONTEXT_MODULE);
 
     expect(importsNamedBinding(wsContext, "ws-pool.js", "getWsPool", WS_CONTEXT_MODULE)).toBe(true);

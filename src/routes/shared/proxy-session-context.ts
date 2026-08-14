@@ -1,4 +1,4 @@
-import type { SessionAffinityMap } from "../../auth/session-affinity.js";
+import type { ChainAdvanceTicket, SessionAffinityMap } from "../../auth/session-affinity.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import { computeVariantHash } from "./variant-hash.js";
 import {
@@ -6,8 +6,8 @@ import {
   getContinuationInputStartIndex,
   getFunctionCallOutputIds,
   getInlineFunctionCallIds,
+  hashInstructions,
   IMPLICIT_RESUME_MAX_AGE_MS,
-  normalizeInstructions,
   resolvePromptCacheIdentity,
   type ImplicitResumeOpts,
 } from "./proxy-session-helpers.js";
@@ -30,12 +30,12 @@ export interface ProxySessionContext {
   variantHash: string;
   implicitPrevRespId: string | null;
   prevRespId: string | null | undefined;
-  implicitStoredInstructions: string | null;
+  implicitStoredInstructionsHash: string | null;
   implicitContinuationInput: ProxyRequest["codexRequest"]["input"];
   requiredFunctionCallOutputIds: string[];
   implicitStoredFunctionCallIds: string[];
   preferredEntryId: string | null;
-  explicitTurnState: string | null;
+  chainAdvanceTicket: ChainAdvanceTicket;
   resumeEvaluationInput: ProxyResumeEvaluationInput;
 }
 
@@ -65,8 +65,8 @@ export function buildProxySessionContext(
         )
       : null;
   const prevRespId = explicitPrevRespId ?? implicitPrevRespId;
-  const implicitStoredInstructions = implicitPrevRespId
-    ? affinityMap.lookupInstructions(implicitPrevRespId)
+  const implicitStoredInstructionsHash = implicitPrevRespId
+    ? affinityMap.lookupInstructionsHash(implicitPrevRespId)
     : null;
   const implicitContinuationInput = codexRequest.input.slice(continuationInputStart);
   const requiredFunctionCallOutputIds = implicitPrevRespId
@@ -84,10 +84,24 @@ export function buildProxySessionContext(
   const preferredEntryId =
     explicitPrevRespId
       ? affinityMap.lookup(explicitPrevRespId)
-      : implicitPrevRespId && normalizeInstructions(currentInstructions) === normalizeInstructions(implicitStoredInstructions)
+      : implicitPrevRespId && hashInstructions(currentInstructions) === implicitStoredInstructionsHash
         ? affinityMap.lookup(implicitPrevRespId)
         : null;
-  const explicitTurnState = explicitPrevRespId ? affinityMap.lookupTurnState(explicitPrevRespId) : null;
+  const currentVariantHead = affinityMap.lookupLatestResponseIdByConversationId(
+    chainConversationId,
+    undefined,
+    variantHash,
+  );
+  const expectedChainParent = explicitPrevRespId
+    ? currentVariantHead === null
+      ? null
+      : explicitPrevRespId
+    : implicitPrevRespId ?? undefined;
+  const chainAdvanceTicket = affinityMap.captureChainAdvance(
+    chainConversationId,
+    variantHash,
+    expectedChainParent,
+  );
 
   return {
     currentInstructions,
@@ -100,19 +114,19 @@ export function buildProxySessionContext(
     variantHash,
     implicitPrevRespId,
     prevRespId,
-    implicitStoredInstructions,
+    implicitStoredInstructionsHash,
     implicitContinuationInput,
     requiredFunctionCallOutputIds,
     implicitStoredFunctionCallIds,
     preferredEntryId,
-    explicitTurnState,
+    chainAdvanceTicket,
     resumeEvaluationInput: {
       implicitPrevRespId,
       continuationInputStart,
       inputLength: codexRequest.input.length,
       preferredEntryId,
       currentInstructions,
-      storedInstructions: implicitStoredInstructions,
+      storedInstructionsHash: implicitStoredInstructionsHash,
       requiredFunctionCallOutputIds,
       storedFunctionCallIds: implicitStoredFunctionCallIds,
       inlineFunctionCallIds,

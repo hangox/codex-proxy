@@ -79,7 +79,7 @@ export const ConfigSchema = z.object({
     chromium_version: z.string().default("136"),
   }),
   model: z.object({
-    default: z.string().default("gpt-5.4"),
+    default: z.string().default("gpt-5.6-sol"),
     default_reasoning_effort: z.string().nullable().default(null),
     default_service_tier: z.string().nullable().default(null),
     aliases: z.record(z.string(), z.string()).default({}),
@@ -139,6 +139,17 @@ export const ConfigSchema = z.object({
     port: z.number().min(1).max(65535).default(8080),
     proxy_api_key: z.string().nullable().default(null),
     trust_proxy: z.boolean().default(false),
+    cors: z.array(z.string().trim().min(1).refine((val) => {
+      // Strip scheme if present and validate it's a valid hostname
+      const hostname = val.replace(/^https?:\/\//, '').trim();
+      if (!hostname) return false;
+      // Basic hostname validation - allow hostnames, IP addresses, and localhost
+      return /^([a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$/.test(hostname) ||
+             /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) ||
+             hostname === "localhost";
+    }, {
+      message: "Invalid hostname format. Use bare hostnames like 'example.com' or '192.168.1.1'",
+    })).default([]),
   }),
   logs: z.object({
     enabled: z.boolean().default(false),
@@ -174,6 +185,7 @@ export const ConfigSchema = z.object({
   tls: z.object({
     proxy_url: z.string().nullable().default(null),
     force_http11: z.boolean().default(false),
+    health_check_url: z.string().default("https://api.ipify.org?format=json"),
   }).default({}),
   quota: z.object({
     refresh_interval_minutes: z.number().min(0).default(5),
@@ -228,9 +240,11 @@ export const ConfigSchema = z.object({
     }).optional(),
     anthropic: z.object({
       api_key: z.string(),
+      base_url: z.string().optional(),
     }).optional(),
     gemini: z.object({
       api_key: z.string(),
+      base_url: z.string().optional(),
     }).optional(),
     /** OpenAI-compatible third-party providers (Groq, DeepSeek, Together, etc.). */
     custom: z.record(

@@ -10,7 +10,7 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions, budgetToEffort, clampReasoningEffortToModel, isRecognizedReasoningEffort } from "./shared-utils.js";
+import { buildInstructions, budgetToEffort, clampReasoningEffortToModel, isRecognizedReasoningEffort, isRecord } from "./shared-utils.js";
 import type { ModelConfigOverride } from "./shared-utils.js";
 import {
   anthropicToolsToCodex,
@@ -18,12 +18,16 @@ import {
   type AnthropicToolConversionOptions,
 } from "./tool-format.js";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function hasHostedWebSearchTool(tools: unknown[]): boolean {
   return tools.some((tool) => isRecord(tool) && tool.type === "web_search");
+}
+
+function normalizeMessageRole(role: string): "system" | "developer" | "user" | "assistant" {
+  if (role === "system" || role === "developer" || role === "user" || role === "assistant") {
+    return role;
+  }
+  console.warn("[anthropic-to-codex] Unknown message role, downgrading to user:", role);
+  return "user";
 }
 
 /**
@@ -111,7 +115,7 @@ function extractMultimodalContent(
  * Handles text, image, tool_use, and tool_result blocks.
  */
 function contentToInputItems(
-  role: "user" | "assistant",
+  role: "system" | "developer" | "user" | "assistant",
   content: string | Array<Record<string, unknown>>,
 ): CodexInputItem[] {
   if (typeof content === "string") {
@@ -128,10 +132,9 @@ function contentToInputItems(
       items.push({ role: "user", content: extracted || "" });
     }
   } else {
-    // Assistant messages: text-only (Codex doesn't support structured assistant content)
     const text = extractTextContent(content);
     if (text || !hasToolBlocks) {
-      items.push({ role: "assistant", content: text });
+      items.push({ role, content: text });
     }
   }
 
@@ -251,7 +254,7 @@ export function translateAnthropicToCodexRequest(
   const input: CodexInputItem[] = [];
   for (const msg of req.messages) {
     const items = contentToInputItems(
-      msg.role as "user" | "assistant",
+      normalizeMessageRole(msg.role),
       msg.content as string | Array<Record<string, unknown>>,
     );
     input.push(...items);

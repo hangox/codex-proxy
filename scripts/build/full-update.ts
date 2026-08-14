@@ -52,7 +52,6 @@ function runTsxStep(label: string, args: string[]): Promise<void> {
     const child = spawn(command, childArgs, {
       cwd: ROOT,
       stdio: "inherit",
-      shell: process.platform === "win32",
     });
 
     child.on("error", rejectStep);

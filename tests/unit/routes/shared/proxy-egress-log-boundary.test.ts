@@ -9,7 +9,7 @@ const EGRESS_LOG_MODULE = "src/routes/shared/proxy-egress-log.ts";
 const UPSTREAM_ATTEMPT_MODULE = "src/routes/shared/proxy-upstream-attempt.ts";
 const PROXY_HANDLER_MODULE = "src/routes/shared/proxy-handler.ts";
 const NON_STREAMING_HANDLER_MODULE = "src/routes/shared/non-streaming-handler.ts";
-const NON_STREAMING_EMPTY_RESPONSE_RETRY_MODULE = "src/routes/shared/non-streaming-helpers.ts";
+const NON_STREAMING_EMPTY_RESPONSE_RETRY_MODULE = "src/routes/shared/non-streaming-empty-response-retry.ts";
 
 function source(path: string): string {
   return readFileSync(resolve(ROOT, path), "utf-8");

@@ -37,9 +37,11 @@ describe("ConfigSchema", () => {
     expect(result.auth.max_concurrent_per_account).toBe(3);
     expect(result.auth.request_interval_ms).toBe(50);
     expect(result.model.default).toBe("gpt-5.6-sol");
+    expect(result.model.image_host_model).toBe("gpt-5.5");
     expect(result.model.default_reasoning_effort).toBeNull();
     expect(result.model.aliases).toEqual({});
     expect(result.model.custom_models).toEqual([]);
+    expect(result.model.opaque_compact_token_budget_overrides).toEqual({});
     expect(result.model.allow_client_system_prompt_strategy).toBe(false);
     expect(result.tls.force_http11).toBe(false);
     expect(result.tls.health_check_url).toBe("https://api.ipify.org?format=json");
@@ -85,6 +87,7 @@ describe("ConfigSchema", () => {
       client: { platform: "linux" },
       model: {
         default: "gpt-5.4",
+        opaque_compact_token_budget_overrides: { "gpt-5.6-sol": 880_000 },
         aliases: {
           "claude-opus-4-7": "gpt-5.5",
           "my-openai": "openai:gpt-4o",
@@ -137,6 +140,7 @@ describe("ConfigSchema", () => {
     expect(result.api.timeout_seconds).toBe(120);
     expect(result.client.platform).toBe("linux");
     expect(result.model.default).toBe("gpt-5.4");
+    expect(result.model.opaque_compact_token_budget_overrides).toEqual({ "gpt-5.6-sol": 880_000 });
     expect(result.model.aliases).toEqual({
       "claude-opus-4-7": "gpt-5.5",
       "my-openai": "openai:gpt-4o",
@@ -181,6 +185,20 @@ describe("ConfigSchema", () => {
     expect(result.official_agent.api_key).toBe("agent-key");
     expect(result.official_agent.app_server_url).toBe("ws://127.0.0.1:4777");
     expect(result.official_agent.auth).toEqual({ type: "capability_token", token_file: "/tmp/codex-token" });
+  });
+
+  it("rejects invalid opaque compact budget overrides", () => {
+    const result = ConfigSchema.safeParse({
+      api: {}, client: {}, model: { opaque_compact_token_budget_overrides: { "gpt-5.6-sol": 0 } }, auth: {}, server: {}, session: {},
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects gpt-image-2 as the image host model", () => {
+    const result = ConfigSchema.safeParse({
+      api: {}, client: {}, model: { image_host_model: "gpt-image-2" }, auth: {}, server: {}, session: {},
+    });
+    expect(result.success).toBe(false);
   });
 
   it("rejects non-websocket official agent URLs", () => {

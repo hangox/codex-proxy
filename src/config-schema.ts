@@ -80,6 +80,12 @@ export const ConfigSchema = z.object({
   }),
   model: z.object({
     default: z.string().default("gpt-5.6-sol"),
+    /** Images generations 使用的 Codex 宿主模型；不能把 gpt-image-2 当作宿主模型。 */
+    image_host_model: z.string().trim().min(1)
+      .refine((model) => model.toLowerCase() !== "gpt-image-2", {
+        message: "model.image_host_model must be a Codex chat model, not gpt-image-2",
+      })
+      .default("gpt-5.5"),
     default_reasoning_effort: z.string().nullable().default(null),
     default_service_tier: z.string().nullable().default(null),
     aliases: z.record(z.string(), z.string()).default({}),
@@ -88,6 +94,11 @@ export const ConfigSchema = z.object({
     suppress_desktop_directives: z.boolean().default(true),
     claude_code_compact_bridge: z.boolean().default(false),
     claude_code_opaque_compact_experimental: z.boolean().default(false),
+    /** Opaque compact 每个上游模型的运行时预检预算覆盖。 */
+    opaque_compact_token_budget_overrides: z.record(
+      z.string().trim().min(1),
+      z.number().int().min(1).max(1_000_000),
+    ).default({}),
     allow_client_system_prompt_strategy: z.boolean().default(false),
     system_prompt_strategy: z
       .enum(["instructions", "developer_inline", "system_inline"])

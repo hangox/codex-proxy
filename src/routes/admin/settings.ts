@@ -10,6 +10,13 @@ import {
 } from "../shared/opaque-compact-runtime.js";
 import { getOpaqueCompactStateReadiness, getOpaqueCompactStateCapacity } from "../shared/opaque-compact-state.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
+import {
+  buildOpaqueCompactBudgetRows,
+  canonicalizeOpaqueCompactBudgetOverrides,
+  getOpaqueCompactBudgetAllowedModelNames,
+  getOpaqueCompactBudgetCalibration,
+  resolveOpaqueCompactBudgetModel,
+} from "../shared/codex-compact-service.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -45,6 +52,49 @@ function normalizeModelAliases(input: unknown): {
   }
 
   return { aliases, error: null };
+}
+
+function normalizeOpaqueCompactTokenBudgetOverrides(input: unknown): {
+  overrides: Record<string, number>;
+  error: string | null;
+} {
+  if (!isRecord(input)) {
+    return { overrides: {}, error: "opaque_compact_token_budget_overrides must be an object of model -> positive integer" };
+  }
+
+  const overrides: Record<string, number> = {};
+  for (const [rawModel, rawBudget] of Object.entries(input)) {
+    const model = rawModel.trim();
+    if (!model) {
+      return { overrides: {}, error: "opaque_compact_token_budget_overrides model names must not be empty" };
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, model)) {
+      return { overrides: {}, error: `opaque_compact_token_budget_overrides contains duplicate model after trimming: ${model}` };
+    }
+    if (typeof rawBudget !== "number" || !Number.isInteger(rawBudget) || rawBudget < 1 || rawBudget > 1_000_000) {
+      return { overrides: {}, error: "opaque_compact_token_budget_overrides values must be integers between 1 and 1000000" };
+    }
+    const resolvedModel = resolveOpaqueCompactBudgetModel(model);
+    if (resolvedModel === null) {
+      return {
+        overrides: {},
+        error: `${model} is not a routable Codex model. Register it under model.custom_models or add an alias to a catalog model first`,
+      };
+    }
+    if (Object.prototype.hasOwnProperty.call(overrides, resolvedModel)) {
+      return { overrides: {}, error: `opaque_compact_token_budget_overrides contains duplicate model after alias normalization: ${resolvedModel}` };
+    }
+    const firstFailureTokens = getOpaqueCompactBudgetCalibration(resolvedModel)?.firstFailureTokens;
+    if (firstFailureTokens !== null && firstFailureTokens !== undefined && rawBudget >= firstFailureTokens) {
+      return {
+        overrides: {},
+        error: `${resolvedModel} override must be lower than its first verified failure boundary (${firstFailureTokens})`,
+      };
+    }
+    overrides[resolvedModel] = rawBudget;
+  }
+
+  return { overrides, error: null };
 }
 
 export function createSettingsRoutes(): Hono {
@@ -124,6 +174,9 @@ export function createSettingsRoutes(): Hono {
       suppress_desktop_directives: config.model.suppress_desktop_directives,
       claude_code_compact_bridge: config.model.claude_code_compact_bridge,
       claude_code_opaque_compact_experimental: config.model.claude_code_opaque_compact_experimental,
+      opaque_compact_token_budget_overrides: canonicalizeOpaqueCompactBudgetOverrides(config.model.opaque_compact_token_budget_overrides),
+      opaque_compact_budget_allowed_models: getOpaqueCompactBudgetAllowedModelNames(),
+      opaque_compact_budgets: buildOpaqueCompactBudgetRows(config.model.opaque_compact_token_budget_overrides),
       opaque_compact_state_readiness: getOpaqueCompactStateReadiness(),
       // ★ 8.20（reviewer 复审发现，从 /health 挪过来）：容量数字（count/
       // bytes/离 capacity·maxBytes 上限多远）不是凭据，但是运营信息——
@@ -168,6 +221,7 @@ export function createSettingsRoutes(): Hono {
       suppress_desktop_directives?: boolean;
       claude_code_compact_bridge?: boolean;
       claude_code_opaque_compact_experimental?: boolean;
+      opaque_compact_token_budget_overrides?: unknown;
       allow_client_system_prompt_strategy?: boolean;
       system_prompt_strategy?: string;
       default_model?: string;
@@ -229,6 +283,16 @@ export function createSettingsRoutes(): Hono {
         c.status(400);
         return c.json({ error: "system_prompt_strategy requires enabling allow_client_system_prompt_strategy first" });
       }
+    }
+
+    let normalizedOpaqueCompactTokenBudgetOverrides: Record<string, number> | null = null;
+    if (body.opaque_compact_token_budget_overrides !== undefined) {
+      const result = normalizeOpaqueCompactTokenBudgetOverrides(body.opaque_compact_token_budget_overrides);
+      if (result.error) {
+        c.status(400);
+        return c.json({ error: result.error });
+      }
+      normalizedOpaqueCompactTokenBudgetOverrides = result.overrides;
     }
 
     let normalizedModelAliases: Record<string, string> | null = null;
@@ -321,6 +385,10 @@ export function createSettingsRoutes(): Hono {
       if (body.claude_code_opaque_compact_experimental !== undefined) {
         if (!data.model) data.model = {};
         (data.model as Record<string, unknown>).claude_code_opaque_compact_experimental = body.claude_code_opaque_compact_experimental;
+      }
+      if (normalizedOpaqueCompactTokenBudgetOverrides !== null) {
+        if (!data.model) data.model = {};
+        (data.model as Record<string, unknown>).opaque_compact_token_budget_overrides = normalizedOpaqueCompactTokenBudgetOverrides;
       }
       if (body.allow_client_system_prompt_strategy !== undefined) {
         if (!data.model) data.model = {};
@@ -445,6 +513,9 @@ export function createSettingsRoutes(): Hono {
       suppress_desktop_directives: updated.model.suppress_desktop_directives,
       claude_code_compact_bridge: updated.model.claude_code_compact_bridge,
       claude_code_opaque_compact_experimental: updated.model.claude_code_opaque_compact_experimental,
+      opaque_compact_token_budget_overrides: canonicalizeOpaqueCompactBudgetOverrides(updated.model.opaque_compact_token_budget_overrides),
+      opaque_compact_budget_allowed_models: getOpaqueCompactBudgetAllowedModelNames(),
+      opaque_compact_budgets: buildOpaqueCompactBudgetRows(updated.model.opaque_compact_token_budget_overrides),
       // reason 与 /health、路由 409 三处同名同义，便于运维与 E2E 断言。
       opaque_compact_state_readiness: getOpaqueCompactStateReadiness(),
       allow_client_system_prompt_strategy: updated.model.allow_client_system_prompt_strategy,

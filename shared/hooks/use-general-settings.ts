@@ -3,6 +3,16 @@ import { extractErrorMessage } from "../utils/extract-error";
 
 export type SystemPromptStrategy = "instructions" | "developer_inline" | "system_inline";
 
+export interface OpaqueCompactBudgetRow {
+  model: string;
+  recommended_tokens: number | null;
+  override_tokens: number | null;
+  effective_tokens: number;
+  verified_success_tokens: number | null;
+  first_failure_tokens: number | null;
+  experimental: boolean;
+}
+
 export interface GeneralSettingsData {
   port: number;
   proxy_url: string | null;
@@ -10,6 +20,9 @@ export interface GeneralSettingsData {
   inject_desktop_context: boolean;
   suppress_desktop_directives: boolean;
   claude_code_opaque_compact_experimental: boolean;
+  opaque_compact_token_budget_overrides: Record<string, number>;
+  opaque_compact_budget_allowed_models: string[];
+  opaque_compact_budgets: OpaqueCompactBudgetRow[];
   allow_client_system_prompt_strategy: boolean;
   system_prompt_strategy: SystemPromptStrategy;
   default_model: string;
@@ -55,7 +68,7 @@ export function useGeneralSettings(apiKey: string | null) {
     }
   }, []);
 
-  const save = useCallback(async (patch: Partial<GeneralSettingsData>) => {
+  const save = useCallback(async (patch: Partial<GeneralSettingsData>): Promise<boolean> => {
     setSaving(true);
     setSaved(false);
     setError(null);
@@ -81,6 +94,9 @@ export function useGeneralSettings(apiKey: string | null) {
         inject_desktop_context: result.inject_desktop_context,
         suppress_desktop_directives: result.suppress_desktop_directives,
         claude_code_opaque_compact_experimental: result.claude_code_opaque_compact_experimental,
+        opaque_compact_token_budget_overrides: result.opaque_compact_token_budget_overrides ?? {},
+        opaque_compact_budget_allowed_models: result.opaque_compact_budget_allowed_models ?? [],
+        opaque_compact_budgets: result.opaque_compact_budgets ?? [],
         allow_client_system_prompt_strategy: result.allow_client_system_prompt_strategy,
         system_prompt_strategy: result.system_prompt_strategy,
         default_model: result.default_model,
@@ -104,8 +120,10 @@ export function useGeneralSettings(apiKey: string | null) {
       setRestartRequired(result.restart_required);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setSaving(false);
     }

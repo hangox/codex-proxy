@@ -15,6 +15,8 @@ const mockConfig = {
     suppress_desktop_directives: true,
     claude_code_compact_bridge: false,
     claude_code_opaque_compact_experimental: false,
+    opaque_compact_token_budget_overrides: {} as Record<string, number>,
+    custom_models: [] as Array<string | { id: string }>,
     allow_client_system_prompt_strategy: false,
     system_prompt_strategy: "instructions",
   },
@@ -124,6 +126,8 @@ describe("GET /admin/general-settings", () => {
     mockConfig.usage_stats.credits_per_usd = 25;
     mockConfig.model.allow_client_system_prompt_strategy = false;
     mockConfig.model.system_prompt_strategy = "instructions";
+    mockConfig.model.aliases = {};
+    mockConfig.model.custom_models = [];
   });
 
   it("returns current values including logs_llm_only and credits_per_usd", async () => {
@@ -138,6 +142,45 @@ describe("GET /admin/general-settings", () => {
       force_http11: false,
       claude_code_compact_bridge: false,
       claude_code_opaque_compact_experimental: false,
+      opaque_compact_token_budget_overrides: {},
+      opaque_compact_budgets: [
+        {
+          model: "gpt-5.6-sol",
+          recommended_tokens: 900_000,
+          override_tokens: null,
+          effective_tokens: 900_000,
+          verified_success_tokens: 920_038,
+          first_failure_tokens: 925_000,
+          experimental: false,
+        },
+        {
+          model: "gpt-5.6-terra",
+          recommended_tokens: 900_000,
+          override_tokens: null,
+          effective_tokens: 900_000,
+          verified_success_tokens: 920_038,
+          first_failure_tokens: 925_000,
+          experimental: false,
+        },
+        {
+          model: "gpt-5.6-luna",
+          recommended_tokens: 900_000,
+          override_tokens: null,
+          effective_tokens: 900_000,
+          verified_success_tokens: 920_038,
+          first_failure_tokens: 925_000,
+          experimental: false,
+        },
+        {
+          model: "gpt-5.5",
+          recommended_tokens: 320_000,
+          override_tokens: null,
+          effective_tokens: 320_000,
+          verified_success_tokens: 340_081,
+          first_failure_tokens: 350_000,
+          experimental: false,
+        },
+      ],
       allow_client_system_prompt_strategy: false,
       system_prompt_strategy: "instructions",
       default_model: "gpt-5.4",
@@ -164,6 +207,9 @@ describe("POST /admin/general-settings", () => {
     mockConfig.usage_stats.credits_per_usd = 25;
     mockConfig.model.allow_client_system_prompt_strategy = false;
     mockConfig.model.system_prompt_strategy = "instructions";
+    mockConfig.model.aliases = {};
+    mockConfig.model.custom_models = [];
+    mockConfig.model.opaque_compact_token_budget_overrides = {};
   });
 
   it("persists compact bridge without requiring restart", async () => {
@@ -206,6 +252,122 @@ describe("POST /admin/general-settings", () => {
     mutate?.(localConfig);
     expect(localConfig).toEqual({
       model: { claude_code_opaque_compact_experimental: true },
+    });
+  });
+
+  it("persists opaque compact budgets without requiring restart", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ opaque_compact_token_budget_overrides: { "gpt-5.6-sol": 880_000 } }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.restart_required).toBe(false);
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    expect(reloadAllConfigs).toHaveBeenCalledOnce();
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { opaque_compact_token_budget_overrides: { "gpt-5.6-sol": 880_000 } },
+    });
+  });
+
+  it("rejects invalid opaque compact budget overrides", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ opaque_compact_token_budget_overrides: { "gpt-5.6-sol": 1_000_001 } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("rejects a calibrated override at or above the first verified failure boundary", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        opaque_compact_token_budget_overrides: {
+          "gpt-5.6-sol": 925_000,
+          "gpt-5.5": 340_000,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("gpt-5.6-sol");
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("accepts registered custom model overrides within the generic range", async () => {
+    mockConfig.model.custom_models = ["my-experimental-model"];
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        opaque_compact_token_budget_overrides: {
+          "my-experimental-model": 1,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).restart_required).toBe(false);
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { opaque_compact_token_budget_overrides: { "my-experimental-model": 1 } },
+    });
+  });
+
+  it("rejects an unregistered custom model override", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        opaque_compact_token_budget_overrides: { "not-registered-model": 123_456 },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("not a routable Codex model");
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("normalizes an alias override to the routable catalog model", async () => {
+    mockConfig.model.aliases = { "compact-sol": "gpt-5.6-sol" };
+    mockConfig.model.opaque_compact_token_budget_overrides = { "gpt-5.6-sol": 880_000 };
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        opaque_compact_token_budget_overrides: { "compact-sol": 880_000 },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).opaque_compact_token_budget_overrides).toEqual({ "gpt-5.6-sol": 880_000 });
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { opaque_compact_token_budget_overrides: { "gpt-5.6-sol": 880_000 } },
     });
   });
 

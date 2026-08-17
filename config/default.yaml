@@ -10,6 +10,8 @@ client:
   chromium_version: "146"
 model:
   default: gpt-5.4
+  # Images generations 的 Codex 宿主模型；客户端的 gpt-image-2 只表示图像工具后端。
+  image_host_model: gpt-5.5
   default_reasoning_effort: null
   default_service_tier: null
   aliases: {}
@@ -18,6 +20,9 @@ model:
   suppress_desktop_directives: false
   claude_code_compact_bridge: false
   claude_code_opaque_compact_experimental: false
+  # 每个模型的 opaque compact 预检预算覆盖；留空时使用内置实测预算。
+  # Dashboard 保存后立即写入 data/local.yaml 并生效，无需重启容器。
+  opaque_compact_token_budget_overrides: {}
   # How user-supplied system prompt is delivered to the Codex backend:
   #   instructions     - default; user system goes into the top-level `instructions` field
   #   developer_inline - user system is moved to input[0] as a developer-role message

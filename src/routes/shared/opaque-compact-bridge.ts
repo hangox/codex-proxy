@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { getConfig } from "../../config.js";
 import type { AccountPool } from "../../auth/account-pool.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { CodexInputItem, CodexResponsesRequest } from "../../proxy/codex-types.js";
@@ -7,6 +8,7 @@ import type { AnthropicMessagesRequest } from "../../types/anthropic.js";
 import {
   buildClaudeCodeOpaqueCompactRequest,
   CompactServiceError,
+  canonicalizeOpaqueCompactBudgetOverrides,
   executeCompactOnly,
   opaqueCompactSemanticDigest,
   planCompactRequestForBudget,
@@ -237,7 +239,11 @@ export async function respondWithOpaqueCompactMarker(options: {
   // "唯一拦"。
   // ★ 8.11：planCompactRequestForBudget 现在可能懒加载分词器（粗筛怀疑
   // 超限时），异步——见该函数文档"两级估算"部分。
-  const budgetPlan = await planCompactRequestForBudget(compactRequest);
+  // 配置会在 Dashboard 保存后热重载；下一次 compact 直接读取新覆盖值。
+  const budgetPlan = await planCompactRequestForBudget(
+    compactRequest,
+    canonicalizeOpaqueCompactBudgetOverrides(getConfig().model.opaque_compact_token_budget_overrides),
+  );
   if (budgetPlan.trimmedCount > 0) {
     compactRequest.input = budgetPlan.compactRequest.input;
     console.warn(

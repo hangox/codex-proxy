@@ -8,6 +8,19 @@
 
 ## [Unreleased]
 
+## [2.0.102] - 2026-08-17
+
+### Added
+
+- **Dashboard 现可热配置各模型的 Opaque Compact 预算。** 内置实测校准目录覆盖 GPT-5.6 Sol / Terra / Luna（推荐 900K、已验证成功 920,038、首次失败 925K）和 GPT-5.5（推荐 320K、已验证成功 340,081、首次失败 350K）；可按已注册模型或 alias 设置覆盖值、查看实际生效值、一次保存多行并重置为自动值。保存立即热生效，不要求重启容器。
+- **新增 OpenAI 兼容的 `POST /v1/images/generations`。** 以配置的可路由 Codex 聊天模型承载上游 Responses `image_generation` 工具调用，返回标准 `b64_json` 结果；支持尺寸、格式、背景、moderation、partial_images 与 jpeg/webp 压缩参数，`quality` 兼容接收但不转发。
+
+### Fixed
+
+- **预算覆盖不会再对不可路由模型显示为已生效。** 设置接口会拒绝未知模型、把 alias 规范化到实际模型 ID；运行时预算查询也会规范化 `-fast` / `-high` 等后缀，因此 Sol、Terra、Luna 的直接模型和 alias 快速/推理档位都继承基础模型校准值，而不再静默回退默认预算。
+- **Images API 的成功判定和错误语义补齐。** 只有收到 `response.completed` 且有非空 `image_generation_call.result` 才返回成功；截断流、空图结果和文本响应会明确失败且不计为成功。默认 PNG 的压缩校验、429 的 OpenAI rate-limit 错误体、以及 `image_host_model` 不能指向 `gpt-image-2` 或不可路由模型也一并修复。
+- **预算保存失败时保留 Dashboard 草稿。** 服务端边界拒绝或网络错误不再清空用户刚编辑的覆盖值和自定义模型输入。
+
 ## [2.0.101] - 2026-08-15
 
 ### Fixed

@@ -1,6 +1,10 @@
 import { useState, useCallback } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
-import { useGeneralSettings, type SystemPromptStrategy } from "../../../shared/hooks/use-general-settings";
+import {
+  useGeneralSettings,
+  type OpaqueCompactBudgetRow,
+  type SystemPromptStrategy,
+} from "../../../shared/hooks/use-general-settings";
 import { useSettings } from "../../../shared/hooks/use-settings";
 
 export function GeneralSettings() {
@@ -14,6 +18,11 @@ export function GeneralSettings() {
   const [draftInjectContext, setDraftInjectContext] = useState<boolean | null>(null);
   const [draftSuppressDirectives, setDraftSuppressDirectives] = useState<boolean | null>(null);
   const [draftOpaqueCompact, setDraftOpaqueCompact] = useState<boolean | null>(null);
+  const [draftOpaqueCompactBudgets, setDraftOpaqueCompactBudgets] = useState<Record<string, string>>({});
+  const [draftOpaqueCompactAddedModels, setDraftOpaqueCompactAddedModels] = useState<OpaqueCompactBudgetRow[]>([]);
+  const [draftOpaqueCompactCustomModel, setDraftOpaqueCompactCustomModel] = useState("");
+  const [draftOpaqueCompactCustomBudget, setDraftOpaqueCompactCustomBudget] = useState("");
+  const [opaqueCompactBudgetError, setOpaqueCompactBudgetError] = useState<string | null>(null);
   const [draftAllowSystemPromptStrategy, setDraftAllowSystemPromptStrategy] = useState<boolean | null>(null);
   const [draftSystemPromptStrategy, setDraftSystemPromptStrategy] = useState<SystemPromptStrategy | null>(null);
   const [draftDefaultModel, setDraftDefaultModel] = useState<string | null>(null);
@@ -35,6 +44,9 @@ export function GeneralSettings() {
   const currentInjectContext = gs.data?.inject_desktop_context ?? false;
   const currentSuppressDirectives = gs.data?.suppress_desktop_directives ?? false;
   const currentOpaqueCompact = gs.data?.claude_code_opaque_compact_experimental ?? false;
+  const currentOpaqueCompactBudgets = gs.data?.opaque_compact_budgets ?? [];
+  const currentOpaqueCompactOverrides = gs.data?.opaque_compact_token_budget_overrides ?? {};
+  const currentOpaqueCompactAllowedModels = gs.data?.opaque_compact_budget_allowed_models ?? [];
   const currentAllowSystemPromptStrategy = gs.data?.allow_client_system_prompt_strategy ?? false;
   const currentSystemPromptStrategy = gs.data?.system_prompt_strategy ?? "instructions";
   const currentDefaultModel = gs.data?.default_model ?? "";
@@ -55,6 +67,22 @@ export function GeneralSettings() {
   const displayInjectContext = draftInjectContext ?? currentInjectContext;
   const displaySuppressDirectives = draftSuppressDirectives ?? currentSuppressDirectives;
   const displayOpaqueCompact = draftOpaqueCompact ?? currentOpaqueCompact;
+  const displayOpaqueCompactBudgets = [
+    ...currentOpaqueCompactBudgets,
+    ...draftOpaqueCompactAddedModels.filter(
+      (row) => !currentOpaqueCompactBudgets.some((currentRow) => currentRow.model === row.model),
+    ),
+  ].map((row) => {
+    const hasDraft = Object.prototype.hasOwnProperty.call(draftOpaqueCompactBudgets, row.model);
+    const override = hasDraft
+      ? (draftOpaqueCompactBudgets[row.model] === "" ? null : Number(draftOpaqueCompactBudgets[row.model]))
+      : row.override_tokens;
+    return {
+      ...row,
+      override_tokens: override,
+      effective_tokens: override ?? row.recommended_tokens ?? 0,
+    };
+  });
   const displayAllowSystemPromptStrategy = draftAllowSystemPromptStrategy ?? currentAllowSystemPromptStrategy;
   const canEditSystemPromptStrategy = displayAllowSystemPromptStrategy;
   const displaySystemPromptStrategy = draftSystemPromptStrategy ?? currentSystemPromptStrategy;
@@ -77,6 +105,8 @@ export function GeneralSettings() {
     draftInjectContext !== null ||
     draftSuppressDirectives !== null ||
     draftOpaqueCompact !== null ||
+    Object.keys(draftOpaqueCompactBudgets).length > 0 ||
+    draftOpaqueCompactAddedModels.length > 0 ||
     draftAllowSystemPromptStrategy !== null ||
     draftSystemPromptStrategy !== null ||
     draftDefaultModel !== null ||
@@ -118,6 +148,28 @@ export function GeneralSettings() {
 
     if (draftOpaqueCompact !== null) {
       patch.claude_code_opaque_compact_experimental = draftOpaqueCompact;
+    }
+
+    if (Object.keys(draftOpaqueCompactBudgets).length > 0 || draftOpaqueCompactAddedModels.length > 0) {
+      const overrides: Record<string, number> = { ...currentOpaqueCompactOverrides };
+      for (const [model, rawValue] of Object.entries(draftOpaqueCompactBudgets)) {
+        if (rawValue.trim() === "") {
+          delete overrides[model];
+          continue;
+        }
+        const value = Number(rawValue);
+        if (!Number.isInteger(value) || value < 1 || value > 1_000_000) {
+          setOpaqueCompactBudgetError(t("generalSettingsOpaqueCompactValidation"));
+          return;
+        }
+        const row = currentOpaqueCompactBudgets.find((item) => item.model === model);
+        if (row?.first_failure_tokens !== null && row?.first_failure_tokens !== undefined && value >= row.first_failure_tokens) {
+          setOpaqueCompactBudgetError(t("generalSettingsOpaqueCompactBoundaryValidation", { tokens: row.first_failure_tokens }));
+          return;
+        }
+        overrides[model] = value;
+      }
+      patch.opaque_compact_token_budget_overrides = overrides;
     }
 
     if (draftAllowSystemPromptStrategy !== null) {
@@ -187,7 +239,13 @@ export function GeneralSettings() {
       patch.show_update_dialog = draftShowUpdateDialog;
     }
 
-    await gs.save(patch);
+    const saved = await gs.save(patch);
+    if (!saved) return;
+    setOpaqueCompactBudgetError(null);
+    setDraftOpaqueCompactBudgets({});
+    setDraftOpaqueCompactAddedModels([]);
+    setDraftOpaqueCompactCustomModel("");
+    setDraftOpaqueCompactCustomBudget("");
     setDraftPort(null);
     setDraftProxyUrl(null);
     setDraftForceHttp11(null);
@@ -207,7 +265,7 @@ export function GeneralSettings() {
     setDraftAutoUpdate(null);
     setDraftAutoDownload(null);
     setDraftShowUpdateDialog(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftOpaqueCompact, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, gs]);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftOpaqueCompact, draftOpaqueCompactBudgets, draftOpaqueCompactAddedModels, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, currentOpaqueCompactBudgets, currentOpaqueCompactOverrides, gs, t]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -434,6 +492,195 @@ export function GeneralSettings() {
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsOpaqueCompactHint")}</p>
+          </div>
+
+          {/* Opaque Compact Budgets */}
+          <div class="space-y-2">
+            <div>
+              <h3 class="text-xs font-semibold text-slate-700 dark:text-text-main">
+                {t("generalSettingsOpaqueCompactBudgets")}
+              </h3>
+              <p class="text-xs text-slate-400 dark:text-text-dim">{t("generalSettingsOpaqueCompactBudgetsHint")}</p>
+            </div>
+            <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-border-dark">
+              <table class="w-full min-w-[760px] text-left text-xs">
+                <thead class="bg-slate-50 dark:bg-[#171b21] text-slate-500 dark:text-text-dim">
+                  <tr>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactModel")}</th>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactOverride")}</th>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactEffective")}</th>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactRecommended")}</th>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactVerifiedSuccess")}</th>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactFirstFailure")}</th>
+                    <th class="px-3 py-2 font-semibold">{t("generalSettingsOpaqueCompactStatus")}</th>
+                    <th class="px-3 py-2" />
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100 dark:divide-border-dark">
+                  {displayOpaqueCompactBudgets.map((row) => {
+                    const rawValue = Object.prototype.hasOwnProperty.call(draftOpaqueCompactBudgets, row.model)
+                      ? draftOpaqueCompactBudgets[row.model]
+                      : row.override_tokens === null ? "" : String(row.override_tokens);
+                    const numericValue = rawValue === "" ? null : Number(rawValue);
+                    const isAboveRecommended = row.recommended_tokens !== null && numericValue !== null && numericValue > row.recommended_tokens;
+                    const isInvalid = numericValue !== null && (!Number.isInteger(numericValue) || numericValue < 1 || numericValue > 1_000_000);
+                    const isBoundaryInvalid = row.first_failure_tokens !== null && numericValue !== null && numericValue >= row.first_failure_tokens;
+                    return (
+                      <tr key={row.model} class="align-top">
+                        <td class="px-3 py-2">
+                          <div class="font-mono text-slate-700 dark:text-text-main">{row.model}</div>
+                          {row.experimental && (
+                            <span class="mt-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[0.65rem] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                              {t("generalSettingsOpaqueCompactExperimental")}
+                            </span>
+                          )}
+                        </td>
+                        <td class="px-3 py-2">
+                          <input
+                            aria-label={`${row.model} ${t("generalSettingsOpaqueCompactOverride")}`}
+                            type="number"
+                            min="1"
+                            max="1000000"
+                            class={`${inputCls} min-w-[140px] ${isInvalid || isBoundaryInvalid ? "border-red-400" : ""}`}
+                            value={rawValue}
+                            placeholder={t("generalSettingsOpaqueCompactBudgetPlaceholder")}
+                            onInput={(e) => {
+                              setOpaqueCompactBudgetError(null);
+                              setDraftOpaqueCompactBudgets((current) => ({
+                                ...current,
+                                [row.model]: (e.target as HTMLInputElement).value,
+                              }));
+                            }}
+                          />
+                          {isBoundaryInvalid && row.first_failure_tokens !== null && (
+                            <p class="mt-1 max-w-[180px] text-[0.65rem] text-red-600 dark:text-red-400">
+                              {t("generalSettingsOpaqueCompactBoundaryValidation", { tokens: row.first_failure_tokens })}
+                            </p>
+                          )}
+                          {isAboveRecommended && !isBoundaryInvalid && (
+                            <p class="mt-1 max-w-[180px] text-[0.65rem] text-amber-600 dark:text-amber-400">
+                              {t("generalSettingsOpaqueCompactWarning")}
+                            </p>
+                          )}
+                        </td>
+                        <td class="px-3 py-2 font-mono text-slate-600 dark:text-text-dim">
+                          {row.effective_tokens.toLocaleString()}
+                        </td>
+                        <td class="px-3 py-2 font-mono text-slate-600 dark:text-text-dim">
+                          {row.recommended_tokens === null ? t("generalSettingsOpaqueCompactNoBoundary") : row.recommended_tokens.toLocaleString()}
+                        </td>
+                        <td class="px-3 py-2 font-mono text-slate-600 dark:text-text-dim">
+                          {row.verified_success_tokens === null ? t("generalSettingsOpaqueCompactNoBoundary") : row.verified_success_tokens.toLocaleString()}
+                        </td>
+                        <td class="px-3 py-2 font-mono text-slate-600 dark:text-text-dim">
+                          {row.first_failure_tokens === null ? t("generalSettingsOpaqueCompactNoBoundary") : row.first_failure_tokens.toLocaleString()}
+                        </td>
+                        <td class="px-3 py-2 whitespace-nowrap">
+                          <span class={`rounded px-1.5 py-0.5 text-[0.65rem] font-medium ${row.override_tokens === null ? "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300" : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"}`}>
+                            {row.override_tokens === null ? t("generalSettingsOpaqueCompactAutomatic") : t("generalSettingsOpaqueCompactOverridden")}
+                          </span>
+                        </td>
+                        <td class="px-3 py-2">
+                          {row.override_tokens !== null && (
+                            <button
+                              type="button"
+                              class="text-primary hover:underline whitespace-nowrap"
+                              onClick={() => {
+                                setOpaqueCompactBudgetError(null);
+                                setDraftOpaqueCompactBudgets((current) => ({ ...current, [row.model]: "" }));
+                              }}
+                            >
+                              {t("generalSettingsOpaqueCompactReset")}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p class="text-xs text-slate-500 dark:text-text-dim">
+              {t("generalSettingsOpaqueCompactAllowedModelsHint")}
+            </p>
+            <div class="flex flex-wrap items-end gap-2">
+              <div class="space-y-1">
+                <label for="opaque-compact-custom-model" class="text-[0.7rem] font-semibold text-slate-600 dark:text-text-dim">
+                  {t("generalSettingsOpaqueCompactAddModel")}
+                </label>
+                <input
+                  id="opaque-compact-custom-model"
+                  type="text"
+                  class={`${inputCls} min-w-[220px]`}
+                  value={draftOpaqueCompactCustomModel}
+                  placeholder={t("generalSettingsOpaqueCompactModelPlaceholder")}
+                  list="opaque-compact-allowed-models"
+                  onInput={(e) => setDraftOpaqueCompactCustomModel((e.target as HTMLInputElement).value)}
+                />
+                <datalist id="opaque-compact-allowed-models">
+                  {currentOpaqueCompactAllowedModels.map((model) => <option key={model} value={model} />)}
+                </datalist>
+              </div>
+              <div class="space-y-1">
+                <label for="opaque-compact-custom-budget" class="text-[0.7rem] font-semibold text-slate-600 dark:text-text-dim">
+                  {t("generalSettingsOpaqueCompactOverride")}
+                </label>
+                <input
+                  id="opaque-compact-custom-budget"
+                  type="number"
+                  min="1"
+                  max="1000000"
+                  class={`${inputCls} min-w-[140px]`}
+                  value={draftOpaqueCompactCustomBudget}
+                  placeholder={t("generalSettingsOpaqueCompactBudgetPlaceholder")}
+                  onInput={(e) => setDraftOpaqueCompactCustomBudget((e.target as HTMLInputElement).value)}
+                />
+              </div>
+              <button
+                type="button"
+                class="px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 dark:bg-[#21262d] text-slate-700 dark:text-text-main hover:bg-slate-200 dark:hover:bg-[#2b3139]"
+                onClick={() => {
+                  const model = draftOpaqueCompactCustomModel.trim();
+                  const value = Number(draftOpaqueCompactCustomBudget);
+                  if (!model) {
+                    setOpaqueCompactBudgetError(t("generalSettingsOpaqueCompactCustomModelValidation"));
+                    return;
+                  }
+                  if (!Number.isInteger(value) || value < 1 || value > 1_000_000) {
+                    setOpaqueCompactBudgetError(t("generalSettingsOpaqueCompactValidation"));
+                    return;
+                  }
+                  const isRoutableModel = currentOpaqueCompactAllowedModels.includes(model)
+                    || currentOpaqueCompactBudgets.some((row) => row.model === model);
+                  if (!isRoutableModel) {
+                    setOpaqueCompactBudgetError(t("generalSettingsOpaqueCompactModelNotRoutable"));
+                    return;
+                  }
+                  if ([...currentOpaqueCompactBudgets, ...draftOpaqueCompactAddedModels].some((row) => row.model === model)) {
+                    setDraftOpaqueCompactBudgets((current) => ({ ...current, [model]: String(value) }));
+                  } else {
+                    setDraftOpaqueCompactAddedModels((current) => [...current, {
+                      model,
+                      recommended_tokens: null,
+                      override_tokens: value,
+                      effective_tokens: value,
+                      verified_success_tokens: null,
+                      first_failure_tokens: null,
+                      experimental: true,
+                    }]);
+                    setDraftOpaqueCompactBudgets((current) => ({ ...current, [model]: String(value) }));
+                  }
+                  setDraftOpaqueCompactCustomModel("");
+                  setDraftOpaqueCompactCustomBudget("");
+                  setOpaqueCompactBudgetError(null);
+                }}
+              >
+                {t("generalSettingsOpaqueCompactAdd")}
+              </button>
+            </div>
+            {opaqueCompactBudgetError && (
+              <p class="text-xs text-red-600 dark:text-red-400">{opaqueCompactBudgetError}</p>
+            )}
           </div>
 
           {/* Auto-refresh Tokens */}

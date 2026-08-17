@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { getConfig } from "../../config.js";
 import type { AccountPool } from "../../auth/account-pool.js";
 import { CodexApiError, normalizeServiceTierForUpstream } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
@@ -18,7 +19,12 @@ import { staggerIfNeeded } from "./proxy-stagger.js";
 import { auditAccountTag } from "./opaque-compact-audit.js";
 import { canonicalJson } from "./canonical-json.js";
 import { sanitizeFreeTextForLog } from "../../logs/redact.js";
-import { getModelInfo } from "../../models/model-store.js";
+import {
+  getModelAliases,
+  getModelCatalog,
+  getModelInfo,
+  stripKnownModelSuffixes,
+} from "../../models/model-store.js";
 import { isPromptTooLongLike } from "../../proxy/prompt-too-long-error.js";
 import {
   isModelNotSupportedError,
@@ -559,57 +565,194 @@ export function opaqueCompactSemanticDigest(request: CodexCompactRequest): strin
 }
 
 /**
- * ★ 8.8 · compact 输入的 token 预算表——按型号校准，不用单一常量、也不用
- * 声明值乘系数。
+ * Opaque compact 的唯一校准真源。
  *
- * 起因：v2.0.88 生产实测撞过一次真实误判——`gpt-5.6-terra` 当时不在表里，
- * 退到旧默认值 260,000，一个 350,454 token、**本来能成功**的请求（terra
- * 实测能吃到 405,173）被误判超限，降级到全量压缩慢路径，用户自己感知到
- * 变慢。这次重写就是修这个真实回归，不是预防性加固。
+ * Dashboard 只展示 `dashboard: true` 的四个型号；其余条目保留历史上已经
+ * 校准过的运行时预算，避免旧配置在升级后改变语义。所有内置预算都从这张
+ * 目录派生，前端不复制任何数字。
  *
- * qa 完整实测矩阵（8 个带 `contextWindow` 声明的型号全测了，17 次真实调用；
- * "成功最大"一律是上游真实返回的 `usage.input_tokens`；"最小失败"里带 ★ 的
- * 是按 chars/2.18 **估算**——400 响应不带 usage，量不到真实值，两种数字
- * 确定性不同，不要混用）：
- *
- *   | 型号 | 声明 ctxWindow/maxCtx | 成功最大（真实 usage） | 最小失败 | vs 声明值 |
- *   |---|---|---|---|---|
- *   | gpt-5.4              | 272,000 / 1,000,000 | 715,220 | ~966,382★ | 2.63x（但没到声明的 100 万） |
- *   | codex-auto-review    | 272,000 / 272,000   | 611,760 | 未找到失败点 | ≥2.25x |
- *   | gpt-5.6-terra        | 272,000 / 272,000   | 405,173 | ~457,681★ | 1.49x |
- *   | gpt-5.6-luna         | 272,000 / 272,000   | 405,128 | ~509,000  | 1.49x |
- *   | gpt-5.6-sol          | 272,000 / 272,000   | 405,083 | 未测到    | 1.49x |
- *   | gpt-5.5              | 272,000 / 272,000   | 284,961 | ~405,251★ | ~1.05x |
- *   | gpt-5.4-mini         | 272,000 / 272,000   | 271,261 | ~285,000  | ~1.00x |
- *   | gpt-5.3-codex-spark  | 128,000 / 128,000   | 119,036 | ~128,448★ | ~0.93x |
- *
- * ★★ 结论一：「声明值 × 固定系数」这条路彻底死了。同样声明 272000，实测
- * 从 1.00x（mini）到 2.63x（gpt-5.4），差 2.63 倍——不存在一个系数能同时
- * 拟合这整张表。任何试图用公式从 `getModelInfo(model)?.contextWindow` 推导
- * 预算的做法都是错的，只能逐型号实测入表，这也是为什么 `COMPACT_TOKEN_
- * BUDGET_BY_MODEL` 是一张手工维护的表而不是一个函数。
- *
- * ★★ 结论二：`gpt-5.3-codex-spark` 是唯一的反例，也是最危险的一个——它的
- * 真实上限几乎贴着声明值走（~0.93x），**不是"留了安全边际"，是"声明值
- * 基本可信"**。如果照着其他型号"实测普遍是声明值 1.49 倍"的经验给它套
- * 激进预算（比如 390,000），会直接把它推过真实上限 3.3 倍，必炸。所以
- * spark 的预算必须单独按它自己的实测下界给，不能跟着别的型号"抄近路"。
- *
- * 每档预算 = 实测成功最大值打 ~95% 折（留出估算噪声——字节→token 是近似
- * 换算，见 `estimateCompactInputTokens`——的余量），同代且实测值接近的型号
- * 才合并同一档；gpt-5.5（284,961）虽然和 sol/terra/luna 同代但实测明显更低，
- * 刻意没有合并进 390,000 那一档。
+ * `verifiedSuccessTokens` 是实测成功的最大 input_tokens，`firstFailureTokens`
+ * 是首次观察到上游 context_length_exceeded 的输入量；历史条目没有可靠的首次
+ * 失败实测时保留 null，不用估算值冒充硬边界。
  */
-const COMPACT_TOKEN_BUDGET_BY_MODEL: Readonly<Record<string, number>> = {
-  "gpt-5.3-codex-spark": 110_000,
-  "gpt-5.4-mini": 260_000,
-  "gpt-5.5": 270_000,
-  "gpt-5.6-sol": 390_000,
-  "gpt-5.6-terra": 390_000,
-  "gpt-5.6-luna": 390_000,
-  "codex-auto-review": 580_000,
-  "gpt-5.4": 680_000,
-};
+export interface OpaqueCompactBudgetCatalogEntry {
+  model: string;
+  recommendedTokens: number;
+  verifiedSuccessTokens: number;
+  firstFailureTokens: number | null;
+  dashboard: boolean;
+}
+
+export const OPAQUE_COMPACT_BUDGET_CATALOG: readonly OpaqueCompactBudgetCatalogEntry[] = [
+  // 2026-08-17：remote_compaction_v2 直连实测，920,038 成功，925,000 首次失败。
+  { model: "gpt-5.6-sol", recommendedTokens: 900_000, verifiedSuccessTokens: 920_038, firstFailureTokens: 925_000, dashboard: true },
+  { model: "gpt-5.6-terra", recommendedTokens: 900_000, verifiedSuccessTokens: 920_038, firstFailureTokens: 925_000, dashboard: true },
+  { model: "gpt-5.6-luna", recommendedTokens: 900_000, verifiedSuccessTokens: 920_038, firstFailureTokens: 925_000, dashboard: true },
+  // 2026-08-17：remote_compaction_v2 直连实测，340,081 成功，350,000 首次失败。
+  { model: "gpt-5.5", recommendedTokens: 320_000, verifiedSuccessTokens: 340_081, firstFailureTokens: 350_000, dashboard: true },
+
+  // 历史运行时校准项：仍由同一目录派生，但不占 Dashboard 的四行主表。
+  { model: "gpt-5.3-codex-spark", recommendedTokens: 110_000, verifiedSuccessTokens: 119_036, firstFailureTokens: null, dashboard: false },
+  { model: "gpt-5.4-mini", recommendedTokens: 260_000, verifiedSuccessTokens: 271_261, firstFailureTokens: null, dashboard: false },
+  { model: "codex-auto-review", recommendedTokens: 580_000, verifiedSuccessTokens: 611_760, firstFailureTokens: null, dashboard: false },
+  { model: "gpt-5.4", recommendedTokens: 680_000, verifiedSuccessTokens: 715_220, firstFailureTokens: null, dashboard: false },
+] as const;
+
+const COMPACT_TOKEN_BUDGET_BY_MODEL: Readonly<Record<string, number>> = Object.fromEntries(
+  OPAQUE_COMPACT_BUDGET_CATALOG.map(({ model, recommendedTokens }) => [model, recommendedTokens]),
+);
+
+/**
+ * 返回当前实际可用于 Codex compact 的模型 ID 集合。
+ *
+ * 校准目录是 compact 的内置已知模型；ModelStore 则提供当前后端目录和已
+ * 注册 custom_models。这里刻意不复用 upstream-router 的宽松 gpt/o/codex
+ * 名称正则：翻译层对未知名称会回退到 config.default，允许这种名称保存
+ * override 会造成“保存成功但永远命不中”。
+ */
+export function getOpaqueCompactBudgetAllowedModels(): string[] {
+  const ids = new Set(OPAQUE_COMPACT_BUDGET_CATALOG.map((entry) => entry.model));
+  for (const model of getModelCatalog()) ids.add(model.id);
+  try {
+    for (const raw of getConfig().model.custom_models) {
+      const id = typeof raw === "string" ? raw.trim() : raw.id.trim();
+      if (id) ids.add(id);
+    }
+  } catch {
+    // Config may not be loaded in isolated model-store tests.
+  }
+  return [...ids];
+}
+
+function getOpaqueCompactAliases(): Record<string, string> {
+  const aliases: Record<string, string> = { ...getModelAliases() };
+  try {
+    for (const [rawAlias, rawTarget] of Object.entries(getConfig().model.aliases)) {
+      const alias = rawAlias.trim();
+      const target = rawTarget.trim();
+      if (alias && target) aliases[alias] = target;
+    }
+  } catch {
+    // Config may not be loaded in isolated model-store tests.
+  }
+  return aliases;
+}
+
+function resolveOpaqueCompactAlias(input: string): string | null {
+  const aliases = getOpaqueCompactAliases();
+  let current = input.trim();
+  if (!current) return null;
+
+  const stripped = stripKnownModelSuffixes(current);
+  if (stripped.modelName !== current && aliases[stripped.modelName]) {
+    current = aliases[stripped.modelName].trim();
+  }
+
+  const seen = new Set<string>();
+  for (let depth = 0; depth < 20; depth++) {
+    const target = aliases[current]?.trim();
+    if (!target) return current;
+    if (seen.has(current) || seen.has(target)) return null;
+    seen.add(current);
+    current = target;
+  }
+  return null;
+}
+
+/**
+ * 把预算 map 的输入键规范化为实际 compact 请求使用的基础模型 ID。
+ * 返回 null 表示该名称既不是校准/运行时目录模型，也不是可解析到目录模型
+ * 的 alias；调用方必须拒绝它，不能依赖 resolveModelId 的 default fallback。
+ */
+export function resolveOpaqueCompactBudgetModel(input: string): string | null {
+  const resolved = resolveOpaqueCompactAlias(input);
+  if (!resolved) return null;
+  const base = stripKnownModelSuffixes(resolved).modelName;
+  const allowed = new Set(getOpaqueCompactBudgetAllowedModels());
+  if (allowed.has(resolved)) return resolved;
+  if (allowed.has(base)) return base;
+  return null;
+}
+
+/** 返回可输入到预算编辑器的规范模型 ID 与已注册 alias 名称。 */
+export function getOpaqueCompactBudgetAllowedModelNames(): string[] {
+  const names = new Set(getOpaqueCompactBudgetAllowedModels());
+  for (const alias of Object.keys(getOpaqueCompactAliases())) {
+    if (resolveOpaqueCompactBudgetModel(alias) !== null) names.add(alias);
+  }
+  return [...names].sort();
+}
+
+/** Canonicalize persisted values for GET responses and the next successful save. */
+export function canonicalizeOpaqueCompactBudgetOverrides(
+  overrides: Readonly<Record<string, number>> = {},
+): Record<string, number> {
+  const canonical: Record<string, number> = {};
+  for (const [model, value] of Object.entries(overrides)) {
+    const resolved = resolveOpaqueCompactBudgetModel(model);
+    if (resolved === null) continue;
+    if (!Number.isInteger(value) || value < 1 || value > 1_000_000) continue;
+    const firstFailureTokens = getOpaqueCompactBudgetCalibration(resolved)?.firstFailureTokens;
+    if (firstFailureTokens !== null && firstFailureTokens !== undefined && value >= firstFailureTokens) continue;
+    if (Object.prototype.hasOwnProperty.call(canonical, resolved)) continue;
+    canonical[resolved] = value;
+  }
+  return canonical;
+}
+
+export interface OpaqueCompactBudgetRow {
+  model: string;
+  recommended_tokens: number | null;
+  override_tokens: number | null;
+  effective_tokens: number;
+  verified_success_tokens: number | null;
+  first_failure_tokens: number | null;
+  experimental: boolean;
+}
+
+/** Build the API rows from the catalog and the persisted generic override map. */
+export function buildOpaqueCompactBudgetRows(
+  overrides: Readonly<Record<string, number>> = {},
+): OpaqueCompactBudgetRow[] {
+  const normalizedOverrides = canonicalizeOpaqueCompactBudgetOverrides(overrides);
+  const dashboardEntries = OPAQUE_COMPACT_BUDGET_CATALOG.filter((entry) => entry.dashboard);
+  const rows: OpaqueCompactBudgetRow[] = dashboardEntries.map((entry) => {
+    const override = Object.prototype.hasOwnProperty.call(normalizedOverrides, entry.model)
+      ? normalizedOverrides[entry.model]
+      : null;
+    return {
+      model: entry.model,
+      recommended_tokens: entry.recommendedTokens,
+      override_tokens: override,
+      effective_tokens: override ?? entry.recommendedTokens,
+      verified_success_tokens: entry.verifiedSuccessTokens,
+      first_failure_tokens: entry.firstFailureTokens,
+      experimental: false,
+    };
+  });
+
+  const visibleModels = new Set(rows.map((row) => row.model));
+  for (const [model, overrideValue] of Object.entries(normalizedOverrides)) {
+    if (visibleModels.has(model)) continue;
+    const override = overrideValue;
+    const catalogEntry = OPAQUE_COMPACT_BUDGET_CATALOG.find((entry) => entry.model === model);
+    rows.push({
+      model,
+      recommended_tokens: catalogEntry?.recommendedTokens ?? null,
+      override_tokens: override,
+      effective_tokens: override,
+      verified_success_tokens: catalogEntry?.verifiedSuccessTokens ?? null,
+      first_failure_tokens: catalogEntry?.firstFailureTokens ?? null,
+      experimental: catalogEntry === undefined,
+    });
+  }
+
+  return rows;
+}
+
+export function getOpaqueCompactBudgetCalibration(model: string): OpaqueCompactBudgetCatalogEntry | undefined {
+  return OPAQUE_COMPACT_BUDGET_CATALOG.find((entry) => entry.model === model);
+}
 
 /**
  * 未入表型号（大概率是尚未出现过的新型号）的兜底预算——**刻意维持
@@ -631,8 +774,20 @@ const COMPACT_TOKEN_BUDGET_BY_MODEL: Readonly<Record<string, number>> = {
  */
 const COMPACT_TOKEN_BUDGET_DEFAULT = 260_000;
 
-export function resolveCompactTokenBudget(model: string): number {
-  return COMPACT_TOKEN_BUDGET_BY_MODEL[model] ?? COMPACT_TOKEN_BUDGET_DEFAULT;
+export function resolveCompactTokenBudget(
+  model: string,
+  overrides?: Readonly<Record<string, number>>,
+): number {
+  // 请求可能带 reasoning/service-tier 后缀，或 alias 指向带后缀的目标。
+  // 覆盖 map 与校准目录都按基础模型键保存，因此查找前必须复用 Admin API
+  // 的严格 canonical resolver。未知名称保留原键，继续使用保守兜底预算。
+  const budgetModel = resolveOpaqueCompactBudgetModel(model) ?? model;
+  const normalizedOverrides = overrides === undefined
+    ? undefined
+    : canonicalizeOpaqueCompactBudgetOverrides(overrides);
+  return normalizedOverrides?.[budgetModel]
+    ?? COMPACT_TOKEN_BUDGET_BY_MODEL[budgetModel]
+    ?? COMPACT_TOKEN_BUDGET_DEFAULT;
 }
 
 /**
@@ -1075,8 +1230,9 @@ export interface CompactBudgetPlan {
  */
 export async function planCompactRequestForBudget(
   compactRequest: CodexCompactRequest,
+  budgetOverrides?: Readonly<Record<string, number>>,
 ): Promise<CompactBudgetPlan> {
-  const budgetTokens = resolveCompactTokenBudget(compactRequest.model);
+  const budgetTokens = resolveCompactTokenBudget(compactRequest.model, budgetOverrides);
   const toolsBytes = compactRequest.tools?.length
     ? Buffer.byteLength(JSON.stringify(compactRequest.tools), "utf8")
     : 0;

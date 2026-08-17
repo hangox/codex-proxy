@@ -18,8 +18,10 @@
  * 预期收益，安全性就塌了。
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { CodexCompactRequest, CodexInputItem } from "@src/proxy/codex-types.js";
+import { createMockConfig } from "@helpers/config.js";
+import { resetConfigForTesting, setConfigForTesting } from "@src/config.js";
 
 // ★ 8.11：planCompactRequestForBudget 现在可能懒加载真分词器（js-tiktoken，
 // 见 compact-tokenizer.ts）。这个文件测的是**预算判定逻辑**（超没超、裁不裁、
@@ -43,6 +45,7 @@ vi.mock("@src/routes/shared/compact-tokenizer.js", () => ({
 }));
 
 const {
+  buildOpaqueCompactBudgetRows,
   estimateCompactInputTokens,
   planCompactRequestForBudget,
   resolveCompactTokenBudget,
@@ -52,6 +55,10 @@ const {
 
 beforeEach(() => {
   mockTokenizeCompactContent.mockClear();
+});
+
+afterEach(() => {
+  resetConfigForTesting();
 });
 
 function functionCallOutput(callId: string, output: string): CodexInputItem {
@@ -64,21 +71,92 @@ describe("resolveCompactTokenBudget", () => {
     // 里 COMPACT_TOKEN_BUDGET_BY_MODEL 头部注释的完整表格与两条结论。
     expect(resolveCompactTokenBudget("gpt-5.3-codex-spark")).toBe(110_000);
     expect(resolveCompactTokenBudget("gpt-5.4-mini")).toBe(260_000);
-    expect(resolveCompactTokenBudget("gpt-5.5")).toBe(270_000);
-    expect(resolveCompactTokenBudget("gpt-5.6-sol")).toBe(390_000);
-    expect(resolveCompactTokenBudget("gpt-5.6-terra")).toBe(390_000);
-    expect(resolveCompactTokenBudget("gpt-5.6-luna")).toBe(390_000);
+    // 2026-08-17：remote_compaction_v2 直连实测 340,081 成功，350,000 首次失败。
+    expect(resolveCompactTokenBudget("gpt-5.5")).toBe(320_000);
+    // 2026-08-17：remote_compaction_v2 直连实测 920,038 成功，925,000 首次失败。
+    expect(resolveCompactTokenBudget("gpt-5.6-sol")).toBe(900_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-terra")).toBe(900_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-luna")).toBe(900_000);
     expect(resolveCompactTokenBudget("codex-auto-review")).toBe(580_000);
     expect(resolveCompactTokenBudget("gpt-5.4")).toBe(680_000);
   });
 
-  it("gpt-5.5 明显低于同代的 sol/terra/luna，不能被合并进 390000 那一档", () => {
+  it("gpt-5.5 明显低于 gpt-5.6-sol，不能误合并到它的高预算档", () => {
     // 声明 contextWindow 和 sol/terra/luna 一样都是 272000，但实测成功
     // 最大只有 284,961（vs 三者的 405,1xx）——这条测试锁住"同代不等于同预算"，
     // 防止以后有人看 model 名字像同一代就把它合并档位。
     const gpt55Budget = resolveCompactTokenBudget("gpt-5.5");
     const sameGenBudget = resolveCompactTokenBudget("gpt-5.6-sol");
     expect(gpt55Budget).toBeLessThan(sameGenBudget);
+  });
+
+  it("Dashboard 覆盖值优先于内置实测预算，未覆盖型号仍走内置值", () => {
+    expect(resolveCompactTokenBudget("gpt-5.6-sol", { "gpt-5.6-sol": 880_000 })).toBe(880_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-terra", { "gpt-5.6-sol": 880_000 })).toBe(900_000);
+  });
+
+  it("direct fast 后缀按 Sol/Terra/Luna 基础型号继承覆盖值", () => {
+    const overrides = {
+      "gpt-5.6-sol": 880_000,
+      "gpt-5.6-terra": 881_000,
+      "gpt-5.6-luna": 882_000,
+    };
+    expect(resolveCompactTokenBudget("gpt-5.6-sol-fast", overrides)).toBe(880_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-terra-fast", overrides)).toBe(881_000);
+    expect(resolveCompactTokenBudget("gpt-5.6-luna-fast", overrides)).toBe(882_000);
+  });
+
+  it("alias fast 与 alias 指向 high 后缀都按基础型号继承覆盖值", () => {
+    setConfigForTesting(createMockConfig({
+      model: {
+        aliases: {
+          "compact-sol-fast": "gpt-5.6-sol-fast",
+          "compact-terra-fast": "gpt-5.6-terra-fast",
+          "compact-luna-fast": "gpt-5.6-luna-fast",
+          "compact-sol-high": "gpt-5.6-sol-high",
+          "compact-terra-high": "gpt-5.6-terra-high",
+          "compact-luna-high": "gpt-5.6-luna-high",
+        },
+      },
+    }));
+    const overrides = {
+      "gpt-5.6-sol": 880_000,
+      "gpt-5.6-terra": 881_000,
+      "gpt-5.6-luna": 882_000,
+    };
+    expect(resolveCompactTokenBudget("compact-sol-fast", overrides)).toBe(880_000);
+    expect(resolveCompactTokenBudget("compact-terra-fast", overrides)).toBe(881_000);
+    expect(resolveCompactTokenBudget("compact-luna-fast", overrides)).toBe(882_000);
+    expect(resolveCompactTokenBudget("compact-sol-high", overrides)).toBe(880_000);
+    expect(resolveCompactTokenBudget("compact-terra-high", overrides)).toBe(881_000);
+    expect(resolveCompactTokenBudget("compact-luna-high", overrides)).toBe(882_000);
+  });
+
+  it("校准目录生成四个 Dashboard 行，并保留目录中的额外模型行", () => {
+    const rows = buildOpaqueCompactBudgetRows({ "gpt-5.6-sol": 880_000, "gpt-5.4": 123_456 });
+    expect(rows.slice(0, 4).map((row) => row.model)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+    ]);
+    expect(rows[0]).toMatchObject({
+      override_tokens: 880_000,
+      effective_tokens: 880_000,
+      recommended_tokens: 900_000,
+      verified_success_tokens: 920_038,
+      first_failure_tokens: 925_000,
+      experimental: false,
+    });
+    expect(rows.at(-1)).toMatchObject({
+      model: "gpt-5.4",
+      override_tokens: 123_456,
+      effective_tokens: 123_456,
+      recommended_tokens: 680_000,
+      verified_success_tokens: 715_220,
+      first_failure_tokens: null,
+      experimental: false,
+    });
   });
 
   it("★ gpt-5.3-codex-spark 不会被误套大窗口档——它的真实上限几乎贴着声明值走，必须单独给保守预算，不能落进任何其它档位", () => {

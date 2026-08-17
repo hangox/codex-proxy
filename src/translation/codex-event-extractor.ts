@@ -26,6 +26,8 @@ export interface UsageInfo {
   /** Set by the route handler when the request declared the image_generation tool.
    *  Drives the success/failure split in `recordUsage`. */
   image_request_attempted?: boolean;
+  /** Set by a format collector only after a valid image result and terminal
+   *  response.completed have both been observed. */
   image_request_succeeded?: boolean;
 }
 

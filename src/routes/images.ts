@@ -10,7 +10,7 @@ import type { AccountPool } from "../auth/account-pool.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { getConfig } from "../config.js";
-import { buildDisplayModelName, getModelInfo, isRecognizedModelName, parseModelName } from "../models/model-store.js";
+import { resolveRoutableCodexHostModel } from "../models/routable-model-resolver.js";
 import { enqueueLogEntry } from "../logs/entry.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { getRealClientIp } from "../utils/get-real-client-ip.js";
@@ -82,14 +82,6 @@ function formatImagesConfigurationError(c: Context, model: string): Response {
   });
 }
 
-function resolveImageHostModel(configuredModel: string): string | null {
-  const trimmed = configuredModel.trim();
-  if (!trimmed || trimmed.toLowerCase() === "gpt-image-2" || !isRecognizedModelName(trimmed)) return null;
-  const parsed = parseModelName(trimmed);
-  if (!parsed.modelId || parsed.modelId.toLowerCase() === "gpt-image-2" || !getModelInfo(parsed.modelId)) return null;
-  return buildDisplayModelName(parsed);
-}
-
 function notAuthenticated(c: Context): Response {
   c.status(401);
   return c.json({
@@ -128,7 +120,7 @@ export function createImagesRoutes(
     }
 
     const configuredHostModel = getConfig().model.image_host_model ?? "gpt-5.5";
-    const hostModel = resolveImageHostModel(configuredHostModel);
+    const hostModel = resolveRoutableCodexHostModel(configuredHostModel);
     if (!hostModel) {
       return formatImagesConfigurationError(c, configuredHostModel);
     }

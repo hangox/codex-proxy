@@ -27,6 +27,8 @@ export interface GeneralSettingsData {
   system_prompt_strategy: SystemPromptStrategy;
   default_model: string;
   default_reasoning_effort: string | null;
+  image_host_model: string;
+  image_host_model_allowed_models: string[];
   model_aliases: Record<string, string>;
   refresh_enabled: boolean;
   refresh_margin_seconds: number;
@@ -101,6 +103,8 @@ export function useGeneralSettings(apiKey: string | null) {
         system_prompt_strategy: result.system_prompt_strategy,
         default_model: result.default_model,
         default_reasoning_effort: result.default_reasoning_effort,
+        image_host_model: result.image_host_model,
+        image_host_model_allowed_models: result.image_host_model_allowed_models ?? [],
         model_aliases: result.model_aliases,
         refresh_enabled: result.refresh_enabled,
         refresh_margin_seconds: result.refresh_margin_seconds,

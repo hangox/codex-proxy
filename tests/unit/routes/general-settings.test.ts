@@ -10,6 +10,7 @@ const mockConfig = {
   model: {
     default: "gpt-5.4",
     default_reasoning_effort: null as string | null,
+    image_host_model: "gpt-5.5",
     aliases: {} as Record<string, string>,
     inject_desktop_context: false,
     suppress_desktop_directives: true,
@@ -59,6 +60,21 @@ vi.mock("@src/paths.js", () => ({
 
 const mockLogStore = vi.hoisted(() => ({
   setState: vi.fn(),
+}));
+
+const mockRoutableModelResolver = vi.hoisted(() => ({
+  resolveRoutableCodexHostModel: vi.fn<(input: string) => string | null>(),
+  getRoutableCodexHostModelAllowedModels: vi.fn<() => string[]>(),
+  isImageHostModelClientId: vi.fn<(input: string) => boolean>(
+    (input: string) => input.trim().toLowerCase() === "gpt-image-2",
+  ),
+}));
+
+vi.mock("@src/models/routable-model-resolver.js", () => ({
+  resolveRoutableCodexHostModel: mockRoutableModelResolver.resolveRoutableCodexHostModel,
+  getRoutableCodexHostModelAllowedModels: mockRoutableModelResolver.getRoutableCodexHostModelAllowedModels,
+  isImageHostModelClientId: mockRoutableModelResolver.isImageHostModelClientId,
+  IMAGE_HOST_MODEL_CLIENT_ID: "gpt-image-2",
 }));
 
 vi.mock("@src/utils/yaml-mutate.js", () => ({
@@ -128,6 +144,8 @@ describe("GET /admin/general-settings", () => {
     mockConfig.model.system_prompt_strategy = "instructions";
     mockConfig.model.aliases = {};
     mockConfig.model.custom_models = [];
+    mockRoutableModelResolver.resolveRoutableCodexHostModel.mockReturnValue(null);
+    mockRoutableModelResolver.getRoutableCodexHostModelAllowedModels.mockReturnValue([]);
   });
 
   it("returns current values including logs_llm_only and credits_per_usd", async () => {
@@ -197,6 +215,16 @@ describe("GET /admin/general-settings", () => {
       credits_per_usd: 40,
     });
   });
+
+  it("returns image_host_model and its allowed models", async () => {
+    mockRoutableModelResolver.getRoutableCodexHostModelAllowedModels.mockReturnValue(["gpt-5.4", "gpt-5.5"]);
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings");
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.image_host_model).toBe("gpt-5.5");
+    expect(data.image_host_model_allowed_models).toEqual(["gpt-5.4", "gpt-5.5"]);
+  });
 });
 
 describe("POST /admin/general-settings", () => {
@@ -210,6 +238,8 @@ describe("POST /admin/general-settings", () => {
     mockConfig.model.aliases = {};
     mockConfig.model.custom_models = [];
     mockConfig.model.opaque_compact_token_budget_overrides = {};
+    mockRoutableModelResolver.resolveRoutableCodexHostModel.mockReturnValue(null);
+    mockRoutableModelResolver.getRoutableCodexHostModelAllowedModels.mockReturnValue([]);
   });
 
   it("persists compact bridge without requiring restart", async () => {
@@ -674,5 +704,106 @@ describe("POST /admin/general-settings", () => {
 
     expect(res.status).toBe(200);
     expect(mockLogStore.setState).toHaveBeenCalledWith({ enabled: true });
+  });
+
+  it("persists a routable image host model into model.image_host_model", async () => {
+    mockRoutableModelResolver.resolveRoutableCodexHostModel.mockImplementation((input: string) =>
+      input === "gpt-5.4" ? "gpt-5.4" : null);
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_host_model: "gpt-5.4" }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.image_host_model).toBe("gpt-5.4");
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    expect(reloadAllConfigs).toHaveBeenCalledOnce();
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { image_host_model: "gpt-5.4" },
+    });
+  });
+
+  it("normalizes an alias image host model to its canonical catalog model", async () => {
+    mockRoutableModelResolver.resolveRoutableCodexHostModel.mockImplementation((input: string) =>
+      input === "img-fast" ? "gpt-5.4" : null);
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_host_model: "img-fast" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).image_host_model).toBe("gpt-5.4");
+    const mutate = vi.mocked(mutateYaml).mock.calls[0]?.[1];
+    const localConfig: Record<string, unknown> = {};
+    mutate?.(localConfig);
+    expect(localConfig).toEqual({
+      model: { image_host_model: "gpt-5.4" },
+    });
+  });
+
+  it("rejects an empty image host model", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_host_model: "   " }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("image_host_model");
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-string image host model with 400 instead of crashing", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_host_model: 12345 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("image_host_model");
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("rejects gpt-image-2 as image host model case-insensitively", async () => {
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_host_model: "GPT-IMAGE-2" }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("gpt-image-2");
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown image host model", async () => {
+    // resolveRoutableCodexHostModel defaults to null (set in beforeEach).
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_host_model: "not-a-routable-model" }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("not a routable Codex model");
+    expect(mutateYaml).not.toHaveBeenCalled();
+    expect(reloadAllConfigs).not.toHaveBeenCalled();
   });
 });

@@ -61,6 +61,8 @@ beforeEach(() => {
   resetTransportState();
   (getConfig().server as { proxy_api_key: string | null }).proxy_api_key = null;
   (getConfig().model as { image_host_model: string }).image_host_model = "gpt-5.5";
+  (getConfig().model as unknown as { aliases: Record<string, string> }).aliases = {};
+  (getConfig().model as unknown as { custom_models: Array<string | { id: string }> }).custom_models = [];
   setTransportPost(async () =>
     makeTransportResponse(buildImageGenStreamChunks(
       "resp_images_default",
@@ -144,6 +146,38 @@ describe("POST /v1/images/generations", () => {
     expect(account?.usage.image_output_tokens).toBe(1);
     expect(account?.usage.image_request_count).toBe(1);
     expect(account?.usage.image_request_failed_count ?? 0).toBe(0);
+  });
+
+  it("forwards a newly configured image host model upstream", async () => {
+    (getConfig().model as { image_host_model: string }).image_host_model = "gpt-5.4";
+    ctx = buildApp();
+
+    const res = await imagesRequest({
+      model: "gpt-image-2",
+      prompt: "a red circle",
+    });
+
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(getLastTransportBody()!);
+    expect(sent.model).toBe("gpt-5.4");
+    expect(sent.model).not.toBe("gpt-image-2");
+  });
+
+  it("resolves an alias image host model to its canonical catalog model", async () => {
+    (getConfig().model as unknown as { aliases: Record<string, string> }).aliases = { "img-fast": "gpt-5.4" };
+    (getConfig().model as { image_host_model: string }).image_host_model = "img-fast";
+    ctx = buildApp();
+
+    const res = await imagesRequest({
+      model: "gpt-image-2",
+      prompt: "a red circle",
+    });
+
+    expect(res.status).toBe(200);
+    const sent = JSON.parse(getLastTransportBody()!);
+    expect(sent.model).toBe("gpt-5.4");
+    expect(sent.model).not.toBe("img-fast");
+    expect(sent.model).not.toBe("gpt-image-2");
   });
 
   it("rejects n other than one and unsupported response formats before upstream", async () => {

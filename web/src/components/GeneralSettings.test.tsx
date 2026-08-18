@@ -80,6 +80,8 @@ function makeGeneralSettingsData(overrides: Record<string, unknown> = {}) {
     system_prompt_strategy: "instructions",
     default_model: "gpt-5.4",
     default_reasoning_effort: null,
+    image_host_model: "gpt-5.5",
+    image_host_model_allowed_models: ["gpt-5.4", "gpt-5.5", "img-fast"],
     model_aliases: {},
     refresh_enabled: true,
     refresh_margin_seconds: 300,
@@ -393,5 +395,85 @@ describe("GeneralSettings", () => {
     expect(mockGeneralSettings.save).toHaveBeenCalledWith({
       system_prompt_strategy: "developer_inline",
     });
+  });
+
+  it("renders the current image host model and saves a new selection", () => {
+    mockGeneralSettings.useGeneralSettings.mockReturnValue({
+      data: makeGeneralSettingsData(),
+      saving: false,
+      saved: false,
+      error: null,
+      restartRequired: false,
+      save: mockGeneralSettings.save,
+    });
+
+    render(
+      <I18nProvider>
+        <GeneralSettings />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByText("General Settings"));
+    const input = screen.getByLabelText("Images API Host Model") as HTMLInputElement;
+    expect(input.value).toBe("gpt-5.5");
+
+    fireEvent.input(input, { target: { value: "gpt-5.4" } });
+    fireEvent.click(screen.getByText("Submit"));
+
+    expect(mockGeneralSettings.save).toHaveBeenCalledWith({
+      image_host_model: "gpt-5.4",
+    });
+  });
+
+  it("keeps the image host model draft when the backend rejects the save", async () => {
+    const save = vi.fn().mockResolvedValue(false);
+    mockGeneralSettings.useGeneralSettings.mockReturnValue({
+      data: makeGeneralSettingsData(),
+      saving: false,
+      saved: false,
+      error: "image host model rejected",
+      restartRequired: false,
+      save,
+    });
+
+    render(
+      <I18nProvider>
+        <GeneralSettings />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByText("General Settings"));
+    const input = screen.getByLabelText("Images API Host Model") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "gpt-5.4" } });
+    fireEvent.click(screen.getByText("Submit"));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ image_host_model: "gpt-5.4" }));
+    expect((screen.getByLabelText("Images API Host Model") as HTMLInputElement).value).toBe("gpt-5.4");
+  });
+
+  it("blocks an image host model that is not in the allowed list before saving", () => {
+    mockGeneralSettings.useGeneralSettings.mockReturnValue({
+      data: makeGeneralSettingsData(),
+      saving: false,
+      saved: false,
+      error: null,
+      restartRequired: false,
+      save: mockGeneralSettings.save,
+    });
+
+    render(
+      <I18nProvider>
+        <GeneralSettings />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByText("General Settings"));
+    const input = screen.getByLabelText("Images API Host Model") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "not-in-allowed-list" } });
+    fireEvent.click(screen.getByText("Submit"));
+
+    expect(mockGeneralSettings.save).not.toHaveBeenCalled();
+    expect(screen.getByText(/not an available Images host model/)).toBeTruthy();
+    expect((screen.getByLabelText("Images API Host Model") as HTMLInputElement).value).toBe("not-in-allowed-list");
   });
 });

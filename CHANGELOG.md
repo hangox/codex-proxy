@@ -8,6 +8,16 @@
 
 ## [Unreleased]
 
+## [2.0.103] - 2026-08-18
+
+### Added
+
+- **`model.image_host_model`（Images API 实际宿主聊天模型）现可在 Dashboard 通用设置中查看与保存，无需再改配置文件后重启。** 保存时会拒绝空值、`gpt-image-2`（大小写不敏感）以及无法解析的模型/alias，alias 会落盘为规范化后的实际模型 ID；保存立即热生效。
+
+### Fixed
+
+- **抽出共享的可路由 Codex 宿主模型解析逻辑**，供 `/v1/images/generations` 请求时校验与 Dashboard 保存时校验共用同一套规则，避免两处判定不一致。
+
 ## [2.0.102] - 2026-08-17
 
 ### Added

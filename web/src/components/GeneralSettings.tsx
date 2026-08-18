@@ -27,6 +27,8 @@ export function GeneralSettings() {
   const [draftSystemPromptStrategy, setDraftSystemPromptStrategy] = useState<SystemPromptStrategy | null>(null);
   const [draftDefaultModel, setDraftDefaultModel] = useState<string | null>(null);
   const [draftReasoningEffort, setDraftReasoningEffort] = useState<string | null>(null);
+  const [draftImageHostModel, setDraftImageHostModel] = useState<string | null>(null);
+  const [imageHostModelError, setImageHostModelError] = useState<string | null>(null);
   const [draftRefreshEnabled, setDraftRefreshEnabled] = useState<boolean | null>(null);
   const [draftRefreshMargin, setDraftRefreshMargin] = useState<string | null>(null);
   const [draftRefreshConcurrency, setDraftRefreshConcurrency] = useState<string | null>(null);
@@ -51,6 +53,8 @@ export function GeneralSettings() {
   const currentSystemPromptStrategy = gs.data?.system_prompt_strategy ?? "instructions";
   const currentDefaultModel = gs.data?.default_model ?? "";
   const currentReasoningEffort = gs.data?.default_reasoning_effort ?? "";
+  const currentImageHostModel = gs.data?.image_host_model ?? "";
+  const currentImageHostModelAllowedModels = gs.data?.image_host_model_allowed_models ?? [];
   const currentRefreshEnabled = gs.data?.refresh_enabled ?? true;
   const currentRefreshMargin = gs.data?.refresh_margin_seconds ?? 300;
   const currentRefreshConcurrency = gs.data?.refresh_concurrency ?? 2;
@@ -88,6 +92,7 @@ export function GeneralSettings() {
   const displaySystemPromptStrategy = draftSystemPromptStrategy ?? currentSystemPromptStrategy;
   const displayDefaultModel = draftDefaultModel ?? currentDefaultModel;
   const displayReasoningEffort = draftReasoningEffort ?? currentReasoningEffort;
+  const displayImageHostModel = draftImageHostModel ?? currentImageHostModel;
   const displayRefreshEnabled = draftRefreshEnabled ?? currentRefreshEnabled;
   const displayRefreshMargin = draftRefreshMargin ?? String(currentRefreshMargin);
   const displayRefreshConcurrency = draftRefreshConcurrency ?? String(currentRefreshConcurrency);
@@ -111,6 +116,7 @@ export function GeneralSettings() {
     draftSystemPromptStrategy !== null ||
     draftDefaultModel !== null ||
     draftReasoningEffort !== null ||
+    draftImageHostModel !== null ||
     draftRefreshEnabled !== null ||
     draftRefreshMargin !== null ||
     draftRefreshConcurrency !== null ||
@@ -188,6 +194,15 @@ export function GeneralSettings() {
       patch.default_reasoning_effort = draftReasoningEffort === "" ? null : draftReasoningEffort;
     }
 
+    if (draftImageHostModel !== null) {
+      const trimmed = draftImageHostModel.trim();
+      if (!currentImageHostModelAllowedModels.includes(trimmed)) {
+        setImageHostModelError(t("generalSettingsImageHostModelNotAllowed"));
+        return;
+      }
+      patch.image_host_model = trimmed;
+    }
+
     if (draftRefreshEnabled !== null) {
       patch.refresh_enabled = draftRefreshEnabled;
     }
@@ -256,6 +271,8 @@ export function GeneralSettings() {
     setDraftSystemPromptStrategy(null);
     setDraftDefaultModel(null);
     setDraftReasoningEffort(null);
+    setDraftImageHostModel(null);
+    setImageHostModelError(null);
     setDraftRefreshEnabled(null);
     setDraftRefreshMargin(null);
     setDraftRefreshConcurrency(null);
@@ -265,7 +282,7 @@ export function GeneralSettings() {
     setDraftAutoUpdate(null);
     setDraftAutoDownload(null);
     setDraftShowUpdateDialog(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftOpaqueCompact, draftOpaqueCompactBudgets, draftOpaqueCompactAddedModels, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, currentOpaqueCompactBudgets, currentOpaqueCompactOverrides, gs, t]);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftOpaqueCompact, draftOpaqueCompactBudgets, draftOpaqueCompactAddedModels, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftReasoningEffort, draftImageHostModel, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, currentOpaqueCompactBudgets, currentOpaqueCompactOverrides, currentImageHostModelAllowedModels, gs, t]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -380,6 +397,32 @@ export function GeneralSettings() {
               onInput={(e) => setDraftDefaultModel((e.target as HTMLInputElement).value)}
               placeholder="gpt-5.2-codex"
             />
+          </div>
+
+          {/* Images API Host Model */}
+          <div class="space-y-1.5">
+            <label for="image-host-model" class="text-xs font-semibold text-slate-700 dark:text-text-main">
+              {t("generalSettingsImageHostModel")}
+            </label>
+            <p class="text-xs text-slate-400 dark:text-text-dim">{t("generalSettingsImageHostModelHint")}</p>
+            <input
+              id="image-host-model"
+              type="text"
+              class={inputCls}
+              value={displayImageHostModel}
+              list="image-host-model-allowed-models"
+              onInput={(e) => {
+                setImageHostModelError(null);
+                setDraftImageHostModel((e.target as HTMLInputElement).value);
+              }}
+              placeholder="gpt-5.5"
+            />
+            <datalist id="image-host-model-allowed-models">
+              {currentImageHostModelAllowedModels.map((model) => <option key={model} value={model} />)}
+            </datalist>
+            {imageHostModelError && (
+              <p class="text-xs text-red-600 dark:text-red-400">{imageHostModelError}</p>
+            )}
           </div>
 
           {/* Default Reasoning Effort */}

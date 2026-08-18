@@ -161,7 +161,7 @@ export function handleCodexApiError(
   // account when available, but do not mutate account health or quota state.
   if (isServerOverloadedError(err)) {
     console.warn(
-      `[${tag}] Account ${entryId} (${email}) | 503 server overloaded, trying different account...`,
+      `[${tag}] ${acct} | 503 server overloaded, trying different account...`,
     );
     return {
       action: "retry",

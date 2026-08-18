@@ -27,6 +27,7 @@ import { ProxyPool } from "./proxy/proxy-pool.js";
 import { setWsPoolConfig, getWsPool } from "./proxy/ws-pool.js";
 import { createProxyRoutes } from "./routes/proxies.js";
 import { createResponsesRoutes } from "./routes/responses.js";
+import { createImagesRoutes } from "./routes/images.js";
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker.js";
 import { startProxyUpdateChecker, stopProxyUpdateChecker, setCloseHandler, getDeployMode } from "./self-update.js";
 import { initProxy } from "./tls/proxy.js";
@@ -175,6 +176,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const messagesRoutes = createMessagesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
   const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
   const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter);
+  const imagesRoutes = createImagesRoutes(accountPool, cookieJar, proxyPool);
   const apiKeyRoutes = createApiKeyRoutes(apiKeyPool, apiKeyModelCache);
   const embeddingsRoutes = createEmbeddingsRoutes(accountPool, apiKeyPool);
   const proxyRoutes = createProxyRoutes(proxyPool, accountPool);
@@ -191,6 +193,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   app.route("/", messagesRoutes);
   app.route("/", geminiRoutes);
   app.route("/", responsesRoutes);
+  app.route("/", imagesRoutes);
   app.route("/", createOfficialAgentRoutes());
   app.route("/", proxyRoutes);
   app.route("/", createModelRoutes(apiKeyPool));

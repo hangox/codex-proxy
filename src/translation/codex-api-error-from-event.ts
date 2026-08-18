@@ -27,6 +27,7 @@ export function codexApiErrorFromEvent(
 
 function statusForCode(code: string): number {
   const lower = code.toLowerCase();
+  if (lower === "server_is_overloaded") return 503;
   if (lower.includes("context_length")) return 400;
   // `invalid_value` / `unsupported_value` 是上游对**请求内容**的校验错误，
   // 语义上就是 400。此前它们不在这张表里、落到兜底的 502——而 502 落在

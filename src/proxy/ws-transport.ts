@@ -71,6 +71,8 @@ const ROTATABLE_ERROR_CODES: Readonly<Record<string, number>> = {
   server_error: 502,
   internal_error: 502,
   internal_server_error: 502,
+  // 503 — transient upstream capacity error
+  server_is_overloaded: 503,
 };
 
 function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } | null {

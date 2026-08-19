@@ -97,6 +97,19 @@ export const ConfigSchema = z.object({
     custom_models: z.array(CustomModelSchema).default([]),
     inject_desktop_context: z.boolean().default(false),
     suppress_desktop_directives: z.boolean().default(true),
+    /** Allow dashboard clients to change how system prompts are sent upstream. */
+    allow_client_system_prompt_strategy: z.boolean().default(false),
+    /**
+     * How a user-supplied system prompt is delivered to the Codex backend:
+     *   instructions     - default; user system goes into the top-level `instructions` field
+     *   developer_inline - user system is moved to input[0] as a developer-role message
+     *   system_inline    - user system is moved to input[0] as a system-role message
+     * The two `_inline` modes can bypass the Codex backend's built-in base prompt prior
+     * in cases where the `instructions` field is overridden by server-injected context.
+     */
+    system_prompt_strategy: z
+      .enum(["instructions", "developer_inline", "system_inline"])
+      .default("instructions"),
   }),
   auth: z.object({
     jwt_token: z.string().nullable().default(null),

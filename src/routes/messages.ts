@@ -31,6 +31,8 @@ import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
 import { validateClientKeyModel } from "./shared/proxy-handler-utils.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
+import { resolveDefaultTools, mergeDefaultTools } from "./shared/default-tools.js";
+import { isRecord } from "../translation/shared-utils.js";
 
 function makeError(
   type: AnthropicErrorType,
@@ -193,12 +195,20 @@ export function createMessagesRoutes(
       c.req.header("x-claude-code-session-id"),
     );
 
+    const defaultTools = resolveDefaultTools(c, {
+      allowUnauthenticated,
+      fallbackDefaultTools: ["web_search"],
+    });
+
     const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
-      injectHostedWebSearch: !allowUnauthenticated,
+      injectHostedWebSearch: false,
       mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
     });
     if (!allowUnauthenticated) {
       codexRequest.useWebSocket = true;
+    }
+    if (defaultTools.length > 0) {
+      codexRequest.tools = mergeDefaultTools(codexRequest.tools, defaultTools);
     }
     // Check after translation so suffix-parsed and config-default effort are included.
     const wantThinking = !!codexRequest.reasoning?.effort;
@@ -207,6 +217,8 @@ export function createMessagesRoutes(
       model: buildDisplayModelName(parseModelName(req.model)),
       isStreaming: req.stream,
       clientConversationId: clientConversationId ?? undefined,
+      expectsImageGen: Array.isArray(codexRequest.tools)
+        && codexRequest.tools.some((tool) => isRecord(tool) && tool.type === "image_generation"),
     };
     const fmt = makeAnthropicFormat(wantThinking);
 

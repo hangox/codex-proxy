@@ -29,6 +29,7 @@ import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
 import { validateClientKeyModel } from "./shared/proxy-handler-utils.js";
+import { resolveDefaultTools, mergeDefaultTools } from "./shared/default-tools.js";
 
 function makeOpenAIFormat(wantReasoning: boolean): FormatAdapter {
   return {
@@ -124,7 +125,14 @@ export function createChatRoutes(
       return c.json(formatModelNotFound(req.model));
     }
 
+    const defaultTools = resolveDefaultTools(c, {
+      allowUnauthenticated: routeMatch.kind === "api-key" || routeMatch.kind === "adapter",
+    });
+
     const { codexRequest, tupleSchema } = translateToCodexRequest(req);
+    if (defaultTools.length > 0) {
+      codexRequest.tools = mergeDefaultTools(codexRequest.tools, defaultTools);
+    }
     const expectsImageGen = Array.isArray(codexRequest.tools)
       && codexRequest.tools.some((t): t is Record<string, unknown> => isRecord(t) && t.type === "image_generation");
     // Check after translation so suffix-parsed and config-default effort are included.

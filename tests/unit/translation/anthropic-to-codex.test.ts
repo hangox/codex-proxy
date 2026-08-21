@@ -513,9 +513,9 @@ describe("translateAnthropicToCodexRequest", () => {
 
       expect(result.instructions).toContain("hello");
       expect(result.input.length).toBe(1);
-      const item = result.input[0] as any;
-      expect(item.role).toBe("user");
-      expect(item.content).toBe("Hello");
+      const item = result.input[0];
+      expect(item && "role" in item && item.role).toBe("user");
+      expect(item && "content" in item && item.content).toBe("Hello");
     });
 
     it("case 2: developer_inline moves system to input[0] as a developer message", () => {
@@ -526,11 +526,11 @@ describe("translateAnthropicToCodexRequest", () => {
 
       expect(result.instructions).not.toContain("hello");
       expect(result.input.length).toBe(2);
-      const first = result.input[0] as any;
-      const second = result.input[1] as any;
-      expect(first.role).toBe("developer");
-      expect(first.content[0].text).toBe("hello");
-      expect(second.role).toBe("user");
+      const first = result.input[0];
+      const second = result.input[1];
+      expect(first && "role" in first && first.role).toBe("developer");
+      expect(first && "content" in first && Array.isArray(first.content) && first.content[0]?.text).toBe("hello");
+      expect(second && "role" in second && second.role).toBe("user");
     });
 
     it("case 3: system_inline moves system to input[0] as a system message", () => {
@@ -539,9 +539,9 @@ describe("translateAnthropicToCodexRequest", () => {
         makeModelConfig({ system_prompt_strategy: "system_inline" }),
       );
 
-      const first = result.input[0] as any;
-      expect(first.role).toBe("system");
-      expect(first.content[0].text).toBe("hello");
+      const first = result.input[0];
+      expect(first && "role" in first && first.role).toBe("system");
+      expect(first && "content" in first && Array.isArray(first.content) && first.content[0]?.text).toBe("hello");
       expect(result.input.length).toBe(2);
       expect(result.instructions).not.toContain("hello");
     });
@@ -557,8 +557,8 @@ describe("translateAnthropicToCodexRequest", () => {
         makeModelConfig({ system_prompt_strategy: "developer_inline" }),
       );
 
-      const first = result.input[0] as any;
-      expect(first.content[0].text).toBe("a\n\nb");
+      const first = result.input[0];
+      expect(first && "content" in first && Array.isArray(first.content) && first.content[0]?.text).toBe("a\n\nb");
     });
 
     it("case 5: no unshift when system is absent", () => {
@@ -568,8 +568,8 @@ describe("translateAnthropicToCodexRequest", () => {
       );
 
       expect(result.input.length).toBe(1);
-      const item = result.input[0] as any;
-      expect(item.role).toBe("user");
+      const item = result.input[0];
+      expect(item && "role" in item && item.role).toBe("user");
     });
 
     it("case 5b: no unshift when all blocks are blank", () => {
@@ -584,8 +584,8 @@ describe("translateAnthropicToCodexRequest", () => {
       );
 
       expect(result.input.length).toBe(1);
-      const item = result.input[0] as any;
-      expect(item.role).toBe("user");
+      const item = result.input[0];
+      expect(item && "role" in item && item.role).toBe("user");
     });
 
     it("case 6: billing header is still filtered", () => {
@@ -599,10 +599,11 @@ describe("translateAnthropicToCodexRequest", () => {
         makeModelConfig({ system_prompt_strategy: "developer_inline" }),
       );
 
-      const first = result.input[0] as any;
-      expect(first.content[0].text).toBe("real prompt");
-      expect(first.content[0].text).not.toContain("billing");
-      expect(first.content[0].text).not.toContain("cc_version");
+      const first = result.input[0];
+      const text = first && "content" in first && Array.isArray(first.content) ? first.content[0]?.text : "";
+      expect(text).toBe("real prompt");
+      expect(text).not.toContain("billing");
+      expect(text).not.toContain("cc_version");
     });
 
     it("case 7: inline item shape is strict — only role+content, no type field", () => {
@@ -611,11 +612,13 @@ describe("translateAnthropicToCodexRequest", () => {
         makeModelConfig({ system_prompt_strategy: "developer_inline" }),
       );
 
-      const first = result.input[0] as any;
+      const first = result.input[0];
+      expect(first).toBeDefined();
       expect(first).not.toHaveProperty("type");
-      expect(Object.keys(first).sort()).toEqual(["content", "role"]);
-      expect(first.content[0].type).toBe("input_text");
-      expect(first.content[0].text).toBe("x");
+      expect(Object.keys(first!).sort()).toEqual(["content", "role"]);
+      const contentPart = first && "content" in first && Array.isArray(first.content) ? first.content[0] : undefined;
+      expect(contentPart?.type).toBe("input_text");
+      expect(contentPart?.text).toBe("x");
     });
 
     // Contract test: in inline mode the user system goes through the inline
@@ -640,9 +643,10 @@ describe("translateAnthropicToCodexRequest", () => {
       expect(result.instructions).toBe("");
       expect(result.instructions).not.toContain("hello");
 
-      const first = result.input[0] as any;
-      expect(first.role).toBe("developer");
-      expect(first.content[0].text).toBe("hello");
+      const first = result.input[0];
+      expect(first && "role" in first && first.role).toBe("developer");
+      const firstContent = first && "content" in first && Array.isArray(first.content) ? first.content[0] : undefined;
+      expect(firstContent?.text).toBe("hello");
     });
   });
 

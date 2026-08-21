@@ -213,7 +213,7 @@ export function createSettingsRoutes(): Hono {
       }
 
       const effectiveAllow = body.allow_client_system_prompt_strategy ?? config.model.allow_client_system_prompt_strategy;
-      if (!effectiveAllow) {
+      if (!effectiveAllow && body.system_prompt_strategy !== "instructions") {
         c.status(400);
         return c.json({ error: "system_prompt_strategy requires enabling allow_client_system_prompt_strategy first" });
       }

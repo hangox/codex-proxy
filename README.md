@@ -161,10 +161,12 @@ curl http://localhost:8080/v1/chat/completions \
 - **不可达自动标记** — 代理不可达时自动排除
 
 ### 🛡️ 反检测与协议伪装
-- **Rust Native TLS** — 内置 reqwest + rustls native addon，TLS 指纹与真实 Codex Desktop 精确一致（依赖版本锁定）
-- **完整请求头** — `originator`、`User-Agent`、`x-openai-internal-codex-residency`、`x-codex-turn-state`、`x-client-request-id` 等头按真实客户端行为发送
+- **Rust Native TLS** — 内置 reqwest + rustls native addon，TLS 指纹与真实 Codex 客户端精确一致（依赖版本锁定）
+- **客户端 Profile 预设** — 支持 `codex_cli`（默认，官方 CLI 纯净终端头）、`codex_desktop`（Desktop 完整头）、`opencode`、`pi` 与 `custom`，CLI 模式下自动剔除浏览器特定头（`sec-ch-ua` 等）
+- **按账号 Device ID 隔离** — 为每个账号独立派生并持久化专属的 `x-codex-installation-id`，彻底杜绝多账号共享同一设备指纹
+- **完整请求头仿真** — `originator`、`User-Agent`、`x-openai-internal-codex-residency`、`x-codex-turn-state`、`x-client-request-id` 等头按选定 profile 真实模拟发送
 - **Cookie 持久化** — 自动捕获和回放 Cloudflare Cookie
-- **指纹自动更新** — 轮询 Codex Desktop 更新源，自动同步 `app_version` 和 `build_number`
+- **指纹自动更新** — 轮询 Codex 更新源，自动同步 `app_version` 和 `build_number`
 
 ## 🏗️ 技术架构
 
@@ -526,7 +528,7 @@ server:
 |------|---------|------|
 | `server` | `host`, `port`, `proxy_api_key` | 监听地址与 API 密钥 |
 | `api` | `base_url`, `timeout_seconds` | 上游 API 地址与超时 |
-| `client` | `app_version`, `build_number`, `chromium_version` | 模拟的 Codex Desktop 版本 |
+| `client` | `profile`, `originator`, `app_version`, `build_number`, `platform`, `arch`, `chromium_version` | 客户端指纹预设（`codex_cli` / `codex_desktop` / `opencode` / `pi` / `custom`）及版本参数 |
 | `model` | `default`, `default_reasoning_effort`, `default_service_tier`, `aliases`, `custom_models`, `inject_desktop_context` | 默认模型、推理配置、模型映射与自定义模型目录 |
 | `auth` | `rotation_strategy`, `rate_limit_backoff_seconds` | 轮换策略与限流退避 |
 | `tls` | `proxy_url`, `force_http11` | TLS 代理与 HTTP 版本 |
@@ -534,6 +536,23 @@ server:
 | `session` | `ttl_minutes`, `cleanup_interval_minutes` | Dashboard session 管理 |
 | `ollama` | `enabled`, `host`, `port`, `version`, `disable_vision` | Ollama 兼容桥接 |
 | `official_agent` | `enabled`, `api_key`, `app_server_url`, `auth` | 官方 Codex app-server 桥接，用于复用 Chrome/browser 插件 |
+
+### 客户端 Profile 与指纹预设
+
+`client.profile` 支持一键切换客户端身份，自动调整请求头组合与反检测特征：
+
+```yaml
+client:
+  profile: codex_cli         # 预设: codex_cli (默认), codex_desktop, opencode, pi, custom
+  # 预设说明：
+  # - codex_cli:     官方 Codex CLI 纯净终端头 (originator: codex_cli_rs)，剔除所有浏览器特有头 (sec-ch-ua 等)
+  # - codex_desktop: 官方 Codex Desktop 完整头 (originator: Codex Desktop)，包含 sec-ch-ua 与 Chromium 版本
+  # - opencode:      opencode 终端头 (originator: opencode)
+  # - pi:            pi 终端头 (originator: pi)
+  # - custom:        完全自定义模式，读取 client.originator 及 fingerprint.yaml 模板
+```
+
+同时，代理为每个绑定的账号自动独立派生并持久化专属的 `x-codex-installation-id`（储存于 `data/installation_ids/`），确保多账号并发/轮换时各账号具有独立的客户端设备身份，避免上游根据设备 UUID 产生关联。
 
 ### 模型映射
 

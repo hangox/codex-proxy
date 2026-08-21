@@ -136,10 +136,12 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - **Auto-mark unreachable** — unreachable proxies excluded from rotation
 
 ### 4. 🛡️ Anti-Detection & Protocol Impersonation
-- **Rust Native TLS** — built-in reqwest + rustls native addon, TLS fingerprint matches real Codex Desktop exactly (pinned dependency versions)
-- **Desktop header replication** — `originator`, `User-Agent`, `x-openai-internal-codex-residency`, `x-codex-turn-state`, `x-client-request-id` headers sent per real client behavior
-- **Cookie persistence** — automatic Cloudflare cookie capture and replay
-- **Fingerprint auto-update** — polls Codex Desktop update feed, auto-syncs `app_version` and `build_number`
+- **Rust Native TLS** — built-in reqwest + rustls native addon, TLS fingerprint matches real Codex clients exactly (pinned dependency versions)
+- **Client Profile Presets** — support for `codex_cli` (default, official CLI clean terminal headers), `codex_desktop` (Desktop complete headers), `opencode`, `pi`, and `custom`; CLI mode cleanly strips browser-specific headers (`sec-ch-ua`, etc.)
+- **Per-Account Device ID Isolation** — independently derives and persists unique `x-codex-installation-id` for each account to prevent device correlation
+- **Full Request Header Emulation** — `originator`, `User-Agent`, `x-openai-internal-codex-residency`, `x-codex-turn-state`, `x-client-request-id` headers accurately sent per selected profile
+- **Cookie Persistence** — automatic Cloudflare cookie capture and replay
+- **Fingerprint Auto-Update** — polls Codex update feed, auto-syncs `app_version` and `build_number`
 
 ## 🏗️ Architecture
 
@@ -479,13 +481,30 @@ server:
 |---------|-------------|-------------|
 | `server` | `host`, `port`, `proxy_api_key` | Listen address and API key |
 | `api` | `base_url`, `timeout_seconds` | Upstream API URL and timeout |
-| `client` | `app_version`, `build_number`, `chromium_version` | Codex Desktop version to impersonate |
+| `client` | `profile`, `originator`, `app_version`, `build_number`, `platform`, `arch`, `chromium_version` | Client fingerprint preset (`codex_cli` / `codex_desktop` / `opencode` / `pi` / `custom`) and version metadata |
 | `model` | `default`, `default_reasoning_effort`, `default_service_tier`, `aliases`, `custom_models`, `inject_desktop_context` | Default model, reasoning config, aliases, and custom catalog entries |
 | `auth` | `rotation_strategy`, `rate_limit_backoff_seconds` | Rotation strategy and rate limit backoff |
 | `tls` | `proxy_url`, `force_http11` | TLS proxy and HTTP version |
 | `quota` | `refresh_interval_minutes`, `warning_thresholds`, `skip_exhausted` | Usage snapshots, threshold config, exhausted-account skipping |
 | `session` | `ttl_minutes`, `cleanup_interval_minutes` | Dashboard session management |
 | `ollama` | `enabled`, `host`, `port`, `version`, `disable_vision` | Ollama-compatible bridge |
+
+### Client Profile & Fingerprint Presets
+
+`client.profile` allows switching client identity presets with automatic header and anti-detection formatting:
+
+```yaml
+client:
+  profile: codex_cli         # Presets: codex_cli (default), codex_desktop, opencode, pi, custom
+  # Preset details:
+  # - codex_cli:     Official Codex CLI clean terminal headers (originator: codex_cli_rs), strips browser-only headers (sec-ch-ua, etc.)
+  # - codex_desktop: Official Codex Desktop complete headers (originator: Codex Desktop), includes sec-ch-ua and Chromium version
+  # - opencode:      opencode terminal headers (originator: opencode)
+  # - pi:            pi terminal headers (originator: pi)
+  # - custom:        Fully custom mode, reads client.originator and fingerprint.yaml template
+```
+
+Additionally, the proxy automatically derives and persists an isolated `x-codex-installation-id` per account (under `data/installation_ids/`), ensuring each account retains an independent device identity and preventing multi-account cross-correlation upstream.
 
 ### Model Aliases
 

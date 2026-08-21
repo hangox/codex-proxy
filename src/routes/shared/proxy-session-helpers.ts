@@ -20,24 +20,26 @@ export function normalizeInstructions(instructions: string | null | undefined): 
 }
 
 export function extractEffectiveInstructions(codexRequest: CodexResponsesRequest): string {
+  const parts: string[] = [];
   if (codexRequest.instructions?.trim()) {
-    return codexRequest.instructions;
+    parts.push(codexRequest.instructions.trim());
   }
   const first = codexRequest.input?.[0];
   if (first && "role" in first && (first.role === "developer" || first.role === "system")) {
-    if (typeof first.content === "string") {
-      return first.content;
-    }
-    if (Array.isArray(first.content)) {
-      return first.content
+    if (typeof first.content === "string" && first.content.trim()) {
+      parts.push(first.content.trim());
+    } else if (Array.isArray(first.content)) {
+      const text = first.content
         .filter((part): part is { type: "input_text"; text: string } =>
           !!part && typeof part === "object" && "type" in part && part.type === "input_text" && "text" in part && typeof part.text === "string"
         )
-        .map((p) => p.text)
+        .map((p) => p.text.trim())
+        .filter(Boolean)
         .join("\n\n");
+      if (text) parts.push(text);
     }
   }
-  return codexRequest.instructions ?? "";
+  return parts.join("\n\n");
 }
 
 export function hashInstructions(instructions: string | null | undefined): string {

@@ -184,6 +184,7 @@ function Dashboard() {
                 onImport={accounts.importAccounts}
                 onToggleStatus={accounts.toggleStatus}
                 onUpdateLabel={accounts.updateLabel}
+                onUpdateCodexFingerprintMode={accounts.updateCodexFingerprintMode}
               />
               <ProxyPool proxies={proxies} />
             </div>

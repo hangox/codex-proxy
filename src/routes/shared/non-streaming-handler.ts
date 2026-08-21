@@ -23,6 +23,7 @@ import {
   containsInvalidEncryptedContentSignal,
   getReasoningReplayCache,
 } from "../../proxy/reasoning-replay-cache.js";
+import { relayCodexTurnState } from "./codex-turn-state.js";
 import { recordClientKeyUsage } from "./proxy-handler-utils.js";
 import { updateLogEntry } from "../../logs/entry.js";
 import { calculateLogMetrics } from "../../logs/metrics.js";
@@ -156,6 +157,7 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         model: req.model,
         released,
       });
+      relayCodexTurnState(c, currentRawResponse, fmt.tag);
       return c.json(result.response);
     } catch (collectErr) {
       if (conversationId && variantHash && containsInvalidEncryptedContentSignal(collectErr)) {

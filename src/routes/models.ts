@@ -8,6 +8,7 @@ import {
   getModelCatalog,
   getModelInfo,
   getModelStoreDebug,
+  resolveModelId,
   type CodexModelInfo,
 } from "../models/model-store.js";
 import { triggerImmediateRefresh } from "../models/model-fetcher.js";
@@ -110,6 +111,9 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool, clientKeyPool?: Clien
   // Must be before :modelId to avoid being matched as a model ID
   app.get("/v1/models/catalog", (c) => {
     let catalog = getModelCatalog();
+    const config = getConfig();
+    const rawDefault = config.model?.default?.trim();
+    const configDefault = rawDefault ? resolveModelId(rawDefault) : undefined;
     const allowed = getClientKeyAllowedModels(c);
     if (allowed) {
       catalog = catalog.filter((m) => allowed.includes(m.id));
@@ -120,6 +124,7 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool, clientKeyPool?: Clien
     return c.json(
       catalog.map((m) => ({
         ...m,
+        isDefault: configDefault ? m.id === configDefault : m.isDefault,
         outputModalities: m.outputModalities ?? ["text"],
       })),
     );

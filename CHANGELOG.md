@@ -18,6 +18,10 @@
 - 重构：抽象路由层的 JSON 拦截与 API Key 校验（提取统一的 API Key 提取器 `extractProxyApiKey`；由全局 `errorHandler` 统一拦截 SyntaxError 带来的 JSON 解析失败并返回 400）
 - 更新 `README_EN.md` 中过时的模型推荐说明以匹配最新的模型别名映射（`README_EN.md`）
 
+### Fixed
+
+- 修复分发 Key（Client Access Keys）页面创建与编辑弹窗背景透明问题：修正非标准 Tailwind 类名（`bg-surface-light`、`bg-surface-dark`、`border-border-light` 等），采用标准 `bg-white dark:bg-card-dark` 与 `border-slate-200 dark:border-border-dark` 确保弹窗遮罩及背景不透明显示。（`web/src/pages/ClientKeysPage.tsx`）
+
 ### Added
 
 - 日志可观测性与性能监控增强：为项目日志页面与数据链路添加全方位的可观测性指标捕获，包括首字延迟（TTFT）、单次预估金额（USD Cost）、Token 吐字生成速率（tok/s）、总执行耗时（Latency/Duration）及详细 Token 用量（Prompt / Completion / Reasoning / Cache Hit Rate）。在 Dashboard Logs 页面新增顶部可观测性概览看板（平均首字延迟、平均吐字速率、平均总耗时、总预估金额、Token 吞吐及请求成功率）、增强型列表表格列与 4 宫格性能详情抽屉；支持一键清空内存日志；补齐中英双语国际化支持。（`src/logs/metrics.ts`、`src/logs/store.ts`、`src/logs/entry.ts`、`src/routes/shared/streaming-handler.ts`、`src/routes/shared/non-streaming-handler.ts`、`src/routes/shared/direct-request-handler.ts`、`web/src/pages/LogsPage.tsx`、`shared/hooks/use-logs.ts`、`shared/i18n/translations.ts`）

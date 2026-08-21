@@ -16,6 +16,7 @@ import { createResponseMetadataCollector } from "./response-metadata-collector.j
 import { logProxyUsage } from "./proxy-usage-log.js";
 import { getReasoningReplayCache } from "../../proxy/reasoning-replay-cache.js";
 import { getWsPool } from "../../proxy/ws-pool.js";
+import { forwardCodexRateLimitHeaders } from "./codex-rate-limit-response-headers.js";
 import { relayCodexTurnState } from "./codex-turn-state.js";
 
 export interface HandleStreamingOptions {
@@ -72,6 +73,11 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
   // Disable response buffering on nginx-class reverse proxies so SSE heartbeats
   // and deltas reach the client immediately instead of being held back.
   c.header("X-Accel-Buffering", "no");
+  forwardCodexRateLimitHeaders(
+    c,
+    response.headers,
+    accountPool.getEntry(entryId)?.cachedQuota,
+  );
   relayCodexTurnState(c, response, fmt.tag);
 
   const capturedEntryId = entryId;

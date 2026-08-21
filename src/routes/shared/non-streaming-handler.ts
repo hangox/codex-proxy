@@ -23,6 +23,7 @@ import {
   containsInvalidEncryptedContentSignal,
   getReasoningReplayCache,
 } from "../../proxy/reasoning-replay-cache.js";
+import { forwardCodexRateLimitHeaders } from "./codex-rate-limit-response-headers.js";
 import { relayCodexTurnState } from "./codex-turn-state.js";
 import { recordClientKeyUsage } from "./proxy-handler-utils.js";
 import { updateLogEntry } from "../../logs/entry.js";
@@ -157,6 +158,11 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         model: req.model,
         released,
       });
+      forwardCodexRateLimitHeaders(
+        c,
+        currentRawResponse.headers,
+        accountPool.getEntry(currentEntryId)?.cachedQuota,
+      );
       relayCodexTurnState(c, currentRawResponse, fmt.tag);
       return c.json(result.response);
     } catch (collectErr) {

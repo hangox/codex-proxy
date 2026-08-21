@@ -312,7 +312,7 @@ describe("POST /admin/general-settings", () => {
     });
   });
 
-  it("rejects disabling the client switch and changing system prompt strategy in the same request", async () => {
+  it("rejects disabling the client switch and changing system prompt strategy to non-default in the same request", async () => {
     mockConfig.model.allow_client_system_prompt_strategy = true;
     const app = makeApp();
     const res = await app.request("/admin/general-settings", {
@@ -329,6 +329,25 @@ describe("POST /admin/general-settings", () => {
     expect(data.error).toContain("allow_client_system_prompt_strategy");
     expect(mutateYaml).not.toHaveBeenCalled();
     expect(reloadAllConfigs).not.toHaveBeenCalled();
+  });
+
+  it("allows disabling the client switch and resetting system prompt strategy to instructions in the same request", async () => {
+    mockConfig.model.allow_client_system_prompt_strategy = true;
+    const app = makeApp();
+    const res = await app.request("/admin/general-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allow_client_system_prompt_strategy: false,
+        system_prompt_strategy: "instructions",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(mutateYaml).toHaveBeenCalledOnce();
+    expect(reloadAllConfigs).toHaveBeenCalledOnce();
   });
 
   it("rejects invalid system prompt strategy", async () => {

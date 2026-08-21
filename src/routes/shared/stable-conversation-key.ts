@@ -10,8 +10,29 @@ function normalizeConversationAnchorText(text: string): string {
 export function extractStableConversationSeed(
   req: CodexResponsesRequest,
 ): { instructions: string; firstUserText: string } {
-  const instructions = (req.instructions ?? "").slice(0, 2000);
+  let instructions = (req.instructions ?? "").slice(0, 2000);
   const input = Array.isArray(req.input) ? req.input : [];
+
+  if (!instructions.trim()) {
+    const first = input[0];
+    if (first && "role" in first && (first.role === "developer" || first.role === "system")) {
+      if (typeof first.content === "string") {
+        instructions = first.content.slice(0, 2000);
+      } else if (Array.isArray(first.content)) {
+        instructions = first.content
+          .filter((part): part is { type: "input_text"; text: string } =>
+            !!part &&
+            typeof part === "object" &&
+            "type" in part &&
+            part.type === "input_text" &&
+            "text" in part &&
+            typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n\n")
+          .slice(0, 2000);
+      }
+    }
+  }
 
   let firstUserText = "";
   for (const item of input) {

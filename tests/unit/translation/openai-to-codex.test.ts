@@ -498,4 +498,56 @@ describe("translateToCodexRequest — content edge cases", () => {
     // null content → extractContent returns ""
     expect(result.input[0]).toEqual({ role: "user", content: "" });
   });
+
+  describe("system_prompt_strategy", () => {
+    it("developer_inline moves system messages to input[0] as developer message", () => {
+      const result = _translateToCodexRequest(
+        makeRequest({
+          messages: [
+            { role: "system", content: "system prompt" },
+            { role: "user", content: "hello" },
+          ],
+        }),
+        {
+          default_reasoning_effort: null,
+          default_service_tier: null,
+          inject_desktop_context: false,
+          suppress_desktop_directives: false,
+          system_prompt_strategy: "developer_inline",
+        },
+      ).codexRequest;
+
+      expect(result.instructions).toBe("");
+      expect(result.input).toHaveLength(2);
+      const first = result.input[0];
+      expect(first && "role" in first && first.role).toBe("developer");
+      const firstContent = first && "content" in first && Array.isArray(first.content) ? first.content[0] : undefined;
+      expect(firstContent?.text).toBe("system prompt");
+    });
+
+    it("system_inline moves system messages to input[0] as system message", () => {
+      const result = _translateToCodexRequest(
+        makeRequest({
+          messages: [
+            { role: "developer", content: "developer prompt" },
+            { role: "user", content: "hello" },
+          ],
+        }),
+        {
+          default_reasoning_effort: null,
+          default_service_tier: null,
+          inject_desktop_context: false,
+          suppress_desktop_directives: false,
+          system_prompt_strategy: "system_inline",
+        },
+      ).codexRequest;
+
+      expect(result.instructions).toBe("");
+      expect(result.input).toHaveLength(2);
+      const first = result.input[0];
+      expect(first && "role" in first && first.role).toBe("system");
+      const firstContent = first && "content" in first && Array.isArray(first.content) ? first.content[0] : undefined;
+      expect(firstContent?.text).toBe("developer prompt");
+    });
+  });
 });

@@ -19,6 +19,27 @@ export function normalizeInstructions(instructions: string | null | undefined): 
   return instructions ?? "";
 }
 
+export function extractEffectiveInstructions(codexRequest: CodexResponsesRequest): string {
+  if (codexRequest.instructions?.trim()) {
+    return codexRequest.instructions;
+  }
+  const first = codexRequest.input?.[0];
+  if (first && "role" in first && (first.role === "developer" || first.role === "system")) {
+    if (typeof first.content === "string") {
+      return first.content;
+    }
+    if (Array.isArray(first.content)) {
+      return first.content
+        .filter((part): part is { type: "input_text"; text: string } =>
+          !!part && typeof part === "object" && "type" in part && part.type === "input_text" && "text" in part && typeof part.text === "string"
+        )
+        .map((p) => p.text)
+        .join("\n\n");
+    }
+  }
+  return codexRequest.instructions ?? "";
+}
+
 export function hashInstructions(instructions: string | null | undefined): string {
   return createHash("sha256").update(instructions ?? "").digest("hex");
 }

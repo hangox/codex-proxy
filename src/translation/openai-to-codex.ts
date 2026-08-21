@@ -106,11 +106,12 @@ export function translateToCodexRequest(
   const systemMessages = req.messages.filter(
     (m) => m.role === "system" || m.role === "developer",
   );
-  const userInstructions =
-    systemMessages.map((m) => extractText(m.content)).join("\n\n") ||
-    "You are a helpful assistant.";
+  const rawUserInstructions = systemMessages.map((m) => extractText(m.content)).filter(Boolean).join("\n\n");
+  const userInstructions = rawUserInstructions || "You are a helpful assistant.";
   const cfg = modelConfig ?? getConfig().model;
-  const instructions = buildInstructions(userInstructions, cfg);
+  const strategy = cfg.system_prompt_strategy ?? "instructions";
+  const inlineSystem = strategy === "developer_inline" || strategy === "system_inline";
+  const instructions = buildInstructions(inlineSystem ? "" : userInstructions, cfg);
 
   // Build input items from non-system messages
   // Handles new format (tool/tool_calls) and legacy format (function/function_call)
@@ -192,6 +193,15 @@ export function translateToCodexRequest(
   // Ensure at least one input message
   if (input.length === 0) {
     input.push({ role: "user", content: "" });
+  }
+
+  // Inline strategy: prepend user system prompt as the first input item
+  if (inlineSystem && rawUserInstructions) {
+    const role = strategy === "developer_inline" ? "developer" : "system";
+    input.unshift({
+      role,
+      content: [{ type: "input_text", text: rawUserInstructions }],
+    });
   }
 
   // Resolve model (suffix parsing extracts service_tier and reasoning_effort)

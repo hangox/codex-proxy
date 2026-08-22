@@ -216,6 +216,13 @@ describe("POST /v1/images/generations", () => {
     });
     expect(invalidFormat.status).toBe(400);
     expect(getMockTransport().post).not.toHaveBeenCalled();
+
+    const oversizedPrompt = await imagesRequest({
+      model: "gpt-image-2",
+      prompt: "a".repeat(32769),
+    });
+    expect(oversizedPrompt.status).toBe(400);
+    expect(getMockTransport().post).not.toHaveBeenCalled();
   });
 
   it("rejects a PNG compression override that the Codex image tool cannot use", async () => {

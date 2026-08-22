@@ -44,7 +44,7 @@ const ImageResponseFormatSchema = z.union([
 /** Images generations 的最小兼容请求。未知字段保留在解析结果中但不会转发。 */
 export const ImageGenerationRequestSchema = z.object({
   model: z.string().trim().min(1),
-  prompt: z.string().trim().min(1),
+  prompt: z.string().trim().min(1).max(32768),
   size: z.enum(IMAGE_SIZES).optional(),
   quality: z.enum(["standard", "hd"]).optional(),
   output_format: z.enum(IMAGE_OUTPUT_FORMATS).optional(),

@@ -118,7 +118,9 @@ export class CodexResponsesUpstream implements UpstreamAdapter {
     headers["x-openai-internal-codex-residency"] = "us";
     headers["x-client-request-id"] = identity.conversationId;
     headers["x-codex-installation-id"] = installationId;
+    headers["session_id"] = identity.conversationId;
     headers["session-id"] = identity.conversationId;
+    headers["thread_id"] = identity.conversationId;
     headers["thread-id"] = identity.conversationId;
     headers[X_CODEX_WINDOW_ID_HEADER] = identity.windowId;
     applyCodexContextHeaders(headers, request);

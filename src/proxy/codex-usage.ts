@@ -2,6 +2,7 @@
  * Codex usage/quota API query.
  */
 
+import { randomUUID } from "crypto";
 import { getConfig } from "../config.js";
 import { getTransport, type TlsTransport } from "../tls/transport.js";
 import {
@@ -72,8 +73,10 @@ export function parseResetCreditsSnapshot(payload: unknown): CodexResetCreditsRe
 
   const nowSec = Math.floor(Date.now() / 1000);
   const isAvailable = (credit: CodexResetCreditItem) => {
-    const s = (credit.status || credit.raw_status || "available").trim().toLowerCase();
-    if (s === "redeemed" || s === "used" || s === "consumed" || s === "expired") {
+    // Conservative: if status is absent or unknown, treat as NOT available.
+    // Only explicitly known "available"-equivalent states are accepted.
+    const s = (credit.status || credit.raw_status || "unknown").trim().toLowerCase();
+    if (!["available", "granted"].includes(s)) {
       return false;
     }
     if (typeof credit.expires_at === "number" && Number.isFinite(credit.expires_at) && credit.expires_at <= nowSec) {
@@ -211,7 +214,7 @@ export async function consumeResetCredit(
   }
 
   const payload = JSON.stringify({
-    redeem_request_id: redeemRequestId || crypto.randomUUID(),
+    redeem_request_id: redeemRequestId || randomUUID(),
   });
 
   let lastBody = "";

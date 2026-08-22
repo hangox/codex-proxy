@@ -131,9 +131,9 @@ describe("CodexResponsesUpstream", () => {
     });
     expect(headers).not.toHaveProperty("ChatGPT-Account-Id");
     expect(headers["session-id"]).toMatch(/^cp_[0-9a-f]{32}$/);
+    expect(headers["session_id"]).toBe(headers["session-id"]);
     expect(headers["thread-id"]).toBe(headers["session-id"]);
-    expect(headers).not.toHaveProperty("session_id");
-    expect(headers).not.toHaveProperty("thread_id");
+    expect(headers["thread_id"]).toBe(headers["session-id"]);
     expect(headers["x-codex-window-id"]).toBe(`${headers["session-id"]}:0`);
 
     const body = JSON.parse(rawBody) as Record<string, unknown>;

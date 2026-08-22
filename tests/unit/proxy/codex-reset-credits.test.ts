@@ -88,6 +88,22 @@ describe("parseResetCreditsSnapshot", () => {
     expect(parsed.next_expires_at).toBe(future1);
   });
 
+  it("conservatively treats unknown or missing status as not available (M4)", () => {
+    const future = Math.floor(Date.now() / 1000) + 1800;
+    const payload = {
+      credits: [
+        { id: "c1", status: "pending", expires_at: future },
+        { id: "c2", status: "unknown", expires_at: future },
+        { id: "c3", expires_at: future }, // no status or raw_status
+        { id: "c4", status: "granted", expires_at: future }, // explicitly valid
+      ],
+    };
+
+    const parsed = parseResetCreditsSnapshot(payload);
+    expect(parsed.available_count).toBe(1);
+    expect(parsed.next_expires_at).toBe(future);
+  });
+
   it("handles null or empty payload gracefully", () => {
     expect(parseResetCreditsSnapshot(null)).toEqual({
       credits: [],

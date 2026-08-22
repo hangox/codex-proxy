@@ -160,7 +160,7 @@ describe("Account reset credits routes", () => {
       const res = await app.request(`/auth/accounts/${accountId}/reset-credits/consume`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ redeem_request_id: "test-req-id" }),
+        body: JSON.stringify({ redeem_request_id: "550e8400-e29b-41d4-a716-446655440000" }),
       });
 
       expect(res.status).toBe(200);
@@ -168,11 +168,72 @@ describe("Account reset credits routes", () => {
       expect(json.success).toBe(true);
       expect(json.quota.rate_limit.used_percent).toBe(0);
       expect(json.quota.reset_credits_available).toBe(1);
+      // Verify raw is removed (H3)
+      expect(json).not.toHaveProperty("raw");
 
       // Verify cached quota was updated in pool
       const entry = pool.getEntry(accountId);
       expect(entry?.cachedQuota?.rate_limit.used_percent).toBe(0);
       expect(entry?.cachedQuota?.reset_credits_available).toBe(1);
+    });
+
+    it("rejects non-UUID redeem_request_id with 400 (H2)", async () => {
+      const res = await app.request(`/auth/accounts/${accountId}/reset-credits/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redeem_request_id: "not-a-valid-uuid" }),
+      });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toContain("UUID");
+      expect(mockConsumeResetCredit).not.toHaveBeenCalled();
+    });
+
+    it("enforces 30s cooldown and returns 429 on rapid consecutive calls (H1)", async () => {
+      mockConsumeResetCredit.mockResolvedValue(undefined);
+      mockGetUsage.mockResolvedValue({
+        plan_type: "plus",
+        rate_limit: {
+          allowed: true,
+          limit_reached: false,
+          primary_window: { used_percent: 0, reset_at: null, limit_window_seconds: null, reset_after_seconds: null },
+          secondary_window: null,
+        },
+        code_review_rate_limit: null,
+      });
+
+      // 1st call: succeeds
+      const res1 = await app.request(`/auth/accounts/${accountId}/reset-credits/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redeem_request_id: "550e8400-e29b-41d4-a716-446655440001" }),
+      });
+      expect(res1.status).toBe(200);
+
+      // 2nd immediate call: blocked by cooldown
+      const res2 = await app.request(`/auth/accounts/${accountId}/reset-credits/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redeem_request_id: "550e8400-e29b-41d4-a716-446655440002" }),
+      });
+      expect(res2.status).toBe(429);
+      const json2 = await res2.json();
+      expect(json2.error).toContain("Reset credit already consumed recently");
+    });
+
+    it("returns 200 even if subsequent getUsage fails after successful consume (C1)", async () => {
+      mockConsumeResetCredit.mockResolvedValueOnce(undefined);
+      mockGetUsage.mockRejectedValueOnce(new Error("Usage fetch timeout"));
+
+      const res = await app.request(`/auth/accounts/${accountId}/reset-credits/consume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redeem_request_id: "550e8400-e29b-41d4-a716-446655440003" }),
+      });
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.success).toBe(true);
     });
 
     it("returns 502 when consume call fails", async () => {

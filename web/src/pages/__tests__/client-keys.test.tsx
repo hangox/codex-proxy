@@ -34,6 +34,7 @@ const sampleKey: ClientKeyPublicSummary = {
   used_tokens: 250000,
   max_concurrency: 5,
   allowed_models: ["gpt-5.4", "gpt-5.3-codex"],
+  default_tools: null,
   request_count: 42,
   last_used_at: "2026-08-19T10:00:00.000Z",
   created_at: "2026-08-01T00:00:00.000Z",
@@ -90,4 +91,26 @@ describe("ClientKeysPage Component", () => {
 
     expect(screen.getByPlaceholderText(/Frontend Dev Team/i)).toBeTruthy();
   });
+
+  it("renders noClientKeys empty state when keys list is empty", () => {
+    mockUseClientKeys.useClientKeys.mockReturnValue({
+      keys: [],
+      totalCostUsd: 0,
+      totalRequests: 0,
+      isLoading: false,
+      error: null,
+      fetchKeys: vi.fn(),
+      createKey: vi.fn(),
+      updateKey: vi.fn(),
+      toggleStatus: vi.fn(),
+      resetUsage: vi.fn(),
+      deleteKey: vi.fn(),
+    });
+
+    render(<ClientKeysPage />);
+
+    expect(screen.getByText(translations.en.noClientKeys)).toBeTruthy();
+    expect(screen.queryByText(translations.en.noAccounts)).toBeNull();
+  });
 });
+

@@ -669,6 +669,23 @@ export class AccountRegistry {
         entry.quotaVerifyRequired = true; // Mark dirty when offline reset rolls over
         this.schedulePersist();
       }
+
+      // Fix #730 Bug 2: limit_reached=true with reset_at=null has no offline
+      // unlock path (resetExpiredQuotaWindow returns false when reset_at is null).
+      // Mark quotaVerifyRequired so ActiveQuotaRefresher proactively re-validates.
+      if (!entry.quotaVerifyRequired) {
+        const hasNullLockedPrimary =
+          quota.rate_limit.limit_reached === true && quota.rate_limit.reset_at == null;
+        const hasNullLockedBucket =
+          quota.rate_limits_by_limit_id != null &&
+          Object.values(quota.rate_limits_by_limit_id).some(
+            (l) => l.limit_reached === true && l.reset_at == null,
+          );
+        if (hasNullLockedPrimary || hasNullLockedBucket) {
+          entry.quotaVerifyRequired = true;
+          this.schedulePersist();
+        }
+      }
     }
   }
 

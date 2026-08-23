@@ -114,24 +114,28 @@ describe("dashboard-auth middleware", () => {
     }
   });
 
-  it("returns 401 for /auth/accounts without session", async () => {
+  it("returns 401 for /auth/accounts without session and sets X-Dashboard-Auth header", async () => {
     const app = createApp();
     const res = await app.request("/auth/accounts");
     expect(res.status).toBe(401);
+    expect(res.headers.get("x-dashboard-auth")).toBe("required");
+    expect(res.headers.get("access-control-expose-headers")).toBe("X-Dashboard-Auth");
     const body = await res.json();
     expect(body.error).toBeTruthy();
   });
 
-  it("returns 401 for /admin/* without session", async () => {
+  it("returns 401 for /admin/* without session and sets X-Dashboard-Auth header", async () => {
     const app = createApp();
     const res = await app.request("/admin/rotation-settings");
     expect(res.status).toBe(401);
+    expect(res.headers.get("x-dashboard-auth")).toBe("required");
   });
 
-  it("returns 401 for /auth/status without session", async () => {
+  it("returns 401 for /auth/status without session and sets X-Dashboard-Auth header", async () => {
     const app = createApp();
     const res = await app.request("/auth/status");
     expect(res.status).toBe(401);
+    expect(res.headers.get("x-dashboard-auth")).toBe("required");
   });
 
   it("passes through with valid session cookie", async () => {

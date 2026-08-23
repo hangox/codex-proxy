@@ -3,27 +3,27 @@ import { useState, useEffect, useCallback } from "preact/hooks";
 export type DashboardAuthStatus = "loading" | "login" | "authenticated";
 
 /** Custom event fired when any fetch receives a 401 from dashboard endpoints. */
-const AUTH_EXPIRED_EVENT = "codex:auth-expired";
+export const AUTH_EXPIRED_EVENT = "codex:auth-expired";
+
+/** Check whether a response indicates an expired dashboard session. */
+export function isDashboardAuthExpiredResponse(resp: Response): boolean {
+  return resp.status === 401 && resp.headers.get("x-dashboard-auth") === "required";
+}
 
 /**
  * Install a one-time global fetch wrapper that detects 401 responses
  * from dashboard-protected endpoints and dispatches an auth-expired event.
  */
 let interceptorInstalled = false;
-function installFetchInterceptor(): void {
+export function installFetchInterceptor(): void {
   if (interceptorInstalled) return;
   interceptorInstalled = true;
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const resp = await originalFetch(input, init);
-    if (resp.status === 401) {
-      // Only fire for dashboard endpoints, not for proxy API routes
-      const url = typeof input === "string" ? input : input instanceof URL ? input.pathname : (input as Request).url;
-      const isProxyApi = url.includes("/v1/") || url.includes("/v1beta/");
-      if (!isProxyApi) {
-        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-      }
+    if (isDashboardAuthExpiredResponse(resp)) {
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
     }
     return resp;
   };

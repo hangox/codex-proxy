@@ -168,7 +168,7 @@ describe("AddKeyForm", () => {
     fireEvent.blur(screen.getByPlaceholderText("sk-..."));
 
     await waitFor(() => expect(screen.getByPlaceholderText("model-name-1, model-name-2")).toBeTruthy());
-    expect(screen.getByText("模型列表获取失败，请手动输入模型名：Failed")).toBeTruthy();
+    expect(screen.getByText("Failed to fetch model list, please enter model names manually: Failed")).toBeTruthy();
   });
 
   it("fetches custom provider models with base URL", async () => {
@@ -326,6 +326,30 @@ describe("AddKeyForm", () => {
     fireEvent.change(screen.getByDisplayValue("Chat Completions (OpenAI-compatible)"), { target: { value: "gemini" } });
 
     expect(screen.queryByText("Chat Custom")).toBeNull();
-    expect(screen.getByText("请先输入 API Key 和 URL，将会获取模型列表")).toBeTruthy();
+    expect(screen.getByText("Enter API Key and URL to fetch models")).toBeTruthy();
+  });
+
+  it("renders in Chinese when I18nProvider provides zh language", async () => {
+    const { I18nProvider } = await import("../../../shared/i18n/context");
+
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels();
+
+    render(
+      <I18nProvider initialLang="zh">
+        <AddKeyForm
+          onAdd={onAdd}
+          catalog={defaultCatalog}
+          fetchProviderModels={fetchProviderModels}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("供应商")).toBeTruthy();
+    expect(screen.getByText("模型")).toBeTruthy();
+    expect(screen.getByText("支持能力")).toBeTruthy();
+    expect(screen.getByText("添加 Key")).toBeTruthy();
+    expect(screen.getByText("Chat 对话")).toBeTruthy();
+    expect(screen.getByText("Embeddings 向量")).toBeTruthy();
   });
 });

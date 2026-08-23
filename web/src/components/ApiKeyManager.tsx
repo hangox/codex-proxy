@@ -1,41 +1,10 @@
 import { useState, useCallback, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
+import { useT } from "../../../shared/i18n/context";
 import type { ApiKeyCapability, ApiKeyProvider, ApiKeyWire, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
 
 /** Providers whose upstream wire protocol is selectable. */
 const WIRE_SELECTABLE_PROVIDERS: ReadonlySet<ApiKeyProvider> = new Set(["openai", "openrouter", "custom"]);
-
-const WIRE_OPTIONS: Array<{ value: ApiKeyWire; label: string; description: string }> = [
-  {
-    value: "chat",
-    label: "Chat Completions (OpenAI-compatible)",
-    description: "POST /chat/completions；DeepSeek / Kimi / GLM 等第三方通常使用此协议。",
-  },
-  {
-    value: "responses",
-    label: "Responses API (OpenAI-compatible)",
-    description: "POST /responses；仅当上游支持原生 Responses API 时使用。",
-  },
-  {
-    value: "codex-responses",
-    label: "Codex Responses (client context)",
-    description: "POST /responses；使用 API Key，并发送 Codex 官方客户端 context headers 与 client metadata。Base URL 应包含 /v1。",
-  },
-  {
-    value: "anthropic",
-    label: "Anthropic Messages",
-    description: "POST /messages；用于 Anthropic-compatible 自定义上游。",
-  },
-  {
-    value: "gemini",
-    label: "Gemini generateContent",
-    description: "POST /models/{model}:streamGenerateContent；Base URL 填 API root，例如 /v1beta，不要包含 /models。",
-  },
-];
-
-const PROVIDER_MODELS_HINT = "请先输入 API Key，将会获取模型列表";
-const CUSTOM_MODELS_HINT = "请先输入 API Key 和 URL，将会获取模型列表";
-const MODELS_FALLBACK_HINT = "模型列表获取失败，请手动输入模型名";
 
 const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
   { value: "anthropic", label: "Anthropic" },
@@ -43,11 +12,6 @@ const PROVIDER_OPTIONS: Array<{ value: ApiKeyProvider; label: string }> = [
   { value: "gemini", label: "Google Gemini" },
   { value: "openrouter", label: "OpenRouter" },
   { value: "custom", label: "Custom" },
-];
-
-const CAPABILITY_OPTIONS: Array<{ value: ApiKeyCapability; label: string }> = [
-  { value: "chat", label: "Chat" },
-  { value: "embeddings", label: "Embeddings" },
 ];
 
 type ProviderModelStatus = "idle" | "loading" | "loaded" | "fallback";
@@ -90,6 +54,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
   fetchProviderModels: (input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
 }) {
+  const t = useT();
   const [provider, setProvider] = useState<ApiKeyProvider>("anthropic");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
@@ -100,29 +65,62 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
   const [wire, setWire] = useState<ApiKeyWire>("chat");
   const [providerModels, setProviderModels] = useState<CatalogModel[]>([]);
   const [modelStatus, setModelStatus] = useState<ProviderModelStatus>("idle");
-  const [modelMessage, setModelMessage] = useState(PROVIDER_MODELS_HINT);
+  const [modelMessage, setModelMessage] = useState(t("providerModelsHint"));
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
   const latestModelRequestRef = useRef(0);
   const latestResolvedSignatureRef = useRef("");
+
+  const wireOptions = useMemo<Array<{ value: ApiKeyWire; label: string; description: string }>>(() => [
+    {
+      value: "chat",
+      label: t("wireChatLabel"),
+      description: t("wireChatDesc"),
+    },
+    {
+      value: "responses",
+      label: t("wireResponsesLabel"),
+      description: t("wireResponsesDesc"),
+    },
+    {
+      value: "codex-responses",
+      label: t("wireCodexResponsesLabel"),
+      description: t("wireCodexResponsesDesc"),
+    },
+    {
+      value: "anthropic",
+      label: t("wireAnthropicLabel"),
+      description: t("wireAnthropicDesc"),
+    },
+    {
+      value: "gemini",
+      label: t("wireGeminiLabel"),
+      description: t("wireGeminiDesc"),
+    },
+  ], [t]);
+
+  const capabilityOptions = useMemo<Array<{ value: ApiKeyCapability; label: string }>>(() => [
+    { value: "chat", label: t("capChat") },
+    { value: "embeddings", label: t("capEmbeddings") },
+  ], [t]);
 
   const isCustom = provider === "custom";
   const wireSelectable = WIRE_SELECTABLE_PROVIDERS.has(provider);
   const providerCatalog = !isCustom ? catalog[provider]?.models ?? [] : [];
   const availableModels = providerModels.length > 0 ? providerModels : providerCatalog;
   const visibleWireOptions = isCustom
-    ? WIRE_OPTIONS
-    : WIRE_OPTIONS.filter((option) => option.value === "chat" || option.value === "responses");
+    ? wireOptions
+    : wireOptions.filter((option) => option.value === "chat" || option.value === "responses");
   const selectedWireOption = visibleWireOptions.find((option) => option.value === wire) ?? visibleWireOptions[0];
   const selectedModelSet = useMemo(() => new Set(selectedModels), [selectedModels]);
   const selectedCapabilitySet = useMemo(() => new Set(capabilities), [capabilities]);
 
-  const resetProviderModels = useCallback((status: ProviderModelStatus = "idle", message = PROVIDER_MODELS_HINT) => {
+  const resetProviderModels = useCallback((status: ProviderModelStatus = "idle", message?: string) => {
     setProviderModels([]);
     setSelectedModels([]);
     setModelStatus(status);
-    setModelMessage(message);
-  }, []);
+    setModelMessage(message ?? (isCustom ? t("customModelsHint") : t("providerModelsHint")));
+  }, [isCustom, t]);
 
   const handleModelToggle = (modelId: string) => {
     setSelectedModels((prev) => prev.includes(modelId)
@@ -140,7 +138,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     const normalizedApiKey = apiKey.trim();
     const normalizedBaseUrl = baseUrl.trim();
     if (!normalizedApiKey || (isCustom && !normalizedBaseUrl)) {
-      resetProviderModels("idle", isCustom ? CUSTOM_MODELS_HINT : PROVIDER_MODELS_HINT);
+      resetProviderModels("idle", isCustom ? t("customModelsHint") : t("providerModelsHint"));
       return;
     }
 
@@ -152,7 +150,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     const requestId = latestModelRequestRef.current + 1;
     latestModelRequestRef.current = requestId;
     setModelStatus("loading");
-    setModelMessage("正在获取模型列表...");
+    setModelMessage(t("fetchingModelsHint"));
     setError("");
 
     const result = await fetchProviderModels({
@@ -168,7 +166,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       setProviderModels([]);
       setSelectedModels([]);
       setModelStatus("fallback");
-      setModelMessage(result.ok ? MODELS_FALLBACK_HINT : `${MODELS_FALLBACK_HINT}：${result.error}`);
+      setModelMessage(result.ok ? t("modelsFallbackHint") : t("modelsFallbackHintWithError", { error: result.error }));
       latestResolvedSignatureRef.current = "";
       return;
     }
@@ -181,7 +179,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       const next = prev.filter((id) => result.models.some((model) => model.id === id));
       return next.length > 0 ? next : [result.models[0].id];
     });
-  }, [apiKey, baseUrl, fetchProviderModels, isCustom, provider, providerModels.length, resetProviderModels, wire]);
+  }, [apiKey, baseUrl, fetchProviderModels, isCustom, provider, providerModels.length, resetProviderModels, t, wire]);
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -195,17 +193,15 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       : [...new Set([...selectedModels, ...normalizedManualModels])];
 
     if (models.length === 0 || !normalizedApiKey) {
-      setError(modelStatus === "fallback"
-        ? "请输入至少一个模型名并填写 API Key"
-        : "Select at least one model and enter an API Key");
+      setError(t("requireModelAndKey"));
       return;
     }
     if (isCustom && !normalizedBaseUrl) {
-      setError("Base URL is required for custom providers");
+      setError(t("requireBaseUrl"));
       return;
     }
     if (capabilities.length === 0) {
-      setError("Select at least one capability");
+      setError(t("requireCapability"));
       return;
     }
 
@@ -235,7 +231,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       setWire("chat");
       resetProviderModels();
     } else {
-      setError(result.error || "Failed to add key");
+      setError(result.error || t("failedToAddKey"));
     }
   };
 
@@ -243,7 +239,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     <form onSubmit={handleSubmit} class="flex flex-col gap-3 p-4 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl">
       <div class="flex flex-wrap gap-3">
         <div class="flex flex-col gap-1 min-w-[140px]">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Provider</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("providerLabel")}</label>
           <select
             value={provider}
             onChange={(e) => {
@@ -257,7 +253,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
               setCapabilities(["chat"]);
               setWire("chat");
               latestResolvedSignatureRef.current = "";
-              resetProviderModels("idle", v === "custom" ? CUSTOM_MODELS_HINT : PROVIDER_MODELS_HINT);
+              resetProviderModels("idle", v === "custom" ? t("customModelsHint") : t("providerModelsHint"));
             }}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           >
@@ -268,14 +264,14 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
         </div>
 
         <div class="flex flex-col gap-1 flex-1 min-w-[200px]">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">API Key</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("apiKeyLabelField")}</label>
           <input
             type="password"
             value={apiKey}
             onInput={(e) => {
               setApiKey((e.target as HTMLInputElement).value);
               latestResolvedSignatureRef.current = "";
-              resetProviderModels("idle", isCustom ? CUSTOM_MODELS_HINT : PROVIDER_MODELS_HINT);
+              resetProviderModels("idle", isCustom ? t("customModelsHint") : t("providerModelsHint"));
             }}
             onBlur={() => { void triggerProviderModelFetch(); }}
             placeholder="sk-..."
@@ -285,11 +281,11 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Models</label>
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("modelsLabel")}</label>
         {availableModels.length > 0 && renderModelChecklist(availableModels, selectedModelSet, handleModelToggle)}
         {availableModels.length === 0 && (
           <div class="px-2.5 py-2 text-sm rounded-lg border border-dashed border-gray-200 dark:border-border-dark text-slate-400 dark:text-text-dim">
-            {modelStatus === "loading" ? "正在获取模型列表..." : modelMessage}
+            {modelStatus === "loading" ? t("fetchingModelsHint") : modelMessage}
           </div>
         )}
         {modelStatus === "fallback" && (
@@ -313,9 +309,9 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Capabilities</label>
+        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("capabilitiesLabel")}</label>
         <div class="flex flex-wrap gap-2">
-          {CAPABILITY_OPTIONS.map((option) => (
+          {capabilityOptions.map((option) => (
             <label key={option.value} class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-sm text-slate-700 dark:text-text-main">
               <input
                 type="checkbox"
@@ -330,13 +326,13 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
 
       {wireSelectable && (
         <div class="flex flex-col gap-1">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Upstream protocol</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("upstreamProtocolLabel")}</label>
           <select
             value={wire}
             onChange={(e) => {
               setWire((e.target as HTMLSelectElement).value as ApiKeyWire);
               latestResolvedSignatureRef.current = "";
-              resetProviderModels("idle", isCustom ? CUSTOM_MODELS_HINT : PROVIDER_MODELS_HINT);
+              resetProviderModels("idle", isCustom ? t("customModelsHint") : t("providerModelsHint"));
             }}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           >
@@ -352,14 +348,14 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
 
       {isCustom && (
         <div class="flex flex-col gap-1">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Base URL</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("baseUrlLabel")}</label>
           <input
             type="url"
             value={baseUrl}
             onInput={(e) => {
               setBaseUrl((e.target as HTMLInputElement).value);
               latestResolvedSignatureRef.current = "";
-              resetProviderModels("idle", CUSTOM_MODELS_HINT);
+              resetProviderModels("idle", t("customModelsHint"));
             }}
             onBlur={() => { void triggerProviderModelFetch(); }}
             placeholder="https://api.example.com/v1"
@@ -370,12 +366,12 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
 
       <div class="flex gap-3 items-end">
         <div class="flex flex-col gap-1 flex-1">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">Label (optional)</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("labelOptionalField")}</label>
           <input
             type="text"
             value={label}
             onInput={(e) => setLabel((e.target as HTMLInputElement).value)}
-            placeholder="e.g. Production, Team A"
+            placeholder={t("labelPlaceholderField")}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
         </div>
@@ -384,7 +380,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
           disabled={adding}
           class="px-4 py-1.5 text-sm font-medium text-white bg-primary-action hover:bg-primary-action-hover rounded-lg transition-colors disabled:opacity-40 whitespace-nowrap"
         >
-          {adding ? "Adding..." : "Add Key"}
+          {adding ? t("addingKeyBtn") : t("addKeyBtn")}
         </button>
       </div>
 
@@ -410,6 +406,7 @@ function KeyRow({ entry, onDelete, onToggle }: {
   onDelete: (id: string) => void;
   onToggle: (id: string, status: "active" | "disabled") => void;
 }) {
+  const t = useT();
   const isActive = entry.status === "active";
 
   return (
@@ -438,7 +435,7 @@ function KeyRow({ entry, onDelete, onToggle }: {
 
       <button
         onClick={() => onToggle(entry.id, isActive ? "disabled" : "active")}
-        title={isActive ? "Disable" : "Enable"}
+        title={isActive ? t("disableApiKey") : t("enableApiKey")}
         class={`relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0 ${
           isActive ? "bg-primary" : "bg-slate-300 dark:bg-slate-600"
         }`}
@@ -450,7 +447,7 @@ function KeyRow({ entry, onDelete, onToggle }: {
 
       <button
         onClick={() => onDelete(entry.id)}
-        title="Delete"
+        title={t("deleteApiKey")}
         class="p-1 text-slate-400 hover:text-red-500 transition-colors"
       >
         <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -462,6 +459,7 @@ function KeyRow({ entry, onDelete, onToggle }: {
 }
 
 export function ApiKeyManager() {
+  const t = useT();
   const { keys, catalog, loading, addKey, deleteKey, toggleStatus, importKeys, fetchProviderModels } = useApiKeys();
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
@@ -472,16 +470,16 @@ export function ApiKeyManager() {
     if (!files || files.length === 0) return;
     try {
       const result = await importKeys(files[0]);
-      setImportResult(`Added: ${result.added}, Failed: ${result.failed}`);
+      setImportResult(t("importApiKeysResult", { added: result.added, failed: result.failed }));
       setTimeout(() => setImportResult(null), 5000);
     } catch {
-      setImportResult("Import failed");
+      setImportResult(t("importApiKeysFailed"));
     }
     if (fileRef.current) fileRef.current.value = "";
-  }, [importKeys]);
+  }, [importKeys, t]);
 
   if (loading) {
-    return <div class="text-sm text-slate-400 dark:text-text-dim animate-pulse">Loading API keys...</div>;
+    return <div class="text-sm text-slate-400 dark:text-text-dim animate-pulse">{t("loadingApiKeys")}</div>;
   }
 
   return (
@@ -491,7 +489,7 @@ export function ApiKeyManager() {
           <svg class="size-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" />
           </svg>
-          API Keys
+          {t("apiKeysTitle")}
           <span class="text-xs font-normal text-slate-400 dark:text-text-dim">
             ({keys.length})
           </span>
@@ -505,7 +503,7 @@ export function ApiKeyManager() {
           <input ref={fileRef} type="file" accept=".json" onChange={handleImport} class="hidden" />
           <button
             onClick={() => fileRef.current?.click()}
-            title="Import"
+            title={t("importApiKeys")}
             class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
           >
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -514,7 +512,7 @@ export function ApiKeyManager() {
           </button>
           <button
             onClick={() => setShowForm(!showForm)}
-            title="Add API Key"
+            title={t("addApiKey")}
             class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
           >
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -538,7 +536,7 @@ export function ApiKeyManager() {
 
       {keys.length === 0 ? (
         <div class="text-center py-8 text-sm text-slate-400 dark:text-text-dim">
-          No API keys configured. Click + to add one.
+          {t("noApiKeys")}
         </div>
       ) : (
         <div class="flex flex-col gap-2">

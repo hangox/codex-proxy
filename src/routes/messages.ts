@@ -200,9 +200,11 @@ export function createMessagesRoutes(
       fallbackDefaultTools: ["web_search"],
     });
 
+    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
       injectHostedWebSearch: false,
       mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
+      requestId,
     });
     if (!allowUnauthenticated) {
       codexRequest.useWebSocket = true;
@@ -222,7 +224,6 @@ export function createMessagesRoutes(
     };
     const fmt = makeAnthropicFormat(wantThinking);
 
-    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
     enqueueLogEntry({
       requestId,
       direction: "ingress",

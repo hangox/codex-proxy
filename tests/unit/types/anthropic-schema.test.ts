@@ -91,4 +91,54 @@ describe("AnthropicMessagesRequestSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  // output_config.effort carries Claude Code's explicitly selected reasoning
+  // effort. It must survive schema parsing (zod objects silently strip
+  // undeclared fields), otherwise the user's choice is dropped before the
+  // translation layer ever sees it.
+  describe("output_config", () => {
+    it("preserves output_config.effort instead of stripping it", () => {
+      const result = AnthropicMessagesRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        output_config: { effort: "max" },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.output_config?.effort).toBe("max");
+      }
+    });
+
+    it("accepts requests without output_config", () => {
+      const result = AnthropicMessagesRequestSchema.safeParse(BASE_REQUEST);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.output_config).toBeUndefined();
+      }
+    });
+
+    it("accepts output_config without effort", () => {
+      const result = AnthropicMessagesRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        output_config: { format: { type: "json_schema" } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("preserves undeclared subfields via passthrough (future-proofing)", () => {
+      const result = AnthropicMessagesRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        output_config: {
+          effort: "high",
+          task_budget: { type: "tokens", total: 64000 },
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.output_config).toEqual({
+          effort: "high",
+          task_budget: { type: "tokens", total: 64000 },
+        });
+      }
+    });
+  });
 });

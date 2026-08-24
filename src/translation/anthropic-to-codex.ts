@@ -10,7 +10,7 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions, budgetToEffort, isRecord } from "./shared-utils.js";
+import { buildInstructions, budgetToEffort, clampReasoningEffortToModel, isRecord, isRecognizedReasoningEffort } from "./shared-utils.js";
 import type { ModelConfigOverride } from "./shared-utils.js";
 import {
   anthropicToolsToCodex,
@@ -196,7 +196,12 @@ function contentToInputItems(
 export function translateAnthropicToCodexRequest(
   req: AnthropicMessagesRequest,
   modelConfig?: ModelConfigOverride,
-  options?: { injectHostedWebSearch?: boolean; mapClaudeCodeWebSearch?: boolean },
+  options?: {
+    injectHostedWebSearch?: boolean;
+    mapClaudeCodeWebSearch?: boolean;
+    /** Used only for effort-clamp log correlation; does not affect translation. */
+    requestId?: string;
+  },
 ): CodexResponsesRequest {
   // Extract the user-supplied system prompt (empty when none provided). The
   // synthetic default below is intentionally kept out of `userInstructions` so
@@ -292,14 +297,43 @@ export function translateAnthropicToCodexRequest(
     request.tool_choice = codexToolChoice;
   }
 
-  // Reasoning effort: thinking config > suffix > config default
+  // Reasoning effort: output_config.effort > thinking config > suffix > config default
+  //
+  // Claude Code sends the user's explicit effort selection in
+  // `output_config.effort` (adaptive thinking never carries budget_tokens), so
+  // it takes top priority. The value is validated before use: an empty or
+  // whitespace string must NOT short-circuit the fallback chain (the `??`
+  // operator only handles null/undefined), and an unknown level name must NOT
+  // be fed to clampReasoningEffortToModel to guess a direction — both are
+  // treated as "not provided" so the next source (thinking → suffix → config
+  // default) takes over. A recognized value is trimmed so e.g. `" high "`
+  // resolves to `high` instead of being treated as an unknown level.
+  const explicitEffort = (() => {
+    if (typeof req.output_config?.effort !== "string") return undefined;
+    const trimmed = req.output_config.effort.trim();
+    if (trimmed === "" || !isRecognizedReasoningEffort(trimmed)) return undefined;
+    return trimmed;
+  })();
   const thinkingEffort = mapThinkingToEffort(req.thinking);
-  const effort =
+  const requestedEffort =
+    explicitEffort ??
     thinkingEffort ??
     parsed.reasoningEffort ??
     cfg.default_reasoning_effort;
-  if (effort) {
-    request.reasoning = { effort, summary: "auto" };
+  if (requestedEffort) {
+    // Clamp to the target model's real supported levels — the Codex upstream
+    // stalls/times out (502) on unsupported efforts instead of degrading, and
+    // `supportedReasoningEfforts` model metadata was previously never
+    // consulted. Full rationale in clampReasoningEffortToModel.
+    const clampResult = clampReasoningEffortToModel(requestedEffort, modelInfo);
+    if (clampResult.clamped) {
+      console.warn(
+        `[AnthropicToCodex] rid=${options?.requestId ?? "-"} phase=effort_clamped model=${modelId} ` +
+          `requested=${requestedEffort} clamped_to=${clampResult.effort} ` +
+          `supported=${clampResult.supported.length > 0 ? clampResult.supported.join(",") : "(none declared)"}`,
+      );
+    }
+    request.reasoning = { effort: clampResult.effort, summary: "auto" };
   }
 
   // Service tier: suffix > config default

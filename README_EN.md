@@ -719,7 +719,10 @@ On first startup, if `data/local.yaml` is missing, Codex Proxy creates it with `
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | OpenAI format chat completions |
 | `/v1/responses` | POST | Codex Responses API passthrough |
-| `/v1/responses/compact` | POST | Codex compact response proxy |
+| `/v1/responses/compact` | POST | Codex remote compact response proxy |
+| `/v1/alpha/search` | POST | Codex standalone Web Search (`codex-responses` API-key wire) |
+| `/v1/images/generations` | POST | Codex JSON image generation passthrough (`codex-responses` API-key wire) |
+| `/v1/images/edits` | POST | Codex JSON image edit passthrough (`codex-responses` API-key wire) |
 | `/v1/messages` | POST | Anthropic format chat completions |
 | `/v1/models` | GET | List available models |
 | `/v1/models/catalog` | GET | Full model catalog for the dashboard |
@@ -747,7 +750,7 @@ On first startup, if `data/local.yaml` is missing, Codex Proxy creates it with `
 
 **Third-Party API Keys**
 
-For API-key upstreams that require official Codex client context on a standard Responses API, choose the `Custom` provider and `Codex Responses (client context)` protocol in the Dashboard. Set Base URL to the API v1 root (for example, `https://provider.example.com/v1`), not the full `/responses` endpoint. This protocol uses HTTP SSE and sends Codex headers, installation/session/thread/window IDs, and client metadata. It currently handles Chat/Responses requests, not Embeddings. If the provider does not expose a compatible `/models` endpoint, enter the model name manually in the Dashboard.
+For API-key upstreams that require official Codex client context on a standard Responses API, choose the `Custom` provider and `Codex Responses (client context)` protocol in the Dashboard. Set Base URL to the API v1 root (for example, `https://provider.example.com/v1`), not the full `/responses` endpoint. The primary Responses call uses HTTP SSE and sends Codex headers, installation/session/thread/window IDs, and client metadata. The same wire also routes standalone Web Search, remote compact, and Codex JSON image generation/edit requests by the body `model`; Embeddings remain unsupported. If the provider does not expose a compatible `/models` endpoint, enter the model name manually in the Dashboard.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

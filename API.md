@@ -80,6 +80,19 @@ Native Codex Responses API passthrough (WebSocket transport).
 - Non-streaming: `{ response, usage, responseId }`
 - Do not send `max_output_tokens` to native Codex. The proxy accepts it only for compatibility and strips it, because the real Codex backend rejects it with `400 Unsupported parameter: max_output_tokens`.
 
+### Codex Responses API-key auxiliary endpoints
+
+When the requested model resolves to an API-key provider with `wire=codex-responses`, the proxy also supports these non-streaming JSON endpoints:
+
+| Endpoint | Upstream target | Purpose |
+|---|---|---|
+| `POST /v1/alpha/search` | `<baseUrl>/alpha/search` | Codex CLI standalone Web Search |
+| `POST /v1/responses/compact` | `<baseUrl>/responses/compact` | Remote conversation compaction |
+| `POST /v1/images/generations` | `<baseUrl>/images/generations` | Codex JSON image generation |
+| `POST /v1/images/edits` | `<baseUrl>/images/edits` | Codex JSON image editing |
+
+Each endpoint requires a non-empty `model` in its JSON body and uses the existing model router to select the API-key entry. The proxy replaces local authentication with the configured provider key. Apart from configured model-alias resolution and stripping an internal provider prefix, it leaves the JSON body unchanged and preserves the upstream status, Content-Type, and response body. Paths outside the exact allowlist are not forwarded. Local aliases without `/v1` are accepted as well. See the public [OpenAI Responses compact API](https://developers.openai.com/api/reference/resources/responses/methods/compact/) and the [Codex CLI 0.147.0 search endpoint source](https://github.com/openai/codex/blob/rust-v0.147.0/codex-rs/codex-api/src/endpoint/search.rs#L31-L45).
+
 #### image_generation tool
 
 Declare `{"type": "image_generation", ...}` in `tools[]` to let the model invoke

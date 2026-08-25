@@ -190,6 +190,181 @@ describe("POST /v1/responses/compact", () => {
     expect(capturedCompactRequest).toBeNull();
   });
 
+  it("uses the remote compact endpoint when the adapter declares Codex JSON support", async () => {
+    const forwardCodexJsonRequest = vi.fn(async () => new Response(
+      JSON.stringify({ output: [{ role: "user", content: "remote compact" }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const upstreamRouter = {
+      resolveMatch: vi.fn(() => ({
+        kind: "adapter",
+        adapter: { tag: "codex-responses", forwardCodexJsonRequest },
+      })),
+    };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+    const requestBody = {
+      model: "my-custom-model",
+      input: [{ role: "user", content: "Hello" }],
+      instructions: "You are helpful",
+      provider_extension: { preserved: true },
+    };
+
+    const res = await app.request("/responses/compact", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-codex-turn-state": "turn-state-1",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      output: [{ role: "user", content: "remote compact" }],
+    });
+    expect(forwardCodexJsonRequest).toHaveBeenCalledWith(
+      "responses/compact",
+      requestBody,
+      expect.any(AbortSignal),
+      expect.objectContaining({ turnState: "turn-state-1" }),
+    );
+    expect(mockHandleDirectRequest).not.toHaveBeenCalled();
+    expect(capturedCompactRequest).toBeNull();
+  });
+
+  it.each([
+    ["/v1/alpha/search", "alpha/search"],
+    ["/alpha/search", "alpha/search"],
+    ["/v1/images/generations", "images/generations"],
+    ["/v1/images/edits", "images/edits"],
+  ] as const)("forwards Codex auxiliary route %s", async (incomingPath, upstreamPath) => {
+    const forwardCodexJsonRequest = vi.fn(async () => new Response(
+      JSON.stringify({ endpoint: upstreamPath, ok: true }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "x-request-id": "upstream-rid",
+          "x-ratelimit-remaining-requests": "7",
+          "Set-Cookie": "provider-secret=hidden",
+          "Set-Cookie2": "provider-secret-2=hidden",
+          Authorization: "Bearer upstream-secret",
+          "X-Api-Key": "upstream-secret",
+          Cookie: "provider-cookie=hidden",
+          "X-Accel-Buffering": "no",
+          Connection: "keep-alive",
+        },
+      },
+    ));
+    const upstreamRouter = {
+      resolveMatch: vi.fn(() => ({
+        kind: "api-key",
+        adapter: { tag: "codex-responses", forwardCodexJsonRequest },
+      })),
+    };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+    const requestBody = {
+      id: "aux-1",
+      model: "my-custom-model",
+      input: [{ type: "search_query", q: "OpenAI docs" }],
+    };
+
+    const res = await app.request(incomingPath, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-codex-turn-state": "turn-state-1",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-request-id")).toBe("upstream-rid");
+    expect(res.headers.get("x-ratelimit-remaining-requests")).toBe("7");
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(res.headers.get("set-cookie2")).toBeNull();
+    expect(res.headers.get("authorization")).toBeNull();
+    expect(res.headers.get("x-api-key")).toBeNull();
+    expect(res.headers.get("cookie")).toBeNull();
+    expect(res.headers.get("x-accel-buffering")).toBeNull();
+    expect(res.headers.get("connection")).toBeNull();
+    await expect(res.json()).resolves.toEqual({ endpoint: upstreamPath, ok: true });
+    expect(forwardCodexJsonRequest).toHaveBeenCalledWith(
+      upstreamPath,
+      requestBody,
+      expect.any(AbortSignal),
+      expect.objectContaining({ turnState: "turn-state-1" }),
+    );
+  });
+
+  it("preserves non-2xx auxiliary status, body, and safe retry headers", async () => {
+    const forwardCodexJsonRequest = vi.fn(async () => new Response(
+      JSON.stringify({ error: { message: "rate limited" } }),
+      {
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": "5",
+          "Proxy-Authenticate": "Basic realm=upstream",
+        },
+      },
+    ));
+    const upstreamRouter = {
+      resolveMatch: vi.fn(() => ({
+        kind: "api-key",
+        adapter: { tag: "codex-responses", forwardCodexJsonRequest },
+      })),
+    };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+
+    const res = await app.request("/v1/alpha/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "my-custom-model", input: [] }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(res.statusText).toBe("Too Many Requests");
+    expect(res.headers.get("retry-after")).toBe("5");
+    expect(res.headers.get("proxy-authenticate")).toBeNull();
+    await expect(res.json()).resolves.toEqual({ error: { message: "rate limited" } });
+  });
+
+  it("fails closed when an auxiliary model is not routed to a Codex JSON adapter", async () => {
+    const upstreamRouter = {
+      resolveMatch: vi.fn(() => ({ kind: "adapter", adapter: { tag: "responses" } })),
+    };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+
+    const res = await app.request("/v1/alpha/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "my-custom-model", input: [] }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("unsupported_codex_auxiliary_route");
+    expect(mockHandleDirectRequest).not.toHaveBeenCalled();
+  });
+
+  it("requires a model for auxiliary routing", async () => {
+    const upstreamRouter = { resolveMatch: vi.fn() };
+    app = createResponsesRoutes(pool, undefined, undefined, upstreamRouter as never);
+
+    const res = await app.request("/v1/alpha/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: [] }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("missing_model");
+    expect(upstreamRouter.resolveMatch).not.toHaveBeenCalled();
+  });
+
   it("sends correct CompactRequest format (no stream/store)", async () => {
     await app.request("/v1/responses/compact", {
       method: "POST",

@@ -5,7 +5,9 @@ import { enqueueLogEntry, updateLogEntry } from "../logs/entry.js";
 const KNOWN_LLM_PATHS = [
   /^\/v1\/chat\/completions$/,
   /^\/v1\/messages$/,
-  /^\/v1\/responses(?:\/compact)?$/,
+  /^\/(?:v1\/)?responses(?:\/(?:compact|review))?$/,
+  /^\/(?:v1\/)?alpha\/search$/,
+  /^\/(?:v1\/)?images\/(?:generations|edits)$/,
   /^\/v1\/models(?:\/.*)?$/,
   /^\/v1beta\/models(?:\/.*)?$/,
   /^\/(?:v1\/)?images\/generations$/,

@@ -5,7 +5,8 @@ release/
 public-desktop/
 data/
 public/
-docs/
+docs/*
+!docs/MULTI_AGENT_WORKFLOW.md
 bin/*
 !bin/README.md
 .env

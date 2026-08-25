@@ -30,6 +30,16 @@ function responseStream(): ReadableStream<Uint8Array> {
   });
 }
 
+function jsonStream(value: unknown): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
 /**
  * Model a strict gateway that requires official identity, a parseable engine
  * version, Codex-prefixed headers, session/thread IDs, and body metadata.
@@ -171,5 +181,76 @@ describe("CodexResponsesUpstream", () => {
       string,
     ];
     expect(passesStrictCodexClientMatrix(headers, JSON.parse(rawBody))).toBe(true);
+  });
+
+  it.each([
+    "alpha/search",
+    "responses/compact",
+    "images/generations",
+    "images/edits",
+  ] as const)("forwards the exact %s JSON endpoint without rewriting its body", async (path) => {
+    postMock.mockResolvedValueOnce({
+      status: 202,
+      headers: new Headers({ "Content-Type": "application/json", "x-request-id": "upstream-rid" }),
+      body: jsonStream({ ok: true }),
+      setCookieHeaders: [],
+    });
+    const upstream = new CodexResponsesUpstream(
+      "sk-vendor",
+      "https://provider.example.com/v1/",
+      "entry-1",
+    );
+    const signal = new AbortController().signal;
+    const body = {
+      id: "request-123",
+      model: "custom:gpt-5.6-sol",
+      input: [{ role: "user", content: "hello" }],
+      provider_extension: { preserved: true },
+    };
+
+    const response = await upstream.forwardCodexJsonRequest(path, body, signal, {
+      turnState: "turn-state-1",
+      parentThreadId: "parent-thread-1",
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("x-request-id")).toBe("upstream-rid");
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    const [url, headers, rawBody, passedSignal] = postMock.mock.calls[0] as [
+      string,
+      Record<string, string>,
+      string,
+      AbortSignal,
+    ];
+    expect(url).toBe(`https://provider.example.com/v1/${path}`);
+    expect(passedSignal).toBe(signal);
+    expect(JSON.parse(rawBody)).toEqual(body);
+    expect(headers).toMatchObject({
+      Accept: "application/json",
+      Authorization: "Bearer sk-vendor",
+      originator: "Codex Desktop",
+      "x-codex-installation-id": "11111111-2222-3333-4444-555555555555",
+      "x-codex-turn-state": "turn-state-1",
+      "x-codex-parent-thread-id": "parent-thread-1",
+    });
+    expect(headers).not.toHaveProperty("ChatGPT-Account-Id");
+    expect(headers).not.toHaveProperty("OpenAI-Beta");
+    expect(headers["session-id"]).toMatch(/^cp_[0-9a-f]{32}$/);
+    expect(headers["thread-id"]).toBe(headers["session-id"]);
+  });
+
+  it("rejects paths outside the auxiliary endpoint allowlist before transport", async () => {
+    const upstream = new CodexResponsesUpstream(
+      "sk-vendor",
+      "https://provider.example.com/v1",
+      "entry-1",
+    );
+
+    await expect(upstream.forwardCodexJsonRequest(
+      "admin/secrets" as "alpha/search",
+      { model: "gpt-5.6-sol" },
+      new AbortController().signal,
+    )).rejects.toThrow("Unsupported Codex auxiliary endpoint");
+    expect(postMock).not.toHaveBeenCalled();
   });
 });

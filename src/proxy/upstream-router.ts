@@ -69,14 +69,21 @@ export class UpstreamRouter {
         if (entries.length > 0) {
           const entry = pickLeastRecentlyUsed(entries);
           this.apiKeyPool.markUsed(entry.id);
-          return { kind: "api-key", adapter: this.getOrCreateDynamicAdapter(entry), entry };
+          return {
+            kind: "api-key",
+            adapter: this.getOrCreateDynamicAdapter(entry),
+            entry,
+            ...(candidate === model ? {} : { resolvedModel: candidate }),
+          };
         }
       }
     }
 
     if (explicitProvider) {
       const adapter = this.adapters.get(explicitProvider.tag);
-      if (adapter) return { kind: "adapter", adapter };
+      if (adapter) {
+        return { kind: "adapter", adapter, resolvedModel: explicitProvider.bareModel };
+      }
     }
 
     const aliases = getModelAliases();

@@ -856,7 +856,10 @@ curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
 |------|------|------|
 | `/v1/chat/completions` | POST | OpenAI 格式聊天补全 |
 | `/v1/responses` | POST | Codex Responses API 直通 |
-| `/v1/responses/compact` | POST | Codex compact 响应代理 |
+| `/v1/responses/compact` | POST | Codex 远程 compact 响应代理 |
+| `/v1/alpha/search` | POST | Codex standalone Web Search（`codex-responses` API-key wire） |
+| `/v1/images/generations` | POST | Codex JSON 图片生成直通（`codex-responses` API-key wire） |
+| `/v1/images/edits` | POST | Codex JSON 图片编辑直通（`codex-responses` API-key wire） |
 | `/v1/messages` | POST | Anthropic 格式聊天补全 |
 | `/v1/models` | GET | 可用模型列表 |
 | `/v1/models/catalog` | GET | Dashboard 使用的完整模型目录 |
@@ -884,7 +887,7 @@ curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
 
 **第三方 API Keys**
 
-对于在标准 Responses API 上要求 Codex 官方客户端上下文的 API-key 上游，请在 Dashboard 中选择 `Custom` Provider 和 `Codex Responses (client context)` 协议。Base URL 应填写 API v1 根地址（例如 `https://provider.example.com/v1`，不要填写完整的 `/responses` 地址）。该协议使用 HTTP SSE，并发送 Codex headers、installation/session/thread/window ID 与 client metadata；当前用于 Chat/Responses 请求，不支持 Embeddings。若供应商没有提供兼容的 `/models` 接口，可在 Dashboard 中手动填写模型名。
+对于在标准 Responses API 上要求 Codex 官方客户端上下文的 API-key 上游，请在 Dashboard 中选择 `Custom` Provider 和 `Codex Responses (client context)` 协议。Base URL 应填写 API v1 根地址（例如 `https://provider.example.com/v1`，不要填写完整的 `/responses` 地址）。该协议的主 Responses 请求使用 HTTP SSE，并发送 Codex headers、installation/session/thread/window ID 与 client metadata；同时支持按请求 body 的 `model` 路由 standalone Web Search、远程 compact 和 Codex JSON 图片生成/编辑端点，不支持 Embeddings。若供应商没有提供兼容的 `/models` 接口，可在 Dashboard 中手动填写模型名。
 
 | 端点 | 方法 | 说明 |
 |------|------|------|

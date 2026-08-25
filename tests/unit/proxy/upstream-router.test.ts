@@ -104,7 +104,7 @@ describe("UpstreamRouter", () => {
     expect(openaiMatch.kind).toBe("adapter");
     if (openaiMatch.kind === "adapter") {
       expect(openaiMatch.adapter.tag).toBe("openai");
-      expect(openaiMatch.resolvedModel).toBe("openai:gpt-4o");
+      expect(openaiMatch.resolvedModel).toBe("gpt-4o");
     }
 
     const deepseekMatch = router.resolveMatch("my-deepseek");
@@ -160,7 +160,10 @@ describe("UpstreamRouter", () => {
   });
 
   it("classifies explicit upstream routes as adapter matches", () => {
-    expect(router.resolveMatch("openai:gpt-4o").kind).toBe("adapter");
+    expect(router.resolveMatch("openai:gpt-4o")).toMatchObject({
+      kind: "adapter",
+      resolvedModel: "gpt-4o",
+    });
     expect(router.resolveMatch("claude-3-5-sonnet-20241022").kind).toBe("adapter");
   });
 });

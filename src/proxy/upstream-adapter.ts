@@ -8,6 +8,25 @@
 
 import type { CodexResponsesRequest, CodexSSEEvent } from "./codex-types.js";
 
+/** Exact JSON endpoints used by Codex clients outside the Responses SSE call. */
+export type CodexAuxiliaryJsonPath =
+  | "alpha/search"
+  | "responses/compact"
+  | "images/generations"
+  | "images/edits";
+
+export type CodexAuxiliaryRequestContext = Partial<Pick<
+  CodexResponsesRequest,
+  | "turnState"
+  | "turnMetadata"
+  | "betaFeatures"
+  | "version"
+  | "includeTimingMetrics"
+  | "codexWindowId"
+  | "parentThreadId"
+  | "client_metadata"
+>>;
+
 export interface UpstreamAdapter {
   /** Short identifier used in logs (e.g. "codex", "openai", "anthropic"). */
   readonly tag: string;
@@ -21,8 +40,24 @@ export interface UpstreamAdapter {
     signal: AbortSignal,
   ): Promise<Response>;
   /**
+   * Optional Codex-client JSON passthrough. Implementations must enforce the
+   * exact path allowlist and replace downstream authentication with their own.
+   */
+  forwardCodexJsonRequest?(
+    path: CodexAuxiliaryJsonPath,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+    context?: CodexAuxiliaryRequestContext,
+  ): Promise<Response>;
+  /**
    * Parse the upstream SSE response into a stream of Codex-normalized events.
    * Each adapter normalizes its native event format to CodexSSEEvent.
    */
   parseStream(response: Response): AsyncGenerator<CodexSSEEvent>;
+}
+
+export function supportsCodexAuxiliaryJson(
+  adapter: UpstreamAdapter,
+): adapter is UpstreamAdapter & Required<Pick<UpstreamAdapter, "forwardCodexJsonRequest">> {
+  return typeof adapter.forwardCodexJsonRequest === "function";
 }

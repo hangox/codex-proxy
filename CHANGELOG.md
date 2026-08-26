@@ -25,6 +25,7 @@
 ### Fixed
 
 - 修复首页已连接账户卡片的代理选择器在窄屏下横向溢出（`web/src/components/AccountCard.tsx`）
+- 用量统计页面的折线图改为平滑曲线，提升趋势查看体验（`web/src/components/UsageChart.tsx`）
 
 ### Added
 

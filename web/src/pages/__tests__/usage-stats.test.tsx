@@ -22,6 +22,7 @@ vi.mock("../../../../shared/i18n/context", () => ({
 }));
 
 import { UsageStats } from "../UsageStats";
+import { UsageChart, buildSmoothPath } from "../../components/UsageChart";
 
 const summary: UsageSummary = {
   total_input_tokens: 999_000,
@@ -137,6 +138,36 @@ describe("UsageStats", () => {
     expect(screen.queryByText("Official Codex Quota")).toBeNull();
     expect(screen.queryByText("Primary Remaining")).toBeNull();
     expect(screen.queryByText("Credit Balance")).toBeNull();
+  });
+
+  it("renders usage trends as smooth SVG paths", () => {
+    render(<UsageChart data={windowPoints} />);
+
+    const paths = document.querySelectorAll("path");
+    expect(paths.length).toBe(5);
+    expect(paths[0].getAttribute("d")).toContain("C");
+    expect(paths[1].getAttribute("d")).toContain("C");
+    expect(paths[2].getAttribute("d")).toContain("C");
+    expect(paths[3].getAttribute("d")).toContain("C");
+  });
+
+  it("keeps a single point path valid", () => {
+    expect(buildSmoothPath([{ x: 10, y: 20 }])).toBe("M 10,20");
+    expect(buildSmoothPath([])).toBe("");
+  });
+
+  it("connects hit-rate points across empty buckets", () => {
+    const dataWithEmptyBucket: UsageDataPoint[] = [
+      windowPoints[0],
+      { ...windowPoints[0], timestamp: "2026-05-08T00:30:00.000Z", input_tokens: 0, cached_tokens: 0 },
+      windowPoints[1],
+    ];
+
+    render(<UsageChart data={dataWithEmptyBucket} />);
+
+    const hitRatePath = document.querySelectorAll("path")[4].getAttribute("d") ?? "";
+    expect((hitRatePath.match(/M /g) ?? []).length).toBe(1);
+    expect(hitRatePath).toContain("C");
   });
 
 });

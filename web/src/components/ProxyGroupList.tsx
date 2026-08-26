@@ -37,7 +37,7 @@ export function ProxyGroupList({ accounts, proxies, selectedGroup, onSelectGroup
   groups.push({ id: "global", label: t("globalDefault"), count: countMap.get("global") || 0 });
 
   // Proxy entries
-  for (const p of proxies) {
+  for (const p of proxies.filter((proxy) => proxy.status !== "disabled")) {
     groups.push({ id: p.id, label: p.name, count: countMap.get(p.id) || 0 });
   }
 

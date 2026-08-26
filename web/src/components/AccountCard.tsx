@@ -469,7 +469,7 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
             <option value="global">{t("globalDefault")}</option>
             <option value="direct">{t("directNoProxy")}</option>
             <option value="auto">{t("autoRoundRobin")}</option>
-            {proxies.map((p) => (
+            {proxies.filter((p) => p.status !== "disabled").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
                 {p.health?.exitIp ? ` (${p.health.exitIp})` : ""}

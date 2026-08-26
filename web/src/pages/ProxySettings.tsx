@@ -122,7 +122,7 @@ export function ProxySettings({ embedded }: { embedded?: boolean } = {}) {
               >
                 <option value="__all__">{t("allAccounts")} ({data.accounts.length})</option>
                 <option value="global">{t("globalDefault")}</option>
-                {data.proxies.map((p) => (
+                {data.proxies.filter((p) => p.status !== "disabled").map((p) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
                 <option value="direct">{t("directNoProxy")}</option>

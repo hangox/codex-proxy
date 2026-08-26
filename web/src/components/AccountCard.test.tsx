@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Account } from "../../../shared/types";
+import type { Account, ProxyEntry } from "../../../shared/types";
 
 vi.mock("../../../shared/i18n/context", () => ({
   useT: () => (key: string) => key,
@@ -62,6 +62,33 @@ describe("AccountCard Codex fingerprint control", () => {
 
     expect(control.checked).toBe(false);
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe("AccountCard proxy selector", () => {
+  afterEach(() => cleanup());
+
+  it("does not show disabled proxies", () => {
+    const proxies: ProxyEntry[] = [
+      { id: "active-proxy", name: "Active proxy", url: "http://active", status: "active", health: null, addedAt: "" },
+      { id: "unreachable-proxy", name: "Unreachable proxy", url: "http://unreachable", status: "unreachable", health: null, addedAt: "" },
+      { id: "disabled-proxy", name: "Disabled proxy", url: "http://disabled", status: "disabled", health: null, addedAt: "" },
+    ];
+
+    const { container } = render(
+      <AccountCard
+        account={account()}
+        index={0}
+        onDelete={vi.fn(async () => null)}
+        proxies={proxies}
+        onProxyChange={vi.fn()}
+      />,
+    );
+
+    const optionLabels = Array.from(container.querySelectorAll("select option"), (option) => option.textContent);
+    expect(optionLabels).toContain("Active proxy");
+    expect(optionLabels).toContain("Unreachable proxy");
+    expect(optionLabels).not.toContain("Disabled proxy");
   });
 });
 

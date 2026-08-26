@@ -50,7 +50,7 @@ export function BulkActions({
             <option value="global">{t("globalDefault")}</option>
             <option value="direct">{t("directNoProxy")}</option>
             <option value="auto">{t("autoRoundRobin")}</option>
-            {proxies.map((p) => (
+            {proxies.filter((p) => p.status !== "disabled").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>
@@ -69,7 +69,7 @@ export function BulkActions({
         {/* Even distribute */}
         <button
           onClick={onEvenDistribute}
-          disabled={proxies.length === 0}
+          disabled={!proxies.some((p) => p.status === "active")}
           class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {t("evenDistribute")}

@@ -22,6 +22,7 @@ vi.mock("../../../../shared/i18n/context", () => ({
 }));
 
 import { UsageStats } from "../UsageStats";
+import { UsageChart, buildSmoothPath } from "../../components/UsageChart";
 
 const summary: UsageSummary = {
   total_input_tokens: 999_000,
@@ -137,6 +138,22 @@ describe("UsageStats", () => {
     expect(screen.queryByText("Official Codex Quota")).toBeNull();
     expect(screen.queryByText("Primary Remaining")).toBeNull();
     expect(screen.queryByText("Credit Balance")).toBeNull();
+  });
+
+  it("renders usage trends as smooth SVG paths", () => {
+    render(<UsageChart data={windowPoints} />);
+
+    const paths = document.querySelectorAll("path");
+    expect(paths.length).toBe(5);
+    expect(paths[0].getAttribute("d")).toContain("C");
+    expect(paths[1].getAttribute("d")).toContain("C");
+    expect(paths[2].getAttribute("d")).toContain("C");
+    expect(paths[3].getAttribute("d")).toContain("C");
+  });
+
+  it("keeps a single point path valid", () => {
+    expect(buildSmoothPath([{ x: 10, y: 20 }])).toBe("M 10,20");
+    expect(buildSmoothPath([])).toBe("");
   });
 
 });

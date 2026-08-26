@@ -156,4 +156,18 @@ describe("UsageStats", () => {
     expect(buildSmoothPath([])).toBe("");
   });
 
+  it("connects hit-rate points across empty buckets", () => {
+    const dataWithEmptyBucket: UsageDataPoint[] = [
+      windowPoints[0],
+      { ...windowPoints[0], timestamp: "2026-05-08T00:30:00.000Z", input_tokens: 0, cached_tokens: 0 },
+      windowPoints[1],
+    ];
+
+    render(<UsageChart data={dataWithEmptyBucket} />);
+
+    const hitRatePath = document.querySelectorAll("path")[4].getAttribute("d") ?? "";
+    expect((hitRatePath.match(/M /g) ?? []).length).toBe(1);
+    expect(hitRatePath).toContain("C");
+  });
+
 });

@@ -98,9 +98,8 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
     const cac = data.map((d, i) => ({ x: toX(i), y: toYTokens(d.cached_tokens ?? 0) }));
     const req = data.map((d, i) => ({ x: toX(i), y: toYReqs(d.request_count) }));
 
-    // Connect only buckets with input > 0; gaps split the line.
-    const hitSegments: string[] = [];
-    let currentSegment: Point[] = [];
+    // Skip empty buckets as markers, but connect the surrounding valid points.
+    const hitPoints: Point[] = [];
     const hitMarkers: ComputedSeries["hitRateMarkers"] = [];
     for (let i = 0; i < data.length; i++) {
       const d = data[i];
@@ -110,17 +109,12 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
         const pct = Math.min(100, (cachedTok / inTok) * 100);
         const x = toX(i);
         const y = toYHit(pct);
-        currentSegment.push({ x, y });
+        hitPoints.push({ x, y });
         hitMarkers.push({ x, y, cached: cachedTok, input: inTok, ts: d.timestamp });
       } else {
-        if (currentSegment.length > 0) {
-          hitSegments.push(buildSmoothPath(currentSegment));
-          currentSegment = [];
-        }
         hitMarkers.push(null);
       }
     }
-    if (currentSegment.length > 0) hitSegments.push(buildSmoothPath(currentSegment));
 
     const step = Math.max(1, Math.floor(data.length / 5));
     const xl = [];
@@ -143,7 +137,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
       outputPath: buildSmoothPath(out),
       cachedPath: buildSmoothPath(cac),
       requestPath: buildSmoothPath(req),
-      hitRatePath: hitSegments.join(" "),
+      hitRatePath: buildSmoothPath(hitPoints),
       hitRateMarkers: hitMarkers,
       xLabels: xl,
       yTokenLabels: yTL,

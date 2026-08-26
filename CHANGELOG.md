@@ -21,6 +21,10 @@
 - 修复局域网/非 HTTPS 环境下分发密钥创建后复制报错与第三方 API Key 探测误退出的问题：`ClientKeysPage` / `LogsPage` / `UpdateModal` 统一接入 `clipboardCopy` 安全剪贴板降级（含 `readOnly` 与字号保护适配移动端），解决 `navigator.clipboard` 在 non-secure context 下为 `undefined` 导致的 `TypeError: Cannot read properties of undefined (reading 'writeText')`；`dashboardAuth` 中间件注入并暴露 `X-Dashboard-Auth: required` 响应头，`use-dashboard-auth` 精确基于该响应头判定会话过期，彻底杜绝添加第三方 Key 或非会话 401 响应时被误踢回登录页。（`src/middleware/dashboard-auth.ts`、`shared/hooks/use-dashboard-auth.ts`、`shared/utils/clipboard.ts`、`web/src/pages/ClientKeysPage.tsx`、`web/src/pages/LogsPage.tsx`、`web/src/components/UpdateModal.tsx`）
 - 修复分发 Key（Client Access Keys）页面创建与编辑弹窗背景透明问题：修正非标准 Tailwind 类名（`bg-surface-light`、`bg-surface-dark`、`border-border-light` 等），采用标准 `bg-white dark:bg-card-dark` 与 `border-slate-200 dark:border-border-dark` 确保弹窗遮罩及背景不透明显示。（`web/src/pages/ClientKeysPage.tsx`）
 
+### Fixed
+
+- 修复首页已连接账户卡片的代理选择器在窄屏下横向溢出（`web/src/components/AccountCard.tsx`）
+
 ### Added
 
 - 自定义 API Key 新增可选 `codex-responses` wire：针对要求 Codex 客户端上下文的标准 Responses API 上游，使用 Bearer API key、Codex 会话/窗口/安装实例元数据与 SSE；不改变现有 `chat` / `responses` 默认行为，也不支持 Embeddings。

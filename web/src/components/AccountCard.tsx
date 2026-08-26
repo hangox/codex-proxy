@@ -457,14 +457,14 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
 
       {/* Proxy selector */}
       {proxies && onProxyChange && (
-        <div class="flex items-center justify-between text-[0.78rem] mt-2 pt-2 border-t border-slate-100 dark:border-border-dark">
-          <span class="text-slate-500 dark:text-text-dim">{t("proxyAssignment")}</span>
+        <div class="flex min-w-0 items-center justify-between gap-3 text-[0.78rem] mt-2 pt-2 border-t border-slate-100 dark:border-border-dark">
+          <span class="shrink-0 text-slate-500 dark:text-text-dim">{t("proxyAssignment")}</span>
           <select
             value={account.proxyId || "global"}
             onChange={(e) =>
               onProxyChange(account.id, (e.target as HTMLSelectElement).value)
             }
-            class="text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-border-dark bg-white dark:bg-bg-dark text-slate-700 dark:text-text-main focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+            class="min-w-0 w-0 flex-1 text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-border-dark bg-white dark:bg-bg-dark text-slate-700 dark:text-text-main focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
           >
             <option value="global">{t("globalDefault")}</option>
             <option value="direct">{t("directNoProxy")}</option>

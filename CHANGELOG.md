@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 为 `/v1/responses` 端点添加客户端 WebSocket 支持：接受 `ws://<host>:<port>/v1/responses` 的升级请求并用 Bearer 令牌鉴权，将客户端的 `response.create` 帧代理到现有上游 Codex WebSocket 并把响应事件以 JSON 流式回传；HTTP POST + SSE 仍作为回退保持不变，并在关闭路径中一并关闭该 WS 服务器。（#681）
+
 ### Fixed
 
 - 修复 GPT-5.6 的 `-max` / `-ultra` 推理后缀未被模型解析器识别的问题，并同步更新中英文 README 的 Pi 配置示例。

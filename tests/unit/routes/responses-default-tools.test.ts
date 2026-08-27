@@ -121,4 +121,25 @@ describe("Responses default_tools injection", () => {
     expect(res.status).toBe(200);
     expect(mockState.capturedReq?.codexRequest.tools).toBeUndefined();
   });
+
+  it("rejects an unrecognized model with model_not_found instead of falling back to default", async () => {
+    const app = createResponsesRoutes(accountPool, undefined, undefined, undefined, clientKeyPool);
+    const res = await app.request("/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer master-key-123",
+      },
+      body: JSON.stringify({
+        model: "gpt-9999",
+        input: [{ role: "user", content: "Hi" }],
+      }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error?.code).toBe("model_not_found");
+    expect(body.error?.param).toBe("model");
+    expect(mockState.capturedReq).toBeNull();
+  });
 });

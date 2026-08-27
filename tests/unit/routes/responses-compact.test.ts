@@ -157,6 +157,23 @@ describe("POST /v1/responses/compact", () => {
     expect(body).toEqual({ output: [{ role: "user", content: "compacted" }] });
   });
 
+  it("rejects an unrecognized model with model_not_found instead of falling back to default", async () => {
+    const res = await app.request("/v1/responses/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        input: [{ role: "user", content: "Hi" }],
+      }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe("model_not_found");
+    expect(body.error.param).toBe("model");
+    expect(capturedCompactRequest).toBeNull();
+  });
+
   it("routes compact requests for runtime API-key models to direct upstream", async () => {
     const upstreamRouter = {
       resolveMatch: vi.fn(() => ({ kind: "adapter", adapter: { tag: "custom-upstream" } })),

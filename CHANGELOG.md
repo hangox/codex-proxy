@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- 修复 `/v1/responses` 与 `/v1/responses/compact` 在客户端指定未收录模型时静默回退默认模型、响应 `model` 字段误报为默认模型的问题：与 `/v1/chat/completions` 行为一致，未识别模型返回 `404 model_not_found`；`codex` 哨兵与配置默认模型仍正常回退默认。（`src/routes/responses.ts`、`src/routes/responses-compact.ts`、`src/models/model-store.ts`，关联 issue #660）
 - 修复 GPT-5.6 的 `-max` / `-ultra` 推理后缀未被模型解析器识别的问题，并同步更新中英文 README 的 Pi 配置示例。
 - Docker 镜像版本号显示错误（始终显示 2.0.77 而非实际发布版本）：`docker-publish.yml` 构建时通过 `--build-arg PROXY_VERSION` 将版本注入镜像，`Dockerfile` 将其写入 `ENV PROXY_VERSION`，`getProxyInfo()` 优先读取该环境变量，容器内无 `.git` 时也能正确报告版本。（#677，关联 issue #676）
 

@@ -60,6 +60,18 @@ tests/
 | `tests/vitest.config.ts` | stress | 120s | No (`npm run test:stress`) |
 | `tests/real/vitest.config.ts` | real | 60s | No (`npm run test:real`) |
 
+## Real-Upstream Coverage Gaps (accepted risk)
+
+The default `npm run test:real` suite only exercises free-tier accounts. The following paths have never been validated against a real Plus/Team upstream and are covered by mocks/fixtures only — documented as accepted risk (#377):
+
+- **Secondary rate-limit rotation** — `secondary-quota.test.ts` stress scenarios use mocks only.
+- **Team/Plus plan model access** — e.g. `gpt-5.4` returns `400` on free accounts.
+- **Credits balance management** — `credits` is `null` for free accounts.
+- **Rate-limit (429) fallback recovery** — cannot trigger a real 429 to validate recovery.
+- **Prompt cache hit rates** — upstream returns `cached_tokens=0` for free accounts.
+
+Mocks validate plumbing (field presence, type correctness) but cannot catch cross-plan behavioral differences. When a Plus/Team test account or recorded real-tier fixtures become available, revisit these paths and extend `tests/real/`.
+
 ## Conventions
 
 - All test imports use `@src/` alias (never relative `../` into `src/`)

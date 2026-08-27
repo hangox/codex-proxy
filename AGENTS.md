@@ -1,5 +1,3 @@
-CLAUDE.md
-
 ## 多 Agent 工作流
 
 - 仅在用户明确授权或任务明确要求时启用；完整规则见 `docs/MULTI_AGENT_WORKFLOW.md`。

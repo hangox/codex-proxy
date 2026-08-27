@@ -214,9 +214,9 @@ curl http://localhost:8080/v1/chat/completions \
 
 | 模型 ID | 推理等级 | 当前上下文 | 最大上下文 | 最大输出 | 输出 | 说明 |
 |---------|---------|------------|------------|----------|------|------|
-| `gpt-5.6-sol` | low / medium / high / xhigh | 1,050,000 | 1,050,000 | 128,000 | 文本 | GPT-5.6 旗舰：复杂推理与编码（默认；`gpt-5.6` 为其别名） |
-| `gpt-5.6-terra` | low / medium / high / xhigh | 1,050,000 | 1,050,000 | 128,000 | 文本 | GPT-5.6 智能与成本平衡 |
-| `gpt-5.6-luna` | low / medium / high / xhigh | 1,050,000 | 1,050,000 | 128,000 | 文本 | GPT-5.6 高性价比 / 高吞吐 |
+| `gpt-5.6-sol` | low / medium / high / xhigh / max / ultra | 1,050,000 | 1,050,000 | 128,000 | 文本 | GPT-5.6 旗舰：复杂推理与编码（默认；`gpt-5.6` 为其别名） |
+| `gpt-5.6-terra` | low / medium / high / xhigh / max / ultra | 1,050,000 | 1,050,000 | 128,000 | 文本 | GPT-5.6 智能与成本平衡 |
+| `gpt-5.6-luna` | low / medium / high / xhigh / max / ultra | 1,050,000 | 1,050,000 | 128,000 | 文本 | GPT-5.6 高性价比 / 高吞吐 |
 | `gpt-5.5` | low / medium / high / xhigh | 272,000 | 272,000 | 128,000 | 文本 | 复杂编码、研究和真实工作流 |
 | `gpt-5.4` | low / medium / high / xhigh | 272,000 | 1,000,000 | 128,000 | 文本 | 日常编码强模型 |
 | `gpt-5.4-mini` | low / medium / high / xhigh | 400,000 | — | 128,000 | 文本 | 5.4 轻量版 |
@@ -228,7 +228,7 @@ curl http://localhost:8080/v1/chat/completions \
 | `gpt-oss-20b` | low / medium / high | 131,072 | — | — | 文本 | 开源 20B 模型 |
 | `gpt-image-2` | — | — | — | — | 图像 | 图像生成工具后端（通过 `image_generation` 调用） |
 
-> **后缀**：任意 chat 模型名后追加 `-fast` 启用 Fast 模式，`-high`/`-low` 切换推理等级。例如：`gpt-5.6-sol-fast`、`gpt-5.6-sol-high-fast`。图像模型（`gpt-image-2`）不支持后缀。
+> **后缀**：任意 chat 模型名后追加 `-fast` 启用 Fast 模式，`-high`/`-low`/`-max`/`-ultra` 切换推理等级。例如：`gpt-5.6-sol-fast`、`gpt-5.6-sol-high-fast`、`gpt-5.6-sol-max`、`gpt-5.6-sol-ultra`。图像模型（`gpt-image-2`）不支持后缀。
 >
 > **Plan Routing**：不同 plan（free/plus/team/business）的账号自动路由到各自支持的模型，模型可用性以登录账号对应的 Codex 后端返回为准，不要按旧的 Plus-only 表理解。模型列表由后端动态获取，自动同步；只要模型出现在 Dashboard / `/v1/models/catalog` 中，就可以作为请求里的 `model` 使用。
 >
@@ -463,17 +463,17 @@ aider --model openai/gpt-5.6-sol
       "apiKey": "your-api-key",
       "models": [
         {
-          "id": "gpt-5.4",
-          "name": "Codex GPT-5.4",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-sol",
+          "name": "Codex GPT-5.6 Sol",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         },
         {
-          "id": "gpt-5.5",
-          "name": "Codex GPT-5.5",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-terra",
+          "name": "Codex GPT-5.6 Terra",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         }
       ]
@@ -495,10 +495,10 @@ aider --model openai/gpt-5.6-sol
       "apiKey": "your-api-key",
       "models": [
         {
-          "id": "gpt-5.4",
-          "name": "Codex GPT-5.4",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-sol",
+          "name": "Codex GPT-5.6 Sol",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         }
       ]
@@ -518,10 +518,10 @@ aider --model openai/gpt-5.6-sol
       "apiKey": "your-api-key",
       "models": [
         {
-          "id": "gpt-5.4",
-          "name": "Codex GPT-5.4",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-sol",
+          "name": "Codex GPT-5.6 Sol",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         }
       ]
@@ -532,7 +532,7 @@ aider --model openai/gpt-5.6-sol
 
 启动运行：
 ```bash
-pi --provider codex-proxy --model gpt-5.4
+pi --provider codex-proxy --model gpt-5.6-sol
 ```
 
 ### Ollama 兼容客户端

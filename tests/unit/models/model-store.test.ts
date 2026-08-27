@@ -437,6 +437,12 @@ aliases: {}
       expect(result.reasoningEffort).toBe("xhigh");
     });
 
+    it.each(["max", "ultra"])("strips -%s suffix as reasoning_effort", (effort) => {
+      const result = parseModelName(`gpt-5.4-${effort}`);
+      expect(result.modelId).toBe("gpt-5.4");
+      expect(result.reasoningEffort).toBe(effort);
+    });
+
     it("strips -low suffix as reasoning_effort", () => {
       const result = parseModelName("gpt-5.4-low");
       expect(result.modelId).toBe("gpt-5.4");
@@ -473,6 +479,8 @@ aliases: {}
     it("accepts known model IDs with suffixes", () => {
       expect(isRecognizedModelName("gpt-5.4-low")).toBe(true);
       expect(isRecognizedModelName("gpt-5.4-high-fast")).toBe(true);
+      expect(isRecognizedModelName("gpt-5.4-max")).toBe(true);
+      expect(isRecognizedModelName("gpt-5.4-ultra-fast")).toBe(true);
     });
 
     it("accepts configured aliases with suffixes", () => {

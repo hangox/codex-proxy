@@ -189,9 +189,9 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 
 | Model ID | Reasoning | Current context | Max context | Max output | Output | Description |
 |----------|-----------|-----------------|-------------|------------|--------|-------------|
-| `gpt-5.6-sol` | low / medium / high / xhigh | 1,050,000 | 1,050,000 | 128,000 | text | GPT-5.6 flagship for complex reasoning & coding (default; `gpt-5.6` is an alias) |
-| `gpt-5.6-terra` | low / medium / high / xhigh | 1,050,000 | 1,050,000 | 128,000 | text | GPT-5.6 balanced intelligence and cost |
-| `gpt-5.6-luna` | low / medium / high / xhigh | 1,050,000 | 1,050,000 | 128,000 | text | GPT-5.6 cost-efficient / high-throughput |
+| `gpt-5.6-sol` | low / medium / high / xhigh / max / ultra | 1,050,000 | 1,050,000 | 128,000 | text | GPT-5.6 flagship for complex reasoning & coding (default; `gpt-5.6` is an alias) |
+| `gpt-5.6-terra` | low / medium / high / xhigh / max / ultra | 1,050,000 | 1,050,000 | 128,000 | text | GPT-5.6 balanced intelligence and cost |
+| `gpt-5.6-luna` | low / medium / high / xhigh / max / ultra | 1,050,000 | 1,050,000 | 128,000 | text | GPT-5.6 cost-efficient / high-throughput |
 | `gpt-5.5` | low / medium / high / xhigh | 272,000 | 272,000 | 128,000 | text | Complex coding, research, and real-world work |
 | `gpt-5.4` | low / medium / high / xhigh | 272,000 | 1,000,000 | 128,000 | text | Strong model for everyday coding |
 | `gpt-5.4-mini` | low / medium / high / xhigh | 400,000 | — | 128,000 | text | GPT-5.4 lightweight model |
@@ -203,7 +203,7 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 | `gpt-oss-20b` | low / medium / high | 131,072 | — | — | text | Open-source 20B model |
 | `gpt-image-2` | — | — | — | — | image | Image-generation tool backend, invoked via `image_generation` |
 
-> **Suffixes**: Append `-fast` to any chat model for Fast mode, `-high`/`-low` for reasoning effort. E.g. `gpt-5.6-sol-fast`, `gpt-5.6-sol-high-fast`. The image model (`gpt-image-2`) does not take suffixes.
+> **Suffixes**: Append `-fast` to any chat model for Fast mode, and `-high`/`-low`/`-max`/`-ultra` for reasoning effort. E.g. `gpt-5.6-sol-fast`, `gpt-5.6-sol-high-fast`, `gpt-5.6-sol-max`, `gpt-5.6-sol-ultra`. The image model (`gpt-image-2`) does not take suffixes.
 >
 > **Plan Routing**: Accounts on different plans auto-route to the models returned for that account by the Codex backend. Do not treat old Plus-only notes as fixed model access rules. Models are dynamically fetched and auto-synced; if a model appears in the Dashboard or `/v1/models/catalog`, it can be used as the request `model`.
 >
@@ -420,17 +420,17 @@ Edit `~/.pi/agent/models.json`:
       "apiKey": "your-api-key",
       "models": [
         {
-          "id": "gpt-5.4",
-          "name": "Codex GPT-5.4",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-sol",
+          "name": "Codex GPT-5.6 Sol",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         },
         {
-          "id": "gpt-5.5",
-          "name": "Codex GPT-5.5",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-terra",
+          "name": "Codex GPT-5.6 Terra",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         }
       ]
@@ -452,10 +452,10 @@ Edit `~/.pi/agent/models.json`:
       "apiKey": "your-api-key",
       "models": [
         {
-          "id": "gpt-5.4",
-          "name": "Codex GPT-5.4",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-sol",
+          "name": "Codex GPT-5.6 Sol",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         }
       ]
@@ -475,10 +475,10 @@ Edit `~/.pi/agent/models.json`:
       "apiKey": "your-api-key",
       "models": [
         {
-          "id": "gpt-5.4",
-          "name": "Codex GPT-5.4",
-          "contextWindow": 200000,
-          "maxTokens": 8192,
+          "id": "gpt-5.6-sol",
+          "name": "Codex GPT-5.6 Sol",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
           "input": ["text", "image"]
         }
       ]
@@ -489,7 +489,7 @@ Edit `~/.pi/agent/models.json`:
 
 Run Pi:
 ```bash
-pi --provider codex-proxy --model gpt-5.4
+pi --provider codex-proxy --model gpt-5.6-sol
 ```
 
 ### Ollama-Compatible Clients

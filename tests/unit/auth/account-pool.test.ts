@@ -59,6 +59,10 @@ import { AccountPool } from "@src/auth/account-pool.js";
 import { getConfig } from "@src/config.js";
 import { isTokenExpired, extractUserProfile } from "@src/auth/jwt-utils.js";
 import { getModelPlanTypes } from "@src/models/model-store.js";
+import {
+  _resetAllCfChallengeCooldowns,
+  recordCfChallengeCooldown,
+} from "@src/auth/cf-challenge-cooldown.js";
 
 describe("AccountPool", () => {
   let pool: AccountPool;
@@ -76,6 +80,7 @@ describe("AccountPool", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as ReturnType<typeof getConfig>);
     vi.mocked(getModelPlanTypes).mockReturnValue([]);
+    _resetAllCfChallengeCooldowns();
     // extractUserProfile: derive plan from token name for test flexibility
     vi.mocked(extractUserProfile).mockImplementation((token: string) => {
       let plan = "free";
@@ -123,6 +128,17 @@ describe("AccountPool", () => {
       vi.mocked(isTokenExpired).mockReturnValue(true);
       pool.addAccount("token-expired");
       expect(pool.acquire()).toBeNull();
+    });
+
+    it("skips accounts with active Cloudflare challenge cooldown", () => {
+      const cooledDownId = pool.addAccount("token-aaa");
+      const availableId = pool.addAccount("token-bbb");
+      recordCfChallengeCooldown(cooledDownId);
+
+      const acquired = pool.acquire();
+
+      expect(acquired).not.toBeNull();
+      expect(acquired!.entryId).toBe(availableId);
     });
   });
 
@@ -203,6 +219,24 @@ describe("AccountPool", () => {
       const accounts = pool.getAccounts();
       expect(accounts[0].usage.cached_tokens).toBe(200);
       expect(accounts[0].usage.window_cached_tokens).toBe(200);
+    });
+
+    it("accumulates estimated_cost_usd across releases and clears on resetUsage", () => {
+      pool.addAccount("token-aaa");
+
+      const a1 = pool.acquire()!;
+      pool.release(a1.entryId, { input_tokens: 100, output_tokens: 50, estimated_cost_usd: 0.12 });
+      const a2 = pool.acquire()!;
+      pool.release(a2.entryId, { input_tokens: 200, output_tokens: 100, estimated_cost_usd: 0.08 });
+
+      let accounts = pool.getAccounts();
+      expect(accounts[0].usage.estimated_cost_usd).toBeCloseTo(0.2);
+      expect(accounts[0].usage.window_estimated_cost_usd).toBeCloseTo(0.2);
+
+      pool.resetUsage(accounts[0].id);
+      accounts = pool.getAccounts();
+      expect(accounts[0].usage.estimated_cost_usd).toBe(0);
+      expect(accounts[0].usage.window_estimated_cost_usd).toBe(0);
     });
 
     it("counts image_request_count on attempted+succeeded release", () => {

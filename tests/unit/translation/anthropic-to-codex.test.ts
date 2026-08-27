@@ -19,6 +19,14 @@ vi.mock("@src/paths.js", () => ({
   getConfigDir: vi.fn(() => "/tmp/test-config"),
 }));
 
+// The clamp/isRecognized mocks below mirror the real implementations' behavior
+// (not stubbed as identity) because the output_config.effort tests depend on
+// their actual semantics: unsupported levels clamp to the nearest supported
+// one, empty/unknown values fall back to the next priority source.
+const REASONING_EFFORT_RANK: Record<string, number> = {
+  none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6, ultra: 7,
+};
+
 vi.mock("@src/translation/shared-utils.js", () => ({
   buildInstructions: vi.fn((text: string) => text),
   budgetToEffort: vi.fn((budget: number | undefined) => {
@@ -28,6 +36,22 @@ vi.mock("@src/translation/shared-utils.js", () => ({
     if (budget < 20000) return "high";
     return "xhigh";
   }),
+  isRecognizedReasoningEffort: vi.fn((effort: string) => Object.hasOwn(REASONING_EFFORT_RANK, effort)),
+  clampReasoningEffortToModel: vi.fn(
+    (effort: string, modelInfo: { supportedReasoningEfforts?: { reasoningEffort: string }[] } | undefined) => {
+      const supported = (modelInfo?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
+      if (supported.length === 0 || supported.includes(effort)) {
+        return { effort, clamped: false, supported };
+      }
+      const rankOf = (e: string) => REASONING_EFFORT_RANK[e] ?? -1;
+      const requestedRank = rankOf(effort);
+      const nearest = [...supported].sort((a, b) => {
+        const d = Math.abs(rankOf(a) - requestedRank) - Math.abs(rankOf(b) - requestedRank);
+        return d !== 0 ? d : rankOf(a) - rankOf(b);
+      })[0];
+      return { effort: nearest ?? effort, clamped: true, supported };
+    },
+  ),
 }));
 
 vi.mock("@src/translation/tool-format.js", () => ({
@@ -44,12 +68,50 @@ vi.mock("@src/models/model-store.js", () => ({
   }),
   getModelInfo: vi.fn((id: string) => {
     if (id === "gpt-5.4") return { defaultReasoningEffort: "medium" };
+    // Supports up to xhigh — mirrors real gpt-5.4-mini, exposes the clamp path.
+    if (id === "limited-effort-model") {
+      return {
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+        ],
+      };
+    }
+    // Supports through max/ultra — mirrors real gpt-5.6-sol.
+    if (id === "full-effort-model") {
+      return {
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+          { reasoningEffort: "max", description: "" },
+          { reasoningEffort: "ultra", description: "" },
+        ],
+      };
+    }
+    // Mirrors real gpt-5.4-pro: no low tier — clamps low up to medium, not xhigh.
+    if (id === "no-low-model") {
+      return {
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+        ],
+      };
+    }
     return undefined;
   }),
 }));
 
 import { translateAnthropicToCodexRequest } from "@src/translation/anthropic-to-codex.js";
 import { anthropicToolsToCodex, anthropicToolChoiceToCodex } from "@src/translation/tool-format.js";
+import type { ModelConfigOverride } from "@src/translation/shared-utils.js";
 import type { AnthropicMessagesRequest } from "@src/types/anthropic.js";
 
 function makeRequest(overrides: Partial<AnthropicMessagesRequest> = {}): AnthropicMessagesRequest {
@@ -59,6 +121,24 @@ function makeRequest(overrides: Partial<AnthropicMessagesRequest> = {}): Anthrop
     messages: [{ role: "user", content: "Hello" }],
     ...overrides,
   } as AnthropicMessagesRequest;
+}
+
+/**
+ * Build a ModelConfigOverride to pass directly into translateAnthropicToCodexRequest,
+ * avoiding a dependency on the global config mock. Defaults mirror the schema
+ * defaults; override per case.
+ */
+function makeModelConfig(
+  overrides: Partial<ModelConfigOverride> = {},
+): ModelConfigOverride {
+  return {
+    default_reasoning_effort: null,
+    default_service_tier: null,
+    inject_desktop_context: false,
+    suppress_desktop_directives: false,
+    system_prompt_strategy: "instructions",
+    ...overrides,
+  };
 }
 
 describe("translateAnthropicToCodexRequest", () => {
@@ -456,6 +536,207 @@ describe("translateAnthropicToCodexRequest", () => {
     });
   });
 
+  // ── output_config.effort ─────────────────────────────────────────────
+  // Real Claude Code sends the user's explicit effort selection in
+  // `output_config.effort` (adaptive thinking never carries budget_tokens).
+  // These tests lock the priority chain and the clamp behavior.
+
+  describe("output_config.effort", () => {
+    it("takes priority over thinking.budget_tokens", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          // budgetToEffort(500) would yield "low"; output_config.effort must win.
+          thinking: { type: "adaptive", budget_tokens: 500 } as never,
+          output_config: { effort: "high" },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("high");
+    });
+
+    it("applies standalone (real adaptive mode: only output_config, no budget)", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "xhigh" },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("xhigh");
+    });
+
+    it("does not affect the existing chain when absent", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("clamps to the model's max and logs a warning when requested effort is unsupported", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "limited-effort-model",
+            output_config: { effort: "max" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("xhigh");
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain("phase=effort_clamped");
+        expect(logged).toContain("requested=max");
+        expect(logged).toContain("clamped_to=xhigh");
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("passes through unchanged on models that support the requested effort", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "max" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("max");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("passes through unchanged when the model declares no effort metadata", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "totally-unknown-model",
+            output_config: { effort: "ultra" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("ultra");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("ignores non-string effort and falls back to the next source", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          output_config: { effort: 123 } as never,
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("treats empty-string effort as not provided instead of dropping the whole chain", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          output_config: { effort: "" },
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      // Decisive assertion: falls back to thinking's medium, not undefined.
+      expect(result.reasoning?.effort).toBe("medium");
+      expect(result.reasoning?.effort).not.toBeUndefined();
+    });
+
+    it("falls back to the config default when empty-string effort has no next source", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ output_config: { effort: "" } }),
+        makeModelConfig({ default_reasoning_effort: "medium" }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("does not turn whitespace effort into the model's max via clamping", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "   " },
+            thinking: { type: "enabled", budget_tokens: 5000 },
+          }),
+        );
+        // Decisive: must be thinking's medium, not max (the clamp would produce).
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("max");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("trims a valid level with surrounding whitespace (\" high \" → high)", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "limited-effort-model",
+            output_config: { effort: " high " },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("high");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("treats an unrecognized level name as not provided and falls back to thinking", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "banana" },
+            thinking: { type: "enabled", budget_tokens: 5000 },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("banana");
+        expect(result.reasoning?.effort).not.toBe("ultra");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("falls back to the config default for unrecognized effort with no next source", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ model: "full-effort-model", output_config: { effort: "banana" } }),
+        makeModelConfig({ default_reasoning_effort: "medium" }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("clamps low up to the model's min (medium), not its max (xhigh), on models without a low tier", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "no-low-model",
+            output_config: { effort: "low" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("xhigh");
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain("requested=low");
+        expect(logged).toContain("clamped_to=medium");
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
   // ── Model parsing ────────────────────────────────────────────────────
 
   describe("model parsing", () => {
@@ -478,6 +759,156 @@ describe("translateAnthropicToCodexRequest", () => {
         makeRequest({ model: "gpt-5.4-high" }),
       );
       expect(result.reasoning?.effort).toBe("high");
+    });
+  });
+
+  // ── system_prompt_strategy switch ──────────────────────────────────────
+  // buildInstructions is mocked as identity in this file ((text) => text), so
+  // `instructions` equals whatever text was passed in — useful for asserting
+  // whether the user system prompt landed in `instructions`.
+  describe("system_prompt_strategy", () => {
+    it("case 1: baseline default — system goes into instructions", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        makeModelConfig(),
+      );
+
+      expect(result.instructions).toContain("hello");
+      expect(result.input.length).toBe(1);
+      const item = result.input[0];
+      expect(item && "role" in item && item.role).toBe("user");
+      expect(item && "content" in item && item.content).toBe("Hello");
+    });
+
+    it("case 2: developer_inline moves system to input[0] as a developer message", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      expect(result.instructions).not.toContain("hello");
+      expect(result.input.length).toBe(2);
+      const first = result.input[0];
+      const second = result.input[1];
+      expect(first && "role" in first && first.role).toBe("developer");
+      expect(first && "content" in first && Array.isArray(first.content) && first.content[0]?.text).toBe("hello");
+      expect(second && "role" in second && second.role).toBe("user");
+    });
+
+    it("case 3: system_inline moves system to input[0] as a system message", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        makeModelConfig({ system_prompt_strategy: "system_inline" }),
+      );
+
+      const first = result.input[0];
+      expect(first && "role" in first && first.role).toBe("system");
+      expect(first && "content" in first && Array.isArray(first.content) && first.content[0]?.text).toBe("hello");
+      expect(result.input.length).toBe(2);
+      expect(result.instructions).not.toContain("hello");
+    });
+
+    it("case 4: multi-block system array is joined", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            { type: "text" as const, text: "a" },
+            { type: "text" as const, text: "b" },
+          ],
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0];
+      expect(first && "content" in first && Array.isArray(first.content) && first.content[0]?.text).toBe("a\n\nb");
+    });
+
+    it("case 5: no unshift when system is absent", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: undefined }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      expect(result.input.length).toBe(1);
+      const item = result.input[0];
+      expect(item && "role" in item && item.role).toBe("user");
+    });
+
+    it("case 5b: no unshift when all blocks are blank", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            { type: "text" as const, text: "" },
+            { type: "text" as const, text: "   " },
+          ],
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      expect(result.input.length).toBe(1);
+      const item = result.input[0];
+      expect(item && "role" in item && item.role).toBe("user");
+    });
+
+    it("case 6: billing header is still filtered", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          system: [
+            { type: "text" as const, text: "x-anthropic-billing-header: cc_version=2.1.185;" },
+            { type: "text" as const, text: "real prompt" },
+          ],
+        }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0];
+      const text = first && "content" in first && Array.isArray(first.content) ? first.content[0]?.text : "";
+      expect(text).toBe("real prompt");
+      expect(text).not.toContain("billing");
+      expect(text).not.toContain("cc_version");
+    });
+
+    it("case 7: inline item shape is strict — only role+content, no type field", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "x" }),
+        makeModelConfig({ system_prompt_strategy: "developer_inline" }),
+      );
+
+      const first = result.input[0];
+      expect(first).toBeDefined();
+      expect(first).not.toHaveProperty("type");
+      expect(Object.keys(first!).sort()).toEqual(["content", "role"]);
+      const contentPart = first && "content" in first && Array.isArray(first.content) ? first.content[0] : undefined;
+      expect(contentPart?.type).toBe("input_text");
+      expect(contentPart?.text).toBe("x");
+    });
+
+    // Contract test: in inline mode the user system goes through the inline
+    // item, and `instructions` gets whatever buildInstructions("", cfg)
+    // returns — i.e. user content never lands in `instructions`, leaving room
+    // for desktop-context injection (inject_desktop_context can still write
+    // to that field). Note: this file mocks buildInstructions as identity, so
+    // passing an empty string is observable as "". buildInstructions' real
+    // context-injection behavior is covered by shared-utils.test.ts; this
+    // test only verifies the contract.
+    it("case 8: developer_inline keeps user content out of instructions (leaves room for ctx injection)", () => {
+      const cfg = makeModelConfig({
+        system_prompt_strategy: "developer_inline",
+        inject_desktop_context: true,
+      });
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ system: "hello" }),
+        cfg,
+      );
+
+      // Empty string passed to buildInstructions -> identity mock -> instructions === ""
+      expect(result.instructions).toBe("");
+      expect(result.instructions).not.toContain("hello");
+
+      const first = result.input[0];
+      expect(first && "role" in first && first.role).toBe("developer");
+      const firstContent = first && "content" in first && Array.isArray(first.content) ? first.content[0] : undefined;
+      expect(firstContent?.text).toBe("hello");
     });
   });
 

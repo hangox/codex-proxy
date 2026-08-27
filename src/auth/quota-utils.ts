@@ -102,6 +102,20 @@ export function toQuota(usage: CodexUsageResponse): CodexQuota {
     rate_limits_by_limit_id: Object.keys(rateLimitsByLimitId).length > 0
       ? rateLimitsByLimitId
       : null,
+    reset_credits_available:
+      typeof usage.rate_limit_reset_credits?.available_count === "number" &&
+      Number.isFinite(usage.rate_limit_reset_credits.available_count)
+        ? usage.rate_limit_reset_credits.available_count
+        : null,
     credits: normalizeCredits(usage.credits),
   };
+}
+
+export function getRateLimitIdForModel(model?: string | null): string | null {
+  if (!model) return null;
+  const normalized = model.trim().toLowerCase();
+  if (normalized.includes("spark") || normalized.includes("bengalfox")) {
+    return "codex_bengalfox";
+  }
+  return null;
 }

@@ -3,8 +3,11 @@ import { CodexApiError } from "@src/proxy/codex-types.js";
 import {
   extractRetryAfterSec,
   isBanError,
+  isCfChallengeError,
   isCfPathBlockError,
   isQuotaExhaustedError,
+  isServerOverloadedError,
+  isEarlyServerError,
   isTokenInvalidError,
   isModelNotSupportedError,
   isUnansweredFunctionCallError,
@@ -61,6 +64,38 @@ describe("isQuotaExhaustedError", () => {
   });
 });
 
+describe("isServerOverloadedError", () => {
+  it("accepts only a structured server_is_overloaded 503", () => {
+    expect(isServerOverloadedError(new CodexApiError(503, JSON.stringify({
+      error: { code: "server_is_overloaded" },
+    })))).toBe(true);
+    expect(isServerOverloadedError(new CodexApiError(503, JSON.stringify({
+      error: { type: "server_is_overloaded" },
+    })))).toBe(true);
+    expect(isServerOverloadedError(new CodexApiError(503, "database unavailable"))).toBe(false);
+    expect(isServerOverloadedError(new CodexApiError(502, JSON.stringify({
+      error: { code: "server_is_overloaded" },
+    })))).toBe(false);
+  });
+});
+
+describe("isEarlyServerError", () => {
+  it("accepts only structured server_error 500 responses", () => {
+    expect(isEarlyServerError(new CodexApiError(500, JSON.stringify({
+      error: { code: "server_error", message: "internal" },
+    })))).toBe(true);
+    expect(isEarlyServerError(new CodexApiError(500, JSON.stringify({
+      error: { type: "server_error", message: "internal" },
+    })))).toBe(true);
+    expect(isEarlyServerError(new CodexApiError(500, "internal"))).toBe(false);
+    expect(isEarlyServerError(new CodexApiError(503, JSON.stringify({
+      error: { code: "server_error" },
+    })))).toBe(false);
+    expect(isEarlyServerError(new CodexApiError(500, JSON.stringify({
+      error: { code: "server_is_overloaded" },
+    })))).toBe(false);
+  });
+});
 describe("isBanError", () => {
   it("returns true for non-CF 403", () => {
     const err = new CodexApiError(403, '{"detail": "Your account has been flagged"}');
@@ -69,6 +104,16 @@ describe("isBanError", () => {
 
   it("returns false for CF challenge 403 (cf_chl)", () => {
     const err = new CodexApiError(403, '<!DOCTYPE html><html><body>cf_chl_managed</body></html>');
+    expect(isBanError(err)).toBe(false);
+  });
+
+  it("returns false for CF challenge 403 (mitigation headers)", () => {
+    const err = new CodexApiError(403, "cf-mitigated: challenge; cf-chl-bypass: managed");
+    expect(isBanError(err)).toBe(false);
+  });
+
+  it("returns false for CF challenge 403 when the signal is only in response headers", () => {
+    const err = new CodexApiError(403, "", new Headers({ "cf-mitigated": "challenge" }));
     expect(isBanError(err)).toBe(false);
   });
 
@@ -86,6 +131,25 @@ describe("isBanError", () => {
     expect(isBanError(new Error("random"))).toBe(false);
     expect(isBanError("string")).toBe(false);
     expect(isBanError(null)).toBe(false);
+  });
+});
+
+describe("isCfChallengeError", () => {
+  it("returns true for Cloudflare challenge indicators", () => {
+    expect(isCfChallengeError(new CodexApiError(403, "<html>cf_chl challenge</html>"))).toBe(true);
+    expect(isCfChallengeError(new CodexApiError(403, "<html>Just a Moment</html>"))).toBe(true);
+    expect(isCfChallengeError(new CodexApiError(403, "cf-mitigated: challenge"))).toBe(true);
+    expect(isCfChallengeError(new CodexApiError(403, "", new Headers({ "cf-chl-bypass": "managed" })))).toBe(true);
+  });
+
+  it("returns false for non-CF 403 bans", () => {
+    const err = new CodexApiError(403, '{"detail": "Your account has been flagged"}');
+    expect(isCfChallengeError(err)).toBe(false);
+  });
+
+  it("returns false for non-403 and non-Codex errors", () => {
+    expect(isCfChallengeError(new CodexApiError(404, "<html>cf_chl challenge</html>"))).toBe(false);
+    expect(isCfChallengeError(new Error("cf_chl"))).toBe(false);
   });
 });
 

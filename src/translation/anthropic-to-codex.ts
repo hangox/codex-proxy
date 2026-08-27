@@ -10,7 +10,7 @@ import type {
 } from "../proxy/codex-api.js";
 import { parseModelName, getModelInfo } from "../models/model-store.js";
 import { getConfig } from "../config.js";
-import { buildInstructions, budgetToEffort, isRecord } from "./shared-utils.js";
+import { buildInstructions, budgetToEffort, clampReasoningEffortToModel, isRecord, isRecognizedReasoningEffort } from "./shared-utils.js";
 import type { ModelConfigOverride } from "./shared-utils.js";
 import {
   anthropicToolsToCodex,
@@ -196,10 +196,17 @@ function contentToInputItems(
 export function translateAnthropicToCodexRequest(
   req: AnthropicMessagesRequest,
   modelConfig?: ModelConfigOverride,
-  options?: { injectHostedWebSearch?: boolean; mapClaudeCodeWebSearch?: boolean },
+  options?: {
+    injectHostedWebSearch?: boolean;
+    mapClaudeCodeWebSearch?: boolean;
+    /** Used only for effort-clamp log correlation; does not affect translation. */
+    requestId?: string;
+  },
 ): CodexResponsesRequest {
-  // Extract system instructions
-  let userInstructions: string;
+  // Extract the user-supplied system prompt (empty when none provided). The
+  // synthetic default below is intentionally kept out of `userInstructions` so
+  // it is never treated as real user content by the inline strategy.
+  let userInstructions = "";
   if (req.system) {
     if (typeof req.system === "string") {
       userInstructions = normalizeSystemInstructionText(req.system);
@@ -209,11 +216,23 @@ export function translateAnthropicToCodexRequest(
         .filter(Boolean)
         .join("\n\n");
     }
-  } else {
-    userInstructions = "You are a helpful assistant.";
   }
+  // Text that goes into the top-level `instructions` field in the default
+  // (non-inline) strategy. Falls back to a generic assistant prompt.
+  const instructionsText = userInstructions || "You are a helpful assistant.";
   const cfg = modelConfig ?? getConfig().model;
-  const instructions = buildInstructions(userInstructions, cfg);
+
+  // system_prompt_strategy controls where the user-supplied system prompt is
+  // delivered. With the two `_inline` modes the prompt is moved out of the
+  // top-level `instructions` field into the first input item, bypassing the
+  // Codex backend's built-in base prompt prior when it overrides `instructions`.
+  const strategy = cfg.system_prompt_strategy ?? "instructions";
+  const inlineSystem = strategy === "developer_inline" || strategy === "system_inline";
+  // In inline modes keep `instructions` free of user content (so desktop
+  // context can still be injected) and carry the real user system inline
+  // instead. The synthetic default is dropped in inline modes (nothing to
+  // bypass when the user supplied no system).
+  const instructions = buildInstructions(inlineSystem ? "" : instructionsText, cfg);
 
   // Build input items from messages
   const input: CodexInputItem[] = [];
@@ -228,6 +247,17 @@ export function translateAnthropicToCodexRequest(
   // Ensure at least one input message
   if (input.length === 0) {
     input.push({ role: "user", content: "" });
+  }
+
+  // Inline strategy: prepend the user system prompt as the first input item.
+  // ChatGPT Codex backend accepts a {role, content:[{type:"input_text"}]} item
+  // for developer/system roles (no item-level `type: "message"`).
+  if (inlineSystem && userInstructions) {
+    const role = strategy === "developer_inline" ? "developer" : "system";
+    input.unshift({
+      role,
+      content: [{ type: "input_text", text: userInstructions }],
+    });
   }
 
   // Resolve model (suffix parsing extracts service_tier and reasoning_effort)
@@ -267,14 +297,43 @@ export function translateAnthropicToCodexRequest(
     request.tool_choice = codexToolChoice;
   }
 
-  // Reasoning effort: thinking config > suffix > config default
+  // Reasoning effort: output_config.effort > thinking config > suffix > config default
+  //
+  // Claude Code sends the user's explicit effort selection in
+  // `output_config.effort` (adaptive thinking never carries budget_tokens), so
+  // it takes top priority. The value is validated before use: an empty or
+  // whitespace string must NOT short-circuit the fallback chain (the `??`
+  // operator only handles null/undefined), and an unknown level name must NOT
+  // be fed to clampReasoningEffortToModel to guess a direction — both are
+  // treated as "not provided" so the next source (thinking → suffix → config
+  // default) takes over. A recognized value is trimmed so e.g. `" high "`
+  // resolves to `high` instead of being treated as an unknown level.
+  const explicitEffort = (() => {
+    if (typeof req.output_config?.effort !== "string") return undefined;
+    const trimmed = req.output_config.effort.trim();
+    if (trimmed === "" || !isRecognizedReasoningEffort(trimmed)) return undefined;
+    return trimmed;
+  })();
   const thinkingEffort = mapThinkingToEffort(req.thinking);
-  const effort =
+  const requestedEffort =
+    explicitEffort ??
     thinkingEffort ??
     parsed.reasoningEffort ??
     cfg.default_reasoning_effort;
-  if (effort) {
-    request.reasoning = { effort, summary: "auto" };
+  if (requestedEffort) {
+    // Clamp to the target model's real supported levels — the Codex upstream
+    // stalls/times out (502) on unsupported efforts instead of degrading, and
+    // `supportedReasoningEfforts` model metadata was previously never
+    // consulted. Full rationale in clampReasoningEffortToModel.
+    const clampResult = clampReasoningEffortToModel(requestedEffort, modelInfo);
+    if (clampResult.clamped) {
+      console.warn(
+        `[AnthropicToCodex] rid=${options?.requestId ?? "-"} phase=effort_clamped model=${modelId} ` +
+          `requested=${requestedEffort} clamped_to=${clampResult.effort} ` +
+          `supported=${clampResult.supported.length > 0 ? clampResult.supported.join(",") : "(none declared)"}`,
+      );
+    }
+    request.reasoning = { effort: clampResult.effort, summary: "auto" };
   }
 
   // Service tier: suffix > config default

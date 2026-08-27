@@ -17,6 +17,7 @@ import type {
   AccountEntry,
   AccountInfo,
   AcquiredAccount,
+  CodexFingerprintMode,
   CodexQuota,
 } from "./types.js";
 
@@ -62,7 +63,7 @@ export class AccountPool {
       // Default to assuming quarantine succeeded if the persistence
       // implementation didn't report — older/mocked impls predate the
       // health field. The file-based createFsPersistence always reports.
-      this.persistenceHealth = loaded.health ?? { quarantined: true, backupPath: null };
+      this.persistenceHealth = loaded.health ?? { quarantined: true, backupPath: null, store: "accounts.json" };
     }
     this.registry = new AccountRegistry(persistence, loaded.entries, {
       persistDisabled: loaded.loadFailed === true,
@@ -97,6 +98,7 @@ export class AccountPool {
       input_tokens?: number;
       output_tokens?: number;
       cached_tokens?: number;
+      estimated_cost_usd?: number;
       image_input_tokens?: number;
       image_output_tokens?: number;
       image_request_attempted?: boolean;
@@ -134,6 +136,15 @@ export class AccountPool {
     return this.registry.addAccount(token, refreshToken);
   }
 
+  async withPersistenceBatch<T>(fn: () => Promise<T>): Promise<T> {
+    this.registry.beginPersistenceBatch();
+    try {
+      return await fn();
+    } finally {
+      this.registry.endPersistenceBatch();
+    }
+  }
+
   removeAccount(id: string): boolean {
     this.lifecycle.clearLock(id);
     this.evictWsPool(id);
@@ -164,6 +175,12 @@ export class AccountPool {
 
   setLabel(entryId: string, label: string | null): boolean {
     return this.registry.setLabel(entryId, label);
+  }
+
+  setCodexFingerprintMode(entryId: string, mode: CodexFingerprintMode): boolean {
+    const changed = this.registry.setCodexFingerprintMode(entryId, mode);
+    if (changed) this.evictWsPool(entryId);
+    return changed;
   }
 
   // ── Status mutations (coordinate registry + lifecycle lock clear) ─
@@ -198,6 +215,17 @@ export class AccountPool {
     options?: { retryAfterSec?: number; resetsAtSec?: number; countRequest?: boolean },
   ): void {
     if (this.registry.applyRateLimit429(entryId, this.rateLimitBackoffSeconds, options)) {
+      this.lifecycle.clearLock(entryId);
+      this.evictWsPool(entryId);
+    }
+  }
+
+  applyAdditionalRateLimit429(
+    entryId: string,
+    limitId: string,
+    options?: { retryAfterSec?: number; resetsAtSec?: number; countRequest?: boolean },
+  ): void {
+    if (this.registry.applyAdditionalRateLimit429(entryId, limitId, this.rateLimitBackoffSeconds, options)) {
       this.lifecycle.clearLock(entryId);
       this.evictWsPool(entryId);
     }
@@ -287,7 +315,7 @@ export class AccountPool {
   }
 
   /**
-   * True when the on-disk `accounts.json` failed to load at startup and
+   * True when account persistence failed to load at startup and
    * was quarantined. While disabled, all schedulePersist/persistNow calls
    * are no-ops — in-memory CRUD still works for the running session, but
    * nothing reaches disk until the user restores a healthy file and
@@ -308,6 +336,7 @@ export class AccountPool {
   getPersistenceHealth(): PersistenceHealth {
     if (!this.isPersistDisabled()) return { ok: true };
     const health = this.persistenceHealth;
+    const store = health?.store ?? "accounts.json";
     if (health?.quarantined === false) {
       return {
         ok: false,
@@ -315,8 +344,8 @@ export class AccountPool {
         quarantined: false,
         backupPath: null,
         message:
-          "accounts.json failed to load at startup. The proxy tried to move it aside but the rename failed — the original file is still on disk. " +
-          "Auto-save is paused for this session. Inspect data/accounts.json manually and restart the app once it parses cleanly.",
+          `${store} failed to load at startup. The proxy tried to move it aside but the rename failed — the original file is still on disk. ` +
+          `Auto-save is paused for this session. Inspect data/${store} manually and restart the app once it parses cleanly.`,
       };
     }
     return {
@@ -325,13 +354,13 @@ export class AccountPool {
       quarantined: true,
       backupPath: health?.backupPath ?? null,
       message:
-        "accounts.json failed to load at startup and was quarantined (see data/ for accounts.json.corrupt-*.bak). " +
+        `${store} failed to load at startup and was quarantined (see data/ for ${store}.corrupt-*.bak). ` +
         "Auto-save is paused until you restore the file and restart the app. Imports in this session live in memory only.",
     };
   }
 
   /**
-   * Read a single account's refresh token directly from disk (accounts.json).
+   * Read a single account's refresh token directly from the active persistence backend.
    * Used by RefreshScheduler to detect cross-process RT updates before refreshing.
    * Returns null if not found or on read error.
    */

@@ -14,6 +14,8 @@
 
 ### Changed
 
+- Dashboard 日志页面完善深色模式适配，补齐筛选控件、统计卡片、详情抽屉和 JSON 代码块的深色状态；复制 JSON 成功后改为绿色反馈（`web/src/pages/LogsPage.tsx`）。
+- 账号持久化从 `accounts.json` 主存储迁移到 `accounts.sqlite`，启动时自动从旧 JSON 迁移并继续保留 `accounts.json` 镜像用于降级/回滚；批量导入改为持久化批处理，避免每个账号同步重写整份 JSON 导致大批量导入卡死。（#657）
 - 重构：消除类型守卫 `isRecord` 的多处重复声明（收拢翻译层与路由层到 `shared-utils.ts`）
 - 重构：合并推理预算映射表 `REASONING_EFFORT_BUDGET`（提取为 `shared-utils.ts` 的公共常量）
 - 重构：精简别名（删除 `gemini-to-codex.ts` 里的 `flattenParts` 别名）
@@ -21,9 +23,22 @@
 - 重构：抽象路由层的 JSON 拦截与 API Key 校验（提取统一的 API Key 提取器 `extractProxyApiKey`；由全局 `errorHandler` 统一拦截 SyntaxError 带来的 JSON 解析失败并返回 400）
 - 更新 `README_EN.md` 中过时的模型推荐说明以匹配最新的模型别名映射（`README_EN.md`）
 
+- 修复局域网/非 HTTPS 环境下分发密钥创建后复制报错与第三方 API Key 探测误退出的问题：`ClientKeysPage` / `LogsPage` / `UpdateModal` 统一接入 `clipboardCopy` 安全剪贴板降级（含 `readOnly` 与字号保护适配移动端），解决 `navigator.clipboard` 在 non-secure context 下为 `undefined` 导致的 `TypeError: Cannot read properties of undefined (reading 'writeText')`；`dashboardAuth` 中间件注入并暴露 `X-Dashboard-Auth: required` 响应头，`use-dashboard-auth` 精确基于该响应头判定会话过期，彻底杜绝添加第三方 Key 或非会话 401 响应时被误踢回登录页。（`src/middleware/dashboard-auth.ts`、`shared/hooks/use-dashboard-auth.ts`、`shared/utils/clipboard.ts`、`web/src/pages/ClientKeysPage.tsx`、`web/src/pages/LogsPage.tsx`、`web/src/components/UpdateModal.tsx`）
+- 修复分发 Key（Client Access Keys）页面创建与编辑弹窗背景透明问题：修正非标准 Tailwind 类名（`bg-surface-light`、`bg-surface-dark`、`border-border-light` 等），采用标准 `bg-white dark:bg-card-dark` 与 `border-slate-200 dark:border-border-dark` 确保弹窗遮罩及背景不透明显示。（`web/src/pages/ClientKeysPage.tsx`）
+
+### Fixed
+
+- 修复首页已连接账户卡片的代理选择器在窄屏下横向溢出（`web/src/components/AccountCard.tsx`）
+- 用量统计页面的折线图改为平滑曲线，提升趋势查看体验（`web/src/components/UsageChart.tsx`）
+
 ### Added
 
-- 支持 Release Notes 中英文双语自动生成：在 `generate-release-notes.sh` 脚本输出末尾通过管道并结合 Node.js 编写的 `translate-notes.js` 进行结构化翻译过滤，自动生成英文对照和中文翻译两部分。（`.github/scripts/translate-notes.js`、`.github/scripts/generate-release-notes.sh`、`tests/unit/ci/release-notes-script.test.ts`）
+- `codex-responses` API-key wire 补齐 Codex 客户端 JSON 辅助端点：standalone Web Search `/v1/alpha/search`、远程压缩 `/v1/responses/compact`、图片生成/编辑 `/v1/images/generations|edits`（同时支持无 `/v1` 别名）。所有请求按 body `model` 走现有 UpstreamRouter，仅允许声明该能力的 adapter，使用固定 method/path 白名单并替换为上游 API key；JSON body、状态码和响应体透明转发，过滤 hop-by-hop 与 `Set-Cookie` 响应头，未知路径 fail-closed。
+- 自定义 API Key 新增可选 `codex-responses` wire：针对要求 Codex 客户端上下文的标准 Responses API 上游，使用 Bearer API key、Codex 会话/窗口/安装实例元数据与 SSE；不改变现有 `chat` / `responses` 默认行为，也不支持 Embeddings。
+- 新增按账号显式启用的 Codex `session_id` 指纹收敛模式，默认保持关闭；启用后仅将 HTTP/WebSocket 的上游 `session_id` 收敛为账号级稳定值，不合并 installation、conversation、window、turn 或 prompt-cache identity。Dashboard 提供风险确认开关，账号切换、空响应重试与 failover 均继承各自账号配置，旧持久化数据和非法模式安全回退为 `off`。（`src/auth/`、`src/proxy/codex-api.ts`、`src/routes/shared/`、`web/src/components/AccountCard.tsx`）
+- 日志可观测性与性能监控增强：为项目日志页面与数据链路添加全方位的可观测性指标捕获，包括首字延迟（TTFT）、单次预估金额（USD Cost）、Token 吐字生成速率（tok/s）、总执行耗时（Latency/Duration）及详细 Token 用量（Prompt / Completion / Reasoning / Cache Hit Rate）。在 Dashboard Logs 页面新增顶部可观测性概览看板（平均首字延迟、平均吐字速率、平均总耗时、总预估金额、Token 吞吐及请求成功率）、增强型列表表格列与 4 宫格性能详情抽屉；支持一键清空内存日志；补齐中英双语国际化支持。（`src/logs/metrics.ts`、`src/logs/store.ts`、`src/logs/entry.ts`、`src/routes/shared/streaming-handler.ts`、`src/routes/shared/non-streaming-handler.ts`、`src/routes/shared/direct-request-handler.ts`、`web/src/pages/LogsPage.tsx`、`shared/hooks/use-logs.ts`、`shared/i18n/translations.ts`）
+- Release Notes 改为 LLM 双语生成（替换并删除此前的逐词替换字典 `translate-notes.js`，机翻词盐根因）：新增 `summarize-release-notes.mjs` 调 OpenAI-compatible endpoint（secrets：`RELEASE_NOTES_BASE_URL/API_KEY/MODEL`）按 Electron 用户视角输出「✨ 本次更新」中文亮点 + 英文对照 + 折叠完整 commit 清单；输出强校验（JSON 契约、必须含 CJK、条数上限），LLM 不可用/校验失败时回退按 type 分组的纯英文列表，脚本永不非零退出（notes 问题不阻塞发版）；notes 过滤规则对齐 bump 的 `SKIP_RELEASE_PATTERN`（排除 chore/docs/ci/test/refactor/style）；已用真实 gateway 连调 3 次验证双语产出（`.github/scripts/summarize-release-notes.mjs`、`.github/scripts/generate-release-notes.sh`、`tests/unit/ci/summarize-release-notes.test.ts`、`tests/unit/ci/release-notes-script.test.ts`）
+- CI 发版通知 webhook：release 成功/失败、promote 成功/ff 前提破坏时 POST 纯文本到 `NOTIFY_WEBHOOK_URL` secret（ntfy 开箱可用）；secret 未配置时静默跳过、永不阻塞流水线（`.github/scripts/notify-webhook.sh`、`.github/workflows/release.yml`、`.github/workflows/promote-dev-to-master.yml`）
 - 自定义 API Key 的 Upstream protocol 新增 Anthropic Messages / Gemini generateContent 选项，并支持对应 base URL、模型列表获取与底层转发（`shared/hooks/use-api-keys.ts`、`src/auth/api-key-model-cache.ts`、`src/proxy/adapter-factory.ts`、`web/src/components/ApiKeyManager.tsx`）。
 - 修复并支持自定义 Anthropic & Gemini Upstream Base URL 与 ProxyPool 健康检查 URL（硬编码审计与修复）：在 `config-schema.ts` 的 `providers.anthropic` 和 `providers.gemini` 中添加可选的 `base_url` 字段，且在 `tls` 中添加 `health_check_url`（默认为 `https://api.ipify.org?format=json`）。通过构造函数将配置传入 `AnthropicUpstream` 和 `GeminiUpstream` 并在请求中动态调用；修改 `ProxyPool` 的 `healthCheck` 获取动态的健康检查 URL。新增 `tests/unit/proxy/adapter-factory.test.ts` 与 `tests/unit/config-schema.test.ts` 相关测试以保障 TDD。（`src/config-schema.ts`、`src/proxy/anthropic-upstream.ts`、`src/proxy/gemini-upstream.ts` 、`src/proxy/adapter-factory.ts`、`src/index.ts`、`src/proxy/proxy-pool.ts`、`tests/unit/config-schema.test.ts`、`tests/unit/proxy/adapter-factory.test.ts`）
 - Web 前端测试接入 CI 门禁:`web/` 是独立 package(非 root workspace)、用自己的 vitest(jsdom),其组件测试此前不被 root `npm test` 收录、不在任何自动化里跑。新增 root `test:web` 脚本(`cd web && npx vitest run`)和 `ci-quality.yml` 独立 `frontend-tests` job(`cd web && npm ci` + vitest),把现存 7 个 web 测试文件 16 用例纳入 PR 门禁;并给 `web/vite.config.ts` 补 `preact/devtools` / `preact/debug` alias——`@preact/preset-vite` 会把这两个 import 注入 `shared/` 文件,干净 `npm ci`(CI)从 web/ 外解析不到会在 import 阶段直接炸(本地因根 node_modules 有 preact 兜底而测不出)(`package.json`、`.github/workflows/ci-quality.yml`、`web/vite.config.ts`)
@@ -43,6 +58,25 @@
 - 本地 uncaught error log（observability foundation，#480 PR-1）：进程级 `uncaughtException` / `unhandledRejection` 自动落盘到 `data/error-log.jsonl`，单 backup 滚动（默认 10MB → `error-log.1.jsonl`），`context` 经 `redactJson` 脱敏 token / cookie / api_key / oauth；新增 4 个 admin 端点 `/admin/error-logs`（按 `name + first stack frame` 聚合）/ `/admin/error-logs/raw`（裸 JSONL tail）/ `/admin/error-logs/count`（含 unread）/ `/admin/error-logs/seen`（推进读游标）/ `/admin/error-logs/report`（renderer / 外部 POST 上报）；`uncaughtException` 走 `setImmediate(throw)` 保留 Node 默认崩溃语义，不会静默吞掉 fatal；新增 schema 节 `observability: { local_error_log: bool=true, max_log_bytes: int=10485760 }`；前端 Errors tab + 浮起 badge 由 PR-2 跟进（`src/logs/error-log.ts`、`src/routes/admin/error-logs.ts`、`src/config-schema.ts`、`src/index.ts`、`tests/unit/logs/error-log.test.ts`、`tests/unit/routes/admin/error-logs.test.ts`）
 
 ### Fixed
+
+- 代理选择器不再显示已禁用的代理，批量均分仅使用 active 代理（`web/src/components/{AccountCard,AccountTable,BulkActions,RuleAssign}.tsx`）
+- 修复默认 hosted tools 的协议兼容：按工具 `type` 通用判重，保留 Anthropic Messages 在全局默认列表为空时的 Web Search fallback，基于最终注入后的工具统计图片请求，并将默认 `image_generation` 结果分别转换为 Anthropic `tool_use` 与 Gemini `inlineData`；新增路由、翻译、集成测试及真实上游 Web Search / 图片生成连续 3 次验证。（`src/routes/shared/default-tools.ts`、`src/routes/{chat,gemini,messages,responses}.ts`、`src/translation/codex-to-{anthropic,gemini}.ts`、`tests/{unit,integration,real}`）
+- Retry early upstream `server_error` responses once on a different account before streaming, while preserving already-started streams and formatting errors according to client protocol.
+- 修复 `promote-dev-to-master` 将同一 commit 上历史 Electron release 失败记录误当作当前 CI 失败的问题：晋升门禁现在只读取该 commit 最新的 `ci-quality.yml` 结果，并支持分页读取 workflow runs，避免一次临时发布下载错误在成功重试后永久阻塞 `dev → master`，并补充回归测试（`.github/scripts/check-promote-ci.sh`、`.github/workflows/promote-dev-to-master.yml`、`tests/unit/ci/promote-ci-gate.test.ts`）
+
+- 修复上游 WebSocket 首帧 `server_is_overloaded` 被当作普通 SSE 错误透传、最终表现为 `stream disconnected before completion` 的问题：现在在 HTTP 响应提交前映射为 503，进入账号切换/有限重试；已产生输出后不重放请求，且 `response.completed` 后的异常关闭不再误报未完成流。（`src/proxy/error-classification.ts`、`src/proxy/ws-pool.ts`、`src/proxy/ws-transport.ts`、`src/routes/shared/proxy-error-handler.ts`、`src/translation/codex-api-error-from-event.ts`）
+
+- 修复 Dashboard Errors tab 的“全部标记已读”和“删除”操作被 Settings Bearer-token middleware 拦截成 401 的问题；`/admin/error-logs*` 统一交给 dashboard session auth，避免 cookie 登录会话被误判失效并跳回登录页。（`src/routes/admin/settings.ts`、`tests/integration/error-logs-dashboard-auth.test.ts`）
+- 修复 release notes 生成脚本在 LLM endpoint 不可达时可能被 60s 默认请求超时拖慢测试的问题；新增 `RELEASE_NOTES_REQUEST_TIMEOUT_MS` 仅用于覆盖该脚本请求超时，生产默认仍为 60s。（`.github/scripts/summarize-release-notes.mjs`、`tests/unit/ci/summarize-release-notes.test.ts`）
+- 修复并强化 WebSocket 消息流的生命周期管理：通过缓冲早期元数据帧（如 `response.created`），延迟解析 HTTP 响应，从而解决由于内部限流事件导致的提前解析和挂起问题，并在重构中排除了首字时间（TTFT）超过 20s 会引发超时的隐患。（#678，感谢 [@zyycn](https://github.com/zyycn)）
+- 修复 promote soak 饿死：旧规则要求 dev HEAD 本身 ≥24h，活跃开发期每个新 commit 重置时钟导致 master 长期不晋升；新增 `select-promote-candidate.sh` 改为晋升「最新的、已泡满 24h 的 dev first-parent commit」（新鲜提交留在 dev 继续 soak、次日跟进），CI 门禁逐候选回退找绿；`force_skip_soak` 仍直接取 dev HEAD（`.github/scripts/select-promote-candidate.sh`、`.github/workflows/promote-dev-to-master.yml`、`tests/unit/ci/select-promote-candidate.test.ts`）
+- 修复 Docker 版本镜像被覆盖：`docker-publish.yml` 此前在 master 分支 push 时用 `max(package.json, 最新 stable tag)` 决定版本号，14:00 promote 后会用「晚于 tag 的代码」重打 `ghcr.io/...:vX.Y.Z` 镜像（镜像内容 ≠ git tag）；现在分支 push 只打 `latest` + `sha-<short>`，版本镜像仅由 `bump-electron.yml` dispatch 带 `tag` 输入、从 tag 源码构建（`.github/workflows/docker-publish.yml`、`.github/workflows/bump-electron.yml`）
+- 修复 release 空 body 窗口：`release.yml` notes 生成从最后一个 job 提前为第一个 job，此前 upload 步骤先 `gh release create --notes ""`、notes job 挂掉则 release 永久空 body（更新弹窗里用户看到空白）；stable release 创建时 `--latest=false`，全部平台 smoke 通过后才翻 `--latest`（构建窗口内 `/releases/latest` 始终指向上一个完整版本，auto-updater 不会撞到零资产 release）；构建全挂时自动删除零资产 release（保留 tag 可重试），防止 beta 渠道解析到空版本；顺带 release/build job Node 版本统一到 22（与 ci-quality 一致）（`.github/workflows/release.yml`）
+- 修复自定义 API Key 原生 wire 的 provider/wire 一致性问题：后端拒绝 built-in provider 的无效 wire/baseUrl 组合，custom 模型缓存按 wire 隔离，Anthropic 模型发现改用 x-api-key，Anthropic 上游请求接入 fetch dispatcher，Embeddings 路由拒绝 custom Anthropic/Gemini wire，并在前端切换 custom wire 时清空旧模型列表（src/routes/api-keys.ts、src/auth/api-key-model-cache.ts、src/proxy/anthropic-upstream.ts、src/routes/embeddings.ts、web/src/components/ApiKeyManager.tsx）。
+
+- 修复 Windows 本地缺少 POSIX shell 时 CI 脚本单测失败、Electron bundle 动态导入路径以及 `full-update` 子进程启动路径含空格的问题（`tests/unit/ci/*`、`packages/electron/__tests__/build.test.ts`、`scripts/build/full-update.ts`）。
+
+- 修复 Settings → API 配置默认模型下拉混入写死、别名和过期权限模型的问题：模型目录改为使用当前成功拉取的账号/plan 快照与缓存快照，成功刷新后不再增量保留已失效模型；缓存按 plan 持久化以保留未刷新 plan 的冷启动 fallback，并避免本地 custom models 被写入 backend cache；同时过滤非文本 chat 模型（`config/models.yaml`、`src/models/model-store.ts`、`src/routes/models.ts`、`shared/hooks/use-status.ts`）。
 
 - 修复了 Electron 强制覆盖 `server.host` 配置的问题：不再于启动 server 时硬编码 `host: "127.0.0.1"`，使其能正常使用配置文件 `local.yaml` 以及环境变量 `CODEX_PROXY_HOST` 的设置（`packages/electron/electron/main.ts`、`tests/unit/config-local-override.test.ts`）
 - 修复了当启用 `skip_exhausted` 模式时可能造成配额耗尽账号”死锁假死”以及本地被动重置引发”重置时间漂移”的隐患：通过新增 `ActiveQuotaRefresher` 后台主动心跳服务，对耗尽或重置前后的账号定期带 Jitter 主动校验；同时引入 “Drift-Defense” 防漂移验证，在本地脑补清零后，强制触发一次上游验证后再安全放行。（`src/auth/active-quota-refresher.ts`，`src/routes/shared/proxy-handler.ts`，`tests/integration/proxy-handler.test.ts`）

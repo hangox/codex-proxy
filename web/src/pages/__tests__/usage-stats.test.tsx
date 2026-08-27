@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/preact";
+import { render, screen, cleanup, within } from "@testing-library/preact";
 import type { UsageDataPoint, UsageSummary } from "../../../../shared/hooks/use-usage-stats";
 
 const mockUsageStats = vi.hoisted(() => ({
@@ -22,6 +22,7 @@ vi.mock("../../../../shared/i18n/context", () => ({
 }));
 
 import { UsageStats } from "../UsageStats";
+import { UsageChart, buildSmoothPath } from "../../components/UsageChart";
 
 const summary: UsageSummary = {
   total_input_tokens: 999_000,
@@ -31,6 +32,7 @@ const summary: UsageSummary = {
   total_image_output_tokens: 555_000,
   total_image_request_count: 444_000,
   total_image_request_failed_count: 333_000,
+  total_estimated_cost_usd: 111.11,
   total_request_count: 222_000,
   total_accounts: 5,
   active_accounts: 2,
@@ -46,6 +48,7 @@ const windowPoints: UsageDataPoint[] = [
     image_output_tokens: 6,
     image_request_count: 1,
     image_request_failed_count: 0,
+    estimated_cost_usd: 0.12,
     request_count: 2,
   },
   {
@@ -57,6 +60,7 @@ const windowPoints: UsageDataPoint[] = [
     image_output_tokens: 9,
     image_request_count: 2,
     image_request_failed_count: 1,
+    estimated_cost_usd: 0.34,
     request_count: 5,
   },
 ];
@@ -71,6 +75,8 @@ describe("UsageStats", () => {
       const labels: Record<string, string> = {
         totalInputTokens: "Input Tokens",
         totalOutputTokens: "Output Tokens",
+        estimatedApiCost: "Estimated API Cost",
+        estimatedApiCostHint: "Based on official API prices",
         cacheHitRate: "Cache Hit Rate",
         cacheHitRateHint: "{cached} cached / {input} input",
         rangeHitRate: "Range Hit Rate",
@@ -117,4 +123,51 @@ describe("UsageStats", () => {
     expect(screen.queryByText("888.0K")).toBeNull();
     expect(screen.queryByText("222.0K")).toBeNull();
   });
+
+  it("shows estimated API cost for the selected history window", () => {
+    renderUsageStats();
+
+    const costLabel = screen.getByText("Estimated API Cost");
+    expect(costLabel).toBeTruthy();
+    expect(within(costLabel.parentElement as HTMLElement).getByText("$0.46")).toBeTruthy();
+  });
+
+  it("does not render the official quota card on the usage page", () => {
+    renderUsageStats();
+
+    expect(screen.queryByText("Official Codex Quota")).toBeNull();
+    expect(screen.queryByText("Primary Remaining")).toBeNull();
+    expect(screen.queryByText("Credit Balance")).toBeNull();
+  });
+
+  it("renders usage trends as smooth SVG paths", () => {
+    render(<UsageChart data={windowPoints} />);
+
+    const paths = document.querySelectorAll("path");
+    expect(paths.length).toBe(5);
+    expect(paths[0].getAttribute("d")).toContain("C");
+    expect(paths[1].getAttribute("d")).toContain("C");
+    expect(paths[2].getAttribute("d")).toContain("C");
+    expect(paths[3].getAttribute("d")).toContain("C");
+  });
+
+  it("keeps a single point path valid", () => {
+    expect(buildSmoothPath([{ x: 10, y: 20 }])).toBe("M 10,20");
+    expect(buildSmoothPath([])).toBe("");
+  });
+
+  it("connects hit-rate points across empty buckets", () => {
+    const dataWithEmptyBucket: UsageDataPoint[] = [
+      windowPoints[0],
+      { ...windowPoints[0], timestamp: "2026-05-08T00:30:00.000Z", input_tokens: 0, cached_tokens: 0 },
+      windowPoints[1],
+    ];
+
+    render(<UsageChart data={dataWithEmptyBucket} />);
+
+    const hitRatePath = document.querySelectorAll("path")[4].getAttribute("d") ?? "";
+    expect((hitRatePath.match(/M /g) ?? []).length).toBe(1);
+    expect(hitRatePath).toContain("C");
+  });
+
 });

@@ -12,6 +12,7 @@ import { getRotationStrategy } from "./rotation-strategy.js";
 import type { RotationStrategy, RotationState, RotationStrategyName } from "./rotation-strategy.js";
 import type { AccountRegistry } from "./account-registry.js";
 import type { AccountEntry, AcquiredAccount } from "./types.js";
+import { isCfChallengeCooldownActive } from "./cf-challenge-cooldown.js";
 
 const ACQUIRE_LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -92,7 +93,8 @@ export class AccountLifecycle {
         a.status === "active" &&
         this.slotCount(a.id) < maxConcurrent &&
         (!excludeSet || !excludeSet.has(a.id)) &&
-        (!skipExhausted || !hasReachedCachedQuota(a)),
+        !isCfChallengeCooldownActive(a.id) &&
+        (!skipExhausted || !hasReachedCachedQuota(a, options?.model)),
     );
 
     if (available.length === 0) return null;
@@ -146,6 +148,7 @@ export class AccountLifecycle {
       entryId: selected.id,
       token: selected.token,
       accountId: selected.accountId,
+      codexFingerprintMode: selected.codexFingerprintMode === "session" ? "session" : "off",
       prevSlotMs,
     };
   }
@@ -156,6 +159,7 @@ export class AccountLifecycle {
       input_tokens?: number;
       output_tokens?: number;
       cached_tokens?: number;
+      estimated_cost_usd?: number;
       image_input_tokens?: number;
       image_output_tokens?: number;
       image_request_attempted?: boolean;
@@ -204,6 +208,7 @@ export class AccountLifecycle {
         a.status === "active" &&
         this.slotCount(a.id) < maxConcurrent &&
         a.planType &&
+        !isCfChallengeCooldownActive(a.id) &&
         (!skipExhausted || !hasReachedCachedQuota(a)),
     );
 

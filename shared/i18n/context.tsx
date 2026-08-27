@@ -9,7 +9,16 @@ interface I18nContextValue {
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
 }
 
-const I18nContext = createContext<I18nContextValue>(null!);
+const defaultI18nValue: I18nContextValue = {
+  lang: "en",
+  toggleLang: () => {},
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => {
+    const template = translations.en[key] ?? key;
+    return interpolateTranslation(template, vars);
+  },
+};
+
+const I18nContext = createContext<I18nContextValue>(defaultI18nValue);
 
 export function interpolateTranslation(template: string, vars?: Record<string, string | number>): string {
   if (!vars) return template;
@@ -24,13 +33,15 @@ function getInitialLang(): LangCode {
   return navigator.language.startsWith("zh") ? "zh" : "en";
 }
 
-export function I18nProvider({ children }: { children: ComponentChildren }) {
-  const [lang, setLang] = useState<LangCode>(getInitialLang);
+export function I18nProvider({ children, initialLang }: { children: ComponentChildren; initialLang?: LangCode }) {
+  const [lang, setLang] = useState<LangCode>(() => initialLang ?? getInitialLang());
 
   const toggleLang = useCallback(() => {
     setLang((prev) => {
       const next = prev === "en" ? "zh" : "en";
-      localStorage.setItem("codex-proxy-lang", next);
+      try {
+        localStorage.setItem("codex-proxy-lang", next);
+      } catch {}
       return next;
     });
   }, []);

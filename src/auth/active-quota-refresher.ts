@@ -64,8 +64,20 @@ export class ActiveQuotaRefresher {
         if (entry.status !== "active") continue;
 
         // Condition 1: Account is marked as limit_reached (locked in black-hole).
+        // Condition 1b: Fix #730 — used_percent>=100 even if limit_reached not yet
+        //   set; upstream may have lifted the limit but passive header path sets
+        //   limit_reached=true from used_percent>=100, so this is already covered.
+        //   Also proactively refresh when any per-model bucket is locked (Bug 3).
         // Condition 2: Account was locally reset offline and requires verification.
-        const isLocked = entry.cachedQuota?.rate_limit.limit_reached === true;
+        const primaryLocked = entry.cachedQuota?.rate_limit.limit_reached === true;
+        const primaryExhausted = (entry.cachedQuota?.rate_limit.used_percent ?? 0) >= 100;
+        // Fix #730 Bug 3: check all rate_limits_by_limit_id buckets
+        const bucketLocked =
+          entry.cachedQuota?.rate_limits_by_limit_id != null &&
+          Object.values(entry.cachedQuota.rate_limits_by_limit_id).some(
+            (l) => l.limit_reached === true,
+          );
+        const isLocked = primaryLocked || primaryExhausted || bucketLocked;
         const isDirty = entry.quotaVerifyRequired === true;
 
         if (!isLocked && !isDirty) continue;

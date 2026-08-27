@@ -6,7 +6,7 @@ import type { AccountPool } from "../../auth/account-pool.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import { EmptyResponseError, UpstreamPrematureCloseError } from "../../translation/codex-event-extractor.js";
-import type { SessionAffinityMap } from "../../auth/session-affinity.js";
+import type { ChainAdvanceTicket, SessionAffinityMap } from "../../auth/session-affinity.js";
 import type { FormatAdapter, ProxyRequest, UsageHint } from "./proxy-handler-types.js";
 import {
   retryNonStreamingEmptyResponse,
@@ -19,6 +19,15 @@ import {
   releaseNonStreamingSuccessAccount,
   collectNonStreamingResponse,
 } from "./non-streaming-helpers.js";
+import {
+  containsInvalidEncryptedContentSignal,
+  getReasoningReplayCache,
+} from "../../proxy/reasoning-replay-cache.js";
+import { forwardCodexRateLimitHeaders } from "./codex-rate-limit-response-headers.js";
+import { relayCodexTurnState } from "./codex-turn-state.js";
+import { recordClientKeyUsage } from "./proxy-handler-utils.js";
+import { updateLogEntry } from "../../logs/entry.js";
+import { calculateLogMetrics } from "../../logs/metrics.js";
 
 
 const MAX_EMPTY_RETRIES = 2;
@@ -44,6 +53,7 @@ export interface HandleNonStreamingOptions {
   buildPoolCtx?: (forEntryId: string) => WsPoolContext | undefined;
   setActiveAccount?: (entryId: string, api: CodexApi) => void;
   variantHash?: string;
+  chainAdvanceTicket?: ChainAdvanceTicket;
 }
 
 export async function handleNonStreaming(options: HandleNonStreamingOptions): Promise<Response> {
@@ -68,10 +78,20 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
     buildPoolCtx,
     setActiveAccount,
     variantHash,
+    chainAdvanceTicket,
   } = options;
   let currentEntryId = initialEntryId;
   let currentApi = initialApi;
   let currentRawResponse = initialResponse;
+  const initialStartMs = Date.now();
+  const evictReasoningReplayIdentity = (): void => {
+    if (!conversationId || !variantHash) return;
+    getReasoningReplayCache().evictByIdentity({
+      entryId: currentEntryId,
+      conversationId,
+      variantHash,
+    });
+  };
 
   for (let attempt = 1; ; attempt++) {
     try {
@@ -81,8 +101,11 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         rawResponse: currentRawResponse,
         req,
         usageHint: getUsageHint?.(),
+        onResponseMetadata: (metadata) => {
+          if (metadata.invalidReasoningReplay) evictReasoningReplayIdentity();
+        },
       });
-      const { result, responseFunctionCallIds } = collected;
+      const { result, responseFunctionCallIds, reasoningReplayItems } = collected;
       recordNonStreamingSuccessAffinity({
         affinityMap,
         responseId: result.responseId,
@@ -93,19 +116,59 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         inputTokens: result.usage.input_tokens,
         responseFunctionCallIds,
         variantHash,
+        chainAdvanceTicket,
       });
+      if (result.responseId && conversationId && variantHash && reasoningReplayItems.length > 0) {
+        getReasoningReplayCache().record({
+          responseId: result.responseId,
+          entryId: currentEntryId,
+          conversationId,
+          variantHash,
+          items: reasoningReplayItems,
+        });
+      }
       if (result.usage) {
         logNonStreamingUsage({ tag: fmt.tag, entryId: currentEntryId, requestId, usage: result.usage });
       }
+      recordClientKeyUsage(c, req.model, result.usage);
+
+      const metrics = calculateLogMetrics({
+        startMs: initialStartMs,
+        endMs: Date.now(),
+        model: req.model,
+        usage: result.usage,
+      });
+      c.set("metrics", metrics);
+      updateLogEntry(requestId, {
+        status: 200,
+        latencyMs: metrics.durationMs,
+        ttftMs: metrics.ttftMs,
+        durationMs: metrics.durationMs,
+        costUsd: metrics.costUsd,
+        tokensPerSecond: metrics.tokensPerSecond,
+        usage: result.usage,
+        metrics,
+      });
+
       releaseNonStreamingSuccessAccount({
         accountPool,
         entryId: currentEntryId,
         usage: result.usage,
         expectsImageGen: req.expectsImageGen,
+        model: req.model,
         released,
       });
+      forwardCodexRateLimitHeaders(
+        c,
+        currentRawResponse.headers,
+        accountPool.getEntry(currentEntryId)?.cachedQuota,
+      );
+      relayCodexTurnState(c, currentRawResponse, fmt.tag);
       return c.json(result.response);
     } catch (collectErr) {
+      if (conversationId && variantHash && containsInvalidEncryptedContentSignal(collectErr)) {
+        evictReasoningReplayIdentity();
+      }
       // Upstream FIN'd mid-reasoning (typically gpt-5.5 xhigh > 120 s cap).
       // Cross-account retry would re-hit the same cap and burn the pool, so
       // we fail fast with 504. The proxy can't recover this — the client

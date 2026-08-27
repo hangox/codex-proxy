@@ -22,7 +22,7 @@ function isHttps(c: Context): boolean {
 }
 
 /** Paths that are always allowed through without dashboard session. */
-const ALLOWED_PREFIXES = ["/assets/", "/v1/", "/v1beta/", "/official-agent/"];
+const ALLOWED_PREFIXES = ["/assets/", "/v1/", "/v1beta/", "/official-agent/", "/images/", "/responses"];
 const ALLOWED_EXACT = new Set([
   "/health",
   "/auth/dashboard-login",
@@ -42,6 +42,11 @@ export async function dashboardAuth(c: Context, next: Next): Promise<Response | 
   // Localhost → bypass (Electron + local dev)
   const remoteAddr = getRealClientIp(c, config.server.trust_proxy);
   if (isLocalhostRequest(remoteAddr)) return next();
+
+  // Bearer token → bypass (API scripts)
+  const authHeader = c.req.header("Authorization") ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (token === config.server.proxy_api_key) return next();
 
   // Always-allowed paths
   const path = c.req.path;
@@ -63,5 +68,7 @@ export async function dashboardAuth(c: Context, next: Next): Promise<Response | 
 
   // Not authenticated — reject
   c.status(401);
+  c.header("X-Dashboard-Auth", "required");
+  c.header("Access-Control-Expose-Headers", "X-Dashboard-Auth");
   return c.json({ error: "Dashboard login required" });
 }

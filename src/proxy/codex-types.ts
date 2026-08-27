@@ -87,13 +87,46 @@ export type CodexContentPart =
   | { type: "input_text"; text: string }
   | { type: "input_image"; image_url: string };
 
+export type CodexReasoningStatus = "in_progress" | "completed" | "incomplete";
+
+export interface CodexReasoningSummaryPart {
+  type: "summary_text";
+  text: string;
+}
+
+export interface CodexReasoningTextPart {
+  type: "reasoning_text";
+  text: string;
+}
+
+export interface CodexReasoningItem {
+  type: "reasoning";
+  id: string;
+  status?: CodexReasoningStatus;
+  encrypted_content?: string;
+  summary: CodexReasoningSummaryPart[];
+  content?: CodexReasoningTextPart[];
+}
+
+export interface CodexCompactionItem {
+  type: "compaction";
+  id?: string;
+  encrypted_content: string;
+}
+
 export type CodexInputItem =
   | { role: "user"; content: string | CodexContentPart[] }
   | { role: "assistant"; content: string }
-  | { role: "system"; content: string }
-  | { role: "developer"; content: string }
+  // system/developer roles accept structured content so the user system prompt
+  // can be delivered as an inline input item (system_prompt_strategy).
+  | { role: "system"; content: string | CodexContentPart[] }
+  | { role: "developer"; content: string | CodexContentPart[] }
   | { type: "function_call"; id?: string; call_id: string; name: string; arguments: string }
-  | { type: "function_call_output"; call_id: string; output: string };
+  | { type: "function_call_output"; call_id: string; output: string }
+  | { type: "custom_tool_call"; id?: string; call_id: string; name: string; input: string; status?: string }
+  | { type: "custom_tool_call_output"; call_id: string; output: string }
+  | CodexReasoningItem
+  | CodexCompactionItem;
 
 /** Parsed SSE event from the Codex Responses stream */
 export interface CodexSSEEvent {
@@ -148,11 +181,32 @@ export interface CodexUsageRateLimitReachedType {
   details: string | null;
 }
 
+export interface CodexRateLimitResetCreditsUsageInfo {
+  available_count?: number | null;
+}
+
+export interface CodexResetCreditItem {
+  id?: string;
+  status?: string;
+  reset_type?: string;
+  granted_at?: number | null;
+  expires_at?: number | null;
+  redeemed_at?: number | null;
+  raw_status?: string;
+}
+
+export interface CodexResetCreditsResponse {
+  available_count?: number | null;
+  credits: CodexResetCreditItem[];
+  next_expires_at?: number | null;
+}
+
 export interface CodexUsageResponse {
   plan_type: string;
   rate_limit: CodexUsageRateLimit;
   code_review_rate_limit: CodexUsageRateLimit | null;
   additional_rate_limits?: CodexUsageAdditionalRateLimit[] | null;
+  rate_limit_reset_credits?: CodexRateLimitResetCreditsUsageInfo | null;
   credits?: CodexUsageCredits | null;
   spend_control?: CodexUsageSpendControl | null;
   rate_limit_reached_type?: CodexUsageRateLimitReachedType | null;
@@ -160,9 +214,12 @@ export interface CodexUsageResponse {
 }
 
 export class CodexApiError extends Error {
+  public readonly headers: Headers | undefined;
+
   constructor(
     public readonly status: number,
     public readonly body: string,
+    headers?: Headers,
   ) {
     let detail: string;
     try {
@@ -178,12 +235,27 @@ export class CodexApiError extends Error {
       detail = body;
     }
     super(`Codex API error (${status}): ${detail}`);
+    this.headers = headers ? new Headers(headers) : undefined;
   }
 }
 
-/** previous_response_id 只能通过 WebSocket 安全续链，失败后不能降级为 HTTP delta-only。 */
+export type PreviousResponseContinuityReason =
+  | "busy"
+  | "dead"
+  | "expired"
+  | "missing_owner"
+  | "account_mismatch"
+  | "disabled"
+  | "no_key"
+  | "no_context"
+  | "transport";
+
+/** previous_response_id can only continue on its owning physical WebSocket. */
 export class PreviousResponseWebSocketError extends CodexApiError {
-  constructor(public readonly causeMessage: string) {
+  constructor(
+    public readonly causeMessage: string,
+    public readonly continuityReason?: PreviousResponseContinuityReason,
+  ) {
     super(
       0,
       JSON.stringify({

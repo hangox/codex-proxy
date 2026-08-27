@@ -118,6 +118,17 @@ export const AnthropicMessagesRequestSchema = z.object({
       AnthropicThinkingAdaptiveSchema,
     ])
     .optional(),
+  // output_config.effort carries Claude Code's explicitly selected reasoning
+  // effort level. With adaptive thinking Claude Code sends
+  // `thinking: {type:"adaptive"}` without budget_tokens, so the effort level
+  // travels here instead. `.passthrough()` keeps future subfields (format,
+  // task_budget, ...) from being silently stripped the way effort once was.
+  output_config: z
+    .object({
+      effort: z.string().optional(),
+    })
+    .passthrough()
+    .optional(),
   // Tool-related fields. Custom tools are converted to Codex function tools;
   // Anthropic hosted web search is converted to Codex hosted web_search.
   tools: z.array(z.union([

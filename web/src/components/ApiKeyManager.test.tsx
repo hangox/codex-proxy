@@ -168,7 +168,7 @@ describe("AddKeyForm", () => {
     fireEvent.blur(screen.getByPlaceholderText("sk-..."));
 
     await waitFor(() => expect(screen.getByPlaceholderText("model-name-1, model-name-2")).toBeTruthy());
-    expect(screen.getByText("模型列表获取失败，请手动输入模型名：Failed")).toBeTruthy();
+    expect(screen.getByText("Failed to fetch model list, please enter model names manually: Failed")).toBeTruthy();
   });
 
   it("fetches custom provider models with base URL", async () => {
@@ -215,8 +215,38 @@ describe("AddKeyForm", () => {
     expect(screen.queryByRole("option", { name: /Gemini generateContent/i })).toBeNull();
 
     fireEvent.change(providerSelect, { target: { value: "custom" } });
+    expect(screen.getByRole("option", { name: /Codex Responses \(client context\)/i })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Anthropic Messages/i })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Gemini generateContent/i })).toBeTruthy();
+  });
+
+  it("submits custom Codex Responses wire", async () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels();
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByDisplayValue("Chat Completions (OpenAI-compatible)"), { target: { value: "codex-responses" } });
+    fireEvent.input(screen.getByPlaceholderText("sk-..."), { target: { value: "vendor-key" } });
+    fireEvent.input(screen.getByPlaceholderText("https://api.example.com/v1"), { target: { value: "https://provider.example.com/v1" } });
+    fireEvent.input(screen.getByPlaceholderText("manual-model-1, manual-model-2"), { target: { value: "gpt-5.6-sol" } });
+    fireEvent.click(screen.getByText("Add Key"));
+
+    await waitFor(() => expect(onAdd).toHaveBeenCalledTimes(1));
+    expect(onAdd.mock.calls[0][0]).toMatchObject({
+      provider: "custom",
+      apiKey: "vendor-key",
+      baseUrl: "https://provider.example.com/v1",
+      wire: "codex-responses",
+      models: ["gpt-5.6-sol"],
+    });
   });
 
   it("submits custom Anthropic wire", async () => {
@@ -273,5 +303,53 @@ describe("AddKeyForm", () => {
       baseUrl: "https://gemini.example.com/v1beta",
       wire: "gemini",
     });
+  });
+
+  it("clears fetched custom models when the upstream protocol changes", async () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels([{ id: "chat-custom", displayName: "Chat Custom" }]);
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "custom" } });
+    fireEvent.input(screen.getByPlaceholderText("sk-..."), { target: { value: "custom-key" } });
+    fireEvent.input(screen.getByPlaceholderText("https://api.example.com/v1"), { target: { value: "https://api.example.com/v1" } });
+    fireEvent.blur(screen.getByPlaceholderText("https://api.example.com/v1"));
+    await waitFor(() => expect(screen.getByText("Chat Custom")).toBeTruthy());
+
+    fireEvent.change(screen.getByDisplayValue("Chat Completions (OpenAI-compatible)"), { target: { value: "gemini" } });
+
+    expect(screen.queryByText("Chat Custom")).toBeNull();
+    expect(screen.getByText("Enter API Key and URL to fetch models")).toBeTruthy();
+  });
+
+  it("renders in Chinese when I18nProvider provides zh language", async () => {
+    const { I18nProvider } = await import("../../../shared/i18n/context");
+
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels();
+
+    render(
+      <I18nProvider initialLang="zh">
+        <AddKeyForm
+          onAdd={onAdd}
+          catalog={defaultCatalog}
+          fetchProviderModels={fetchProviderModels}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("供应商")).toBeTruthy();
+    expect(screen.getByText("模型")).toBeTruthy();
+    expect(screen.getByText("支持能力")).toBeTruthy();
+    expect(screen.getByText("添加 Key")).toBeTruthy();
+    expect(screen.getByText("Chat 对话")).toBeTruthy();
+    expect(screen.getByText("Embeddings 向量")).toBeTruthy();
   });
 });

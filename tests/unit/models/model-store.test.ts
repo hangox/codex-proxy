@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync, writeFile } from "fs";
 import { resolve } from "path";
 
 const mockConfiguredAliases: Record<string, string> = {};
@@ -138,6 +138,7 @@ describe("ModelStore", () => {
       delete mockConfiguredAliases[key];
     }
     mockCustomModels.length = 0;
+    vi.mocked(existsSync).mockReturnValue(false);
     vi.mocked(readFileSync).mockReturnValue(FIXTURE_YAML);
     loadStaticModels("/tmp/test-config");
   });
@@ -149,24 +150,143 @@ describe("ModelStore", () => {
       expect(catalog[0].id).toBe("gpt-5.4");
     });
 
-    it("loads aliases", () => {
-      const aliases = getModelAliases();
-      expect(aliases["codex"]).toBe("gpt-5.4");
-      expect(aliases["codex-mini"]).toBe("gpt-5.3-codex-spark");
-      expect(aliases["claude-opus-4-7"]).toBe("gpt-5.5");
-      expect(aliases["claude-sonnet-4-6"]).toBe("gpt-5.4");
-      expect(aliases["claude-haiku-4-5"]).toBe("gpt-5.3-codex");
+    it("ignores aliases bundled in models.yaml", () => {
+      expect(getModelAliases()).toEqual({});
     });
 
-    it("overlays model.aliases from local config on top of static aliases", () => {
+    it("loads only model.aliases from local config", () => {
       mockConfiguredAliases["claude-sonnet-4-6"] = "openai:gpt-4o";
-      mockConfiguredAliases["my-free-model"] = "gpt-5.5";
+      mockConfiguredAliases["my-free-model"] = "gpt-5.4";
       loadStaticModels("/tmp/test-config");
 
       const aliases = getModelAliases();
-      expect(aliases["claude-sonnet-4-6"]).toBe("openai:gpt-4o");
-      expect(aliases["my-free-model"]).toBe("gpt-5.5");
-      expect(resolveModelId("my-free-model")).toBe("gpt-5.5");
+      expect(aliases).toEqual({
+        "claude-sonnet-4-6": "openai:gpt-4o",
+        "my-free-model": "gpt-5.4",
+      });
+      expect(resolveModelId("my-free-model")).toBe("gpt-5.4");
+    });
+
+    it("loads data/models-cache.yaml as the cold-start catalog snapshot", () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        const filePath = String(path);
+        if (filePath.endsWith("models-cache.yaml")) {
+          return `
+models:
+  - id: auto
+    displayName: auto
+    description: ChatGPT selector
+    isDefault: false
+    supportedReasoningEfforts:
+      - { reasoningEffort: medium, description: "Medium" }
+    defaultReasoningEffort: medium
+    inputModalities: [text]
+    supportsPersonality: false
+    upgrade: null
+  - id: cached-only
+    displayName: Cached Only
+    description: Cached snapshot model
+    isDefault: true
+    supportedReasoningEfforts:
+      - { reasoningEffort: medium, description: "Medium" }
+    defaultReasoningEffort: medium
+    inputModalities: [text]
+    supportsPersonality: false
+    upgrade: null
+aliases:
+  cached-alias: cached-only
+`;
+        }
+        return FIXTURE_YAML;
+      });
+
+      loadStaticModels("/tmp/test-config");
+
+      expect(getModelCatalog().map((m) => m.id)).toEqual(["cached-only"]);
+      expect(getModelInfo("auto")).toBeUndefined();
+      expect(getModelAliases()).toEqual({});
+      expect(getModelInfo("cached-only")!.source).toBe("backend");
+    });
+
+    it("loads per-plan cache snapshots and preserves unfetched plans after one plan refreshes", () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        const filePath = String(path);
+        if (filePath.endsWith("models-cache.yaml")) {
+          return `
+planSnapshots:
+  plus:
+    - id: auto
+      displayName: auto
+      description: ChatGPT selector
+      isDefault: false
+      supportedReasoningEfforts:
+        - { reasoningEffort: medium, description: "Medium" }
+      defaultReasoningEffort: medium
+      inputModalities: [text]
+      supportsPersonality: false
+      upgrade: null
+    - id: cached-plus
+      displayName: Cached Plus
+      description: Cached plus model
+      isDefault: false
+      supportedReasoningEfforts:
+        - { reasoningEffort: medium, description: "Medium" }
+      defaultReasoningEffort: medium
+      inputModalities: [text]
+      supportsPersonality: false
+      upgrade: null
+  team:
+    - id: cached-team
+      displayName: Cached Team
+      description: Cached team model
+      isDefault: false
+      supportedReasoningEfforts:
+        - { reasoningEffort: medium, description: "Medium" }
+      defaultReasoningEffort: medium
+      inputModalities: [text]
+      supportsPersonality: false
+      upgrade: null
+aliases: {}
+`;
+        }
+        return FIXTURE_YAML;
+      });
+
+      loadStaticModels("/tmp/test-config");
+      expect(getModelInfo("auto")).toBeUndefined();
+      applyBackendModelsForPlan("plus", [{ slug: "fresh-plus", display_name: "Fresh Plus" }]);
+
+      expect(getModelInfo("fresh-plus")).toBeDefined();
+      expect(getModelInfo("cached-plus")).toBeUndefined();
+      expect(getModelInfo("cached-team")).toBeDefined();
+      expect(getModelPlanTypes("cached-team")).toEqual(["team"]);
+    });
+
+    it("does not revive removed custom models from the backend cache", () => {
+      let cachedYaml = "";
+      vi.mocked(writeFile).mockImplementation((_path, data, _enc, cb) => {
+        cachedYaml = String(data);
+        cb(null);
+      });
+
+      mockCustomModels.push("local-custom");
+      loadStaticModels("/tmp/test-config");
+      applyBackendModelsForPlan("plus", [{ slug: "fresh-plus", display_name: "Fresh Plus" }]);
+
+      mockCustomModels.length = 0;
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(readFileSync).mockImplementation((path) => {
+        const filePath = String(path);
+        if (filePath.endsWith("models-cache.yaml")) return cachedYaml;
+        return FIXTURE_YAML;
+      });
+
+      loadStaticModels("/tmp/test-config");
+
+      expect(getModelInfo("fresh-plus")).toBeDefined();
+      expect(getModelInfo("local-custom")).toBeUndefined();
     });
 
     it("adds custom models from local config to the catalog", () => {
@@ -216,14 +336,15 @@ describe("ModelStore", () => {
   });
 
   describe("resolveModelId", () => {
-    it("resolves alias to model ID", () => {
-      expect(resolveModelId("codex")).toBe("gpt-5.4");
+    it("does not resolve aliases bundled in models.yaml", () => {
+      expect(resolveModelId("codex")).toBe("gpt-5.3-codex");
     });
 
-    it("resolves Claude Desktop shell aliases to Codex model IDs", () => {
-      expect(resolveModelId("claude-opus-4-7")).toBe("gpt-5.5");
-      expect(resolveModelId("claude-sonnet-4-6")).toBe("gpt-5.4");
-      expect(resolveModelId("claude-haiku-4-5")).toBe("gpt-5.3-codex");
+    it("resolves explicit local config aliases", () => {
+      mockConfiguredAliases["my-model"] = "gpt-5.4";
+      loadStaticModels("/tmp/test-config");
+
+      expect(resolveModelId("my-model")).toBe("gpt-5.4");
     });
 
     it("returns known model ID as-is", () => {
@@ -243,8 +364,11 @@ describe("ModelStore", () => {
   });
 
   describe("parseModelName", () => {
-    it("returns known alias without stripping", () => {
-      const result = parseModelName("codex");
+    it("returns configured aliases without stripping", () => {
+      mockConfiguredAliases["my-model"] = "gpt-5.4";
+      loadStaticModels("/tmp/test-config");
+
+      const result = parseModelName("my-model");
       expect(result.modelId).toBe("gpt-5.4");
       expect(result.serviceTier).toBeNull();
       expect(result.reasoningEffort).toBeNull();
@@ -283,8 +407,11 @@ describe("ModelStore", () => {
       expect(result.reasoningEffort).toBe("high");
     });
 
-    it("strips suffix from alias", () => {
-      const result = parseModelName("codex-fast");
+    it("strips suffix from configured aliases", () => {
+      mockConfiguredAliases["my-model"] = "gpt-5.4";
+      loadStaticModels("/tmp/test-config");
+
+      const result = parseModelName("my-model-fast");
       expect(result.modelId).toBe("gpt-5.4");
       expect(result.serviceTier).toBe("fast");
     });
@@ -348,9 +475,12 @@ describe("ModelStore", () => {
       expect(isRecognizedModelName("gpt-5.4-high-fast")).toBe(true);
     });
 
-    it("accepts aliases with suffixes", () => {
-      expect(isRecognizedModelName("codex-high")).toBe(true);
-      expect(isRecognizedModelName("codex-fast")).toBe(true);
+    it("accepts configured aliases with suffixes", () => {
+      mockConfiguredAliases["my-model"] = "gpt-5.4";
+      loadStaticModels("/tmp/test-config");
+
+      expect(isRecognizedModelName("my-model-high")).toBe(true);
+      expect(isRecognizedModelName("my-model-fast")).toBe(true);
     });
 
     it("accepts custom models with suffixes", () => {
@@ -409,17 +539,15 @@ describe("ModelStore", () => {
       expect(info!.source).toBe("backend");
     });
 
-    it("preserves static-only models", () => {
-      // Re-load static first
+    it("replaces previous catalog snapshot instead of preserving static-only models", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
         slug: "gpt-5.4",
         display_name: "GPT-5.4 (Backend)",
       }]);
-      // gpt-5.3-codex should still exist (static-only)
-      const info = getModelInfo("gpt-5.3-codex");
-      expect(info).toBeDefined();
-      expect(info!.source).toBe("static");
+
+      expect(getModelInfo("gpt-5.4")).toBeDefined();
+      expect(getModelInfo("gpt-5.3-codex")).toBeUndefined();
     });
 
     it("auto-admits new Codex-compatible models from backend", () => {
@@ -433,26 +561,30 @@ describe("ModelStore", () => {
       expect(info).toBeDefined();
     });
 
-    it("admits all backend models without client-side filtering", () => {
+    it("filters the ChatGPT-only auto selector from backend models", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
-        slug: "research",
-        display_name: "Research Model",
+        slug: "auto",
+        display_name: "auto",
+      }, {
+        slug: "gpt-5.4",
+        display_name: "GPT-5.4",
       }]);
-      // All backend models are trusted — no client-side filtering
-      const info = getModelInfo("research");
-      expect(info).toBeDefined();
+
+      expect(getModelInfo("auto")).toBeUndefined();
+      expect(getModelInfo("gpt-5.4")).toBeDefined();
     });
 
-    it("uses YAML efforts when backend has none", () => {
+    it("uses normalized default efforts when backend has none", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
         slug: "gpt-5.4",
         display_name: "Backend 5.4",
-        // No supported_reasoning_efforts
       }]);
       const info = getModelInfo("gpt-5.4");
-      expect(info!.supportedReasoningEfforts.length).toBe(4); // from YAML
+      expect(info!.supportedReasoningEfforts).toEqual([
+        { reasoningEffort: "medium", description: "Default" },
+      ]);
     });
 
     it("tracks plan types via getModelPlanTypes", () => {
@@ -465,16 +597,13 @@ describe("ModelStore", () => {
       expect(plans).toContain("plus");
     });
 
-    it("preserves static isDefault when backend omits is_default", () => {
-      // Fixture declares gpt-5.4 as isDefault: true. A backend fetch that
-      // doesn't include is_default must not silently demote it to false.
+    it("uses backend default flag only when rebuilding snapshots", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
         slug: "gpt-5.4",
         display_name: "Backend 5.4",
-        // no is_default field
       }]);
-      expect(getModelInfo("gpt-5.4")!.isDefault).toBe(true);
+      expect(getModelInfo("gpt-5.4")!.isDefault).toBe(false);
     });
 
     it("lets backend promote a non-default to default via is_default: true", () => {
@@ -487,16 +616,13 @@ describe("ModelStore", () => {
       expect(getModelInfo("gpt-5.3-codex")!.isDefault).toBe(true);
     });
 
-    it("preserves static outputModalities when backend omits output_modalities", () => {
-      // Fixture declares gpt-5.3-codex-spark with outputModalities: [image].
-      // A backend fetch without the field must keep it, not clobber to undefined.
+    it("does not preserve static outputModalities when backend omits output_modalities", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
         slug: "gpt-5.3-codex-spark",
         display_name: "Backend Spark",
-        // no output_modalities field
       }]);
-      expect(getModelInfo("gpt-5.3-codex-spark")!.outputModalities).toEqual(["image"]);
+      expect(getModelInfo("gpt-5.3-codex-spark")!.outputModalities).toBeUndefined();
     });
 
     it("lets backend override outputModalities when output_modalities is present", () => {
@@ -526,17 +652,17 @@ describe("ModelStore", () => {
       expect(info!.truncationPolicyLimit).toBe(10_000);
     });
 
-    it("preserves static token limit metadata when backend omits it", () => {
+    it("does not preserve static token limit metadata when backend omits it", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
         slug: "gpt-5.4",
         display_name: "Backend 5.4",
       }]);
       const info = getModelInfo("gpt-5.4");
-      expect(info!.contextWindow).toBe(272_000);
-      expect(info!.maxContextWindow).toBe(1_000_000);
-      expect(info!.maxOutputTokens).toBe(128_000);
-      expect(info!.truncationPolicyLimit).toBe(10_000);
+      expect(info!.contextWindow).toBeUndefined();
+      expect(info!.maxContextWindow).toBeUndefined();
+      expect(info!.maxOutputTokens).toBeUndefined();
+      expect(info!.truncationPolicyLimit).toBeUndefined();
     });
   });
 
@@ -614,8 +740,8 @@ describe("ModelStore", () => {
     });
   });
 
-  describe("applyBackendModels — YAML gap filling", () => {
-    it("preserves YAML displayName when backend has empty string", () => {
+  describe("applyBackendModels — backend snapshot fields", () => {
+    it("uses backend-normalized fallback fields instead of YAML gap filling", () => {
       loadStaticModels("/tmp/test-config");
       applyBackendModels([{
         slug: "gpt-5.4",
@@ -623,8 +749,8 @@ describe("ModelStore", () => {
         description: "",
       }]);
       const info = getModelInfo("gpt-5.4");
-      expect(info!.displayName).toBe("GPT-5.4"); // from YAML
-      expect(info!.description).toBe("Latest flagship"); // from YAML
+      expect(info!.displayName).toBe("");
+      expect(info!.description).toBe("");
     });
   });
 
@@ -646,6 +772,29 @@ describe("ModelStore", () => {
       ]);
       expect(getModelPlanTypes("gpt-5.4")).toContain("plus");
       expect(getModelPlanTypes("gpt-5.3-codex")).not.toContain("plus");
+      expect(getModelInfo("gpt-5.3-codex")).toBeUndefined();
+    });
+
+    it("keeps models present in another fetched plan until every plan drops them", () => {
+      loadStaticModels("/tmp/test-config");
+
+      applyBackendModelsForPlan("plus", [
+        { slug: "gpt-5.4", display_name: "GPT-5.4" },
+        { slug: "gpt-5.3-codex", display_name: "Codex" },
+      ]);
+      applyBackendModelsForPlan("team", [
+        { slug: "gpt-5.3-codex", display_name: "Codex" },
+      ]);
+
+      applyBackendModelsForPlan("plus", [
+        { slug: "gpt-5.4", display_name: "GPT-5.4" },
+      ]);
+      expect(getModelPlanTypes("gpt-5.3-codex")).toEqual(["team"]);
+      expect(getModelInfo("gpt-5.3-codex")).toBeDefined();
+
+      applyBackendModelsForPlan("team", []);
+      expect(getModelPlanTypes("gpt-5.3-codex")).toEqual([]);
+      expect(getModelInfo("gpt-5.3-codex")).toBeUndefined();
     });
   });
 });

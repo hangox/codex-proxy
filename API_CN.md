@@ -80,6 +80,19 @@ Google Gemini 兼容接口。
 - 非流式：`{ response, usage, responseId }`
 - 不要向原生 Codex 发送 `max_output_tokens`。代理只兼容解析并剥离该字段，因为真实 Codex 后端会返回 `400 Unsupported parameter: max_output_tokens`。
 
+### Codex Responses API-key 辅助端点
+
+当请求模型路由到 `wire=codex-responses` 的 API-key provider 时，代理还支持以下非流式 JSON 端点：
+
+| 端点 | 上游目标 | 用途 |
+|---|---|---|
+| `POST /v1/alpha/search` | `<baseUrl>/alpha/search` | Codex CLI standalone Web Search |
+| `POST /v1/responses/compact` | `<baseUrl>/responses/compact` | 远程对话压缩 |
+| `POST /v1/images/generations` | `<baseUrl>/images/generations` | Codex JSON 图片生成 |
+| `POST /v1/images/edits` | `<baseUrl>/images/edits` | Codex JSON 图片编辑 |
+
+所有端点都要求 body 含非空 `model`，并使用现有模型路由选择 API-key entry。代理以供应商 API key 替换本地代理鉴权；除应用已配置的模型别名/内部 provider 前缀解析外，不改写 JSON body，并原样返回上游状态码、Content-Type 与响应体。未列入白名单的路径不会转发。也接受不带 `/v1` 的本地别名。远程压缩的公开合同见 [OpenAI Responses compact API](https://developers.openai.com/api/reference/resources/responses/methods/compact/)；standalone search 路径来自 [Codex CLI 0.147.0 官方源码](https://github.com/openai/codex/blob/rust-v0.147.0/codex-rs/codex-api/src/endpoint/search.rs#L31-L45)。
+
 #### image_generation 工具
 
 在 `tools[]` 里声明 `{"type": "image_generation", ...}`，模型可以调用服务端图像
@@ -99,7 +112,8 @@ Google Gemini 兼容接口。
 
 **静默改写 / 明确拒绝的字段**：
 
-- `model` — 不管传啥，上游强制改回 `gpt-image-2`。
+- `model` — 不管传啥，上游强制改回 `gpt-image-2`（响应回显为 `gpt-image-2-codex`）。
+- `size` — 客户端请求的 `2048x2048`、`2K`、`4K` 等尺寸会被上游回显/归一化为 `auto`，实际输出分辨率由服务端自行决定（例如实测 `1254x1254`）。
 - `quality` — 传任何值都被 echo 为 `auto`，用户值不生效。
 - `n` — `unknown_parameter`；一次只能出一张图。
 - `input_image`、`mask`、`input_fidelity`、`style`、`response_format` — 全部拒绝。

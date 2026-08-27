@@ -35,6 +35,7 @@ const HealthCheckSchema = z.object({
 }).optional();
 const BatchStatusSchema = z.object({ ids: z.array(z.string()).min(1), status: z.enum(["active", "disabled"]) });
 const LabelSchema = z.object({ label: z.string().max(64).nullable() });
+const CodexFingerprintSchema = z.object({ mode: z.enum(["off", "session"]) });
 export function createAccountRoutes(pool: AccountPool, scheduler: RefreshScheduler, cookieJar?: CookieJar, proxyPool?: ProxyPool): Hono {
   const app = new Hono();
   const importSvc = new AccountImportService(pool, scheduler, {
@@ -159,6 +160,17 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
     return c.json({ success: true });
   });
 
+  app.patch("/auth/accounts/:id/codex-fingerprint", async (c) => {
+    const body = await c.req.json();
+    const parsed = CodexFingerprintSchema.safeParse(body);
+    if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
+    if (!pool.setCodexFingerprintMode(c.req.param("id"), parsed.data.mode)) {
+      c.status(404);
+      return c.json({ error: "Account not found" });
+    }
+    return c.json({ success: true, mode: parsed.data.mode });
+  });
+
   app.get("/auth/accounts", (c) => {
     const accounts = querySvc.listFresh();
     return c.json({
@@ -217,6 +229,91 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
           ? "Cloudflare blocked this request. Set cookies via POST /auth/accounts/:id/cookies with your browser's cf_clearance cookie."
           : undefined,
       });
+    }
+  });
+
+  app.get("/auth/accounts/:id/reset-credits", async (c) => {
+    const id = c.req.param("id");
+    const entry = pool.getEntry(id);
+    if (!entry) { c.status(404); return c.json({ error: "Account not found" }); }
+    if (entry.status !== "active") { c.status(409); return c.json({ error: `Account is ${entry.status}, cannot query reset credits` }); }
+    try {
+      const api = new CodexApi(entry.token, entry.accountId, cookieJar, id, proxyPool?.resolveProxyUrl(id));
+      const resetCredits = await api.getResetCredits();
+      return c.json(resetCredits);
+    } catch (err) {
+      if (isTokenInvalidError(err)) {
+        pool.markStatus(id, "expired");
+      } else if (isBanError(err)) {
+        pool.markStatus(id, "banned");
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      c.status(502);
+      return c.json({ error: "Failed to fetch reset credits from Codex API", detail });
+    }
+  });
+
+  // H1: per-account cooldown map to prevent rapid re-use of the consume endpoint.
+  // The consume action is irreversible — a 30 s gate is the minimum viable protection.
+  const consumeCooldowns = new Map<string, number>();
+  const CONSUME_COOLDOWN_MS = 30_000;
+
+  app.post("/auth/accounts/:id/reset-credits/consume", async (c) => {
+    const id = c.req.param("id");
+    const entry = pool.getEntry(id);
+    if (!entry) { c.status(404); return c.json({ error: "Account not found" }); }
+    if (entry.status !== "active") { c.status(409); return c.json({ error: `Account is ${entry.status}, cannot consume reset credits` }); }
+
+    // H1: enforce cooldown
+    const lastConsumed = consumeCooldowns.get(id) ?? 0;
+    const msRemaining = lastConsumed + CONSUME_COOLDOWN_MS - Date.now();
+    if (msRemaining > 0) {
+      c.status(429);
+      return c.json({ error: `Reset credit already consumed recently. Try again in ${Math.ceil(msRemaining / 1000)}s.` });
+    }
+
+    // H2: validate redeem_request_id is a UUID if provided
+    let body: { redeem_request_id?: string } | undefined;
+    try {
+      body = await c.req.json<{ redeem_request_id?: string }>();
+    } catch {
+      body = undefined;
+    }
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (body?.redeem_request_id !== undefined && body.redeem_request_id !== null) {
+      if (typeof body.redeem_request_id !== "string" || !UUID_RE.test(body.redeem_request_id)) {
+        c.status(400);
+        return c.json({ error: "redeem_request_id must be a valid UUID v4 string" });
+      }
+    }
+
+    try {
+      const api = new CodexApi(entry.token, entry.accountId, cookieJar, id, proxyPool?.resolveProxyUrl(id));
+      // C1: consume first; record cooldown immediately on success.
+      await api.consumeResetCredit(body?.redeem_request_id);
+      consumeCooldowns.set(id, Date.now());
+
+      // C1: quota refresh is best-effort — a failure here must NOT make consume appear to fail.
+      // The credit is already spent. We refresh the cache silently and return success regardless.
+      // H3: do not expose raw usage response to callers.
+      let quota = pool.getEntry(id)?.cachedQuota ?? null;
+      try {
+        const usage = await api.getUsage();
+        quota = toQuota(usage);
+        pool.updateCachedQuota(id, quota);
+      } catch {
+        // quota cache not updated — caller can refresh manually via GET /auth/accounts/:id/quota
+      }
+      return c.json({ success: true, quota });
+    } catch (err) {
+      if (isTokenInvalidError(err)) {
+        pool.markStatus(id, "expired");
+      } else if (isBanError(err)) {
+        pool.markStatus(id, "banned");
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      c.status(502);
+      return c.json({ error: "Failed to consume reset credit from Codex API", detail });
     }
   });
 

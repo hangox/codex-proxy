@@ -93,9 +93,11 @@ interface AccountCardProps {
   onRefreshQuota?: (id: string) => Promise<void>;
   onToggleStatus?: (id: string, currentStatus: string) => Promise<string | null>;
   onUpdateLabel?: (id: string, label: string | null) => Promise<string | null>;
+  onUpdateCodexFingerprintMode?: (id: string, mode: "off" | "session") => Promise<string | null>;
+  onConsumeResetCredit?: (id: string) => Promise<string | null>;
 }
 
-export function AccountCard({ account, index, onDelete, proxies, onProxyChange, selected, onToggleSelect, onRefreshQuota, onToggleStatus, onUpdateLabel }: AccountCardProps) {
+export function AccountCard({ account, index, onDelete, proxies, onProxyChange, selected, onToggleSelect, onRefreshQuota, onToggleStatus, onUpdateLabel, onUpdateCodexFingerprintMode, onConsumeResetCredit }: AccountCardProps) {
   const t = useT();
   const { lang } = useI18n();
   const email = account.email || "Unknown";
@@ -210,6 +212,39 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
     }
   }, [account.id, onRefreshQuota]);
 
+  const [resetCreditConsuming, setResetCreditConsuming] = useState(false);
+  const resetCreditsCount = account.quota?.reset_credits_available;
+  const showResetCredits = typeof resetCreditsCount === "number" && resetCreditsCount > 0;
+
+  const handleConsumeResetCredit = useCallback(async () => {
+    if (!confirm(t("confirmUseResetCredit"))) return;
+    setResetCreditConsuming(true);
+    try {
+      if (onConsumeResetCredit) {
+        const err = await onConsumeResetCredit(account.id);
+        if (err) alert(err);
+      } else {
+        const resp = await fetch(`/auth/accounts/${encodeURIComponent(account.id)}/reset-credits/consume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!resp.ok) {
+          const data: unknown = await resp.json().catch(() => ({}));
+          const errMsg = (data && typeof data === "object" && "error" in data && typeof data.error === "string")
+            ? data.error
+            : "Failed to consume reset credit";
+          alert(errMsg);
+        } else {
+          await onRefreshQuota?.(account.id);
+        }
+      }
+    } catch (err) {
+      alert("Network error: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setResetCreditConsuming(false);
+    }
+  }, [account.id, onConsumeResetCredit, onRefreshQuota, t]);
+
   const handleToggle = useCallback(() => {
     onToggleSelect?.(account.id);
   }, [account.id, onToggleSelect]);
@@ -253,6 +288,23 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
     if (e.key === "Enter") handleLabelSave();
     if (e.key === "Escape") setEditingLabel(false);
   }, [handleLabelSave]);
+
+  const [fingerprintUpdating, setFingerprintUpdating] = useState(false);
+  const handleFingerprintModeChange = useCallback(async (control: HTMLInputElement) => {
+    const enabled = control.checked;
+    if (!onUpdateCodexFingerprintMode || fingerprintUpdating) return;
+    if (enabled && !confirm(t("codexSessionConvergenceWarning"))) {
+      control.checked = false;
+      return;
+    }
+    setFingerprintUpdating(true);
+    try {
+      const err = await onUpdateCodexFingerprintMode(account.id, enabled ? "session" : "off");
+      if (err) console.error(err);
+    } finally {
+      setFingerprintUpdating(false);
+    }
+  }, [account.id, fingerprintUpdating, onUpdateCodexFingerprintMode, t]);
 
   return (
     <div class={`bg-white dark:bg-card-dark border rounded-xl p-4 shadow-sm hover:shadow-md transition-all ${selected ? "border-primary ring-1 ring-primary/30" : "border-gray-200 dark:border-border-dark hover:border-primary/30 dark:hover:border-primary/50"}`}>
@@ -388,21 +440,36 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
         </div>
       </div>
 
+      <label class="flex items-center justify-between gap-3 text-[0.78rem] mt-3 pt-3 border-t border-slate-100 dark:border-border-dark">
+        <span>
+          <span class="block text-slate-500 dark:text-text-dim">{t("codexSessionConvergence")}</span>
+          <span class="block text-[0.65rem] text-slate-400 dark:text-text-dim/70">{t("codexSessionConvergenceHint")}</span>
+        </span>
+        <input
+          type="checkbox"
+          aria-label={t("codexSessionConvergence")}
+          checked={account.codexFingerprintMode === "session"}
+          disabled={!onUpdateCodexFingerprintMode || fingerprintUpdating}
+          onChange={(event) => void handleFingerprintModeChange(event.currentTarget)}
+          class="size-4 rounded border-gray-300 text-primary focus:ring-primary/50 disabled:opacity-40"
+        />
+      </label>
+
       {/* Proxy selector */}
       {proxies && onProxyChange && (
-        <div class="flex items-center justify-between text-[0.78rem] mt-2 pt-2 border-t border-slate-100 dark:border-border-dark">
-          <span class="text-slate-500 dark:text-text-dim">{t("proxyAssignment")}</span>
+        <div class="flex min-w-0 items-center justify-between gap-3 text-[0.78rem] mt-2 pt-2 border-t border-slate-100 dark:border-border-dark">
+          <span class="shrink-0 text-slate-500 dark:text-text-dim">{t("proxyAssignment")}</span>
           <select
             value={account.proxyId || "global"}
             onChange={(e) =>
               onProxyChange(account.id, (e.target as HTMLSelectElement).value)
             }
-            class="text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-border-dark bg-white dark:bg-bg-dark text-slate-700 dark:text-text-main focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+            class="min-w-0 w-0 flex-1 text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-border-dark bg-white dark:bg-bg-dark text-slate-700 dark:text-text-main focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
           >
             <option value="global">{t("globalDefault")}</option>
             <option value="direct">{t("directNoProxy")}</option>
             <option value="auto">{t("autoRoundRobin")}</option>
-            {proxies.map((p) => (
+            {proxies.filter((p) => p.status !== "disabled").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
                 {p.health?.exitIp ? ` (${p.health.exitIp})` : ""}
@@ -482,6 +549,30 @@ export function AccountCard({ account, index, onDelete, proxies, onProxyChange, 
                   {t("resetsAt")} {sResetAt}
                 </p>
               )}
+            </div>
+          )}
+
+          {/* Rate limit reset credits */}
+          {showResetCredits && (
+            <div data-testid="reset-credits" class="flex items-center justify-between text-[0.78rem] bg-indigo-50/50 dark:bg-indigo-950/20 p-2 rounded-lg border border-indigo-100 dark:border-indigo-900/30">
+              <div class="flex items-center gap-1.5 text-indigo-700 dark:text-indigo-300">
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+                <span class="font-medium">{t("resetCredits")}</span>
+                <span class="text-xs bg-indigo-100 dark:bg-indigo-900/50 px-1.5 py-0.5 rounded font-semibold text-indigo-800 dark:text-indigo-200">
+                  {resetCreditsCount}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleConsumeResetCredit}
+                disabled={resetCreditConsuming || account.status !== "active"}
+                class="px-2.5 py-1 text-xs font-medium rounded-md bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={t("useResetCredit")}
+              >
+                {resetCreditConsuming ? t("usingResetCredit") : t("useResetCredit")}
+              </button>
             </div>
           )}
 

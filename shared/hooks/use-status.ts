@@ -6,6 +6,7 @@ export interface CatalogModel {
   isDefault: boolean;
   supportedReasoningEfforts: { reasoningEffort: string; description: string }[];
   defaultReasoningEffort: string;
+  outputModalities?: string[];
 }
 
 export interface ModelFamily {
@@ -21,7 +22,7 @@ export interface ModelFamily {
  * gpt-5.3-codex-spark → gpt-5.3-codex-spark (spark is a distinct family)
  * gpt-5.4 → gpt-5.4
  */
-function getFamilyId(id: string): string {
+export function getFamilyId(id: string): string {
   // Bare model: gpt-5.4
   if (/^gpt-\d+(?:\.\d+)?$/.test(id)) return id;
   // Spark family: gpt-X.Y-codex-spark
@@ -38,8 +39,18 @@ function getFamilyId(id: string): string {
 }
 
 /** Check if a model ID is a tier variant (not the base family model). */
-function isTierVariant(id: string): boolean {
+export function isTierVariant(id: string): boolean {
   return /^gpt-\d+(?:\.\d+)?-codex-(?:high|mid|low|max)$/.test(id);
+}
+
+export function isSelectableChatModel(model: CatalogModel): boolean {
+  if (model.outputModalities && !model.outputModalities.includes("text")) return false;
+  return model.supportedReasoningEfforts.length > 0;
+}
+
+export function selectDefaultModel(catalog: CatalogModel[], ids: string[]): string {
+  const selectable = catalog.filter(isSelectableChatModel);
+  return selectable.find((m) => m.isDefault)?.id ?? selectable[0]?.id ?? ids[0] ?? "";
 }
 
 export function useStatus(accountCount: number) {
@@ -58,22 +69,19 @@ export function useStatus(accountCount: number) {
       const catalogData: CatalogModel[] = await catalogResp.json();
       setModelCatalog(catalogData);
 
-      // Also fetch model list (includes aliases)
+      // Also fetch flat model list for compatibility with OpenAI clients.
       const resp = await fetch("/v1/models");
       const data = await resp.json();
       const ids: string[] = data.data.map((m: { id: string }) => m.id);
-      if (ids.length > 0) {
-        setModels(ids);
-        if (isInitial) {
-          const defaultModel = catalogData.find((m) => m.isDefault)?.id ?? ids[0] ?? "";
-          setSelectedModel(defaultModel);
-        } else {
-          // On refresh: only reset if current selection is no longer available
-          setSelectedModel((prev) => {
-            if (ids.includes(prev)) return prev;
-            return catalogData.find((m) => m.isDefault)?.id ?? ids[0] ?? prev;
-          });
-        }
+      setModels(ids);
+      if (isInitial) {
+        setSelectedModel(selectDefaultModel(catalogData, ids));
+      } else {
+        // On refresh: only reset if current selection is no longer available
+        setSelectedModel((prev) => {
+          if (ids.includes(prev)) return prev;
+          return selectDefaultModel(catalogData, ids) || prev;
+        });
       }
     } catch {
       if (isInitial) setModels([]);
@@ -85,11 +93,14 @@ export function useStatus(accountCount: number) {
 
     async function loadStatus() {
       try {
-        const resp = await fetch("/auth/status");
-        const data = await resp.json();
-        if (!data.authenticated) return;
         setBaseUrl(`${window.location.origin}/v1`);
-        setApiKey(data.proxy_api_key || "any-string");
+        const resp = await fetch("/auth/status");
+        if (resp.ok) {
+          const data = await resp.json();
+          setApiKey(data.proxy_api_key || "any-string");
+        } else {
+          setApiKey("any-string");
+        }
         await fetchModels(true);
 
         // Refresh model list every 60s to pick up dynamic backend changes
@@ -110,8 +121,8 @@ export function useStatus(accountCount: number) {
     const familyMap = new Map<string, ModelFamily>();
     for (const m of modelCatalog) {
       const fid = getFamilyId(m.id);
-      // Only use the base family model (not tier variants) to define the family
-      if (isTierVariant(m.id)) continue;
+      // Only use selectable base family models (not tier variants) to define the family
+      if (!isSelectableChatModel(m) || isTierVariant(m.id)) continue;
       if (familyMap.has(fid)) continue;
       familyMap.set(fid, {
         id: fid,

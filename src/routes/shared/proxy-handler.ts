@@ -22,7 +22,7 @@
  *   - non-streaming-handler.ts — collect / retry response lifecycle
  */
 
-import { CodexApi, CodexApiError } from "../../proxy/codex-api.js";
+import { CodexApi, CodexApiError, PreviousResponseWebSocketError } from "../../proxy/codex-api.js";
 import { toQuota } from "../../auth/quota-utils.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError } from "./proxy-error-handler.js";
@@ -52,12 +52,17 @@ import {
   applyProxyRetryRecoveryDecision,
   applyCascadingBanDefense,
   buildProxyRetryRecoveryDecision,
+  invalidateRejectedPreviousResponse,
 } from "./proxy-retry-recovery.js";
 import { classifyRetryAction } from "./proxy-retry-classifier.js";
 import { buildProxySessionContext } from "./proxy-session-context.js";
 import { staggerIfNeeded } from "./proxy-stagger.js";
 import { sendProxyUpstreamAttempt } from "./proxy-upstream-attempt.js";
-import { buildWsPoolContext } from "./proxy-ws-context.js";
+import { buildWsPoolContext, forgetWsResponseOwner } from "./proxy-ws-context.js";
+import {
+  containsInvalidEncryptedContentSignal,
+  getReasoningReplayCache,
+} from "../../proxy/reasoning-replay-cache.js";
 
 export async function handleProxyRequest(options: HandleProxyRequestOptions): Promise<Response> {
   const { c, accountPool, cookieJar, req, fmt, proxyPool } = options;
@@ -68,12 +73,15 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   ensureProxyRequestInputArray(req);
   const originalRequestState = captureImplicitResumeRequestState(req);
   const sessionContext = buildProxySessionContext({ request: req, affinityMap });
+  let chainAdvanceTicket = sessionContext.chainAdvanceTicket;
+  let recoveryWsKeySuffix: string | undefined;
+  let continuityRecoveryCount = 0;
 
-  // Turn state: sticky routing token from upstream, echoed back on subsequent requests
+  // turnState is scoped to one Codex turn. Preserve only a value supplied by
+  // the current client request; never restore it from cross-turn affinity.
   applyProxyRequestForwardingDefaults({
     request: req,
     promptCacheKey: sessionContext.promptCacheKey,
-    explicitTurnState: sessionContext.explicitTurnState,
   });
 
   const released = new Set<string>();
@@ -153,10 +161,27 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       tag: fmt.tag,
     });
   }
-  let codexApi = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
+  let codexApi = buildCodexApi(
+    acquired.token,
+    acquired.accountId,
+    cookieJar,
+    entryId,
+    proxyPool,
+    acquired.codexFingerprintMode ?? "off",
+  );
   const triedEntryIds: string[] = [entryId];
   let modelRetried = false;
+  let earlyServerErrorRetried = false;
   let stripAndRetryDone = false;
+  const reasoningReplayCache = getReasoningReplayCache();
+  const reasoningReplayItems = sessionContext.implicitPrevRespId
+    ? reasoningReplayCache.lookup({
+        responseId: sessionContext.implicitPrevRespId,
+        entryId,
+        conversationId: sessionContext.chainConversationId,
+        variantHash: sessionContext.variantHash,
+      })
+    : [];
 
   const implicitResume = createImplicitResumeLifecycle({
     request: req,
@@ -165,6 +190,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
     tag: fmt.tag,
     implicitPrevRespId: sessionContext.implicitPrevRespId,
     continuationInputStart: sessionContext.continuationInputStart,
+    reasoningReplayItems,
     resumeEvaluationInput: sessionContext.resumeEvaluationInput,
     acquiredEntryId: entryId,
   });
@@ -232,6 +258,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       variantHash: sessionContext.variantHash,
       requestId,
       tag: fmt.tag,
+      poolKeySuffix: recoveryWsKeySuffix,
     });
 
   for (;;) {
@@ -268,6 +295,8 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           turnState: upstreamTurnState,
           usageHint: implicitResume.getUsageHint(),
           variantHash: sessionContext.variantHash,
+          chainAdvanceTicket,
+          implicitResumeActive: implicitResume.isActive(),
         });
       }
 
@@ -297,11 +326,31 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           if (!triedEntryIds.includes(nextEntryId)) triedEntryIds.push(nextEntryId);
         },
         variantHash: sessionContext.variantHash,
+        chainAdvanceTicket,
       });
     } catch (err) {
+      invalidateRejectedPreviousResponse({
+        err,
+        previousResponseId: req.codexRequest.previous_response_id,
+        affinityMap,
+        forgetResponseOwner: forgetWsResponseOwner,
+      });
+      if (containsInvalidEncryptedContentSignal(err)) {
+        reasoningReplayCache.evictByIdentity({
+          entryId,
+          conversationId: sessionContext.chainConversationId,
+          variantHash: sessionContext.variantHash,
+        });
+      }
       const retryAction = classifyRetryAction(
         err,
-        { stripAndRetryDone, modelRetried, implicitResumeActive: implicitResume.isActive(), previousResponseId: req.codexRequest.previous_response_id },
+        {
+          stripAndRetryDone,
+          modelRetried,
+          implicitResumeActive: implicitResume.isActive(),
+          previousResponseId: req.codexRequest.previous_response_id,
+          explicitPreviousResponseId: Boolean(sessionContext.explicitPrevRespId),
+        },
         (e) => implicitResume.canReplayAfterError(e),
       );
 
@@ -310,9 +359,33 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
           throw err;
 
-        case "implicit_resume_replay":
-          implicitResume.replayFullInputAfterError(err);
+        case "implicit_resume_replay": {
+          if (!implicitResume.replayFullInputAfterError(err)) throw err;
+          stripAndRetryDone = true;
+          const staleId = sessionContext.implicitPrevRespId;
+          const continuityReason = err instanceof PreviousResponseWebSocketError
+            ? err.continuityReason
+            : undefined;
+
+          // A busy owner is a live sibling branch. Keep the parent head and
+          // original ticket so only the first sibling completion advances it.
+          // Missing/dead owners are stale: invalidate and rebuild from a root.
+          if (staleId && continuityReason !== "busy") {
+            affinityMap.forget(staleId);
+            forgetWsResponseOwner(staleId);
+            chainAdvanceTicket = affinityMap.captureChainAdvance(
+              sessionContext.chainConversationId,
+              sessionContext.variantHash,
+              null,
+            );
+          }
+
+          // A unique pooled key avoids both the busy canonical connection and
+          // one-shot fallback while establishing a new response owner.
+          recoveryWsKeySuffix =
+            `recovery-${requestId.slice(0, 8)}-${++continuityRecoveryCount}`;
           continue;
+        }
 
         case "strip_and_retry": {
           stripAndRetryDone = true;
@@ -326,12 +399,23 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
             affinityMap,
             restoreImplicitResumeRequest: implicitResume.restore,
           });
+          if (decision.action === "retry" && decision.staleId) {
+            forgetWsResponseOwner(decision.staleId);
+            chainAdvanceTicket = affinityMap.captureChainAdvance(
+              sessionContext.chainConversationId,
+              sessionContext.variantHash,
+              null,
+            );
+            recoveryWsKeySuffix =
+              `recovery-${requestId.slice(0, 8)}-${++continuityRecoveryCount}`;
+          }
           continue;
         }
 
         case "error_handler_decides": {
           const decision = handleCodexApiError(
             err as CodexApiError, accountPool, entryId, req.codexRequest.model, fmt.tag, modelRetried, cookieJar,
+            earlyServerErrorRetried,
           );
 
           const errorRetryTransition = applyProxyErrorRetryTransition({
@@ -354,6 +438,9 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           }
 
           modelRetried = errorRetryTransition.modelRetried;
+          if (decision.action === "retry" && decision.markEarlyServerErrorRetried) {
+            earlyServerErrorRetried = true;
+          }
           entryId = errorRetryTransition.entryId;
           triedEntryIds.push(errorRetryTransition.entryId);
           codexApi = errorRetryTransition.api;

@@ -37,7 +37,9 @@ export function RuleAssign({ proxies, selectedCount, onAssign, onClose }: RuleAs
   const allTargets = [
     { id: "global", label: t("globalDefault"), status: "active" as const },
     { id: "direct", label: t("directNoProxy"), status: "active" as const },
-    ...proxies.map((p) => ({ id: p.id, label: p.name, status: p.status })),
+    ...proxies
+      .filter((p) => p.status !== "disabled")
+      .map((p) => ({ id: p.id, label: p.name, status: p.status })),
   ];
 
   return (

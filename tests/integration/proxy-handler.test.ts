@@ -15,6 +15,10 @@ import { createMockFormatAdapter } from "@helpers/format-adapter.js";
 import { getSessionAffinityMap } from "@src/auth/session-affinity.js";
 import { buildVariantIdentity, resolvePromptCacheIdentity } from "@src/routes/shared/proxy-session-helpers.js";
 import { computeVariantHash } from "@src/routes/shared/variant-hash.js";
+import {
+  _resetAllCfChallengeCooldowns,
+  getCfChallengeCooldown,
+} from "@src/auth/cf-challenge-cooldown.js";
 
 // ── Module-level control for CodexApi.createResponse ──────────────────
 
@@ -34,7 +38,8 @@ vi.mock("@src/proxy/codex-api.js", () => {
   class CodexApiError extends Error {
     status: number;
     body: string;
-    constructor(status: number, body: string) {
+    headers: Headers | undefined;
+    constructor(status: number, body: string, headers?: Headers) {
       let detail: string;
       try {
         const parsed = JSON.parse(body);
@@ -45,6 +50,7 @@ vi.mock("@src/proxy/codex-api.js", () => {
       super(`Codex API error (${status}): ${detail}`);
       this.status = status;
       this.body = body;
+      this.headers = headers ? new Headers(headers) : undefined;
     }
   }
 
@@ -73,11 +79,22 @@ vi.mock("@src/proxy/codex-api.js", () => {
       if (mockCreateResponse) return mockCreateResponse(request, signal, onRateLimits, poolCtx);
       return Promise.resolve(new Response("data: {}\n\n"));
     }),
-    getUsage: vi.fn((): Promise<any> => {
+    getUsage: vi.fn((): Promise<CodexUsageResponse> => {
       if (mockGetUsage) return mockGetUsage();
       return Promise.resolve({
         plan_type: "plus",
-        rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: 0, reset_at: Date.now() / 1000 + 3600, limit_window_seconds: 3600 } },
+        rate_limit: {
+          allowed: true,
+          limit_reached: false,
+          primary_window: {
+            used_percent: 0,
+            reset_after_seconds: 3600,
+            reset_at: Date.now() / 1000 + 3600,
+            limit_window_seconds: 3600,
+          },
+          secondary_window: null,
+        },
+        code_review_rate_limit: null,
         additional_rate_limits: [],
       });
     }),
@@ -212,6 +229,7 @@ describe("proxy-handler integration", () => {
     mockCreateResponse = null;
     mockGetUsage = null;
     getSessionAffinityMap().dispose();
+    _resetAllCfChallengeCooldowns();
     vi.clearAllMocks();
   });
 
@@ -300,7 +318,7 @@ describe("proxy-handler integration", () => {
     const affinityMap = getSessionAffinityMap();
     expect(affinityMap.lookup("resp_meta")).toBe("e1");
     expect(affinityMap.lookupConversationId("resp_meta")).toBe("thread-collect");
-    expect(affinityMap.lookupTurnState("resp_meta")).toBe("turn-success");
+    expect(affinityMap.lookupTurnState("resp_meta")).toBeNull();
     expect(affinityMap.lookupInstructionsHash("resp_meta")).toBe("58d0189aa8572b25a2e4ba09928df2c3d924d07f53de9aeb94ffe7f6f2a1de2b");
     expect(affinityMap.lookupInputTokens("resp_meta")).toBe(33);
     expect(affinityMap.lookupFunctionCallIds("resp_meta")).toEqual(["call_a", "call_b"]);
@@ -672,20 +690,39 @@ describe("proxy-handler integration", () => {
     expect(accountPool.release).not.toHaveBeenCalled();
   });
 
-  // 5c. CF 403 (Cloudflare challenge) → NOT treated as ban
-  it("handles CF 403 as regular error, not ban", async () => {
+  // 5c. CF 403 (Cloudflare challenge) → cooldown + fallback retry, NOT ban
+  it("handles CF 403 as cooldown retry, not ban", async () => {
     mockCreateResponse = () =>
-      Promise.reject(new CodexApiError(403, '<!DOCTYPE html><html>cf_chl_managed</html>'));
+      Promise.reject(new CodexApiError(
+        403,
+        "",
+        new Headers({ "cf-mitigated": "challenge" }),
+      ));
 
-    const accountPool = createMockAccountPool();
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn()
+        .mockReturnValueOnce({ entryId: "e1", token: "tok1", accountId: "acc1" })
+        .mockReturnValueOnce(null),
+      hasAvailableAccounts: vi.fn(() => true),
+    });
     const fmt = createMockFormatAdapter();
     const { app } = buildTestApp({ accountPool, fmt });
 
     const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toBe("api_error");
+    expect(body.message).toContain("Cloudflare challenge");
 
     expect(accountPool.markStatus).not.toHaveBeenCalled();
     expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
+    expect(accountPool.hasAvailableAccounts).toHaveBeenCalledWith(["e1"]);
+    expect(accountPool.acquire).toHaveBeenNthCalledWith(2, {
+      model: "codex",
+      excludeIds: ["e1"],
+      preferredEntryId: undefined,
+    });
+    expect(getCfChallengeCooldown("e1")?.delaySeconds).toBe(10);
   });
 
   // 6. CodexApiError 5xx → formatError with 502
@@ -1047,8 +1084,8 @@ describe("proxy-handler integration", () => {
     expect(accountPool.acquire).toHaveBeenCalledTimes(1);
   });
 
-  // 19. Cascading Ban Defense — strips only when preferred is banned
-  it("strips previous_response_id and turnState when preferred account is banned (cascading ban defense)", async () => {
+  // 19. Explicit continuation account fallback — preserve state and fail closed in transport
+  it("preserves explicit continuation state on banned-owner fallback for fail-closed continuity", async () => {
     const affinityMap = getSessionAffinityMap();
     affinityMap.record(
       "resp_preferred",
@@ -1088,9 +1125,9 @@ describe("proxy-handler integration", () => {
     expect(res.status).toBe(200);
 
     expect(capturedRequest).toBeDefined();
-    expect(capturedRequest?.previous_response_id).toBeUndefined();
+    expect(capturedRequest?.previous_response_id).toBe("resp_preferred");
     expect(capturedRequest?.turnState).toBeUndefined();
-    expect(affinityMap.lookup("resp_preferred")).toBeNull();
+    expect(affinityMap.lookup("resp_preferred")).toBe("e_preferred");
   });
 
   // 19b. Cascading Ban Defense — does NOT strip for quota exhaustion

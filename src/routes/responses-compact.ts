@@ -5,12 +5,15 @@
 import type { Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
 import type { AccountPool } from "../auth/account-pool.js";
+import { clearCfChallengeCooldown } from "../auth/cf-challenge-cooldown.js";
 import type { CookieJar } from "../proxy/cookie-jar.js";
 import type { ProxyPool } from "../proxy/proxy-pool.js";
 import { CodexApi, CodexApiError } from "../proxy/codex-api.js";
-import type { CodexCompactRequest, CodexInputItem } from "../proxy/codex-api.js";
+import type { CodexCompactRequest } from "../proxy/codex-api.js";
+import { sanitizeCodexInputItems } from "../proxy/reasoning-input-sanitizer.js";
 import type { UsageInfo } from "../translation/codex-event-extractor.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
+import { supportsCodexAuxiliaryJson } from "../proxy/upstream-adapter.js";
 import { parseModelName, resolveModelId } from "../models/model-store.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
@@ -19,6 +22,8 @@ import { staggerIfNeeded } from "./shared/proxy-stagger.js";
 import { withRetry } from "../utils/retry.js";
 import { PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
 import { isRecord } from "../translation/shared-utils.js";
+import { annotateUsageCost } from "./shared/proxy-handler-utils.js";
+import { handleCodexAuxiliaryJson } from "./codex-auxiliary.js";
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -55,12 +60,27 @@ export async function handleCompact(
   upstreamRouter?: UpstreamRouter,
 ): Promise<Response> {
   const rawModel = typeof body.model === "string" ? body.model : "codex";
+  const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
+  if (
+    (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter")
+    && supportsCodexAuxiliaryJson(compactRouteMatch.adapter)
+  ) {
+    const directModel = compactRouteMatch.resolvedModel ?? rawModel;
+    return handleCodexAuxiliaryJson({
+      c,
+      upstream: compactRouteMatch.adapter,
+      path: "responses/compact",
+      body: directModel === rawModel ? body : { ...body, model: directModel },
+      model: directModel,
+    });
+  }
+
   const parsed = parseModelName(rawModel);
   const modelId = resolveModelId(parsed.modelId);
 
   const compactRequest: CodexCompactRequest = {
     model: modelId,
-    input: Array.isArray(body.input) ? (body.input as CodexInputItem[]) : [],
+    input: Array.isArray(body.input) ? sanitizeCodexInputItems(body.input) : [],
     instructions: typeof body.instructions === "string" ? body.instructions : "",
   };
   if (Array.isArray(body.tools) && body.tools.length > 0) {
@@ -95,7 +115,6 @@ export async function handleCompact(
     };
   }
 
-  const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
   if (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter") {
     const directModel = compactRouteMatch.resolvedModel ?? rawModel;
     const directReq = {
@@ -146,11 +165,12 @@ export async function handleCompact(
         { tag: TAG },
       );
 
-      releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
+      clearCfChallengeCooldown(entryId);
+      releaseAccount(accountPool, entryId, annotateUsageCost(modelId, compactImageFailedUsage), released);
       return c.json(result);
     } catch (err) {
       if (!(err instanceof CodexApiError)) {
-        releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
+        releaseAccount(accountPool, entryId, annotateUsageCost(modelId, compactImageFailedUsage), released);
         throw err;
       }
 
@@ -159,13 +179,13 @@ export async function handleCompact(
       );
 
       if (decision.action === "respond") {
-        releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
+        releaseAccount(accountPool, entryId, annotateUsageCost(modelId, compactImageFailedUsage), released);
         c.status(decision.status as StatusCode);
         return c.json(formatResponsesError(decision.status, decision.message));
       }
 
       if (decision.releaseBeforeRetry) {
-        releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
+        releaseAccount(accountPool, entryId, annotateUsageCost(modelId, compactImageFailedUsage), released);
       }
 
       const retry = acquireAccount(accountPool, modelId, triedEntryIds, TAG);
@@ -194,7 +214,7 @@ export async function handleCompact(
     }
   }
 
-  releaseAccount(accountPool, entryId, compactImageFailedUsage, released);
+  releaseAccount(accountPool, entryId, annotateUsageCost(modelId, compactImageFailedUsage), released);
   c.status(502);
   return c.json(formatResponsesError(502, "Compact failed after maximum retry attempts"));
 }

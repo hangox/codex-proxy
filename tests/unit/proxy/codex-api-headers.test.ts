@@ -19,9 +19,11 @@ vi.mock("@src/config.js", () => ({
 }));
 
 // Mock installation_id (deterministic value)
+const mockGetInstallationId = vi.fn((_accountScope?: string | null) => "11111111-2222-3333-4444-555555555555");
 vi.mock("@src/proxy/installation-id.js", () => ({
-  getInstallationId: () => "11111111-2222-3333-4444-555555555555",
+  getInstallationId: (accountScope?: string | null) => mockGetInstallationId(accountScope),
 }));
+
 
 // Capture createWebSocketResponse calls
 const mockCreateWebSocketResponse = vi.fn<
@@ -85,9 +87,22 @@ describe("codex-api headers", () => {
   });
 
   // Lazy import to let mocks register first
-  async function createApi() {
+  async function createApi(
+    entryId = "e1",
+    accountId = "acct-1",
+    fingerprintMode: "off" | "session" = "off",
+  ) {
     const { CodexApi } = await import("@src/proxy/codex-api.js");
-    return new CodexApi("test-token", "acct-1", null, "e1", null, "https://test.example", transport);
+    return new CodexApi(
+      "test-token",
+      accountId,
+      null,
+      entryId,
+      null,
+      "https://test.example",
+      transport,
+      { codexFingerprintMode: fingerprintMode },
+    );
   }
 
   describe("HTTP SSE path", () => {
@@ -135,8 +150,9 @@ describe("codex-api headers", () => {
     });
 
     it("sends x-codex-installation-id header and inside body.client_metadata", async () => {
-      const api = await createApi();
+      const api = await createApi("entry-acc-99", "acct-99");
       await api.createResponse(makeRequest());
+      expect(mockGetInstallationId).toHaveBeenCalledWith("entry-acc-99");
       expect(transport.lastHeaders!["x-codex-installation-id"]).toBe(
         "11111111-2222-3333-4444-555555555555",
       );
@@ -145,6 +161,7 @@ describe("codex-api headers", () => {
         "x-codex-installation-id": "11111111-2222-3333-4444-555555555555",
       });
     });
+
 
     it("preserves caller-provided client_metadata fields and only injects installation id", async () => {
       const api = await createApi();
@@ -169,15 +186,74 @@ describe("codex-api headers", () => {
       expect(body.client_metadata["x-openai-subagent"]).toBe("review");
     });
 
-    it("uses prompt_cache_key as Codex conversation identity", async () => {
+    it("derives a stable account-scoped upstream identity from prompt_cache_key", async () => {
       const api = await createApi();
       await api.createResponse(makeRequest({ prompt_cache_key: "thread-123" }));
 
-      expect(transport.lastHeaders!["x-client-request-id"]).toBe("thread-123");
-      expect(transport.lastHeaders!["session_id"]).toBe("thread-123");
-      expect(transport.lastHeaders!["x-codex-window-id"]).toBe("thread-123:0");
+      const firstIdentity = transport.lastHeaders!["x-client-request-id"];
+      expect(firstIdentity).toMatch(/^cp_[0-9a-f]{32}$/);
+      expect(firstIdentity).not.toBe("thread-123");
+      expect(transport.lastHeaders!["session_id"]).toBe(firstIdentity);
+      expect(transport.lastHeaders!["x-codex-window-id"]).toBe(`${firstIdentity}:0`);
+      const firstBody = JSON.parse(transport.lastBody!) as {
+        prompt_cache_key: string;
+        client_metadata: Record<string, string>;
+      };
+      expect(firstBody.prompt_cache_key).toBe(firstIdentity);
+      expect(firstBody.client_metadata["session_id"]).toBe(firstIdentity);
+      expect(firstBody.client_metadata["x-codex-window-id"]).toBe(`${firstIdentity}:0`);
+
+      await api.createResponse(makeRequest({ prompt_cache_key: "thread-123" }));
+      expect(transport.lastHeaders!["x-client-request-id"]).toBe(firstIdentity);
+
+      const otherAccountApi = await createApi("e2", "acct-2");
+      await otherAccountApi.createResponse(makeRequest({ prompt_cache_key: "thread-123" }));
+      expect(transport.lastHeaders!["x-client-request-id"]).toMatch(/^cp_[0-9a-f]{32}$/);
+      expect(transport.lastHeaders!["x-client-request-id"]).not.toBe(firstIdentity);
+    });
+
+    it("converges only session_id when the account explicitly opts in", async () => {
+      const api = await createApi("e1", "acct-1", "session");
+      const turnMetadata = JSON.stringify({ session_id: "client-session", sandbox: "seatbelt" });
+      await api.createResponse(makeRequest({ prompt_cache_key: "thread-a", turnMetadata }));
+
+      const firstHeaders = { ...transport.lastHeaders! };
+      const firstBody = JSON.parse(transport.lastBody!) as {
+        prompt_cache_key: string;
+        client_metadata: Record<string, string>;
+      };
+      await api.createResponse(makeRequest({ prompt_cache_key: "thread-b" }));
+      const secondBody = JSON.parse(transport.lastBody!) as {
+        prompt_cache_key: string;
+        client_metadata: Record<string, string>;
+      };
+
+      expect(firstHeaders.session_id).toMatch(/^cs_[0-9a-f]{32}$/);
+      expect(transport.lastHeaders!.session_id).toBe(firstHeaders.session_id);
+      expect(firstHeaders["x-client-request-id"]).not.toBe(transport.lastHeaders!["x-client-request-id"]);
+      expect(firstBody.prompt_cache_key).not.toBe(secondBody.prompt_cache_key);
+      expect(firstBody.client_metadata.session_id).toBe(firstHeaders.session_id);
+      expect(secondBody.client_metadata.session_id).toBe(firstHeaders.session_id);
+      expect(firstHeaders["x-codex-installation-id"]).toBe("11111111-2222-3333-4444-555555555555");
+      expect(firstHeaders["x-codex-turn-metadata"]).toBe(turnMetadata);
+
+      const otherAccountApi = await createApi("e2", "acct-2", "session");
+      await otherAccountApi.createResponse(makeRequest({ prompt_cache_key: "thread-c" }));
+      expect(transport.lastHeaders!.session_id).toMatch(/^cs_[0-9a-f]{32}$/);
+      expect(transport.lastHeaders!.session_id).not.toBe(firstHeaders.session_id);
+    });
+
+    it("maps explicit Codex window ids before upstream forwarding", async () => {
+      const api = await createApi();
+      await api.createResponse(makeRequest({
+        prompt_cache_key: "thread-123",
+        codexWindowId: "thread-123:1",
+      }));
+
+      expect(transport.lastHeaders!["x-codex-window-id"]).toMatch(/^cw_[0-9a-f]{32}$/);
+      expect(transport.lastHeaders!["x-codex-window-id"]).not.toBe("thread-123:1");
       const body = JSON.parse(transport.lastBody!) as { client_metadata: Record<string, string> };
-      expect(body.client_metadata["x-codex-window-id"]).toBe("thread-123:0");
+      expect(body.client_metadata["x-codex-window-id"]).toBe(transport.lastHeaders!["x-codex-window-id"]);
     });
 
     it("forwards Codex review context headers and metadata", async () => {
@@ -195,12 +271,13 @@ describe("codex-api headers", () => {
       expect(transport.lastHeaders!["x-codex-beta-features"]).toBe("feature-a");
       expect(transport.lastHeaders!["x-responsesapi-include-timing-metrics"]).toBe("true");
       expect(transport.lastHeaders!["Version"]).toBe("26.318.11754");
-      expect(transport.lastHeaders!["x-codex-window-id"]).toBe("thread-123:1");
+      expect(transport.lastHeaders!["x-codex-window-id"]).toMatch(/^cw_[0-9a-f]{32}$/);
+      expect(transport.lastHeaders!["x-codex-window-id"]).not.toBe("thread-123:1");
       expect(transport.lastHeaders!["x-codex-parent-thread-id"]).toBe("parent-123");
       const body = JSON.parse(transport.lastBody!) as { client_metadata: Record<string, string> };
       expect(body.client_metadata).toMatchObject({
         "x-codex-turn-metadata": "{\"thread_source\":\"subagent\"}",
-        "x-codex-window-id": "thread-123:1",
+        "x-codex-window-id": transport.lastHeaders!["x-codex-window-id"],
         "x-codex-parent-thread-id": "parent-123",
       });
     });
@@ -288,7 +365,7 @@ describe("codex-api headers", () => {
       expect(wsRequest.service_tier).toBe("priority");
     });
 
-    it("uses prompt_cache_key as WebSocket conversation identity", async () => {
+    it("derives a stable account-scoped WebSocket identity from prompt_cache_key", async () => {
       mockCreateWebSocketResponse.mockResolvedValue(
         new Response("data: {}\n\n", {
           headers: { "content-type": "text/event-stream" },
@@ -304,13 +381,92 @@ describe("codex-api headers", () => {
       );
 
       const headers = mockCreateWebSocketResponse.mock.calls[0][1] as Record<string, string>;
-      expect(headers["x-client-request-id"]).toBe("thread-456");
-      expect(headers["session_id"]).toBe("thread-456");
-      expect(headers["x-codex-window-id"]).toBe("thread-456:0");
+      const firstIdentity = headers["x-client-request-id"];
+      expect(firstIdentity).toMatch(/^cp_[0-9a-f]{32}$/);
+      expect(firstIdentity).not.toBe("thread-456");
+      expect(headers["session_id"]).toBe(firstIdentity);
+      expect(headers["x-codex-window-id"]).toBe(`${firstIdentity}:0`);
+      const wsRequest = mockCreateWebSocketResponse.mock.calls[0][2] as {
+        prompt_cache_key?: string;
+        client_metadata?: Record<string, string>;
+      };
+      expect(wsRequest.prompt_cache_key).toBe(firstIdentity);
+      expect(wsRequest.client_metadata?.["x-codex-window-id"]).toBe(`${firstIdentity}:0`);
+
+      await api.createResponse(
+        makeRequest({
+          useWebSocket: true,
+          prompt_cache_key: "thread-456",
+        }),
+      );
+      const secondHeaders = mockCreateWebSocketResponse.mock.calls[1][1] as Record<string, string>;
+      expect(secondHeaders["x-client-request-id"]).toBe(firstIdentity);
+
+      const otherAccountApi = await createApi("e2", "acct-2");
+      await otherAccountApi.createResponse(
+        makeRequest({
+          useWebSocket: true,
+          prompt_cache_key: "thread-456",
+        }),
+      );
+      const otherHeaders = mockCreateWebSocketResponse.mock.calls[2][1] as Record<string, string>;
+      expect(otherHeaders["x-client-request-id"]).toMatch(/^cp_[0-9a-f]{32}$/);
+      expect(otherHeaders["x-client-request-id"]).not.toBe(firstIdentity);
+    });
+
+    it("uses one opt-in session_id across WebSocket conversations without merging cache keys", async () => {
+      mockCreateWebSocketResponse.mockResolvedValue(
+        new Response("data: {}\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+      const api = await createApi("e1", "acct-1", "session");
+
+      await api.createResponse(makeRequest({ useWebSocket: true, prompt_cache_key: "thread-a" }));
+      await api.createResponse(makeRequest({ useWebSocket: true, prompt_cache_key: "thread-b" }));
+
+      const firstHeaders = mockCreateWebSocketResponse.mock.calls[0][1] as Record<string, string>;
+      const secondHeaders = mockCreateWebSocketResponse.mock.calls[1][1] as Record<string, string>;
+      const firstRequest = mockCreateWebSocketResponse.mock.calls[0][2] as {
+        prompt_cache_key?: string;
+        client_metadata?: Record<string, string>;
+      };
+      const secondRequest = mockCreateWebSocketResponse.mock.calls[1][2] as {
+        prompt_cache_key?: string;
+        client_metadata?: Record<string, string>;
+      };
+
+      expect(firstHeaders.session_id).toMatch(/^cs_[0-9a-f]{32}$/);
+      expect(secondHeaders.session_id).toBe(firstHeaders.session_id);
+      expect(firstHeaders["x-client-request-id"]).not.toBe(secondHeaders["x-client-request-id"]);
+      expect(firstRequest.prompt_cache_key).not.toBe(secondRequest.prompt_cache_key);
+      expect(firstRequest.client_metadata?.session_id).toBe(firstHeaders.session_id);
+      expect(secondRequest.client_metadata?.session_id).toBe(firstHeaders.session_id);
+    });
+
+    it("maps explicit Codex window ids on WebSocket requests", async () => {
+      mockCreateWebSocketResponse.mockResolvedValue(
+        new Response("data: {}\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+
+      const api = await createApi();
+      await api.createResponse(
+        makeRequest({
+          useWebSocket: true,
+          prompt_cache_key: "thread-456",
+          codexWindowId: "thread-456:1",
+        }),
+      );
+
+      const headers = mockCreateWebSocketResponse.mock.calls[0][1] as Record<string, string>;
+      expect(headers["x-codex-window-id"]).toMatch(/^cw_[0-9a-f]{32}$/);
+      expect(headers["x-codex-window-id"]).not.toBe("thread-456:1");
       const wsRequest = mockCreateWebSocketResponse.mock.calls[0][2] as {
         client_metadata?: Record<string, string>;
       };
-      expect(wsRequest.client_metadata?.["x-codex-window-id"]).toBe("thread-456:0");
+      expect(wsRequest.client_metadata?.["x-codex-window-id"]).toBe(headers["x-codex-window-id"]);
     });
 
     it("forwards Codex review context on WebSocket requests", async () => {
@@ -338,14 +494,15 @@ describe("codex-api headers", () => {
       expect(headers["x-codex-beta-features"]).toBe("feature-a");
       expect(headers["x-responsesapi-include-timing-metrics"]).toBe("true");
       expect(headers["Version"]).toBe("26.318.11754");
-      expect(headers["x-codex-window-id"]).toBe("thread-456:1");
+      expect(headers["x-codex-window-id"]).toMatch(/^cw_[0-9a-f]{32}$/);
+      expect(headers["x-codex-window-id"]).not.toBe("thread-456:1");
       expect(headers["x-codex-parent-thread-id"]).toBe("parent-456");
       const wsRequest = mockCreateWebSocketResponse.mock.calls[0][2] as {
         client_metadata?: Record<string, string>;
       };
       expect(wsRequest.client_metadata).toMatchObject({
         "x-codex-turn-metadata": "{\"thread_source\":\"subagent\"}",
-        "x-codex-window-id": "thread-456:1",
+        "x-codex-window-id": headers["x-codex-window-id"],
         "x-codex-parent-thread-id": "parent-456",
       });
     });
@@ -396,5 +553,35 @@ describe("codex-api headers", () => {
 
       expect(transport.post).not.toHaveBeenCalled();
     });
+
+    it("sends account-scoped x-codex-installation-id on createCompactResponse", async () => {
+      const api = await createApi("entry-compact-1", "acct-compact-1");
+      const encoder = new TextEncoder();
+      transport.post = vi.fn(async (_url: string, headers: Record<string, string>) => {
+        transport.lastHeaders = headers;
+        return {
+          status: 200,
+          headers: new Headers({ "content-type": "application/json" }),
+          body: new ReadableStream({
+            start(c) {
+              c.enqueue(encoder.encode(JSON.stringify({ status: "completed", output: [] })));
+              c.close();
+            },
+          }),
+          setCookieHeaders: [],
+        };
+      });
+
+      await api.createCompactResponse({
+        model: "gpt-5.4",
+        input: [{ type: "message", role: "user", content: "test" }],
+      });
+
+      expect(mockGetInstallationId).toHaveBeenCalledWith("entry-compact-1");
+      expect(transport.lastHeaders!["x-codex-installation-id"]).toBe(
+        "11111111-2222-3333-4444-555555555555",
+      );
+    });
   });
 });
+

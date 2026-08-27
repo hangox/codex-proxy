@@ -10,10 +10,16 @@ export type AccountStatus =
   | "disabled"
   | "banned";
 
+export type CodexFingerprintMode = "off" | "session";
+
 export interface AccountUsage {
   request_count: number;
   input_tokens: number;
   output_tokens: number;
+  /** Estimated equivalent API cost, not the upstream account balance. */
+  estimated_cost_usd?: number;
+  /** Per-window estimated equivalent API cost (resets when window expires). */
+  window_estimated_cost_usd?: number;
   /** Cached prompt tokens billed at the discounted rate (subset of input_tokens). */
   cached_tokens?: number;
   /** image_generation tool tokens (gpt-image-2). Tracked separately from host-model tokens. */
@@ -64,6 +70,8 @@ export interface AccountEntry {
   userId: string | null;
   /** User-editable label for disambiguation (e.g. "Team Alpha", "Personal"). */
   label: string | null;
+  /** Account-scoped Codex session convergence. Explicit opt-in; legacy/missing values are off. */
+  codexFingerprintMode?: CodexFingerprintMode;
   planType: string | null;
   proxyApiKey: string;
   status: AccountStatus;
@@ -83,6 +91,7 @@ export interface AccountInfo {
   accountId: string | null;
   userId: string | null;
   label: string | null;
+  codexFingerprintMode: CodexFingerprintMode;
   planType: string | null;
   status: AccountStatus;
   usage: AccountUsage;
@@ -129,6 +138,7 @@ export interface CodexQuota {
     reset_at: number | null;
     limit_window_seconds: number | null;
   } | null;
+  reset_credits_available?: number | null;
   /** Credit accounting (Pro / PAYG only — null for Plus). */
   credits?: CodexQuotaCredits | null;
   /** All metered quota buckets returned by Codex app's /wham/usage additional_rate_limits. */
@@ -152,6 +162,7 @@ export interface AcquiredAccount {
   entryId: string;
   token: string;
   accountId: string | null;
+  codexFingerprintMode?: CodexFingerprintMode;
   /** Timestamp of the previous slot on this account (null = first request). */
   prevSlotMs: number | null;
 }

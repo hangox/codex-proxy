@@ -1,9 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { mockWithFetchDispatcher } = vi.hoisted(() => ({
+  mockWithFetchDispatcher: vi.fn((init: RequestInit) => ({ ...init, dispatcher: "mock-dispatcher" })),
+}));
+
+vi.mock("@src/proxy/fetch-dispatcher.js", () => ({
+  withFetchDispatcher: mockWithFetchDispatcher,
+}));
+
 import { createAdapterForEntry } from "@src/proxy/adapter-factory.js";
 import { OpenAIUpstream } from "@src/proxy/openai-upstream.js";
 import { ResponsesUpstream } from "@src/proxy/responses-upstream.js";
 import { AnthropicUpstream } from "@src/proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "@src/proxy/gemini-upstream.js";
+import { CodexResponsesUpstream } from "@src/proxy/codex-responses-upstream.js";
 import type { ApiKeyEntry, ApiKeyProvider, ApiKeyWire } from "@src/auth/api-key-pool.js";
 import type { CodexResponsesRequest } from "@src/proxy/codex-types.js";
 
@@ -60,6 +70,17 @@ describe("createAdapterForEntry — wire routing", () => {
     expect(createAdapterForEntry(entry("custom", "gemini"))).toBeInstanceOf(GeminiUpstream);
   });
 
+  it("custom with wire=codex-responses adds official Codex client context", () => {
+    const adapter = createAdapterForEntry(entry(
+      "custom",
+      "codex-responses",
+      "https://provider.example.com/v1/",
+    ));
+    expect(adapter).toBeInstanceOf(CodexResponsesUpstream);
+    expect(adapter.tag).toBe("codex-responses");
+    expect((adapter as CodexResponsesUpstream).baseUrl).toBe("https://provider.example.com/v1");
+  });
+
   it("built-in anthropic/gemini ignore wire and use their native adapters with custom baseUrl", () => {
     const customUrl = "https://custom.endpoint.com/v1";
     const anthropicAdapter = createAdapterForEntry(entry("anthropic", "responses", customUrl)) as AnthropicUpstream;
@@ -80,8 +101,10 @@ describe("createAdapterForEntry — wire routing", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe("https://anthropic.example.com/v1/messages");
+    expect(mockWithFetchDispatcher).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: "POST",
+      dispatcher: "mock-dispatcher",
       headers: {
         "x-api-key": "sk-ant",
         "anthropic-version": "2023-06-01",

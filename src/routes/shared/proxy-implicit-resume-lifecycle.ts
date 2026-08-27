@@ -23,6 +23,7 @@ export interface CreateImplicitResumeLifecycleOptions {
   tag: string;
   implicitPrevRespId: string | null;
   continuationInputStart: number;
+  reasoningReplayItems?: ProxyRequest["codexRequest"]["input"];
   resumeEvaluationInput: ImplicitResumeEvaluationInput;
   acquiredEntryId: string;
   warn?: ImplicitResumeWarn;
@@ -50,6 +51,7 @@ export function createImplicitResumeLifecycle(
     tag,
     implicitPrevRespId,
     continuationInputStart,
+    reasoningReplayItems,
     resumeEvaluationInput,
     acquiredEntryId,
     warn = console.warn,
@@ -78,6 +80,7 @@ export function createImplicitResumeLifecycle(
         implicitPrevRespId,
         continuationInputStart,
         affinityMap,
+        reasoningReplayItems,
       });
       active = true;
     },
@@ -109,6 +112,11 @@ export function createImplicitResumeLifecycle(
       if (!shouldReplayFullInputAfterImplicitResumeError(err, active)) return false;
       warn(`[${tag}] 隐式续链 WebSocket 失败，回退为完整历史重放：${err.causeMessage}`);
       restore();
+      // Rebuild a response-owner chain on a pooled WS. If WS connection setup
+      // itself fails, CodexApi may still fall back to HTTP with full input.
+      request.codexRequest.useWebSocket = true;
+      request.codexRequest.previous_response_id = undefined;
+      request.codexRequest.turnState = snapshot.turnState;
       return true;
     },
     restore,

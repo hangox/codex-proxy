@@ -5,11 +5,8 @@
  * Does NOT own acquire locks (that's AccountLifecycle's concern).
  */
 
-import { randomBytes, timingSafeEqual } from "crypto";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { randomBytes } from "crypto";
 import { getConfig } from "../config.js";
-import { getDataDir } from "../paths.js";
 import { jitter } from "../utils/jitter.js";
 import {
   decodeJwtPayload,
@@ -21,16 +18,13 @@ import type { AccountPersistence } from "./account-persistence.js";
 import type {
   AccountEntry,
   AccountInfo,
+  CodexFingerprintMode,
   CodexQuota,
 } from "./types.js";
 import { hasReachedCachedQuota } from "./quota-skip.js";
+import { isCfChallengeCooldownActive } from "./cf-challenge-cooldown.js";
 
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
+import { safeEqual } from "./safe-equal.js";
 
 type ResettableQuotaWindow = {
   used_percent: number | null;
@@ -62,6 +56,8 @@ export class AccountRegistry {
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistence: AccountPersistence;
   private persistDisabled: boolean;
+  private persistBatchDepth = 0;
+  private persistDirty = false;
 
   constructor(
     persistence: AccountPersistence,
@@ -84,6 +80,19 @@ export class AccountRegistry {
    */
   isPersistDisabled(): boolean {
     return this.persistDisabled;
+  }
+
+  beginPersistenceBatch(): void {
+    this.persistBatchDepth++;
+  }
+
+  endPersistenceBatch(): void {
+    if (this.persistBatchDepth === 0) return;
+    this.persistBatchDepth--;
+    if (this.persistBatchDepth === 0 && this.persistDirty) {
+      this.persistDirty = false;
+      this.persistNow();
+    }
   }
 
   // ── CRUD ──────────────────────────────────────────────────────────
@@ -120,6 +129,7 @@ export class AccountRegistry {
       accountId,
       userId,
       label: null,
+      codexFingerprintMode: "off",
       planType: profile?.chatgpt_plan_type ?? null,
       proxyApiKey: "codex-proxy-" + randomBytes(24).toString("hex"),
       status: isTokenExpired(token) ? "expired" : "active",
@@ -175,24 +185,25 @@ export class AccountRegistry {
   }
 
   /**
-   * Read a single account's RT from the persisted file on disk.
+   * Read a single account's RT from the active persistence backend.
    * Used to detect cross-process updates before consuming a one-time RT.
    */
   readEntryRTFromDisk(entryId: string): string | null {
-    try {
-      const raw = readFileSync(resolve(getDataDir(), "accounts.json"), "utf-8");
-      const data = JSON.parse(raw) as { accounts?: Array<{ id: string; refreshToken?: string | null }> };
-      const entry = data.accounts?.find((a) => a.id === entryId);
-      return entry?.refreshToken ?? null;
-    } catch {
-      return null;
-    }
+    return this.persistence.readRefreshToken?.(entryId) ?? null;
   }
 
   setLabel(entryId: string, label: string | null): boolean {
     const entry = this.accounts.get(entryId);
     if (!entry) return false;
     entry.label = label;
+    this.schedulePersist();
+    return true;
+  }
+
+  setCodexFingerprintMode(entryId: string, mode: CodexFingerprintMode): boolean {
+    const entry = this.accounts.get(entryId);
+    if (!entry) return false;
+    entry.codexFingerprintMode = mode;
     this.schedulePersist();
     return true;
   }
@@ -276,6 +287,65 @@ export class AccountRegistry {
     return true;
   }
 
+  applyAdditionalRateLimit429(
+    entryId: string,
+    limitId: string,
+    backoffSeconds: number,
+    options?: { retryAfterSec?: number; resetsAtSec?: number; countRequest?: boolean },
+  ): boolean {
+    const entry = this.accounts.get(entryId);
+    if (!entry) return false;
+
+    const nowSec = Date.now() / 1000;
+    const explicit = options?.resetsAtSec;
+    const fromRetry = options?.retryAfterSec != null
+      ? nowSec + jitter(options.retryAfterSec, 0.2)
+      : null;
+    const newResetAt = explicit ?? fromRetry ?? (nowSec + jitter(backoffSeconds, 0.2));
+    const quota: CodexQuota = entry.cachedQuota ?? {
+      plan_type: entry.planType ?? "unknown",
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        used_percent: null,
+        reset_at: null,
+        limit_window_seconds: null,
+      },
+      secondary_rate_limit: null,
+      code_review_rate_limit: null,
+    };
+    const limits = quota.rate_limits_by_limit_id ?? {};
+    const existing = limits[limitId];
+    const existingResetAt = existing?.reset_at;
+    const finalResetAt = existingResetAt != null && existingResetAt > newResetAt
+      ? existingResetAt
+      : newResetAt;
+
+    limits[limitId] = {
+      limit_id: limitId,
+      limit_name: existing?.limit_name ?? limitId,
+      allowed: false,
+      limit_reached: true,
+      used_percent: 100,
+      remaining_percent: 0,
+      reset_at: finalResetAt,
+      limit_window_seconds: existing?.limit_window_seconds ?? entry.usage.limit_window_seconds ?? null,
+      secondary_rate_limit: existing?.secondary_rate_limit ?? null,
+    };
+    quota.rate_limits_by_limit_id = limits;
+    entry.cachedQuota = quota;
+    entry.quotaFetchedAt = new Date().toISOString();
+
+    if (options?.countRequest) {
+      entry.usage.request_count++;
+      entry.usage.last_used = new Date().toISOString();
+      entry.usage.window_request_count = (entry.usage.window_request_count ?? 0) + 1;
+    }
+
+    this.schedulePersist();
+    return true;
+  }
+
   // ── Query ─────────────────────────────────────────────────────────
 
   getAccounts(): AccountInfo[] {
@@ -313,6 +383,7 @@ export class AccountRegistry {
       // usable and we must report authenticated.
       if (
         entry.status === "active" &&
+        !isCfChallengeCooldownActive(entry.id) &&
         (!skipExhausted || !hasReachedCachedQuota(entry))
       ) {
         return true;
@@ -331,6 +402,7 @@ export class AccountRegistry {
       if (
         entry.status === "active" &&
         (!excludeSet || !excludeSet.has(entry.id)) &&
+        !isCfChallengeCooldownActive(entry.id) &&
         (!skipExhausted || !hasReachedCachedQuota(entry))
       ) {
         return true;
@@ -409,6 +481,7 @@ export class AccountRegistry {
       input_tokens?: number;
       output_tokens?: number;
       cached_tokens?: number;
+      estimated_cost_usd?: number;
       image_input_tokens?: number;
       image_output_tokens?: number;
       /** True when the request declared `tools: [{type: "image_generation"}]`.
@@ -429,6 +502,7 @@ export class AccountRegistry {
       entry.usage.input_tokens += usage.input_tokens ?? 0;
       entry.usage.output_tokens += usage.output_tokens ?? 0;
       entry.usage.cached_tokens = (entry.usage.cached_tokens ?? 0) + (usage.cached_tokens ?? 0);
+      entry.usage.estimated_cost_usd = (entry.usage.estimated_cost_usd ?? 0) + (usage.estimated_cost_usd ?? 0);
       entry.usage.image_input_tokens = (entry.usage.image_input_tokens ?? 0) + (usage.image_input_tokens ?? 0);
       entry.usage.image_output_tokens = (entry.usage.image_output_tokens ?? 0) + (usage.image_output_tokens ?? 0);
       if (usage.image_request_attempted) {
@@ -444,6 +518,7 @@ export class AccountRegistry {
       entry.usage.window_input_tokens = (entry.usage.window_input_tokens ?? 0) + (usage.input_tokens ?? 0);
       entry.usage.window_output_tokens = (entry.usage.window_output_tokens ?? 0) + (usage.output_tokens ?? 0);
       entry.usage.window_cached_tokens = (entry.usage.window_cached_tokens ?? 0) + (usage.cached_tokens ?? 0);
+      entry.usage.window_estimated_cost_usd = (entry.usage.window_estimated_cost_usd ?? 0) + (usage.estimated_cost_usd ?? 0);
       entry.usage.window_image_input_tokens = (entry.usage.window_image_input_tokens ?? 0) + (usage.image_input_tokens ?? 0);
       entry.usage.window_image_output_tokens = (entry.usage.window_image_output_tokens ?? 0) + (usage.image_output_tokens ?? 0);
       if (usage.image_request_attempted) {
@@ -501,6 +576,11 @@ export class AccountRegistry {
         entry.usage.window_input_tokens = 0;
         entry.usage.window_output_tokens = 0;
         entry.usage.window_cached_tokens = 0;
+        entry.usage.window_estimated_cost_usd = 0;
+        entry.usage.window_image_input_tokens = 0;
+        entry.usage.window_image_output_tokens = 0;
+        entry.usage.window_image_request_count = 0;
+        entry.usage.window_image_request_failed_count = 0;
         entry.usage.window_counters_reset_at = new Date().toISOString();
       }
     }
@@ -519,6 +599,7 @@ export class AccountRegistry {
       input_tokens: 0,
       output_tokens: 0,
       cached_tokens: 0,
+      estimated_cost_usd: 0,
       empty_response_count: 0,
       last_used: null,
       window_reset_at: entry.usage.window_reset_at ?? null,
@@ -526,6 +607,7 @@ export class AccountRegistry {
       window_input_tokens: 0,
       window_output_tokens: 0,
       window_cached_tokens: 0,
+      window_estimated_cost_usd: 0,
       window_counters_reset_at: new Date().toISOString(),
       limit_window_seconds: entry.usage.limit_window_seconds ?? null,
     };
@@ -547,6 +629,12 @@ export class AccountRegistry {
       entry.usage.window_request_count = 0;
       entry.usage.window_input_tokens = 0;
       entry.usage.window_output_tokens = 0;
+      entry.usage.window_cached_tokens = 0;
+      entry.usage.window_estimated_cost_usd = 0;
+      entry.usage.window_image_input_tokens = 0;
+      entry.usage.window_image_output_tokens = 0;
+      entry.usage.window_image_request_count = 0;
+      entry.usage.window_image_request_failed_count = 0;
       entry.usage.window_counters_reset_at = now.toISOString();
       const windowSec = entry.usage.limit_window_seconds;
       if (windowSec && windowSec > 0) {
@@ -568,9 +656,35 @@ export class AccountRegistry {
       changed = resetExpiredQuotaWindow(quota.secondary_rate_limit, nowSec) || changed;
       changed = resetExpiredQuotaWindow(quota.code_review_rate_limit, nowSec) || changed;
 
+      if (quota.rate_limits_by_limit_id) {
+        for (const limit of Object.values(quota.rate_limits_by_limit_id)) {
+          changed = resetExpiredQuotaWindow(limit, nowSec) || changed;
+          if (limit.secondary_rate_limit) {
+            changed = resetExpiredQuotaWindow(limit.secondary_rate_limit, nowSec) || changed;
+          }
+        }
+      }
+
       if (changed) {
         entry.quotaVerifyRequired = true; // Mark dirty when offline reset rolls over
         this.schedulePersist();
+      }
+
+      // Fix #730 Bug 2: limit_reached=true with reset_at=null has no offline
+      // unlock path (resetExpiredQuotaWindow returns false when reset_at is null).
+      // Mark quotaVerifyRequired so ActiveQuotaRefresher proactively re-validates.
+      if (!entry.quotaVerifyRequired) {
+        const hasNullLockedPrimary =
+          quota.rate_limit.limit_reached === true && quota.rate_limit.reset_at == null;
+        const hasNullLockedBucket =
+          quota.rate_limits_by_limit_id != null &&
+          Object.values(quota.rate_limits_by_limit_id).some(
+            (l) => l.limit_reached === true && l.reset_at == null,
+          );
+        if (hasNullLockedPrimary || hasNullLockedBucket) {
+          entry.quotaVerifyRequired = true;
+          this.schedulePersist();
+        }
       }
     }
   }
@@ -584,6 +698,7 @@ export class AccountRegistry {
       accountId: entry.accountId,
       userId: entry.userId,
       label: entry.label,
+      codexFingerprintMode: entry.codexFingerprintMode === "session" ? "session" : "off",
       planType: entry.planType,
       status: entry.status,
       usage: { ...entry.usage },
@@ -607,6 +722,10 @@ export class AccountRegistry {
 
   schedulePersist(): void {
     if (this.persistDisabled) return;
+    if (this.persistBatchDepth > 0) {
+      this.persistDirty = true;
+      return;
+    }
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
@@ -620,6 +739,10 @@ export class AccountRegistry {
       this.persistTimer = null;
     }
     if (this.persistDisabled) return;
+    if (this.persistBatchDepth > 0) {
+      this.persistDirty = true;
+      return;
+    }
     this.persistence.save([...this.accounts.values()]);
   }
 

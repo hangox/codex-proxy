@@ -1,6 +1,6 @@
 /**
  * Pure SVG line chart for token usage trends.
- * No external chart library — renders <polyline> with axis labels.
+ * No external chart library — renders smooth paths with axis labels.
  */
 
 import { useMemo } from "preact/hooks";
@@ -15,7 +15,35 @@ interface UsageChartProps {
   height?: number;
 }
 
+interface Point {
+  x: number;
+  y: number;
+}
+
 const PADDING = { top: 20, right: 20, bottom: 40, left: 65 };
+
+export function buildSmoothPath(points: Point[]): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x},${points[0].y}`;
+
+  const commands = [`M ${points[0].x},${points[0].y}`];
+  for (let i = 0; i < points.length - 1; i++) {
+    const previous = points[i - 1] ?? points[i];
+    const current = points[i];
+    const next = points[i + 1];
+    const following = points[i + 2] ?? next;
+    const control1 = {
+      x: current.x + (next.x - previous.x) / 6,
+      y: current.y + (next.y - previous.y) / 6,
+    };
+    const control2 = {
+      x: next.x - (following.x - current.x) / 6,
+      y: next.y - (following.y - current.y) / 6,
+    };
+    commands.push(`C ${control1.x},${control1.y} ${control2.x},${control2.y} ${next.x},${next.y}`);
+  }
+  return commands.join(" ");
+}
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -23,11 +51,11 @@ function formatTime(iso: string): string {
 }
 
 interface ComputedSeries {
-  inputPoints: string;
-  outputPoints: string;
-  cachedPoints: string;
-  requestPoints: string;
-  hitRateLine: string;
+  inputPath: string;
+  outputPath: string;
+  cachedPath: string;
+  requestPath: string;
+  hitRatePath: string;
   /** Per-bucket hit rate marker; null when input=0 (skip dot). */
   hitRateMarkers: Array<{ x: number; y: number; cached: number; input: number; ts: string } | null>;
   xLabels: Array<{ x: number; label: string }>;
@@ -65,14 +93,13 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
     const toYReqs = (v: number) => PADDING.top + reqChartH - (v / yMaxR) * reqChartH;
     const toYHit = (v: number) => PADDING.top + hitChartH - (v / yMaxH) * hitChartH;
 
-    const inp = data.map((d, i) => `${toX(i)},${toYTokens(d.input_tokens)}`).join(" ");
-    const out = data.map((d, i) => `${toX(i)},${toYTokens(d.output_tokens)}`).join(" ");
-    const cac = data.map((d, i) => `${toX(i)},${toYTokens(d.cached_tokens ?? 0)}`).join(" ");
-    const req = data.map((d, i) => `${toX(i)},${toYReqs(d.request_count)}`).join(" ");
+    const inp = data.map((d, i) => ({ x: toX(i), y: toYTokens(d.input_tokens) }));
+    const out = data.map((d, i) => ({ x: toX(i), y: toYTokens(d.output_tokens) }));
+    const cac = data.map((d, i) => ({ x: toX(i), y: toYTokens(d.cached_tokens ?? 0) }));
+    const req = data.map((d, i) => ({ x: toX(i), y: toYReqs(d.request_count) }));
 
-    // Hit-rate polyline: connect only buckets with input > 0; gaps split the line.
-    const hitSegments: string[] = [];
-    let currentSegment: string[] = [];
+    // Skip empty buckets as markers, but connect the surrounding valid points.
+    const hitPoints: Point[] = [];
     const hitMarkers: ComputedSeries["hitRateMarkers"] = [];
     for (let i = 0; i < data.length; i++) {
       const d = data[i];
@@ -82,17 +109,12 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
         const pct = Math.min(100, (cachedTok / inTok) * 100);
         const x = toX(i);
         const y = toYHit(pct);
-        currentSegment.push(`${x},${y}`);
+        hitPoints.push({ x, y });
         hitMarkers.push({ x, y, cached: cachedTok, input: inTok, ts: d.timestamp });
       } else {
-        if (currentSegment.length > 0) {
-          hitSegments.push(currentSegment.join(" "));
-          currentSegment = [];
-        }
         hitMarkers.push(null);
       }
     }
-    if (currentSegment.length > 0) hitSegments.push(currentSegment.join(" "));
 
     const step = Math.max(1, Math.floor(data.length / 5));
     const xl = [];
@@ -111,11 +133,11 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
     }
 
     return {
-      inputPoints: inp,
-      outputPoints: out,
-      cachedPoints: cac,
-      requestPoints: req,
-      hitRateLine: hitSegments.join(" M "),
+      inputPath: buildSmoothPath(inp),
+      outputPath: buildSmoothPath(out),
+      cachedPath: buildSmoothPath(cac),
+      requestPath: buildSmoothPath(req),
+      hitRatePath: buildSmoothPath(hitPoints),
       hitRateMarkers: hitMarkers,
       xLabels: xl,
       yTokenLabels: yTL,
@@ -136,9 +158,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
     );
   }
 
-  const { inputPoints, outputPoints, cachedPoints, requestPoints, hitRateMarkers, xLabels, yTokenLabels, yReqLabels, yHitLabels, toX, toYTokens, toYReqs } = series;
-  // Build hit-rate path: segments separated by Move so we don't connect across gaps.
-  const hitPathD = series.hitRateLine ? `M ${series.hitRateLine}` : "";
+  const { inputPath, outputPath, cachedPath, requestPath, hitRateMarkers, xLabels, yTokenLabels, yReqLabels, yHitLabels, toX, toYTokens, toYReqs } = series;
 
   return (
     <div class="space-y-6">
@@ -199,22 +219,22 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
             </text>
           ))}
 
-          <polyline
-            points={inputPoints}
+          <path
+            d={inputPath}
             fill="none"
             stroke="var(--chart-blue)"
             stroke-width="2"
             stroke-linejoin="round"
           />
-          <polyline
-            points={outputPoints}
+          <path
+            d={outputPath}
             fill="none"
             stroke="var(--chart-green)"
             stroke-width="2"
             stroke-linejoin="round"
           />
-          <polyline
-            points={cachedPoints}
+          <path
+            d={cachedPath}
             fill="none"
             stroke="var(--chart-violet)"
             stroke-width="2"
@@ -284,8 +304,8 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
             </text>
           ))}
 
-          <polyline
-            points={requestPoints}
+          <path
+            d={requestPath}
             fill="none"
             stroke="var(--chart-amber)"
             stroke-width="2"
@@ -355,9 +375,9 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
             </text>
           ))}
 
-          {hitPathD && (
+          {series.hitRatePath && (
             <path
-              d={hitPathD}
+              d={series.hitRatePath}
               fill="none"
               stroke="var(--chart-fuchsia, #d946ef)"
               stroke-width="2"

@@ -1,13 +1,21 @@
 import type { Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
-import type { SessionAffinityMap } from "../../auth/session-affinity.js";
+import type { ChainAdvanceTicket, SessionAffinityMap } from "../../auth/session-affinity.js";
 import type { AccountPool } from "../../auth/account-pool.js";
+import { clearCfChallengeCooldown } from "../../auth/cf-challenge-cooldown.js";
+import { annotateUsageCost } from "./proxy-handler-utils.js";
 import type { CodexApi, WsPoolContext } from "../../proxy/codex-api.js";
 import { CodexApiError } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { UpstreamPrematureCloseError, UsageInfo, EmptyResponseError } from "../../translation/codex-event-extractor.js";
-import type { FormatAdapter, FormatCollectTranslatorResult, ProxyRequest, UsageHint } from "./proxy-handler-types.js";
+import type {
+  FormatAdapter,
+  FormatCollectTranslatorResult,
+  ProxyRequest,
+  ResponseMetadata,
+  UsageHint,
+} from "./proxy-handler-types.js";
 import { releaseAccount, acquireAccount } from "./account-acquisition.js";
 import { toErrorStatus } from "./proxy-error-handler.js";
 import { annotateImageGenOutcome, buildCodexApi, stripCodexErrorPrefix } from "./proxy-handler-utils.js";
@@ -16,6 +24,7 @@ import { withRetry } from "../../utils/retry.js";
 import { recordProxyEgressLog } from "./proxy-egress-log.js";
 import { recordStreamCloseEvent } from "../../logs/stream-close-event.js";
 import { logProxyUsage } from "./proxy-usage-log.js";
+import type { ReasoningReplayItem } from "../../proxy/reasoning-replay-cache.js";
 
 // ── 1. non-streaming-affinity ─────────────────────────────────────
 export interface RecordNonStreamingSuccessAffinityOptions {
@@ -28,6 +37,7 @@ export interface RecordNonStreamingSuccessAffinityOptions {
   inputTokens: number;
   responseFunctionCallIds: Iterable<string>;
   variantHash?: string;
+  chainAdvanceTicket?: ChainAdvanceTicket;
 }
 
 export function recordNonStreamingSuccessAffinity(
@@ -43,6 +53,7 @@ export function recordNonStreamingSuccessAffinity(
     inputTokens,
     responseFunctionCallIds,
     variantHash,
+    chainAdvanceTicket,
   } = options;
 
   if (!responseId || !affinityMap || !conversationId) return false;
@@ -56,6 +67,7 @@ export function recordNonStreamingSuccessAffinity(
     inputTokens,
     Array.from(new Set(responseFunctionCallIds)),
     variantHash,
+    chainAdvanceTicket,
   );
   return true;
 }
@@ -127,11 +139,14 @@ export interface CollectNonStreamingResponseOptions {
   rawResponse: Response;
   req: ProxyRequest;
   usageHint?: UsageHint;
+  onResponseMetadata?: (metadata: ResponseMetadata) => void;
 }
 
 export interface CollectNonStreamingResponseResult {
   result: FormatCollectTranslatorResult;
   responseFunctionCallIds: Set<string>;
+  reasoningReplayItems: ReasoningReplayItem[];
+  invalidReasoningReplay: boolean;
 }
 
 export async function collectNonStreamingResponse(
@@ -143,6 +158,7 @@ export async function collectNonStreamingResponse(
     rawResponse,
     req,
     usageHint,
+    onResponseMetadata,
   } = options;
   const metadataCollector = createResponseMetadataCollector();
   const result = await fmt.collectTranslator({
@@ -151,12 +167,17 @@ export async function collectNonStreamingResponse(
     model: req.model,
     tupleSchema: req.tupleSchema,
     usageHint,
-    onResponseMetadata: metadataCollector.onResponseMetadata,
+    onResponseMetadata: (metadata) => {
+      metadataCollector.onResponseMetadata(metadata);
+      onResponseMetadata?.(metadata);
+    },
   });
 
   return {
     result,
     responseFunctionCallIds: metadataCollector.responseFunctionCallIds,
+    reasoningReplayItems: metadataCollector.reasoningReplayItems,
+    invalidReasoningReplay: metadataCollector.invalidReasoningReplay,
   };
 }
 
@@ -266,7 +287,7 @@ export async function retryNonStreamingEmptyResponse(
     `[${tag}] Account ${currentEntryId} (${email}) | Empty response (attempt ${attempt}/${maxRetries + 1}), switching account...`,
   );
   accountPool.recordEmptyResponse(currentEntryId);
-  releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen), released);
+  releaseAccount(accountPool, currentEntryId, annotateUsageCost(req.model, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen)), released);
   restoreImplicitResumeRequest?.();
 
   const acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, tag);
@@ -278,7 +299,14 @@ export async function retryNonStreamingEmptyResponse(
     };
   }
 
-  const nextApi = buildCodexApi(acquired.token, acquired.accountId, cookieJar, acquired.entryId, proxyPool);
+  const nextApi = buildCodexApi(
+    acquired.token,
+    acquired.accountId,
+    cookieJar,
+    acquired.entryId,
+    proxyPool,
+    acquired.codexFingerprintMode ?? "off",
+  );
   setActiveAccount?.(acquired.entryId, nextApi);
 
   const retryStartMs = nowMs();
@@ -384,6 +412,7 @@ export interface ReleaseNonStreamingSuccessAccountOptions {
   entryId: string;
   usage: UsageInfo;
   expectsImageGen?: boolean;
+  model?: string;
   released: Set<string>;
 }
 
@@ -393,10 +422,12 @@ export function releaseNonStreamingSuccessAccount(options: ReleaseNonStreamingSu
     entryId,
     usage,
     expectsImageGen,
+    model,
     released,
   } = options;
 
-  releaseAccount(accountPool, entryId, annotateImageGenOutcome(usage, expectsImageGen), released);
+  clearCfChallengeCooldown(entryId);
+  releaseAccount(accountPool, entryId, annotateUsageCost(model, annotateImageGenOutcome(usage, expectsImageGen)), released);
 }
 
 // ── 10. non-streaming-usage-log ──────────────────────────────────

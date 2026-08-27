@@ -6,27 +6,62 @@ import { Hono } from "hono";
 import type { OpenAIModel, OpenAIModelList } from "../types/openai.js";
 import {
   getModelCatalog,
-  getModelAliases,
   getModelInfo,
   getModelStoreDebug,
+  resolveModelId,
   type CodexModelInfo,
 } from "../models/model-store.js";
 import { triggerImmediateRefresh } from "../models/model-fetcher.js";
 import { getConfig } from "../config.js";
 import type { ApiKeyPool } from "../auth/api-key-pool.js";
+import type { ClientKeyPool } from "../auth/client-key-pool.js";
+import { extractProxyApiKey } from "../utils/extract-api-key.js";
 
 // --- Routes ---
 
 /** Stable timestamp used for all model `created` fields (2023-11-14T22:13:20Z). */
 const MODEL_CREATED_TIMESTAMP = 1700000000;
+const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
+const AUTO_COMPACT_CONTEXT_WINDOW_PERCENT = 80;
+const AUTO_COMPACT_TOKEN_LIMIT_OVERRIDES: Record<string, number> = {
+  "gpt-5.5": 50_000,
+};
+
+function resolvedContextWindow(info: CodexModelInfo): number | undefined {
+  return info.contextWindow ?? info.maxContextWindow;
+}
+
+function autoCompactTokenLimit(info: CodexModelInfo): number | undefined {
+  const override = AUTO_COMPACT_TOKEN_LIMIT_OVERRIDES[info.id];
+  if (override !== undefined) return override;
+  if (info.autoCompactTokenLimit !== undefined) return info.autoCompactTokenLimit;
+  const contextWindow = resolvedContextWindow(info);
+  if (contextWindow === undefined) return undefined;
+  return Math.floor((contextWindow * AUTO_COMPACT_CONTEXT_WINDOW_PERCENT) / 100);
+}
 
 function toOpenAIModel(info: CodexModelInfo): OpenAIModel {
-  return {
+  const model: OpenAIModel = {
     id: info.id,
     object: "model",
     created: MODEL_CREATED_TIMESTAMP,
     owned_by: "openai",
   };
+
+  if (info.contextWindow !== undefined) model.context_window = info.contextWindow;
+  if (info.maxContextWindow !== undefined) model.max_context_window = info.maxContextWindow;
+  if (info.maxOutputTokens !== undefined) model.max_output_tokens = info.maxOutputTokens;
+  if (info.truncationPolicyLimit !== undefined) {
+    model.truncation_policy = { mode: "tokens", limit: info.truncationPolicyLimit };
+  }
+
+  const compactLimit = autoCompactTokenLimit(info);
+  if (compactLimit !== undefined) {
+    model.auto_compact_token_limit = compactLimit;
+    model.effective_context_window_percent = DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT;
+  }
+
+  return model;
 }
 
 function toRuntimeOpenAIModel(id: string): OpenAIModel {
@@ -38,36 +73,58 @@ function toRuntimeOpenAIModel(id: string): OpenAIModel {
   };
 }
 
-export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
+export function createModelRoutes(apiKeyPool?: ApiKeyPool, clientKeyPool?: ClientKeyPool): Hono {
   const app = new Hono();
+
+  function getClientKeyAllowedModels(c: import("hono").Context): string[] | null {
+    if (!clientKeyPool) return null;
+    const token = extractProxyApiKey(c);
+    if (!token) return null;
+    const key = clientKeyPool.getByKey(token);
+    return key?.allowed_models && key.allowed_models.length > 0 ? key.allowed_models : null;
+  }
 
   app.get("/v1/models", (c) => {
     const catalog = getModelCatalog();
-    const aliases = getModelAliases();
     const modelsById = new Map<string, OpenAIModel>();
 
     for (const model of catalog) {
       modelsById.set(model.id, toOpenAIModel(model));
     }
-    for (const alias of Object.keys(aliases)) {
-      modelsById.set(alias, toRuntimeOpenAIModel(alias));
-    }
     for (const modelId of apiKeyPool?.getActiveModels() ?? []) {
-      modelsById.set(modelId, toRuntimeOpenAIModel(modelId));
+      if (!modelsById.has(modelId)) {
+        modelsById.set(modelId, toRuntimeOpenAIModel(modelId));
+      }
     }
 
-    const response: OpenAIModelList = { object: "list", data: [...modelsById.values()] };
+    let data = [...modelsById.values()];
+    const allowed = getClientKeyAllowedModels(c);
+    if (allowed) {
+      data = data.filter((m) => allowed.includes(m.id));
+    }
+
+    const response: OpenAIModelList = { object: "list", data };
     return c.json(response);
   });
 
   // Full catalog with reasoning efforts (for dashboard UI)
   // Must be before :modelId to avoid being matched as a model ID
   app.get("/v1/models/catalog", (c) => {
+    let catalog = getModelCatalog();
+    const config = getConfig();
+    const rawDefault = config.model?.default?.trim();
+    const configDefault = rawDefault ? resolveModelId(rawDefault) : undefined;
+    const allowed = getClientKeyAllowedModels(c);
+    if (allowed) {
+      catalog = catalog.filter((m) => allowed.includes(m.id));
+    }
+
     // Default outputModalities to ["text"] for chat-family entries that don't
     // set it explicitly, matching the interface's documented default.
     return c.json(
-      getModelCatalog().map((m) => ({
+      catalog.map((m) => ({
         ...m,
+        isDefault: configDefault ? m.id === configDefault : m.isDefault,
         outputModalities: m.outputModalities ?? ["text"],
       })),
     );
@@ -75,16 +132,23 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
 
   app.get("/v1/models/:modelId", (c) => {
     const modelId = c.req.param("modelId");
+    const allowed = getClientKeyAllowedModels(c);
+    if (allowed && !allowed.includes(modelId)) {
+      c.status(404);
+      return c.json({
+        error: {
+          message: `Model '${modelId}' not found`,
+          type: "invalid_request_error",
+          param: "model",
+          code: "model_not_found",
+        },
+      });
+    }
+
     const catalog = getModelCatalog();
-    const aliases = getModelAliases();
 
     const info = catalog.find((m) => m.id === modelId);
     if (info) return c.json(toOpenAIModel(info));
-
-    const resolved = aliases[modelId];
-    if (resolved) {
-      return c.json(toRuntimeOpenAIModel(modelId));
-    }
 
     if (apiKeyPool?.hasActiveModel(modelId)) {
       return c.json(toRuntimeOpenAIModel(modelId));
@@ -104,9 +168,13 @@ export function createModelRoutes(apiKeyPool?: ApiKeyPool): Hono {
   // Extended endpoint: model details with reasoning efforts
   app.get("/v1/models/:modelId/info", (c) => {
     const modelId = c.req.param("modelId");
-    const aliases = getModelAliases();
-    const resolved = aliases[modelId] ?? modelId;
-    const info = getModelInfo(resolved);
+    const allowed = getClientKeyAllowedModels(c);
+    if (allowed && !allowed.includes(modelId)) {
+      c.status(404);
+      return c.json({ error: `Model '${modelId}' not found` });
+    }
+
+    const info = getModelInfo(modelId);
     if (!info) {
       c.status(404);
       return c.json({ error: `Model '${modelId}' not found` });

@@ -45,7 +45,7 @@
 
 ---
 
-**Codex Proxy** is a lightweight local gateway that translates the [Codex Desktop](https://openai.com/codex) Responses API into multiple standard protocol endpoints — OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini, Codex `/v1/responses` passthrough, and an optional Ollama-compatible `/api/chat` bridge. Use Codex coding models directly in Cursor, Claude Code, Continue, or any compatible client.
+**Codex Proxy** is a lightweight local gateway that translates the [Codex Desktop](https://openai.com/codex) Responses API into multiple standard protocol endpoints — OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini, Codex `/v1/responses` passthrough, and an optional Ollama-compatible `/api/chat` bridge. Use Codex coding models directly in Cursor, Claude Code, Continue, Pi, or any compatible client.
 
 Just a ChatGPT account (or a third-party API key provider) and this proxy — your own personal AI coding assistant gateway, running locally.
 
@@ -136,10 +136,12 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - **Auto-mark unreachable** — unreachable proxies excluded from rotation
 
 ### 4. 🛡️ Anti-Detection & Protocol Impersonation
-- **Rust Native TLS** — built-in reqwest + rustls native addon, TLS fingerprint matches real Codex Desktop exactly (pinned dependency versions)
-- **Desktop header replication** — `originator`, `User-Agent`, `x-openai-internal-codex-residency`, `x-codex-turn-state`, `x-client-request-id` headers sent per real client behavior
-- **Cookie persistence** — automatic Cloudflare cookie capture and replay
-- **Fingerprint auto-update** — polls Codex Desktop update feed, auto-syncs `app_version` and `build_number`
+- **Rust Native TLS** — built-in reqwest + rustls native addon, TLS fingerprint matches real Codex clients exactly (pinned dependency versions)
+- **Client Profile Presets** — support for `codex_cli` (default, official CLI clean terminal headers), `codex_desktop` (Desktop complete headers), `opencode`, `pi`, and `custom`; CLI mode cleanly strips browser-specific headers (`sec-ch-ua`, etc.)
+- **Per-Account Device ID Isolation** — independently derives and persists unique `x-codex-installation-id` for each account to prevent device correlation
+- **Full Request Header Emulation** — `originator`, `User-Agent`, `x-openai-internal-codex-residency`, `x-codex-turn-state`, `x-client-request-id` headers accurately sent per selected profile
+- **Cookie Persistence** — automatic Cloudflare cookie capture and replay
+- **Fingerprint Auto-Update** — polls Codex update feed, auto-syncs `app_version` and `build_number`
 
 ## 🏗️ Architecture
 
@@ -224,7 +226,9 @@ curl -N http://localhost:8080/v1/responses \
   }'
 ```
 
-Tunable fields: `size` (1024×1024 / 1024×1536 / 1536×1024 / 2048×2048 / 2048×3072 / 3072×2048 / 3840×2160 (4K UHD) / `auto`; longest edge ≤ 3840 px, pixel budget ≈ 8 MP), `output_format` (`png` / `jpeg` / `webp`), `output_compression` (jpeg / webp only), `background` (`auto` / `opaque`), `moderation` (`auto` / `low`), `partial_images` (0–3). Upstream forces `model = gpt-image-2` and rejects `n`, `input_image`, `mask`, `input_fidelity`, `style`, `response_format`. See [API.md](./API.md#image_generation-tool) for the full matrix.
+Tunable fields: `size` (can request 1024×1024 / 1024×1536 / 1536×1024 / 2048×2048 / 2048×3072 / 3072×2048 / 3840×2160 / `auto`), `output_format` (`png` / `jpeg` / `webp`), `output_compression` (jpeg / webp only), `background` (`auto` / `opaque`), `moderation` (`auto` / `low`), `partial_images` (0–3). Only 1 image per call (`n` is fixed to 1); the `model` field is always rewritten upstream to the image tool's actual model (currently echoed as `gpt-image-2-codex`). See [API.md](./API.md#image_generation-tool).
+
+> **`size` is not a strict pixel-dimension guarantee.** The proxy preserves and sends the client-specified value, but upstream currently normalizes requests like `2048x2048`, `2K`, and `4K` to `size: "auto"` and determines the actual output dimensions dynamically. In real requests tested on 2026-08-10, a `size: "2048x2048"` tool configuration echoed back as `auto`, and both `image_generation_call.size` and the decoded PNG pixels were `1254x1254`. Therefore, you cannot rely on this field for native, exact 2K/4K outputs; refer to the result item's `size` or the decoded image dimensions. If your workload strictly requires exact `2048x2048` files, apply post-processing such as interpolation or AI upscaling after generation.
 
 In the stream, the `image_generation_call` item's `result` field is a base64-encoded image; `revised_prompt` contains the final prompt used by the model.
 
@@ -397,6 +401,94 @@ aider --openai-api-base http://localhost:8080/v1 \
 4. **API Key**: your API key
 5. Add model `gpt-5.4`
 
+### Pi Coding Agent (pi)
+
+[Pi Coding Agent](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`) can be configured via `~/.pi/agent/models.json` to connect to Codex Proxy.
+
+#### Option 1: OpenAI Completions Protocol (Recommended)
+
+Edit `~/.pi/agent/models.json`:
+```json
+{
+  "providers": {
+    "codex-proxy": {
+      "baseUrl": "http://localhost:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "your-api-key",
+      "models": [
+        {
+          "id": "gpt-5.4",
+          "name": "Codex GPT-5.4",
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": ["text", "image"]
+        },
+        {
+          "id": "gpt-5.5",
+          "name": "Codex GPT-5.5",
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": ["text", "image"]
+        }
+      ]
+    }
+  }
+}
+```
+
+> 💡 `apiKey` can also be set to `"$PROXY_API_KEY"`, then supplied via `export PROXY_API_KEY=your-api-key` in your shell.
+
+#### Option 2: Anthropic Messages Protocol
+
+```json
+{
+  "providers": {
+    "codex-proxy-anthropic": {
+      "baseUrl": "http://localhost:8080",
+      "api": "anthropic-messages",
+      "apiKey": "your-api-key",
+      "models": [
+        {
+          "id": "gpt-5.4",
+          "name": "Codex GPT-5.4",
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": ["text", "image"]
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Option 3: Codex Responses Protocol (Passthrough)
+
+```json
+{
+  "providers": {
+    "codex-proxy-responses": {
+      "baseUrl": "http://localhost:8080/v1",
+      "api": "openai-responses",
+      "apiKey": "your-api-key",
+      "models": [
+        {
+          "id": "gpt-5.4",
+          "name": "Codex GPT-5.4",
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "input": ["text", "image"]
+        }
+      ]
+    }
+  }
+}
+```
+
+Run Pi:
+```bash
+pi --provider codex-proxy --model gpt-5.4
+```
+
 ### Ollama-Compatible Clients
 
 Enable it in Dashboard → Settings → **Ollama Bridge**, then use the default Ollama base URL:
@@ -477,13 +569,30 @@ server:
 |---------|-------------|-------------|
 | `server` | `host`, `port`, `proxy_api_key` | Listen address and API key |
 | `api` | `base_url`, `timeout_seconds` | Upstream API URL and timeout |
-| `client` | `app_version`, `build_number`, `chromium_version` | Codex Desktop version to impersonate |
+| `client` | `profile`, `originator`, `app_version`, `build_number`, `platform`, `arch`, `chromium_version` | Client fingerprint preset (`codex_cli` / `codex_desktop` / `opencode` / `pi` / `custom`) and version metadata |
 | `model` | `default`, `default_reasoning_effort`, `default_service_tier`, `aliases`, `custom_models`, `inject_desktop_context` | Default model, reasoning config, aliases, and custom catalog entries |
 | `auth` | `rotation_strategy`, `rate_limit_backoff_seconds` | Rotation strategy and rate limit backoff |
 | `tls` | `proxy_url`, `force_http11` | TLS proxy and HTTP version |
 | `quota` | `refresh_interval_minutes`, `warning_thresholds`, `skip_exhausted` | Usage snapshots, threshold config, exhausted-account skipping |
 | `session` | `ttl_minutes`, `cleanup_interval_minutes` | Dashboard session management |
 | `ollama` | `enabled`, `host`, `port`, `version`, `disable_vision` | Ollama-compatible bridge |
+
+### Client Profile & Fingerprint Presets
+
+`client.profile` allows switching client identity presets with automatic header and anti-detection formatting:
+
+```yaml
+client:
+  profile: codex_cli         # Presets: codex_cli (default), codex_desktop, opencode, pi, custom
+  # Preset details:
+  # - codex_cli:     Official Codex CLI clean terminal headers (originator: codex_cli_rs), strips browser-only headers (sec-ch-ua, etc.)
+  # - codex_desktop: Official Codex Desktop complete headers (originator: Codex Desktop), includes sec-ch-ua and Chromium version
+  # - opencode:      opencode terminal headers (originator: opencode)
+  # - pi:            pi terminal headers (originator: pi)
+  # - custom:        Fully custom mode, reads client.originator and fingerprint.yaml template
+```
+
+Additionally, the proxy automatically derives and persists an isolated `x-codex-installation-id` per account (under `data/installation_ids/`), ensuring each account retains an independent device identity and preventing multi-account cross-correlation upstream.
 
 ### Model Aliases
 
@@ -610,7 +719,10 @@ On first startup, if `data/local.yaml` is missing, Codex Proxy creates it with `
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | OpenAI format chat completions |
 | `/v1/responses` | POST | Codex Responses API passthrough |
-| `/v1/responses/compact` | POST | Codex compact response proxy |
+| `/v1/responses/compact` | POST | Codex remote compact response proxy |
+| `/v1/alpha/search` | POST | Codex standalone Web Search (`codex-responses` API-key wire) |
+| `/v1/images/generations` | POST | Codex JSON image generation passthrough (`codex-responses` API-key wire) |
+| `/v1/images/edits` | POST | Codex JSON image edit passthrough (`codex-responses` API-key wire) |
 | `/v1/messages` | POST | Anthropic format chat completions |
 | `/v1/models` | GET | List available models |
 | `/v1/models/catalog` | GET | Full model catalog for the dashboard |
@@ -637,6 +749,8 @@ On first startup, if `data/local.yaml` is missing, Codex Proxy creates it with `
 | `/auth/quota/warnings` | GET | Current quota warning state |
 
 **Third-Party API Keys**
+
+For API-key upstreams that require official Codex client context on a standard Responses API, choose the `Custom` provider and `Codex Responses (client context)` protocol in the Dashboard. Set Base URL to the API v1 root (for example, `https://provider.example.com/v1`), not the full `/responses` endpoint. The primary Responses call uses HTTP SSE and sends Codex headers, installation/session/thread/window IDs, and client metadata. The same wire also routes standalone Web Search, remote compact, and Codex JSON image generation/edit requests by the body `model`; Embeddings remain unsupported. If the provider does not expose a compatible `/models` endpoint, enter the model name manually in the Dashboard.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -752,11 +866,15 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 
 ## 🙏 Acknowledgements
 
-Codex Proxy is primarily maintained by one person, but it has been improved by a lot of community help. Special thanks to these contributors who submitted code, documentation, fixes, or PRs:
+Codex Proxy started as a personal project to scratch my own itch, and it has grown with far more support and warmth than I ever anticipated.
 
-[@SsuJojo](https://github.com/SsuJojo) · [@TutuchanXD](https://github.com/TutuchanXD) · [@kanweiwei](https://github.com/kanweiwei) · [@et2010](https://github.com/et2010) · [@d-demand-priv](https://github.com/d-demand-priv) · [@hangox](https://github.com/hangox) · [@jarvisluk](https://github.com/jarvisluk) · [@jeasonstudio](https://github.com/jeasonstudio) · [@JPClaw12](https://github.com/JPClaw12) · [@lezi-fun](https://github.com/lezi-fun) · [@lookvincent](https://github.com/lookvincent) · [@pocper1](https://github.com/pocper1) · [@woai66](https://github.com/woai66) · [@xsShuang](https://github.com/xsShuang) · [@yuwei5380](https://github.com/yuwei5380) · [@aeltorio](https://github.com/aeltorio) · [@williamjameshandley](https://github.com/williamjameshandley) · [@FlavienKlr](https://github.com/FlavienKlr)
+Special thanks to all contributors who submitted code, documentation, fixes, or PRs:
 
-Thanks as well to everyone who opened [Issues](https://github.com/icebear0828/codex-proxy/issues) with bug reproductions, logs, compatibility reports, and feature suggestions. Those reports directly shaped account rotation, proxy compatibility, the Dashboard, Ollama Bridge, model compatibility, and error observability.
+[@SsuJojo](https://github.com/SsuJojo) · [@TutuchanXD](https://github.com/TutuchanXD) · [@kanweiwei](https://github.com/kanweiwei) · [@et2010](https://github.com/et2010) · [@d-demand-priv](https://github.com/d-demand-priv) · [@hangox](https://github.com/hangox) · [@jarvisluk](https://github.com/jarvisluk) · [@jeasonstudio](https://github.com/jeasonstudio) · [@JPClaw12](https://github.com/JPClaw12) · [@lezi-fun](https://github.com/lezi-fun) · [@lookvincent](https://github.com/lookvincent) · [@pocper1](https://github.com/pocper1) · [@woai66](https://github.com/woai66) · [@xsShuang](https://github.com/xsShuang) · [@yuwei5380](https://github.com/yuwei5380) · [@aeltorio](https://github.com/aeltorio) · [@williamjameshandley](https://github.com/williamjameshandley) · [@FlavienKlr](https://github.com/FlavienKlr) · [@zyycn](https://github.com/zyycn)
+
+Thanks as well to everyone who opened [Issues](https://github.com/icebear0828/codex-proxy/issues) with bug reproductions, logs, compatibility reports, and feature suggestions. Those reports directly shaped our proxy engine, account rotation, Dashboard, Ollama Bridge, and observability features.
+
+**Most of all, heartfelt thanks to every developer who silently uses, stars, and supports this project. Your continued love and support is what has kept me going and iterating to this day. I'm truly thrilled and grateful that so many people enjoy Codex Proxy!** ❤️
 
 ## 📄 License
 

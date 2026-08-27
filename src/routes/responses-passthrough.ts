@@ -12,8 +12,17 @@ import { EmptyResponseError } from "../translation/codex-event-extractor.js";
 import { reconvertTupleValues } from "../translation/tuple-schema.js";
 import { extractCodexError } from "../types/codex-events.js";
 import { recordStreamCloseEvent } from "../logs/stream-close-event.js";
-import type { FormatAdapter, StreamTranslatorContext } from "./shared/proxy-handler-types.js";
+import type {
+  FormatAdapter,
+  ResponseMetadata,
+  StreamTranslatorContext,
+} from "./shared/proxy-handler-types.js";
 import { isRecord } from "../translation/shared-utils.js";
+import {
+  containsInvalidEncryptedContentSignal,
+  sanitizeReasoningReplayItems,
+} from "../proxy/reasoning-replay-cache.js";
+import type { ReasoningReplayItem } from "../proxy/reasoning-replay-cache.js";
 
 // ── Shared helpers ────────────────────────────────────────────────
 
@@ -147,6 +156,13 @@ export function extractImageGenUsage(response: Record<string, unknown>): { image
   return { image_input_tokens, image_output_tokens };
 }
 
+function appendReplayArtifacts(
+  target: ReasoningReplayItem[],
+  candidates: readonly unknown[],
+): void {
+  target.push(...sanitizeReasoningReplayItems(candidates));
+}
+
 // ── Stream passthrough ────────────────────────────────────────────
 
 export async function* streamPassthrough(
@@ -158,12 +174,13 @@ export async function* streamPassthrough(
   tupleSchema?: Record<string, unknown> | null,
   streamContext?: StreamTranslatorContext,
   onResponseCompleted?: (id?: string) => void,
-  onResponseMetadata?: (metadata: { functionCallIds?: string[] }) => void,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): AsyncGenerator<string> {
   let tupleTextBuffer = tupleSchema ? "" : null;
   let sawTerminal = false;
   let responseId: string | null = null;
   const streamFunctionCallIds = new Set<string>();
+  const streamReplayItems: ReasoningReplayItem[] = [];
 
   const stream = api.parseStream(response);
   let upstreamDone = false;
@@ -191,6 +208,7 @@ export async function* streamPassthrough(
           responseId,
           detail,
         });
+        onResponseMetadata?.({ prematureClose: true });
         yield buildPrematureCloseFailedEvent(responseId, detail);
         return;
       }
@@ -203,6 +221,34 @@ export async function* streamPassthrough(
       const raw = next.value;
       responseId = extractResponseIdFromEventData(raw.data) ?? responseId;
       if (isTerminalResponsesEvent(raw.event)) sawTerminal = true;
+      if (raw.event === "error" || raw.event === "response.failed") {
+        // Terminal failure frames used to pass through with zero trace: no log
+        // line, no Errors-tab entry, no metadata flag. When implicit resume was
+        // active that made a fast-failing upstream (e.g. context-window
+        // overflow on the prev id chain) look like a healthy stream, so the
+        // poisoned chain was never dropped and the client retried into the
+        // same failure indefinitely.
+        const err = extractCodexError(raw.data);
+        console.warn(
+          `[Responses] upstream terminal ${raw.event} responseId=${responseId ?? "unknown"}: ${err.code}: ${err.message}`,
+        );
+        recordStreamCloseEvent({
+          kind: "upstream-error",
+          tag: streamContext?.tag ?? "Responses",
+          requestId: streamContext?.requestId,
+          provider: streamContext?.provider,
+          path: streamContext?.path,
+          model: streamContext?.model ?? model,
+          accountEntryId: streamContext?.accountEntryId,
+          variantHash: streamContext?.variantHash,
+          responseId,
+          detail: `${raw.event}: ${err.code}: ${err.message}`,
+        });
+        onResponseMetadata?.({ terminalFailure: true });
+        if (containsInvalidEncryptedContentSignal(raw.data)) {
+          onResponseMetadata?.({ invalidReasoningReplay: true });
+        }
+      }
 
       if (tupleTextBuffer !== null && raw.event === "response.output_text.delta") {
         const data = raw.data;
@@ -251,9 +297,15 @@ export async function* streamPassthrough(
 
       if (raw.event === "response.output_item.done") {
         const data = raw.data;
-        if (isRecord(data) && isRecord(data.item) && data.item.type === "function_call") {
+        if (
+          isRecord(data) && isRecord(data.item) &&
+          (data.item.type === "function_call" || data.item.type === "custom_tool_call")
+        ) {
           const callId = data.item.call_id;
           if (typeof callId === "string" && callId) streamFunctionCallIds.add(callId);
+        }
+        if (isRecord(data) && isRecord(data.item)) {
+          appendReplayArtifacts(streamReplayItems, [data.item]);
         }
       }
 
@@ -271,6 +323,13 @@ export async function* streamPassthrough(
             onUsage({ ...extractResponseUsage(resp.usage), ...(imgUsage ?? {}) });
           }
           if (raw.event === "response.completed") {
+            if (Array.isArray(resp.output)) {
+              appendReplayArtifacts(streamReplayItems, resp.output);
+            }
+            const replayItems = sanitizeReasoningReplayItems(streamReplayItems);
+            if (replayItems.length > 0) {
+              onResponseMetadata?.({ reasoningReplayItems: replayItems });
+            }
             onResponseCompleted?.(typeof resp.id === "string" ? resp.id : undefined);
             if (streamFunctionCallIds.size > 0) {
               onResponseMetadata?.({ functionCallIds: [...streamFunctionCallIds] });
@@ -301,6 +360,7 @@ export async function* streamPassthrough(
       variantHash: streamContext?.variantHash,
       responseId,
     });
+    onResponseMetadata?.({ prematureClose: true });
     yield buildPrematureCloseFailedEvent(responseId);
   }
 }
@@ -312,7 +372,7 @@ export async function collectPassthrough(
   response: Response,
   _model: string,
   tupleSchema?: Record<string, unknown> | null,
-  onResponseMetadata?: (metadata: { functionCallIds?: string[] }) => void,
+  onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<{
   response: unknown;
   usage: { input_tokens: number; output_tokens: number; cached_tokens?: number; image_input_tokens?: number; image_output_tokens?: number };
@@ -323,6 +383,7 @@ export async function collectPassthrough(
   let responseId: string | null = null;
   const outputItems: unknown[] = [];
   const collectFunctionCallIds = new Set<string>();
+  const collectReplayItems: ReasoningReplayItem[] = [];
   let textDeltas = "";
 
   try {
@@ -341,12 +402,23 @@ export async function collectPassthrough(
 
       if (raw.event === "response.output_item.done" && isRecord(data.item)) {
         outputItems.push(data.item);
-        if (data.item.type === "function_call" && typeof data.item.call_id === "string" && data.item.call_id) {
+        appendReplayArtifacts(collectReplayItems, [data.item]);
+        if (
+          (data.item.type === "function_call" || data.item.type === "custom_tool_call") &&
+          typeof data.item.call_id === "string" && data.item.call_id
+        ) {
           collectFunctionCallIds.add(data.item.call_id as string);
         }
       }
 
       if (raw.event === "response.completed" && resp) {
+        if (Array.isArray(resp.output)) {
+          appendReplayArtifacts(collectReplayItems, resp.output);
+        }
+        const replayItems = sanitizeReasoningReplayItems(collectReplayItems);
+        if (replayItems.length > 0) {
+          onResponseMetadata?.({ reasoningReplayItems: replayItems });
+        }
         if (collectFunctionCallIds.size > 0) {
           onResponseMetadata?.({ functionCallIds: [...collectFunctionCallIds] });
         }
@@ -374,6 +446,9 @@ export async function collectPassthrough(
       }
 
       if (raw.event === "error" || raw.event === "response.failed") {
+        if (containsInvalidEncryptedContentSignal(data)) {
+          onResponseMetadata?.({ invalidReasoningReplay: true });
+        }
         const err = extractCodexError(data);
         throw new Error(
           `Codex API error: ${err.code}: ${err.message}`,

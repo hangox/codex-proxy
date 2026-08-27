@@ -149,6 +149,24 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     }
   });
 
+  it.each(["codex.response.metadata", "response.metadata"])(
+    "keeps %s behind the early barrier so a following previous_response_not_found rejects",
+    async (metadataType) => {
+      const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+      promise.catch(() => undefined);
+      const ws = await waitForOpen();
+      ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_new" } }));
+      ws.emit("message", JSON.stringify({ type: "response.in_progress", response: { id: "resp_new" } }));
+      ws.emit("message", JSON.stringify({ type: metadataType, headers: { "x-test": "1" } }));
+      ws.emit("message", JSON.stringify({
+        type: "error",
+        status: 400,
+        error: { code: "previous_response_not_found", message: "not found" },
+      }));
+      await expect(promise).rejects.toMatchObject({ status: 400 });
+    },
+  );
+
   it("rejects with CodexApiError(402) when first frame is response.failed quota_exhausted", async () => {
     const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
     promise.catch(() => { /* asserted below */ });
@@ -169,6 +187,63 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     }
   });
 
+  it("rejects with CodexApiError(503) when first frame is server_is_overloaded", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: { code: "server_is_overloaded", message: "The server is overloaded" },
+    }));
+
+    await expect(promise).rejects.toBeInstanceOf(CodexApiError);
+    try {
+      await promise;
+    } catch (err) {
+      expect((err as CodexApiError).status).toBe(503);
+      expect((err as CodexApiError).body).toContain("server_is_overloaded");
+    }
+  });
+
+  it("rejects with CodexApiError(500) when metadata is followed by an early server_error", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    promise.catch(() => undefined);
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.in_progress", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: { code: "server_error", message: "The server had an internal error" },
+    }));
+
+    await expect(promise).rejects.toMatchObject({ status: 500 });
+    try {
+      await promise;
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect((err as CodexApiError).body).toContain("server_error");
+    }
+  });
+
+  it("passes through server_error after visible output", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    const ws = await waitForOpen();
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "partial" }));
+    const response = await promise;
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: { code: "server_error", message: "The server had an internal error" },
+    }));
+
+    const text = await readAll(response);
+    expect(text).toContain("event: response.output_text.delta");
+    expect(text).toContain("event: error");
+    expect(text).toContain("server_error");
+  });
   it("resolves normally when first frame is an error with an unmapped code", async () => {
     // Genuine model errors (e.g. invalid request, model_not_supported_in_plan)
     // must NOT trigger rotation — they keep the SSE pass-through behavior so
@@ -257,6 +332,7 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
     const ws = await waitForOpen();
 
     ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "partial" }));
     const response = await promise;
     expect(response.status).toBe(200);
 
@@ -267,8 +343,45 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
 
     const text = await readAll(response);
     expect(text).toContain("event: response.created");
+    expect(text).toContain("event: response.output_text.delta");
     expect(text).toContain("event: error");
     expect(text).toContain("usage_limit_reached");
+  });
+
+  it("does not retry server_is_overloaded after partial output has been committed", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "partial" }));
+    const response = await promise;
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: { code: "server_is_overloaded", message: "The server is overloaded" },
+    }));
+
+    expect(response.status).toBe(200);
+    const text = await readAll(response);
+    expect(text).toContain("event: response.output_text.delta");
+    expect(text).toContain("partial");
+    expect(text).toContain("event: error");
+    expect(text).toContain("server_is_overloaded");
+  });
+
+  it("accepts an abnormal close after response.completed as a completed stream", async () => {
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({ type: "response.created", response: { id: "resp_1" } }));
+    ws.emit("message", JSON.stringify({ type: "response.output_text.delta", delta: "done" }));
+    const response = await promise;
+    ws.emit("message", JSON.stringify({ type: "response.completed", response: { id: "resp_1" } }));
+    ws.emit("close", 1006, Buffer.from("tcp rst after terminal frame"));
+
+    const text = await readAll(response);
+    expect(text).toContain("event: response.completed");
+    expect(text).toContain("resp_1");
   });
 
   it("rejects when the WebSocket closes before any data frame", async () => {
@@ -283,7 +396,7 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
       throw new Error("expected rejection");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toContain("WebSocket closed before any data");
+      expect((err as Error).message).toContain("WebSocket closed before terminal event");
       expect((err as Error).message).toContain("code=1006");
     }
   });

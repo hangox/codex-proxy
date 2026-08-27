@@ -118,7 +118,7 @@ interface NormalizedModelWithMeta extends CodexModelInfo {
 // ── Constants ────────────────────────────────────────────────────────
 
 const SERVICE_TIER_SUFFIXES = new Set(["fast", "flex"]);
-const EFFORT_SUFFIXES = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const EFFORT_SUFFIXES = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 /** ChatGPT UI selectors that are not valid Codex model IDs. */
 const CHATGPT_ONLY_MODEL_IDS = new Set(["auto"]);
 

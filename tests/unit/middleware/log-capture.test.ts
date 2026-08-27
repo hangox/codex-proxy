@@ -45,6 +45,11 @@ describe("logCapture middleware", () => {
   it("recognizes known LLM paths", () => {
     expect(isKnownLlmPath("/v1/chat/completions")).toBe(true);
     expect(isKnownLlmPath("/v1/messages")).toBe(true);
+    expect(isKnownLlmPath("/v1/alpha/search")).toBe(true);
+    expect(isKnownLlmPath("/alpha/search")).toBe(true);
+    expect(isKnownLlmPath("/responses/compact")).toBe(true);
+    expect(isKnownLlmPath("/v1/images/generations")).toBe(true);
+    expect(isKnownLlmPath("/images/edits")).toBe(true);
     expect(isKnownLlmPath("/v1beta/models/gemini-2.5-pro:generateContent")).toBe(true);
     expect(isKnownLlmPath("/v1/images/generations")).toBe(true);
     expect(isKnownLlmPath("/images/generations")).toBe(true);

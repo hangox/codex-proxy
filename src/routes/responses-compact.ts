@@ -13,6 +13,7 @@ import type { CodexCompactRequest } from "../proxy/codex-api.js";
 import { sanitizeCodexInputItems } from "../proxy/reasoning-input-sanitizer.js";
 import type { UsageInfo } from "../translation/codex-event-extractor.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
+import { supportsCodexAuxiliaryJson } from "../proxy/upstream-adapter.js";
 import { parseModelName, resolveModelId } from "../models/model-store.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
@@ -22,6 +23,7 @@ import { withRetry } from "../utils/retry.js";
 import { PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
 import { isRecord } from "../translation/shared-utils.js";
 import { annotateUsageCost } from "./shared/proxy-handler-utils.js";
+import { handleCodexAuxiliaryJson } from "./codex-auxiliary.js";
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -58,6 +60,21 @@ export async function handleCompact(
   upstreamRouter?: UpstreamRouter,
 ): Promise<Response> {
   const rawModel = typeof body.model === "string" ? body.model : "codex";
+  const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
+  if (
+    (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter")
+    && supportsCodexAuxiliaryJson(compactRouteMatch.adapter)
+  ) {
+    const directModel = compactRouteMatch.resolvedModel ?? rawModel;
+    return handleCodexAuxiliaryJson({
+      c,
+      upstream: compactRouteMatch.adapter,
+      path: "responses/compact",
+      body: directModel === rawModel ? body : { ...body, model: directModel },
+      model: directModel,
+    });
+  }
+
   const parsed = parseModelName(rawModel);
   const modelId = resolveModelId(parsed.modelId);
 
@@ -98,7 +115,6 @@ export async function handleCompact(
     };
   }
 
-  const compactRouteMatch = upstreamRouter?.resolveMatch(rawModel);
   if (compactRouteMatch?.kind === "api-key" || compactRouteMatch?.kind === "adapter") {
     const directModel = compactRouteMatch.resolvedModel ?? rawModel;
     const directReq = {

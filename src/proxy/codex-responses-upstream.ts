@@ -28,9 +28,19 @@ import {
   type CodexResponsesRequest,
   type CodexSSEEvent,
 } from "./codex-types.js";
-import type { UpstreamAdapter } from "./upstream-adapter.js";
+import type {
+  CodexAuxiliaryJsonPath,
+  CodexAuxiliaryRequestContext,
+  UpstreamAdapter,
+} from "./upstream-adapter.js";
 
 const MAX_ERROR_BODY = 1024 * 1024;
+const CODEX_AUXILIARY_JSON_PATHS = new Set<CodexAuxiliaryJsonPath>([
+  "alpha/search",
+  "responses/compact",
+  "images/generations",
+  "images/edits",
+]);
 
 function extractModelId(model: string): string {
   const colon = model.indexOf(":");
@@ -102,10 +112,15 @@ export class CodexResponsesUpstream implements UpstreamAdapter {
     return { conversationId, windowId };
   }
 
-  async createResponse(
+  private buildClientHeaders(
     request: CodexResponsesRequest,
-    signal: AbortSignal,
-  ): Promise<Response> {
+    accept: "application/json" | "text/event-stream",
+    includeResponsesBeta: boolean,
+  ): {
+    headers: Record<string, string>;
+    identity: { conversationId: string; windowId: string };
+    installationId: string;
+  } {
     const identity = this.buildIdentity(request);
     const installationId = getInstallationId();
     const headers = buildHeadersWithContentType(this.apiKey, null);
@@ -113,8 +128,12 @@ export class CodexResponsesUpstream implements UpstreamAdapter {
     // API-key gateways are not ChatGPT account-bound even when an API key
     // happens to be JWT-shaped.
     delete headers["ChatGPT-Account-Id"];
-    headers.Accept = "text/event-stream";
-    headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
+    headers.Accept = accept;
+    if (includeResponsesBeta) {
+      headers["OpenAI-Beta"] = "responses_websockets=2026-02-06";
+    } else {
+      delete headers["OpenAI-Beta"];
+    }
     headers["x-openai-internal-codex-residency"] = "us";
     headers["x-client-request-id"] = identity.conversationId;
     headers["x-codex-installation-id"] = installationId;
@@ -133,6 +152,19 @@ export class CodexResponsesUpstream implements UpstreamAdapter {
       request.client_metadata?.[OPENAI_SUBAGENT_HEADER],
     );
     if (openAiSubagent) headers[OPENAI_SUBAGENT_HEADER] = openAiSubagent;
+
+    return { headers, identity, installationId };
+  }
+
+  async createResponse(
+    request: CodexResponsesRequest,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    const { headers, identity, installationId } = this.buildClientHeaders(
+      request,
+      "text/event-stream",
+      true,
+    );
 
     const body = buildResponsesUpstreamBody(request, extractModelId(request.model));
     body.prompt_cache_key = identity.conversationId;
@@ -166,6 +198,62 @@ export class CodexResponsesUpstream implements UpstreamAdapter {
       );
     }
 
+    return new Response(transportResponse.body, {
+      status: transportResponse.status,
+      headers: transportResponse.headers,
+    });
+  }
+
+  async forwardCodexJsonRequest(
+    path: CodexAuxiliaryJsonPath,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+    context: CodexAuxiliaryRequestContext = {},
+  ): Promise<Response> {
+    // Keep this runtime check even though the TypeScript union is closed: route
+    // input must never become an arbitrary path appended to a configured URL.
+    if (!CODEX_AUXILIARY_JSON_PATHS.has(path)) {
+      throw new CodexApiError(0, `Unsupported Codex auxiliary endpoint: ${path}`);
+    }
+
+    const routedModel = typeof body.model === "string" && body.model.trim()
+      ? body.model.trim()
+      : "codex";
+    // Provider prefixes are resolved by UpstreamRouter. Do not split on every
+    // colon here: exact upstream IDs such as "google/gemma:free" are valid.
+    const model = routedModel;
+    const stableRequestId = typeof body.id === "string" && body.id.trim()
+      ? body.id.trim()
+      : undefined;
+    const contextRequest: CodexResponsesRequest = {
+      model,
+      input: [],
+      stream: true,
+      store: false,
+      ...context,
+      ...(stableRequestId ? { prompt_cache_key: stableRequestId } : {}),
+    };
+    const { headers } = this.buildClientHeaders(
+      contextRequest,
+      "application/json",
+      false,
+    );
+
+    let transportResponse;
+    try {
+      transportResponse = await getTransport().post(
+        `${this.baseUrl}/${path}`,
+        headers,
+        JSON.stringify(model === body.model ? body : { ...body, model }),
+        signal,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new CodexApiError(0, message);
+    }
+
+    // Auxiliary endpoints use ordinary JSON rather than the Responses SSE
+    // protocol. Preserve both successful and error responses for the client.
     return new Response(transportResponse.body, {
       status: transportResponse.status,
       headers: transportResponse.headers,

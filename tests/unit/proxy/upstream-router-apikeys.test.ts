@@ -205,8 +205,12 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     router.setApiKeyPool(pool, mockFactory);
 
     // "openai:gpt-5.4" should strip prefix and find pool entry for "gpt-5.4"
-    const adapter = router.resolve("openai:gpt-5.4");
-    expect(adapter.tag).toBe("dynamic-openai-gpt-5.4");
+    const match = router.resolveMatch("openai:gpt-5.4");
+    expect(match.kind).toBe("api-key");
+    if (match.kind === "api-key") {
+      expect(match.adapter.tag).toBe("dynamic-openai-gpt-5.4");
+      expect(match.resolvedModel).toBe("gpt-5.4");
+    }
   });
 
   it("prefers exact api-key model match for models containing colon", () => {
@@ -218,8 +222,12 @@ describe("UpstreamRouter with ApiKeyPool", () => {
     const router = new UpstreamRouter(adapters, {}, "codex");
     router.setApiKeyPool(pool, mockFactory);
 
-    const adapter = router.resolve("google/gemma-4-26b-a4b-it:free");
-    expect(adapter.tag).toBe("dynamic-openai-google/gemma-4-26b-a4b-it:free");
+    const match = router.resolveMatch("google/gemma-4-26b-a4b-it:free");
+    expect(match.kind).toBe("api-key");
+    if (match.kind === "api-key") {
+      expect(match.adapter.tag).toBe("dynamic-openai-google/gemma-4-26b-a4b-it:free");
+      expect(match.resolvedModel).toBeUndefined();
+    }
     expect(router.isCodexModel("google/gemma-4-26b-a4b-it:free")).toBe(false);
   });
 });

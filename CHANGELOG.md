@@ -29,6 +29,7 @@
 
 ### Added
 
+- `codex-responses` API-key wire 补齐 Codex 客户端 JSON 辅助端点：standalone Web Search `/v1/alpha/search`、远程压缩 `/v1/responses/compact`、图片生成/编辑 `/v1/images/generations|edits`（同时支持无 `/v1` 别名）。所有请求按 body `model` 走现有 UpstreamRouter，仅允许声明该能力的 adapter，使用固定 method/path 白名单并替换为上游 API key；JSON body、状态码和响应体透明转发，过滤 hop-by-hop 与 `Set-Cookie` 响应头，未知路径 fail-closed。
 - 自定义 API Key 新增可选 `codex-responses` wire：针对要求 Codex 客户端上下文的标准 Responses API 上游，使用 Bearer API key、Codex 会话/窗口/安装实例元数据与 SSE；不改变现有 `chat` / `responses` 默认行为，也不支持 Embeddings。
 - 新增按账号显式启用的 Codex `session_id` 指纹收敛模式，默认保持关闭；启用后仅将 HTTP/WebSocket 的上游 `session_id` 收敛为账号级稳定值，不合并 installation、conversation、window、turn 或 prompt-cache identity。Dashboard 提供风险确认开关，账号切换、空响应重试与 failover 均继承各自账号配置，旧持久化数据和非法模式安全回退为 `off`。（`src/auth/`、`src/proxy/codex-api.ts`、`src/routes/shared/`、`web/src/components/AccountCard.tsx`）
 - 日志可观测性与性能监控增强：为项目日志页面与数据链路添加全方位的可观测性指标捕获，包括首字延迟（TTFT）、单次预估金额（USD Cost）、Token 吐字生成速率（tok/s）、总执行耗时（Latency/Duration）及详细 Token 用量（Prompt / Completion / Reasoning / Cache Hit Rate）。在 Dashboard Logs 页面新增顶部可观测性概览看板（平均首字延迟、平均吐字速率、平均总耗时、总预估金额、Token 吞吐及请求成功率）、增强型列表表格列与 4 宫格性能详情抽屉；支持一键清空内存日志；补齐中英双语国际化支持。（`src/logs/metrics.ts`、`src/logs/store.ts`、`src/logs/entry.ts`、`src/routes/shared/streaming-handler.ts`、`src/routes/shared/non-streaming-handler.ts`、`src/routes/shared/direct-request-handler.ts`、`web/src/pages/LogsPage.tsx`、`shared/hooks/use-logs.ts`、`shared/i18n/translations.ts`）

@@ -34,6 +34,11 @@ import {
 } from "../proxy/openai-subagent.js";
 import { PASSTHROUGH_FORMAT } from "./responses-passthrough.js";
 import { handleCompact } from "./responses-compact.js";
+import { handleCodexAuxiliaryJson } from "./codex-auxiliary.js";
+import {
+  supportsCodexAuxiliaryJson,
+  type CodexAuxiliaryJsonPath,
+} from "../proxy/upstream-adapter.js";
 import { resolveDefaultTools, mergeDefaultTools } from "./shared/default-tools.js";
 
 // Re-export for downstream consumers
@@ -339,11 +344,86 @@ export function createResponsesRoutes(
     return res;
   };
 
+  const auxiliaryJsonHandler = (path: CodexAuxiliaryJsonPath) => async (c: Context) => {
+    const rawBody = await c.req.json();
+    const body = parseBody(c, rawBody);
+    if (body instanceof Response) return body;
+
+    const rawModel = nonEmptyString(body.model);
+    if (!rawModel) {
+      c.status(400);
+      return c.json({
+        error: {
+          message: "A non-empty model is required to select the Codex Responses upstream",
+          type: "invalid_request_error",
+          code: "missing_model",
+        },
+      });
+    }
+
+    const modelCheck = validateClientKeyModel(c, rawModel);
+    if (!modelCheck.allowed) {
+      c.status(403);
+      return c.json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "model_not_allowed",
+          message: modelCheck.message,
+          param: "model",
+        },
+      });
+    }
+
+    const routeMatch = upstreamRouter?.resolveMatch(rawModel);
+    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const authErr = checkAuth(c, accountPool, allowUnauthenticated);
+    if (authErr) return authErr;
+
+    if (
+      (routeMatch?.kind !== "api-key" && routeMatch?.kind !== "adapter")
+      || !supportsCodexAuxiliaryJson(routeMatch.adapter)
+    ) {
+      c.status(400);
+      return c.json({
+        error: {
+          message: `Model ${rawModel} is not routed through a Codex Responses API-key provider`,
+          type: "invalid_request_error",
+          code: "unsupported_codex_auxiliary_route",
+        },
+      });
+    }
+
+    const directModel = routeMatch.resolvedModel ?? rawModel;
+    const response = await handleCodexAuxiliaryJson({
+      c,
+      upstream: routeMatch.adapter,
+      path,
+      body: directModel === rawModel ? body : { ...body, model: directModel },
+      model: directModel,
+    });
+    if (response.ok) {
+      recordClientKeyUsage(c, rawModel, { input_tokens: 100, output_tokens: 100 });
+    }
+    return response;
+  };
+
+  const searchHandler = auxiliaryJsonHandler("alpha/search");
+  const imageGenerationHandler = auxiliaryJsonHandler("images/generations");
+  const imageEditHandler = auxiliaryJsonHandler("images/edits");
+
   app.post("/v1/responses", apiKeyAuth(accountPool, clientKeyPool), responsesHandler);
   app.post("/v1/responses/review", apiKeyAuth(accountPool, clientKeyPool), responsesHandler);
   app.post("/responses", apiKeyAuth(accountPool, clientKeyPool), responsesHandler);
   app.post("/responses/review", apiKeyAuth(accountPool, clientKeyPool), responsesHandler);
   app.post("/v1/responses/compact", apiKeyAuth(accountPool, clientKeyPool), compactHandler);
+  app.post("/responses/compact", apiKeyAuth(accountPool, clientKeyPool), compactHandler);
+  app.post("/v1/alpha/search", apiKeyAuth(accountPool, clientKeyPool), searchHandler);
+  app.post("/alpha/search", apiKeyAuth(accountPool, clientKeyPool), searchHandler);
+  app.post("/v1/images/generations", apiKeyAuth(accountPool, clientKeyPool), imageGenerationHandler);
+  app.post("/images/generations", apiKeyAuth(accountPool, clientKeyPool), imageGenerationHandler);
+  app.post("/v1/images/edits", apiKeyAuth(accountPool, clientKeyPool), imageEditHandler);
+  app.post("/images/edits", apiKeyAuth(accountPool, clientKeyPool), imageEditHandler);
 
   return app;
 }

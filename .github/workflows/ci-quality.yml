@@ -51,6 +51,28 @@ jobs:
       - name: Build web assets
         run: npm run build:web
 
+      # build.test.ts spins up the bundled server.mjs in a native Node
+      # subprocess, which requires the codex-tls native addon for the current
+      # platform (resolved from native/ via binDir/../native). Commit-shipped
+      # .node binaries only cover win32/darwin, so build linux here.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: native/target
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: native-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install native addon dependencies
+        working-directory: native
+        run: npm ci
+
+      - name: Build native addon
+        working-directory: native
+        run: npm run build
+
       - name: Run root vitest test suite
         run: npm test
 

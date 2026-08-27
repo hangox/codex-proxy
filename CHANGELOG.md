@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Docker 镜像版本号显示错误（始终显示 2.0.77 而非实际发布版本）：`docker-publish.yml` 构建时通过 `--build-arg PROXY_VERSION` 将版本注入镜像，`Dockerfile` 将其写入 `ENV PROXY_VERSION`，`getProxyInfo()` 优先读取该环境变量，容器内无 `.git` 时也能正确报告版本。（#677，关联 issue #676）
+
 ### Changed
 
 - Dashboard 日志页面完善深色模式适配，补齐筛选控件、统计卡片、详情抽屉和 JSON 代码块的深色状态；复制 JSON 成功后改为绿色反馈（`web/src/pages/LogsPage.tsx`）。

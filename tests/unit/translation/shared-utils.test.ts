@@ -17,8 +17,9 @@ vi.mock("@src/config.js", () => ({
   })),
 }));
 
-import { budgetToEffort, buildInstructions } from "@src/translation/shared-utils.js";
+import { budgetToEffort, buildInstructions, clampReasoningEffortToModel, isRecognizedReasoningEffort } from "@src/translation/shared-utils.js";
 import { getConfig } from "@src/config.js";
+import type { CodexModelInfo } from "@src/models/model-store.js";
 
 describe("budgetToEffort", () => {
   it("returns undefined for 0", () => {
@@ -97,5 +98,116 @@ describe("budgetToEffort additional edge cases", () => {
 
   it("returns 'xhigh' for very large budget (100000)", () => {
     expect(budgetToEffort(100000)).toBe("xhigh");
+  });
+});
+
+describe("isRecognizedReasoningEffort", () => {
+  it("recognizes every known level", () => {
+    for (const e of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
+      expect(isRecognizedReasoningEffort(e)).toBe(true);
+    }
+  });
+
+  it("rejects empty strings, case variants, and unknown names", () => {
+    expect(isRecognizedReasoningEffort("")).toBe(false);
+    expect(isRecognizedReasoningEffort("High")).toBe(false); // case-sensitive, no guessing
+    expect(isRecognizedReasoningEffort("banana")).toBe(false);
+  });
+});
+
+describe("clampReasoningEffortToModel", () => {
+  function model(efforts: string[]): Pick<CodexModelInfo, "supportedReasoningEfforts"> {
+    return { supportedReasoningEfforts: efforts.map((e) => ({ reasoningEffort: e, description: "" })) };
+  }
+
+  it("passes through a requested level that is in the supported list", () => {
+    const result = clampReasoningEffortToModel("high", model(["low", "medium", "high", "xhigh"]));
+    expect(result).toEqual({ effort: "high", clamped: false, supported: ["low", "medium", "high", "xhigh"] });
+  });
+
+  it("clamps to the model's max when requested above it", () => {
+    // Real gpt-5.4-mini shape: supports up to xhigh, client asks for max.
+    const result = clampReasoningEffortToModel("max", model(["low", "medium", "high", "xhigh"]));
+    expect(result.effort).toBe("xhigh");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("clamps to the model's min when requested below it", () => {
+    // Real gpt-5.4-pro shape: medium/high/xhigh, no low. Client asking for
+    // the cheapest low must NOT get the most expensive xhigh.
+    const result = clampReasoningEffortToModel("low", model(["medium", "high", "xhigh"]));
+    expect(result.effort).toBe("medium");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("clamps minimal to the model's min too", () => {
+    const result = clampReasoningEffortToModel("minimal", model(["medium", "high", "xhigh"]));
+    expect(result.effort).toBe("medium");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("clamps to the nearest supported level when requested between supported ones", () => {
+    // Model supports only low and xhigh; medium(3) is distance 1 from low(2)
+    // and distance 2 from xhigh(5) → low.
+    const result = clampReasoningEffortToModel("medium", model(["low", "xhigh"]));
+    expect(result.effort).toBe("low");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("breaks rank-distance ties toward the lower level", () => {
+    // Model supports only low and high; medium(3) is distance 1 from both →
+    // must pick low, never charge the user more when uncertain.
+    const result = clampReasoningEffortToModel("medium", model(["low", "high"]));
+    expect(result.effort).toBe("low");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("single-level models always clamp to that one level", () => {
+    // Real gpt-5-2-pro shape: single "medium" level.
+    for (const requested of ["none", "minimal", "low", "high", "xhigh", "max", "ultra"]) {
+      const result = clampReasoningEffortToModel(requested, model(["medium"]));
+      expect(result.effort).toBe("medium");
+      expect(result.clamped).toBe(true);
+    }
+  });
+
+  it("does not clamp when the requested level equals the model's max", () => {
+    const result = clampReasoningEffortToModel("xhigh", model(["low", "medium", "high", "xhigh"]));
+    expect(result.clamped).toBe(false);
+    expect(result.effort).toBe("xhigh");
+  });
+
+  it("passes through max on models that support it", () => {
+    const result = clampReasoningEffortToModel("max", model(["low", "medium", "high", "xhigh", "max", "ultra"]));
+    expect(result.clamped).toBe(false);
+    expect(result.effort).toBe("max");
+  });
+
+  it("passes through unchanged when modelInfo is undefined", () => {
+    const result = clampReasoningEffortToModel("ultra", undefined);
+    expect(result).toEqual({ effort: "ultra", clamped: false, supported: [] });
+  });
+
+  it("passes through unchanged when the supported list is empty", () => {
+    const result = clampReasoningEffortToModel("high", model([]));
+    expect(result).toEqual({ effort: "high", clamped: false, supported: [] });
+  });
+
+  it("finds the nearest level regardless of declaration order", () => {
+    const result = clampReasoningEffortToModel("ultra", model(["xhigh", "low", "high", "medium"]));
+    expect(result.effort).toBe("xhigh");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("clamps unknown level strings to the lowest supported level (cheaper direction)", () => {
+    const result = clampReasoningEffortToModel("banana", model(["low", "medium", "high"]));
+    expect(result.effort).toBe("low");
+    expect(result.clamped).toBe(true);
+  });
+
+  it("clamps unknown strings to the lowest supported level even when the list has no lower tiers", () => {
+    const result = clampReasoningEffortToModel("banana", model(["high", "xhigh"]));
+    expect(result.effort).toBe("high");
+    expect(result.clamped).toBe(true);
   });
 });

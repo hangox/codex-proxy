@@ -19,6 +19,14 @@ vi.mock("@src/paths.js", () => ({
   getConfigDir: vi.fn(() => "/tmp/test-config"),
 }));
 
+// The clamp/isRecognized mocks below mirror the real implementations' behavior
+// (not stubbed as identity) because the output_config.effort tests depend on
+// their actual semantics: unsupported levels clamp to the nearest supported
+// one, empty/unknown values fall back to the next priority source.
+const REASONING_EFFORT_RANK: Record<string, number> = {
+  none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6, ultra: 7,
+};
+
 vi.mock("@src/translation/shared-utils.js", () => ({
   buildInstructions: vi.fn((text: string) => text),
   budgetToEffort: vi.fn((budget: number | undefined) => {
@@ -28,6 +36,22 @@ vi.mock("@src/translation/shared-utils.js", () => ({
     if (budget < 20000) return "high";
     return "xhigh";
   }),
+  isRecognizedReasoningEffort: vi.fn((effort: string) => Object.hasOwn(REASONING_EFFORT_RANK, effort)),
+  clampReasoningEffortToModel: vi.fn(
+    (effort: string, modelInfo: { supportedReasoningEfforts?: { reasoningEffort: string }[] } | undefined) => {
+      const supported = (modelInfo?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
+      if (supported.length === 0 || supported.includes(effort)) {
+        return { effort, clamped: false, supported };
+      }
+      const rankOf = (e: string) => REASONING_EFFORT_RANK[e] ?? -1;
+      const requestedRank = rankOf(effort);
+      const nearest = [...supported].sort((a, b) => {
+        const d = Math.abs(rankOf(a) - requestedRank) - Math.abs(rankOf(b) - requestedRank);
+        return d !== 0 ? d : rankOf(a) - rankOf(b);
+      })[0];
+      return { effort: nearest ?? effort, clamped: true, supported };
+    },
+  ),
 }));
 
 vi.mock("@src/translation/tool-format.js", () => ({
@@ -44,6 +68,43 @@ vi.mock("@src/models/model-store.js", () => ({
   }),
   getModelInfo: vi.fn((id: string) => {
     if (id === "gpt-5.4") return { defaultReasoningEffort: "medium" };
+    // Supports up to xhigh — mirrors real gpt-5.4-mini, exposes the clamp path.
+    if (id === "limited-effort-model") {
+      return {
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+        ],
+      };
+    }
+    // Supports through max/ultra — mirrors real gpt-5.6-sol.
+    if (id === "full-effort-model") {
+      return {
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+          { reasoningEffort: "max", description: "" },
+          { reasoningEffort: "ultra", description: "" },
+        ],
+      };
+    }
+    // Mirrors real gpt-5.4-pro: no low tier — clamps low up to medium, not xhigh.
+    if (id === "no-low-model") {
+      return {
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "high", description: "" },
+          { reasoningEffort: "xhigh", description: "" },
+        ],
+      };
+    }
     return undefined;
   }),
 }));
@@ -472,6 +533,207 @@ describe("translateAnthropicToCodexRequest", () => {
       );
       // adaptive without budget → undefined, no config default → no effort set
       expect(result.reasoning?.effort).toBeUndefined();
+    });
+  });
+
+  // ── output_config.effort ─────────────────────────────────────────────
+  // Real Claude Code sends the user's explicit effort selection in
+  // `output_config.effort` (adaptive thinking never carries budget_tokens).
+  // These tests lock the priority chain and the clamp behavior.
+
+  describe("output_config.effort", () => {
+    it("takes priority over thinking.budget_tokens", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          // budgetToEffort(500) would yield "low"; output_config.effort must win.
+          thinking: { type: "adaptive", budget_tokens: 500 } as never,
+          output_config: { effort: "high" },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("high");
+    });
+
+    it("applies standalone (real adaptive mode: only output_config, no budget)", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "xhigh" },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("xhigh");
+    });
+
+    it("does not affect the existing chain when absent", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("clamps to the model's max and logs a warning when requested effort is unsupported", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "limited-effort-model",
+            output_config: { effort: "max" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("xhigh");
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain("phase=effort_clamped");
+        expect(logged).toContain("requested=max");
+        expect(logged).toContain("clamped_to=xhigh");
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("passes through unchanged on models that support the requested effort", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "max" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("max");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("passes through unchanged when the model declares no effort metadata", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "totally-unknown-model",
+            output_config: { effort: "ultra" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("ultra");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("ignores non-string effort and falls back to the next source", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          output_config: { effort: 123 } as never,
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("treats empty-string effort as not provided instead of dropping the whole chain", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({
+          output_config: { effort: "" },
+          thinking: { type: "enabled", budget_tokens: 5000 },
+        }),
+      );
+      // Decisive assertion: falls back to thinking's medium, not undefined.
+      expect(result.reasoning?.effort).toBe("medium");
+      expect(result.reasoning?.effort).not.toBeUndefined();
+    });
+
+    it("falls back to the config default when empty-string effort has no next source", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ output_config: { effort: "" } }),
+        makeModelConfig({ default_reasoning_effort: "medium" }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("does not turn whitespace effort into the model's max via clamping", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "   " },
+            thinking: { type: "enabled", budget_tokens: 5000 },
+          }),
+        );
+        // Decisive: must be thinking's medium, not max (the clamp would produce).
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("max");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("trims a valid level with surrounding whitespace (\" high \" → high)", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "limited-effort-model",
+            output_config: { effort: " high " },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("high");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("treats an unrecognized level name as not provided and falls back to thinking", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "full-effort-model",
+            output_config: { effort: "banana" },
+            thinking: { type: "enabled", budget_tokens: 5000 },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("banana");
+        expect(result.reasoning?.effort).not.toBe("ultra");
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("falls back to the config default for unrecognized effort with no next source", () => {
+      const result = translateAnthropicToCodexRequest(
+        makeRequest({ model: "full-effort-model", output_config: { effort: "banana" } }),
+        makeModelConfig({ default_reasoning_effort: "medium" }),
+      );
+      expect(result.reasoning?.effort).toBe("medium");
+    });
+
+    it("clamps low up to the model's min (medium), not its max (xhigh), on models without a low tier", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const result = translateAnthropicToCodexRequest(
+          makeRequest({
+            model: "no-low-model",
+            output_config: { effort: "low" },
+          }),
+        );
+        expect(result.reasoning?.effort).toBe("medium");
+        expect(result.reasoning?.effort).not.toBe("xhigh");
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const logged = warnSpy.mock.calls[0]?.[0] as string;
+        expect(logged).toContain("requested=low");
+        expect(logged).toContain("clamped_to=medium");
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

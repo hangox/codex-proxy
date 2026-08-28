@@ -666,6 +666,19 @@ export function isRequestableModel(input: string): boolean {
   if (trimmed === "codex") return true;
   const defaultModel = getConfig().model.default;
   if (defaultModel && trimmed === defaultModel) return true;
+
+  // The `codex` sentinel has no catalog entry, so a model built from it with a
+  // known suffix (e.g. `codex-high-fast`, `codex-fast`) would not be found by
+  // isRecognizedModelName. Strip known suffixes first: if the base name is the
+  // sentinel or the configured default model, the suffixed form is requestable
+  // too. Unknown names such as `gpt-9999` still fall through and are rejected.
+  const stripped = stripKnownModelSuffixes(trimmed);
+  if (stripped.modelName !== trimmed) {
+    if (stripped.modelName === "codex" || (defaultModel && stripped.modelName === defaultModel)) {
+      return true;
+    }
+  }
+
   return _instance.isRecognizedModelName(trimmed);
 }
 

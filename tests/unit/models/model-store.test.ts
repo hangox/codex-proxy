@@ -58,6 +58,7 @@ import { readFileSync as realReadFileSync } from "fs";
 import {
   loadStaticModels,
   isRecognizedModelName,
+  isRequestableModel,
   parseModelName,
   resolveModelId,
   getModelInfo,
@@ -503,6 +504,35 @@ aliases: {}
       expect(isRecognizedModelName("totally-unknown")).toBe(false);
       expect(isRecognizedModelName("totally-unknown-low")).toBe(false);
       expect(isRecognizedModelName("totally-unknown-high-fast")).toBe(false);
+    });
+  });
+
+  describe("isRequestableModel", () => {
+    it("accepts the codex sentinel and its suffixed forms", () => {
+      expect(isRequestableModel("codex")).toBe(true);
+      expect(isRequestableModel("codex-fast")).toBe(true);
+      expect(isRequestableModel("codex-high-fast")).toBe(true);
+      expect(isRequestableModel("codex-low")).toBe(true);
+    });
+
+    it("accepts the configured default model and its suffixed forms", () => {
+      expect(isRequestableModel("gpt-5.3-codex")).toBe(true);
+      expect(isRequestableModel("gpt-5.3-codex-high-fast")).toBe(true);
+    });
+
+    it("accepts known catalog models and aliases with suffixes", () => {
+      mockConfiguredAliases["my-model"] = "gpt-5.4";
+      loadStaticModels("/tmp/test-config");
+      expect(isRequestableModel("gpt-5.4")).toBe(true);
+      expect(isRequestableModel("gpt-5.4-high-fast")).toBe(true);
+      expect(isRequestableModel("my-model-high")).toBe(true);
+    });
+
+    it("rejects unknown model names", () => {
+      expect(isRequestableModel("")).toBe(false);
+      expect(isRequestableModel("gpt-9999")).toBe(false);
+      expect(isRequestableModel("totally-unknown-high-fast")).toBe(false);
+      expect(isRequestableModel("codex-foo")).toBe(false);
     });
   });
 

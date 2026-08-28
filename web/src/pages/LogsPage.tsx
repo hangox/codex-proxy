@@ -191,7 +191,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
         </button>
 
         <input
-          class="px-3 py-1.5 rounded-lg text-xs bg-white dark:bg-bg-dark border border-slate-200 dark:border-border-dark focus:outline-none focus:ring-1 focus:ring-primary w-48"
+          class="px-3 py-1.5 rounded-lg text-xs bg-white dark:bg-bg-dark text-slate-700 dark:text-text-main placeholder:text-slate-400 dark:placeholder:text-text-dim border border-slate-200 dark:border-border-dark focus:outline-none focus:ring-1 focus:ring-primary w-48"
           value={logs.search}
           onInput={(e) => logs.setSearch((e.target as HTMLInputElement).value)}
           placeholder={t("logsSearch")}
@@ -263,7 +263,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
         {/* Log List Table */}
         <div class="flex-1 min-w-0">
           <div class="border border-slate-200 dark:border-border-dark rounded-lg overflow-hidden bg-white dark:bg-bg-dark shadow-sm">
-            <div class="w-full">
+            <div class="w-full overflow-x-auto">
               <div class="flex items-center text-xs text-slate-500 dark:text-text-dim font-medium px-3 py-2.5 bg-slate-50 dark:bg-bg-dark border-b border-slate-200 dark:border-border-dark gap-2">
                 <div class="w-[68px] shrink-0">{t("logsTime")}</div>
                 <div class="w-[38px] shrink-0 text-center">{t("logsStatus")}</div>
@@ -343,7 +343,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                 })}
               </div>
 
-                <div class="flex items-center justify-between px-3 py-2.5 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500 bg-slate-50 dark:bg-bg-dark">
+                <div class="flex items-center justify-between px-3 py-2.5 border-t border-slate-200 dark:border-border-dark text-xs text-slate-500 dark:text-text-dim bg-slate-50 dark:bg-bg-dark">
                   <button
                       class="px-2.5 py-1 rounded bg-white dark:bg-border-dark text-slate-600 dark:text-text-dim border border-slate-200 dark:border-border-dark disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
                     disabled={!logs.hasPrev}
@@ -430,28 +430,28 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
                   <div class="flex flex-col gap-3.5">
                     {/* KPI 4-Card Grid */}
                     <div class="grid grid-cols-2 gap-2">
-                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-border-dark/30 border border-slate-200/60 dark:border-border-dark">
+                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-card-dark border border-slate-200/60 dark:border-border-dark">
                         <div class="text-[10px] text-slate-400 dark:text-text-dim font-medium">{t("logsTtft")}</div>
                         <div class="text-base font-semibold font-mono text-slate-800 dark:text-white mt-0.5">
                           {formatDuration(logs.selected.ttftMs)}
                         </div>
                       </div>
 
-                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-border-dark/30 border border-slate-200/60 dark:border-border-dark">
+                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-card-dark border border-slate-200/60 dark:border-border-dark">
                         <div class="text-[10px] text-slate-400 dark:text-text-dim font-medium">{t("logsSpeed")}</div>
                         <div class="text-base font-semibold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
                           {formatSpeed(logs.selected.tokensPerSecond)}
                         </div>
                       </div>
 
-                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-border-dark/30 border border-slate-200/60 dark:border-border-dark">
+                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-card-dark border border-slate-200/60 dark:border-border-dark">
                         <div class="text-[10px] text-slate-400 dark:text-text-dim font-medium">{t("logsCost")}</div>
                         <div class="text-base font-semibold font-mono text-amber-600 dark:text-amber-400 mt-0.5">
                           {formatCost(logs.selected.costUsd)}
                         </div>
                       </div>
 
-                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-border-dark/30 border border-slate-200/60 dark:border-border-dark">
+                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-card-dark border border-slate-200/60 dark:border-border-dark">
                         <div class="text-[10px] text-slate-400 dark:text-text-dim font-medium">{t("logsLatency")}</div>
                         <div class="text-base font-semibold font-mono text-slate-800 dark:text-white mt-0.5">
                           {logs.selected.latencyMs != null ? `${logs.selected.latencyMs}ms` : "-"}
@@ -461,7 +461,7 @@ export function LogsPage({ embedded = false }: { embedded?: boolean }) {
 
                     {/* Token Breakdown Card */}
                     {logs.selected.usage && (
-                      <div class="p-3 rounded-lg border border-slate-200 dark:border-border-dark bg-slate-50/50 dark:bg-border-dark/20 flex flex-col gap-2">
+                      <div class="p-3 rounded-lg border border-slate-200 dark:border-border-dark bg-slate-50/50 dark:bg-card-dark flex flex-col gap-2">
                         <div class="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
                           {t("logsTokensDetail")}
                         </div>

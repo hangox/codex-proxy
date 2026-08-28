@@ -218,6 +218,20 @@ describe("Theme CSS", () => {
       expect(findRule("text-text-main")).toBeTruthy();
     });
 
+    it("generates alpha-capable dark neutral variants", () => {
+      for (const variant of [
+        "bg-border-dark\\/50",
+        "bg-border-dark\\/60",
+        "bg-bg-dark\\/40",
+        "text-text-dim\\/50",
+        "text-text-dim\\/70",
+        "text-text-dim\\/80",
+        "hover\\:bg-border-dark\\/30",
+      ]) {
+        expect(findRule(variant), `dark:${variant}`).toBeTruthy();
+      }
+    });
+
     it("all dark: variant selectors require .dark ancestor", () => {
       const darkBlocks = css.split("}").filter((b) => b.includes("dark\\:"));
       expect(darkBlocks.length).toBeGreaterThan(0);

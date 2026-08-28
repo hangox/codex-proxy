@@ -30,11 +30,11 @@ export default {
         "avatar-red-text": "rgb(var(--avatar-red-text) / <alpha-value>)",
         "avatar-red-bg": "rgb(var(--avatar-red-bg) / <alpha-value>)",
         "bg-light": "#ffffff",
-        "bg-dark": "var(--bg-dark, #0d1117)",
-        "card-dark": "var(--card-dark, #161b22)",
-        "border-dark": "var(--border-dark, #30363d)",
-        "text-main": "#e6edf3",
-        "text-dim": "#8b949e",
+        "bg-dark": "rgb(13 17 23 / <alpha-value>)",
+        "card-dark": "rgb(22 27 34 / <alpha-value>)",
+        "border-dark": "rgb(48 54 61 / <alpha-value>)",
+        "text-main": "rgb(230 237 243 / <alpha-value>)",
+        "text-dim": "rgb(139 148 158 / <alpha-value>)",
       },
       fontFamily: {
         display: [

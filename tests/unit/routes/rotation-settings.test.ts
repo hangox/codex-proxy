@@ -78,6 +78,7 @@ const mockPool = {
   getAll: vi.fn(() => []),
   acquire: vi.fn(),
   release: vi.fn(),
+  setRotationStrategy: vi.fn(),
 } as unknown as Parameters<typeof createWebRoutes>[0];
 
 describe("GET /admin/rotation-settings", () => {
@@ -156,6 +157,27 @@ describe("POST /admin/rotation-settings", () => {
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("hot-applies the strategy on the pool without requiring a restart", async () => {
+    const app = createWebRoutes(mockPool);
+    const res = await app.request("/admin/rotation-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rotation_strategy: "round_robin" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockPool.setRotationStrategy).toHaveBeenCalledWith("round_robin");
+  });
+
+  it("does not touch the pool for invalid strategies", async () => {
+    const app = createWebRoutes(mockPool);
+    await app.request("/admin/rotation-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rotation_strategy: "random" }),
+    });
+    expect(mockPool.setRotationStrategy).not.toHaveBeenCalled();
   });
 
 });

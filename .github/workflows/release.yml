@@ -323,7 +323,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" /tmp/latest-mac.yml --clobber
+        # This job has no checkout, so gh cannot auto-detect the repo; pass
+        # --repo explicitly (GITHUB_REPOSITORY is set on every runner).
+        run: gh release upload "$GITHUB_REPOSITORY" "$TAG" /tmp/latest-mac.yml --clobber
 
   notify:
     needs: [notes, build, merge-mac-manifest]

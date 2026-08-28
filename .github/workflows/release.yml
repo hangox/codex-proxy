@@ -14,11 +14,14 @@ on:
 permissions:
   contents: write
 
+# Prevent two runs for the same tag from racing on the same release assets.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  # Runs FIRST so the GitHub Release exists with real notes before any
-  # artifact upload. Previously notes were generated in the last job: upload
-  # steps created the release with `--notes ""`, and a notes-job failure left
-  # the body empty forever (exactly what beta users see in the update popup).
+  # Keep notes first: build jobs only start after the release exists with its
+  # real notes, preserving the existing updater/release safety semantics.
   notes:
     runs-on: ubuntu-latest
     steps:
@@ -46,12 +49,8 @@ jobs:
         run: |
           bash .github/scripts/generate-release-notes.sh "$TAG" > /tmp/release-notes.md
 
-          # Tag like v1.2.3-beta.SHA → mark as prerelease (semver convention).
-          # Stable tags stay --latest=false until assets are uploaded: this
-          # release has zero assets for the whole build window, and stable
-          # update isolation relies on GitHub /releases/latest — clients must
-          # keep resolving the previous good release until the notify job
-          # flips --latest after all platforms pass smoke.
+          # Tag like v1.2.3-beta.SHA -> prerelease. Stable releases remain
+          # non-latest until every platform has passed smoke and uploaded.
           PRERELEASE_FLAG=""
           LATEST_FLAG=""
           case "$TAG" in
@@ -62,19 +61,24 @@ jobs:
           PUBLISHED=""
           for i in 1 2 3; do
             if gh release edit "$TAG" --draft=false $PRERELEASE_FLAG $LATEST_FLAG --notes-file /tmp/release-notes.md; then
-              PUBLISHED=1; break
+              PUBLISHED=1
+              break
             fi
             if gh release create "$TAG" --title "$TAG" $PRERELEASE_FLAG $LATEST_FLAG --notes-file /tmp/release-notes.md; then
-              PUBLISHED=1; break
+              PUBLISHED=1
+              break
             fi
             echo "release edit/create failed (attempt $i/3), retrying..."
             sleep $(( i * 15 ))
           done
+
           if [ -z "$PUBLISHED" ]; then
             echo "::error::could not create or update release $TAG after 3 attempts"
             exit 1
           fi
 
+  # All four targets now build in parallel. macOS x64 uses a native Intel
+  # runner instead of waiting for the ARM64 job and running through Rosetta.
   build:
     needs: notes
     strategy:
@@ -83,14 +87,14 @@ jobs:
         include:
           - os: windows-latest
             platform: win
-            artifact: windows
           - os: macos-latest
             platform: mac
             arch: arm64
-            artifact: macos-arm64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
           - os: ubuntu-latest
             platform: linux
-            artifact: linux
 
     runs-on: ${{ matrix.os }}
 
@@ -110,11 +114,26 @@ jobs:
             web/package-lock.json
             native/package-lock.json
 
+      - name: Cache Electron / electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'packages/electron/electron-builder.yml') }}
+          restore-keys: |
+            electron-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install all workspace dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
 
       - name: Install web frontend dependencies
-        run: cd web && npm ci
+        working-directory: web
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Build core (web + tsc)
         run: npm run build
@@ -122,16 +141,20 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust build
+      - name: Cache Cargo + Rust build
         uses: actions/cache@v4
         with:
-          path: native/target
-          key: native-${{ runner.os }}-${{ matrix.arch || 'x64' }}-${{ hashFiles('native/Cargo.lock') }}
-          restore-keys: native-${{ runner.os }}-${{ matrix.arch || 'x64' }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install native addon dependencies
         working-directory: native
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Build native addon
         working-directory: native
@@ -145,42 +168,12 @@ jobs:
         working-directory: packages/electron
         run: node electron/prepare-pack.mjs
 
-      - name: Clean stale release assets
-        continue-on-error: true
-        shell: bash
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null || echo "")
-          [ -z "$ASSETS" ] && exit 0
-
-          case "${{ matrix.platform }}" in
-            mac) PATTERN="mac-${{ matrix.arch }}" ;;
-            win) PATTERN="win-" ;;
-            linux) PATTERN="linux-" ;;
-          esac
-
-          echo "$ASSETS" | grep -iE "$PATTERN" | while read -r name; do
-            echo "Removing stale asset: $name"
-            gh release delete-asset "$TAG" "$name" -y 2>/dev/null || true
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Pack (${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }})
         working-directory: packages/electron
-        # shell: bash needed so the Windows runner uses Git Bash instead of pwsh
-        # (pwsh doesn't handle backslash line continuations the same way).
         shell: bash
         run: |
-          # Drive electron-builder version from the tag, not package.json. Required
-          # so beta tags (vX.Y.Z-beta.SHA, where bump-electron-beta.yml deliberately
-          # does NOT touch package.json) publish to the correct GitHub release and
-          # are detected as prerelease by electron-builder's semver suffix check.
           TAG="${{ inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
-          # --publish never: build artifacts to release/ but don't upload yet.
-          # The Smoke step below gates the upload — better to ship nothing than
-          # ship a binary that crashes on startup (cf. v2.0.71/72 events bug).
           npx electron-builder --config electron-builder.yml \
             --${{ matrix.platform }} ${{ matrix.arch && format('--{0}', matrix.arch) || '' }} \
             --config.extraMetadata.version="$VERSION" \
@@ -192,9 +185,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update -qq
-          # libfuse2 = AppImage runtime; xvfb = virtual display so the
-          # Electron renderer can spawn a window in a headless runner.
-          sudo apt-get install -y libfuse2 xvfb
+          sudo apt-get install -y --no-install-recommends libfuse2 xvfb
 
       - name: Smoke test packaged binary (win)
         if: matrix.platform == 'win'
@@ -222,197 +213,120 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # Each mac build generates its own latest-mac.yml. Do not upload either
+      # one directly to the release (same filename); save them separately and
+      # merge once both native-architecture builds complete.
+      - name: Save mac update manifest
+        if: matrix.platform == 'mac'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-update-manifest-${{ matrix.arch }}
+          path: packages/electron/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Upload artifacts to release (${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }})
-        # Only runs when smoke succeeded. Mirrors the build-mac-x64
-        # job's manual-upload pattern; replaces what `--publish always`
-        # used to do, but conditional on artifact actually working.
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          # Ensure the GitHub Release exists. With --publish never above,
-          # electron-builder no longer creates it, so the first uploader
-          # to arrive needs to. `|| true` swallows the 422 that the
-          # concurrent matrix jobs hit when a peer wins the race.
-          IS_PRERELEASE=""
-          LATEST_FLAG=""
-          if [[ "$TAG" == *-* ]]; then IS_PRERELEASE="--prerelease"; else LATEST_FLAG="--latest=false"; fi
-          gh release create "$TAG" --title "$TAG" --notes "" --draft=false $IS_PRERELEASE $LATEST_FLAG 2>/dev/null || true
           cd packages/electron/release
+          files=()
+
           case "${{ matrix.platform }}" in
             mac)
-              # arm64 only — x64 handled by build-mac-x64 job.
-              for f in *arm64* latest-mac.yml; do
-                [ -f "$f" ] || continue
-                echo "Uploading: $f"
-                gh release upload "$TAG" "$f" --clobber
-              done
+              # Preserve the old asset-selection behavior while allowing both
+              # architectures to upload concurrently. The shared manifest is
+              # intentionally excluded and merged in the next job.
+              if [ "${{ matrix.arch }}" = "arm64" ]; then
+                for f in *arm64*; do
+                  [ -f "$f" ] && files+=("$f")
+                done
+              else
+                for f in *; do
+                  [ -f "$f" ] || continue
+                  echo "$f" | grep -qi "arm64" && continue
+                  [[ "$f" == *.yml || "$f" == *.yaml ]] && continue
+                  files+=("$f")
+                done
+              fi
               ;;
             linux)
               for f in Codex-Proxy-*-linux* latest-linux.yml; do
-                [ -f "$f" ] || continue
-                echo "Uploading: $f"
-                gh release upload "$TAG" "$f" --clobber
+                [ -f "$f" ] && files+=("$f")
               done
               ;;
             win)
               for f in Codex-Proxy-*-win* latest.yml; do
-                [ -f "$f" ] || continue
-                echo "Uploading: $f"
-                gh release upload "$TAG" "$f" --clobber
+                [ -f "$f" ] && files+=("$f")
               done
               ;;
           esac
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # macOS x64 runs AFTER arm64 to avoid release asset upload collisions
-  # (shared files like latest-mac.yml don't include arch in the name)
-  build-mac-x64:
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no release artifacts found for ${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }}"
+            exit 1
+          fi
+
+          printf 'Uploading: %s\n' "${files[@]}"
+          # One gh invocation per platform instead of one HTTP/API cycle per file.
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  # Merge the two architecture-specific mac manifests after both mac builds
+  # have completed. This job is tiny and removes the old full x64 serial build.
+  merge-mac-manifest:
     needs: build
-    runs-on: macos-latest
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download mac manifests
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          pattern: mac-update-manifest-*
+          path: /tmp/mac-manifests
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            web/package-lock.json
-            native/package-lock.json
-
-      - name: Install all workspace dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Install web frontend dependencies
-        run: cd web && npm ci
-
-      - name: Build core (web + tsc)
-        run: npm run build
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-
-      - name: Cache Rust build
-        uses: actions/cache@v4
-        with:
-          path: native/target
-          key: native-macos-x64-${{ hashFiles('native/Cargo.lock') }}
-          restore-keys: native-macos-x64-
-
-      - name: Install native addon dependencies
-        working-directory: native
-        run: npm ci
-
-      - name: Build native addon (x64)
-        working-directory: native
-        run: npx napi build --platform --release --target x86_64-apple-darwin
-
-      - name: Bundle Electron (esbuild)
-        working-directory: packages/electron
-        run: node electron/build.mjs
-
-      - name: Prepare pack (copy root resources)
-        working-directory: packages/electron
-        run: node electron/prepare-pack.mjs
-
-      - name: Clean stale x64 release assets
-        continue-on-error: true
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null || echo "")
-          [ -z "$ASSETS" ] && exit 0
-          echo "$ASSETS" | grep -iE "mac-x64" | while read -r name; do
-            echo "Removing stale asset: $name"
-            gh release delete-asset "$TAG" "$name" -y 2>/dev/null || true
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pack (mac-x64)
-        working-directory: packages/electron
+      - name: Merge latest-mac.yml
         shell: bash
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          npx electron-builder --config electron-builder.yml \
-            --mac --x64 \
-            --config.extraMetadata.version="$VERSION" \
-            --publish never
+          ARM64_YML="/tmp/mac-manifests/mac-update-manifest-arm64/latest-mac.yml"
+          X64_YML="/tmp/mac-manifests/mac-update-manifest-x64/latest-mac.yml"
 
-      - name: Smoke test packaged binary (mac-x64)
-        shell: bash
-        env:
-          RELEASE_DIR: packages/electron/release
-          MAC_ARCH: x64
-          # x64 app startup runs through Rosetta on macOS runners and can
-          # legitimately take just over the default 90s smoke timeout.
-          SMOKE_TIMEOUT: 180
-          SMOKE_LOG: ${{ runner.temp }}/electron-smoke.log
-        run: bash .github/scripts/electron-smoke.sh
+          [ -f "$ARM64_YML" ] || { echo "::error::missing arm64 latest-mac.yml"; exit 1; }
+          [ -f "$X64_YML" ] || { echo "::error::missing x64 latest-mac.yml"; exit 1; }
 
-      - name: Upload smoke log on failure (mac-x64)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: electron-smoke-mac-x64-log
-          path: ${{ runner.temp }}/electron-smoke.log
-          if-no-files-found: ignore
-          retention-days: 7
+          ruby <<'RUBY'
+          require 'yaml'
 
-      - name: Upload x64 artifacts to release
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          # Cheap backstop only: the `notes` job (which every build job
-          # depends on) already created the release with real notes, so
-          # this create normally no-ops with "already exists".
-          IS_PRERELEASE=""
-          LATEST_FLAG=""
-          if [[ "$TAG" == *-* ]]; then IS_PRERELEASE="--prerelease"; else LATEST_FLAG="--latest=false"; fi
-          gh release create "$TAG" --title "$TAG" --notes "" --draft=false $IS_PRERELEASE $LATEST_FLAG 2>/dev/null || true
-          cd packages/electron/release
-          for f in *; do
-            [ -f "$f" ] || continue
-            # Only upload x64 files; skip arm64 and yml manifests
-            echo "$f" | grep -qi "arm64" && continue
-            echo "$f" | grep -qiE "\.yml$" && continue
-            echo "Uploading: $f"
-            gh release upload "$TAG" "$f" --clobber 2>/dev/null || true
-          done
+          arm64_path = '/tmp/mac-manifests/mac-update-manifest-arm64/latest-mac.yml'
+          x64_path = '/tmp/mac-manifests/mac-update-manifest-x64/latest-mac.yml'
+
+          arm64 = YAML.unsafe_load_file(arm64_path)
+          x64 = YAML.unsafe_load_file(x64_path)
+
+          arm64_files = Array(arm64['files']).select { |f| f['url'].to_s.include?('arm64') }
+          x64_files = Array(x64['files']).reject { |f| f['url'].to_s.include?('arm64') }
+
+          if arm64_files.empty?
+            abort 'arm64 manifest contains no arm64 file entries'
+          end
+          if x64_files.empty?
+            abort 'x64 manifest contains no x64 file entries'
+          end
+
+          merged = arm64
+          merged['files'] = arm64_files + x64_files
+          output = YAML.dump(merged).sub(/\A---\s*\n/, '')
+          File.write('/tmp/latest-mac.yml', output)
+          RUBY
+
+      - name: Upload merged mac manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Merge x64 entries into latest-mac.yml
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          gh release download "$TAG" --pattern "latest-mac.yml" --output /tmp/arm64-mac.yml --clobber 2>/dev/null || exit 0
-          LOCAL_YML="packages/electron/release/latest-mac.yml"
-          [ -f "$LOCAL_YML" ] || exit 0
-          node -e "
-          const fs = require('fs');
-          const yaml = require('js-yaml');
-          const arm64Yml = yaml.load(fs.readFileSync('/tmp/arm64-mac.yml', 'utf8'));
-          const x64Yml = yaml.load(fs.readFileSync('$LOCAL_YML', 'utf8'));
-          const arm64Files = (arm64Yml.files || []).filter(f => f.url.includes('arm64'));
-          const x64Files = (x64Yml.files || []).filter(f => !f.url.includes('arm64'));
-          arm64Yml.files = [...arm64Files, ...x64Files];
-          fs.writeFileSync('/tmp/merged-mac.yml', yaml.dump(arm64Yml, { lineWidth: -1, quotingType: '\"' }));
-          "
-          mv /tmp/merged-mac.yml /tmp/latest-mac.yml
-          gh release upload "$TAG" /tmp/latest-mac.yml --clobber
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" /tmp/latest-mac.yml --clobber
 
   notify:
-    needs: [notes, build, build-mac-x64]
+    needs: [notes, build, merge-mac-manifest]
     runs-on: ubuntu-latest
     if: always() && (startsWith(github.ref, 'refs/tags/v') || inputs.tag)
     steps:
@@ -429,9 +343,6 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           case "$TAG" in *-*) echo "prerelease, never latest"; exit 0 ;; esac
-          # A flip failure makes a fully-built stable release invisible to the
-          # auto-updater (/releases/latest keeps pointing at the previous
-          # one) — retry, and let the webhook below report the failure.
           for i in 1 2 3; do
             if gh release edit "$TAG" --latest; then exit 0; fi
             echo "marking latest failed (attempt $i/3), retrying..."
@@ -446,11 +357,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          # The notes job publishes the release before any artifact exists.
-          # If every platform failed, a published zero-asset release would
-          # break beta clients (allow_prerelease resolves the NEWEST release
-          # and 404s on latest*.yml). Delete it — the tag survives, so a
-          # manual re-dispatch of release.yml can retry the same version.
           COUNT=$(gh release view "$TAG" --json assets -q '.assets | length' 2>/dev/null || echo "")
           if [ "$COUNT" = "0" ]; then
             echo "deleting zero-asset release $TAG (tag kept)"

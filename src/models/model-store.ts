@@ -651,6 +651,37 @@ export function resolveModelId(input: string): string {
   return _instance.resolveModelId(input);
 }
 
+/**
+ * Whether a client-supplied model name is requestable through the default
+ * Codex/account path (as opposed to an api-key/adapter route).
+ *
+ * Treats the "codex" sentinel (used when a client omits the model) and the
+ * configured default model as valid, since both legitimately resolve to the
+ * default model. Any other name that is neither a catalog entry nor an alias
+ * is unrecognised and should be rejected rather than silently defaulted.
+ */
+export function isRequestableModel(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  if (trimmed === "codex") return true;
+  const defaultModel = getConfig().model.default;
+  if (defaultModel && trimmed === defaultModel) return true;
+
+  // The `codex` sentinel has no catalog entry, so a model built from it with a
+  // known suffix (e.g. `codex-high-fast`, `codex-fast`) would not be found by
+  // isRecognizedModelName. Strip known suffixes first: if the base name is the
+  // sentinel or the configured default model, the suffixed form is requestable
+  // too. Unknown names such as `gpt-9999` still fall through and are rejected.
+  const stripped = stripKnownModelSuffixes(trimmed);
+  if (stripped.modelName !== trimmed) {
+    if (stripped.modelName === "codex" || (defaultModel && stripped.modelName === defaultModel)) {
+      return true;
+    }
+  }
+
+  return _instance.isRecognizedModelName(trimmed);
+}
+
 export function isRecognizedModelName(input: string): boolean {
   return _instance.isRecognizedModelName(input);
 }

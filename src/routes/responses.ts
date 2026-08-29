@@ -20,7 +20,7 @@ import { getConfig } from "../config.js";
 import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { prepareSchema, isRecord } from "../translation/shared-utils.js";
-import { parseModelName, resolveModelId, buildDisplayModelName } from "../models/model-store.js";
+import { parseModelName, resolveModelId, buildDisplayModelName, isRequestableModel } from "../models/model-store.js";
 import { handleProxyRequest } from "./shared/proxy-handler.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
@@ -133,8 +133,25 @@ export function createResponsesRoutes(
       });
     }
 
-    const routeMatch = upstreamRouter?.resolveMatch(rawModel);
-    const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
+    const routeMatch = upstreamRouter?.resolveMatch(rawModel)
+      ?? (isRequestableModel(rawModel)
+        ? { kind: "codex" as const }
+        : { kind: "not-found" as const });
+
+    if (routeMatch.kind === "not-found") {
+      c.status(404);
+      return c.json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "model_not_found",
+          message: `Model '${rawModel}' not found`,
+          param: "model",
+        },
+      });
+    }
+
+    const allowUnauthenticated = routeMatch.kind === "api-key" || routeMatch.kind === "adapter";
     const authErr = checkAuth(c, accountPool, allowUnauthenticated);
     if (authErr) return authErr;
 

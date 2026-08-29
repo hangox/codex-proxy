@@ -14,7 +14,7 @@ import { sanitizeCodexInputItems } from "../proxy/reasoning-input-sanitizer.js";
 import type { UsageInfo } from "../translation/codex-event-extractor.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { supportsCodexAuxiliaryJson } from "../proxy/upstream-adapter.js";
-import { parseModelName, resolveModelId } from "../models/model-store.js";
+import { parseModelName, resolveModelId, isRequestableModel } from "../models/model-store.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import { acquireAccount, releaseAccount } from "./shared/account-acquisition.js";
 import { handleCodexApiError } from "./shared/proxy-error-handler.js";
@@ -72,6 +72,23 @@ export async function handleCompact(
       path: "responses/compact",
       body: directModel === rawModel ? body : { ...body, model: directModel },
       model: directModel,
+    });
+  }
+
+  if (
+    compactRouteMatch?.kind !== "api-key"
+    && compactRouteMatch?.kind !== "adapter"
+    && !isRequestableModel(rawModel)
+  ) {
+    c.status(404);
+    return c.json({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        code: "model_not_found",
+        message: `Model '${rawModel}' not found`,
+        param: "model",
+      },
     });
   }
 

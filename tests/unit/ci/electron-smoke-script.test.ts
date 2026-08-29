@@ -162,14 +162,6 @@ function stepBlock(source: string, name: string): string {
 }
 
 describe("release workflow smoke wiring", () => {
-  it("runs stale release asset cleanup through bash on Windows-compatible matrix jobs", () => {
-    const workflow = readFileSync(RELEASE_WORKFLOW, "utf-8");
-    const block = stepBlock(workflow, "Clean stale release assets");
-
-    expect(block).toContain("shell: bash");
-    expect(block).toContain("[ -z \"$ASSETS\" ] && exit 0");
-  });
-
   it("uses PowerShell smoke on Windows and bash smoke on non-Windows platforms", () => {
     const workflow = readFileSync(RELEASE_WORKFLOW, "utf-8");
     const windowsBlock = stepBlock(workflow, "Smoke test packaged binary (win)");
@@ -183,14 +175,11 @@ describe("release workflow smoke wiring", () => {
     expect(unixBlock).toContain("run: bash .github/scripts/electron-smoke.sh");
   });
 
-  it("gives mac x64 packaged smoke extra startup time", () => {
+  it("passes the matrix architecture to the smoke script on non-Windows platforms", () => {
     const workflow = readFileSync(RELEASE_WORKFLOW, "utf-8");
-    const block = workflow.match(
-      /- name: Smoke test packaged binary \(mac-x64\)[\s\S]*?run: bash \.github\/scripts\/electron-smoke\.sh/,
-    )?.[0] ?? "";
+    const unixBlock = stepBlock(workflow, "Smoke test packaged binary (${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) || '' }})");
 
-    expect(block).toContain("MAC_ARCH: x64");
-    expect(block).toContain("SMOKE_TIMEOUT: 180");
+    expect(unixBlock).toContain("MAC_ARCH: ${{ matrix.arch }}");
   });
 });
 

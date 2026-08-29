@@ -135,6 +135,9 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 🌟 核心功能
 
+<details>
+<summary>点击展开核心功能详情</summary>
+
 ### 🔌 全协议兼容
 - 兼容 `/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、Gemini 格式及 `/v1/responses`（Codex 直通）
 - 内置可选 Ollama 兼容桥接，默认监听 `http://127.0.0.1:11434`
@@ -168,7 +171,12 @@ curl http://localhost:8080/v1/chat/completions \
 - **Cookie 持久化** — 自动捕获和回放 Cloudflare Cookie
 - **指纹自动更新** — 轮询 Codex 更新源，自动同步 `app_version` 和 `build_number`
 
+</details>
+
 ## 🏗️ 技术架构
+
+<details>
+<summary>点击展开技术架构图</summary>
 
 ```
                                 Codex Proxy
@@ -210,7 +218,12 @@ curl http://localhost:8080/v1/chat/completions \
          /backend-api/codex  (第三方 API)
 ```
 
+</details>
+
 ## 📦 可用模型
+
+<details>
+<summary>点击展开模型列表与说明</summary>
 
 | 模型 ID | 推理等级 | 当前上下文 | 最大上下文 | 最大输出 | 输出 | 说明 |
 |---------|---------|------------|------------|----------|------|------|
@@ -264,7 +277,12 @@ curl -N http://localhost:8080/v1/responses \
 
 > `/v1/chat/completions` 兼容路径会接受 `image_generation` 工具，避免 OpenAI 客户端因 schema 失败；但图像 payload 只有 `/v1/responses` 会稳定透出 `image_generation_call.result`。需要拿到图片字节时请使用 `/v1/responses`。
 
+</details>
+
 ## 🔗 客户端接入
+
+<details>
+<summary>点击展开客户端配置示例</summary>
 
 > 所有客户端的 API Key 均从控制面板 (`http://localhost:8080`) 获取。模型名填具体 ID（默认 `gpt-5.6-sol`）或任意 [可用模型](#-可用模型) ID。
 
@@ -592,7 +610,12 @@ for await (const chunk of stream) {
 
 </details>
 
+</details>
+
 ## ⚙️ 配置说明
+
+<details>
+<summary>点击展开配置项与部署设置</summary>
 
 > **重要**：不要直接修改 `config/default.yaml`，该文件会在版本更新时被覆盖。自定义配置请通过 Dashboard 设置面板修改（自动保存到 `data/local.yaml`），或手动创建 `data/local.yaml` 写入需要覆盖的字段。`data/` 目录不受更新影响。
 
@@ -847,6 +870,8 @@ curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
 | `OLLAMA_BRIDGE_PORT` | `ollama.port` |
 | `OLLAMA_BRIDGE_VERSION` | `ollama.version` |
 | `OLLAMA_BRIDGE_DISABLE_VISION` | `ollama.disable_vision` |
+
+</details>
 
 ## 📡 API 端点
 

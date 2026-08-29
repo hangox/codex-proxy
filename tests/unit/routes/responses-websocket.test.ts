@@ -115,6 +115,7 @@ vi.mock("@src/routes/shared/proxy-handler.js", () => ({
 // ── Imports ─────────────────────────────────────────────────────────
 
 import { AccountPool } from "@src/auth/account-pool.js";
+import { ClientKeyPool } from "@src/auth/client-key-pool.js";
 import { loadStaticModels } from "@src/models/model-store.js";
 import { createResponsesRoutes } from "@src/routes/responses.js";
 import { ResponsesWebSocketServer } from "@src/routes/responses-websocket.js";
@@ -133,9 +134,15 @@ function connectClient(
   port: number,
   authHeader?: string,
 ): Promise<{ ws: WebSocket }> {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/responses`, {
-    headers: authHeader ? { Authorization: authHeader } : {},
-  });
+  return connectWithHeaders(port, authHeader ? { Authorization: authHeader } : {});
+}
+
+/** Open a WS client with arbitrary handshake headers. */
+function connectWithHeaders(
+  port: number,
+  headers: Record<string, string>,
+): Promise<{ ws: WebSocket }> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/responses`, { headers });
   return new Promise((resolve, reject) => {
     ws.once("open", () => resolve({ ws }));
     ws.once("unexpected-response", (_req, res) =>
@@ -174,6 +181,7 @@ function receiveJsonFrames(ws: WebSocket, count: number): Promise<unknown[]> {
 
 describe("client-facing WebSocket on /v1/responses (issue #681)", () => {
   let pool: AccountPool;
+  let clientKeyPool: ClientKeyPool;
   let app: Hono;
   let server: Server;
   let wsServer: ResponsesWebSocketServer;
@@ -187,6 +195,7 @@ describe("client-facing WebSocket on /v1/responses (issue #681)", () => {
     loadStaticModels();
     pool = new AccountPool();
     pool.addAccount("test-token-1");
+    clientKeyPool = new ClientKeyPool();
     app = createResponsesRoutes(pool);
     const handle = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     server = handle as unknown as Server;
@@ -195,7 +204,7 @@ describe("client-facing WebSocket on /v1/responses (issue #681)", () => {
     await new Promise<void>((resolve) => server.once("listening", () => resolve()));
     const addr = server.address() as AddressInfo;
     port = addr.port;
-    wsServer = new ResponsesWebSocketServer({ server, app, accountPool: pool });
+    wsServer = new ResponsesWebSocketServer({ server, app, accountPool: pool, clientKeyPool });
   });
 
   afterEach(async () => {
@@ -300,6 +309,95 @@ describe("client-facing WebSocket on /v1/responses (issue #681)", () => {
     const [frame] = await received;
 
     expect((frame as Record<string, unknown>).type).toBe("error");
+    ws.close();
+  });
+
+  it("normalizes OpenAI-style {error:{...}} (no top-level type) to a typed error frame", async () => {
+    const { handleProxyRequest } = await import("@src/routes/shared/proxy-handler.js");
+    const mock = handleProxyRequest as ReturnType<typeof vi.fn>;
+    mock.mockImplementationOnce(async () =>
+      new Response(
+        JSON.stringify({
+          error: { message: "Invalid API key provided", type: "invalid_request_error", code: "invalid_api_key" },
+        }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const { ws } = await connectClient(port);
+    const received = receiveJsonFrames(ws, 1);
+    ws.send(RESPONSE_CREATE_BODY);
+    const [frame] = await received;
+
+    const f = frame as Record<string, unknown>;
+    expect(f.type).toBe("error");
+    expect((f.error as Record<string, unknown>).type).toBe("invalid_request_error");
+    expect((f.error as Record<string, unknown>).code).toBe("invalid_api_key");
+    expect((f.error as Record<string, unknown>).message).toBe("Invalid API key provided");
+    ws.close();
+  });
+
+  it("rejects an upgrade with a disabled client key with 401 (validateAccess at handshake)", async () => {
+    mockConfig.server.proxy_api_key = "master-key";
+    const entry = clientKeyPool.createKey({ name: "disabled-key", key: "ck-disabled" });
+    clientKeyPool.updateKey(entry.id, { status: "disabled" });
+
+    await expect(connectClient(port, "Bearer ck-disabled")).rejects.toMatchObject({
+      status: 401,
+    });
+  });
+
+  it("rejects an upgrade with an over-budget client key with 429 (validateAccess at handshake)", async () => {
+    mockConfig.server.proxy_api_key = "master-key";
+    clientKeyPool.createKey({ name: "broke-key", key: "ck-broke", max_budget_usd: 1 });
+    const brokeEntry = clientKeyPool.getByKey("ck-broke");
+    brokeEntry!.used_cost_usd = 1.5;
+
+    await expect(connectClient(port, "Bearer ck-broke")).rejects.toMatchObject({
+      status: 429,
+    });
+  });
+
+  it("accepts an upgrade using an x-api-key header (same locations as the POST route)", async () => {
+    mockConfig.server.proxy_api_key = "master-key";
+    const { ws } = await connectWithHeaders(port, { "x-api-key": "master-key" });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it("returns a structured connection_busy error when a frame is sent mid-flight", async () => {
+    const { handleProxyRequest } = await import("@src/routes/shared/proxy-handler.js");
+    const mock = handleProxyRequest as ReturnType<typeof vi.fn>;
+    // Hold the stream open so the connection stays busy while we pipeline.
+    mock.mockImplementationOnce(async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode(
+                'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1"}}\n\n',
+              ),
+            );
+            // Intentionally never close: keeps the first dispatch in flight.
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+
+    const { ws } = await connectClient(port);
+    const first = receiveJsonFrames(ws, 1);
+    ws.send(RESPONSE_CREATE_BODY);
+    await first;
+
+    const busy = receiveJsonFrames(ws, 1);
+    ws.send(RESPONSE_CREATE_BODY);
+    const [frame] = await busy;
+
+    const f = frame as Record<string, unknown>;
+    expect(f.type).toBe("error");
+    expect((f.error as Record<string, unknown>).code).toBe("connection_busy");
     ws.close();
   });
 });

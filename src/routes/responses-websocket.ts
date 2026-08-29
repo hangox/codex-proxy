@@ -34,6 +34,13 @@ const UPGRADE_PATH = "/v1/responses";
 const WS_OPEN = 1;
 
 /**
+ * How long `close()` waits for a graceful per-socket close handshake before
+ * force-terminating remaining clients. Bounds shutdown so half-open or
+ * unreachable peers cannot block `server.close()` indefinitely.
+ */
+const SHUTDOWN_CLOSE_TIMEOUT_MS = 1000;
+
+/**
  * Hop-by-hop / handshake-only headers from the upgrade request that must not be
  * forwarded onto the synthetic POST (Fetch would reject or mis-parse them).
  */
@@ -99,10 +106,33 @@ export class ResponsesWebSocketServer {
       }
     }
     await new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      // Bound the wait: if a peer never completes the close handshake, force-
+      // terminate it so shutdown cannot block indefinitely.
+      const timer = setTimeout(() => {
+        for (const client of this.wss.clients) {
+          try {
+            client.terminate();
+          } catch {
+            /* already closed */
+          }
+        }
+        done();
+      }, SHUTDOWN_CLOSE_TIMEOUT_MS);
       try {
-        this.wss.close(() => resolve());
+        this.wss.close(() => {
+          clearTimeout(timer);
+          done();
+        });
       } catch {
-        resolve();
+        clearTimeout(timer);
+        done();
       }
     });
   }
@@ -124,8 +154,9 @@ export class ResponsesWebSocketServer {
       return;
     }
 
-    if (!this.authorize(req)) {
-      this.rejectUpgrade(socket, 401, "Unauthorized: invalid proxy API key");
+    const auth = this.authorize(req);
+    if (!auth.allowed) {
+      this.rejectUpgrade(socket, auth.statusCode, auth.message);
       return;
     }
 
@@ -133,25 +164,63 @@ export class ResponsesWebSocketServer {
   }
 
   /** Same auth semantics as the POST route's `apiKeyAuth` middleware. */
-  private authorize(req: IncomingMessage): boolean {
-    const key = this.extractBearerKey(req);
-    if (key && this.accountPool.validateProxyApiKey(key)) return true;
-    if (key && this.clientKeyPool && this.clientKeyPool.getByKey(key) !== undefined) return true;
+  private authorize(req: IncomingMessage): { allowed: boolean; statusCode: number; message: string } {
+    const key = this.extractProxyApiKey(req);
+    if (key && this.accountPool.validateProxyApiKey(key)) {
+      return { allowed: true, statusCode: 0, message: "" };
+    }
+    if (key && this.clientKeyPool) {
+      // Reuse the HTTP middleware's validation so disabled, expired, over-budget,
+      // or token-limited client keys are rejected at the handshake, not later.
+      const validation = this.clientKeyPool.validateAccess(key);
+      if (validation.allowed) {
+        return { allowed: true, statusCode: 0, message: "" };
+      }
+      return {
+        allowed: false,
+        statusCode: validation.statusCode ?? 401,
+        message: validation.message ?? "Unauthorized",
+      };
+    }
     // Passthrough / no-auth mode: no master proxy_api_key is configured.
     const config = getConfig();
-    if (!config?.server?.proxy_api_key) return true;
-    return false;
+    if (!config?.server?.proxy_api_key) {
+      return { allowed: true, statusCode: 0, message: "" };
+    }
+    return { allowed: false, statusCode: 401, message: "Invalid proxy API key" };
   }
 
-  private extractBearerKey(req: IncomingMessage): string | null {
-    const auth = req.headers.authorization;
-    if (!auth) return null;
-    const match = /^Bearer\s+(.+)$/i.exec(auth);
-    return match ? match[1].trim() : null;
+  /**
+   * Extract a proxy API key from the upgrade request, supporting the same
+   * locations as the HTTP routes' `extractProxyApiKey()`: `?key=`,
+   * `x-goog-api-key`, `x-api-key`, and `Authorization: Bearer`.
+   */
+  private extractProxyApiKey(req: IncomingMessage): string | null {
+    let queryKey: string | null = null;
+    try {
+      queryKey = new URL(req.url ?? "/", "http://localhost").searchParams.get("key");
+    } catch {
+      /* fall through to header extraction */
+    }
+    const googKey = this.headerValue(req.headers["x-goog-api-key"]);
+    const xApiKey = this.headerValue(req.headers["x-api-key"]);
+    const authHeader = this.headerValue(req.headers.authorization);
+    const bearerKey = authHeader ? authHeader.replace(/^bearer\s+/i, "").trim() : null;
+    return queryKey ?? googKey ?? xApiKey ?? (bearerKey || null);
+  }
+
+  private headerValue(value: string | string[] | undefined): string | null {
+    if (typeof value === "string" && value.length > 0) return value;
+    if (Array.isArray(value) && value.length > 0) return value[0];
+    return null;
   }
 
   private rejectUpgrade(socket: Duplex, status: number, message: string): void {
-    const reason = status === 401 ? "Unauthorized" : "Not Found";
+    const reason =
+      status === 401 ? "Unauthorized"
+        : status === 429 ? "Too Many Requests"
+          : status === 403 ? "Forbidden"
+            : "Error";
     const body = `${message}\n`;
     socket.write(
       `HTTP/1.1 ${status} ${reason}\r\n` +
@@ -168,14 +237,49 @@ export class ResponsesWebSocketServer {
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
     let busy = false;
+    const abortController = new AbortController();
+
     ws.on("message", (data) => {
       // One in-flight `response.create` per socket at a time.
-      if (busy) return;
+      if (busy) {
+        // Never silently drop a pipelined frame — tell the client the
+        // connection is busy with a structured error so it does not wait
+        // forever for a response that will never arrive.
+        this.sendErrorFrame(
+          ws,
+          JSON.stringify({
+            type: "error",
+            error: {
+              type: "server_error",
+              code: "connection_busy",
+              message: "A response.create is already in progress on this connection",
+            },
+          }),
+        );
+        return;
+      }
       busy = true;
       const raw = typeof data === "string" ? data : (data as Buffer).toString("utf-8");
-      void this.dispatch(ws, req, raw).finally(() => {
+      void this.dispatch(ws, req, raw, abortController.signal).finally(() => {
         busy = false;
       });
+    });
+
+    // A transport/protocol error on this client must not become an uncaught
+    // EventEmitter error (which the process-level handler would rethrow and
+    // could terminate the whole proxy). Clean up only this socket.
+    ws.on("error", () => {
+      try {
+        ws.close(1011, "internal error");
+      } catch {
+        ws.terminate();
+      }
+    });
+
+    // Client disconnect must cancel the in-flight synthetic request so the
+    // upstream stream / account slot is released promptly.
+    ws.on("close", () => {
+      abortController.abort();
     });
   }
 
@@ -183,7 +287,7 @@ export class ResponsesWebSocketServer {
    * Run one `response.create` JSON frame through the exact POST `/v1/responses`
    * handler and stream the resulting SSE events back as WS text frames.
    */
-  private async dispatch(ws: WebSocket, req: IncomingMessage, body: string): Promise<void> {
+  private async dispatch(ws: WebSocket, req: IncomingMessage, body: string, signal: AbortSignal): Promise<void> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     for (const [key, value] of Object.entries(req.headers)) {
       if (typeof value === "string" && !STRIPPED_HEADERS.has(key)) {
@@ -197,8 +301,11 @@ export class ResponsesWebSocketServer {
         method: "POST",
         headers,
         body,
+        signal,
       });
     } catch (err) {
+      // Abort is expected when the client disconnects mid-request.
+      if (signal.aborted || this.isAbortError(err)) return;
       const message = err instanceof Error ? err.message : String(err);
       this.sendErrorFrame(ws, message);
       return;
@@ -213,35 +320,54 @@ export class ResponsesWebSocketServer {
 
     try {
       for await (const event of parseSSEStream(response)) {
-        if (ws.readyState !== WS_OPEN) break;
+        if (ws.readyState !== WS_OPEN || signal.aborted) break;
         // Forward the JSON payload of each SSE `data:` line.
         ws.send(JSON.stringify(event.data));
       }
     } catch (err) {
+      if (signal.aborted || this.isAbortError(err)) return;
       const message = err instanceof Error ? err.message : String(err);
       this.sendErrorFrame(ws, message);
+    } finally {
+      // Release the upstream connection even when we broke out early.
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* already closed */
+      }
     }
   }
 
-  /** Send an error as a JSON WS frame (best-effort; keeps the socket alive). */
+  /**
+   * Send an error as a typed Responses WebSocket error frame (best-effort;
+   * keeps the socket alive). All error payloads are normalized to
+   * `{type:"error", error:{...}}` so clients can classify terminal errors.
+   */
   private sendErrorFrame(ws: WebSocket, rawMessage: string): void {
-    let payload: unknown = rawMessage;
+    let errorType = "server_error";
+    let code = "proxy_error";
+    let message = rawMessage;
     try {
-      payload = JSON.parse(rawMessage) as unknown;
+      const parsed = JSON.parse(rawMessage) as Record<string, unknown>;
+      const errObj =
+        parsed && typeof parsed.error === "object" && parsed.error !== null
+          ? (parsed.error as Record<string, unknown>)
+          : undefined;
+      message =
+        typeof errObj?.message === "string"
+          ? errObj.message
+          : typeof parsed.message === "string"
+            ? parsed.message
+            : rawMessage;
+      if (errObj && typeof errObj.type === "string") errorType = errObj.type;
+      if (errObj && typeof errObj.code === "string") code = errObj.code;
     } catch {
       /* keep raw string */
     }
-    const text =
-      typeof payload === "string"
-        ? JSON.stringify({
-            type: "error",
-            error: {
-              type: "server_error",
-              code: "proxy_error",
-              message: payload,
-            },
-          })
-        : JSON.stringify(payload);
+    const text = JSON.stringify({
+      type: "error",
+      error: { type: errorType, code, message },
+    });
     if (ws.readyState === WS_OPEN) {
       try {
         ws.send(text);
@@ -249,5 +375,9 @@ export class ResponsesWebSocketServer {
         /* socket already closed */
       }
     }
+  }
+
+  private isAbortError(err: unknown): boolean {
+    return err instanceof Error && err.name === "AbortError";
   }
 }

@@ -16,6 +16,22 @@ import type { CodexQuota } from "./types.js";
 const DEFAULT_TICK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 const MIN_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes minimum gap per account
 
+/**
+ * Resolve the scan tick interval and the per-account minimum refresh gap from
+ * `quota.refresh_interval_minutes`. When unset (undefined) or 0, the historical
+ * defaults (15 min tick / 30 min min-gap) are used. Exported for unit testing;
+ * production wiring is `quota.refresh_interval_minutes === 0` in default.yaml.
+ */
+export function resolveRefreshIntervals(
+  minutes: number | undefined | null,
+): { tickMs: number; minGapMs: number } {
+  const configuredMs = typeof minutes === "number" && minutes > 0 ? minutes * 60_000 : null;
+  return {
+    tickMs: configuredMs ?? DEFAULT_TICK_INTERVAL_MS,
+    minGapMs: configuredMs ?? MIN_REFRESH_INTERVAL_MS,
+  };
+}
+
 export class ActiveQuotaRefresher {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
@@ -42,12 +58,7 @@ export class ActiveQuotaRefresher {
    * (15 min tick / 30 min gap) are used.
    */
   private resolveIntervals(): { tickMs: number; minGapMs: number } {
-    const minutes = getConfig().quota?.refresh_interval_minutes;
-    const configuredMs = typeof minutes === "number" && minutes > 0 ? minutes * 60_000 : null;
-    return {
-      tickMs: configuredMs ?? DEFAULT_TICK_INTERVAL_MS,
-      minGapMs: configuredMs ?? MIN_REFRESH_INTERVAL_MS,
-    };
+    return resolveRefreshIntervals(getConfig().quota?.refresh_interval_minutes ?? null);
   }
 
   start(): void {

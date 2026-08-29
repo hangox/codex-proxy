@@ -18,6 +18,7 @@ import { createMockConfig } from "@helpers/config.js";
 import { setConfigForTesting, resetConfigForTesting } from "@src/config.js";
 import { AccountPool } from "@src/auth/account-pool.js";
 import { hasReachedCachedQuota } from "@src/auth/quota-skip.js";
+import { resolveRefreshIntervals } from "@src/auth/active-quota-refresher.js";
 import type { CodexQuota } from "@src/auth/types.js";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -195,5 +196,39 @@ describe("Bug 3 — hasReachedCachedQuota checks rate_limits_by_limit_id", () =>
     const entry = pool.getEntry(id)!;
     expect(hasReachedCachedQuota(entry)).toBe(false);
     expect(pool.hasAvailableAccounts()).toBe(true);
+  });
+});
+
+// ── Bug (Issue #753): refresh_interval_minutes resolution ───────────────────
+// Unconfigured (default.yaml ships 0) must fall back to the historical
+// 15 min tick / 30 min min-gap; an explicitly configured value must be honored.
+
+describe("resolveRefreshIntervals (Issue #753)", () => {
+  it("falls back to 15 min tick / 30 min gap when interval is 0", () => {
+    expect(resolveRefreshIntervals(0)).toEqual({
+      tickMs: 15 * 60_000,
+      minGapMs: 30 * 60_000,
+    });
+  });
+
+  it("falls back when interval is unset or non-positive", () => {
+    expect(resolveRefreshIntervals(undefined)).toEqual({
+      tickMs: 15 * 60_000,
+      minGapMs: 30 * 60_000,
+    });
+    expect(resolveRefreshIntervals(null)).toEqual({
+      tickMs: 15 * 60_000,
+      minGapMs: 30 * 60_000,
+    });
+    expect(resolveRefreshIntervals(-1)).toEqual({
+      tickMs: 15 * 60_000,
+      minGapMs: 30 * 60_000,
+    });
+  });
+
+  it("honors an explicitly configured interval", () => {
+    const { tickMs, minGapMs } = resolveRefreshIntervals(10);
+    expect(tickMs).toBe(10 * 60_000);
+    expect(minGapMs).toBe(10 * 60_000);
   });
 });

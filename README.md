@@ -68,7 +68,8 @@
 
 > **前置条件**：你需要一个 ChatGPT 账号（免费账号即可）。如果还没有，先去 [chat.openai.com](https://chat.openai.com) 注册一个。
 
-### 方式一：桌面应用（推荐新手）
+<details>
+<summary><h3>方式一：桌面应用（推荐新手）</h3></summary>
 
 下载 → 安装 → 打开就能用。
 
@@ -82,7 +83,10 @@
 
 安装后打开应用，点击登录按钮用 ChatGPT 账号登录。浏览器访问 `http://localhost:8080` 即可看到控制面板。
 
-### 方式二：Docker 部署
+</details>
+
+<details>
+<summary><h3>方式二：Docker 部署</h3></summary>
 
 ```bash
 mkdir codex-proxy && cd codex-proxy
@@ -97,7 +101,10 @@ docker compose up -d
 
 取消 `docker-compose.yml` 中 Watchtower 的注释即可自动更新。若要在 Docker 中启用 Ollama 兼容桥接，请参考下方 [Ollama Bridge 配置](#ollama-bridge-配置)。
 
-### 方式三：源码运行
+</details>
+
+<details>
+<summary><h3>方式三：源码运行</h3></summary>
 
 ```bash
 git clone https://github.com/icebear0828/codex-proxy.git
@@ -119,6 +126,8 @@ npm run dev                        # 开发模式（热重载）
 
 打开 `http://localhost:8080` 登录。
 
+</details>
+
 ### 验证
 
 登录后打开控制面板 `http://localhost:8080`，在 **API Configuration** 区域找到你的 API Key，然后：
@@ -134,9 +143,6 @@ curl http://localhost:8080/v1/chat/completions \
 看到 AI 回复的文字流即部署成功。如果返回 401，请检查 API Key 是否正确。
 
 ## 🌟 核心功能
-
-<details>
-<summary>点击展开核心功能详情</summary>
 
 ### 🔌 全协议兼容
 - 兼容 `/v1/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、Gemini 格式及 `/v1/responses`（Codex 直通）
@@ -171,12 +177,8 @@ curl http://localhost:8080/v1/chat/completions \
 - **Cookie 持久化** — 自动捕获和回放 Cloudflare Cookie
 - **指纹自动更新** — 轮询 Codex 更新源，自动同步 `app_version` 和 `build_number`
 
-</details>
-
-## 🏗️ 技术架构
-
 <details>
-<summary>点击展开技术架构图</summary>
+<summary><h2>🏗️ 技术架构</h2></summary>
 
 ```
                                 Codex Proxy
@@ -220,10 +222,8 @@ curl http://localhost:8080/v1/chat/completions \
 
 </details>
 
-## 📦 可用模型
-
 <details>
-<summary>点击展开模型列表与说明</summary>
+<summary><h2>📦 可用模型</h2></summary>
 
 | 模型 ID | 推理等级 | 当前上下文 | 最大上下文 | 最大输出 | 输出 | 说明 |
 |---------|---------|------------|------------|----------|------|------|
@@ -281,12 +281,10 @@ curl -N http://localhost:8080/v1/responses \
 
 ## 🔗 客户端接入
 
-<details>
-<summary>点击展开客户端配置示例</summary>
-
 > 所有客户端的 API Key 均从控制面板 (`http://localhost:8080`) 获取。模型名填具体 ID（默认 `gpt-5.6-sol`）或任意 [可用模型](#-可用模型) ID。
 
-### Claude Code (CLI)
+<details>
+<summary><h3>Claude Code (CLI)</h3></summary>
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8080
@@ -301,7 +299,10 @@ claude
 >
 > ⚠️ 配置不生效？请参考 **[Claude Code 配置避坑指南](.github/guides/claude-code-setup.md)**（AUTH_TOKEN 劫持、API Key 黑名单等常见问题）。
 
-### Codex CLI
+</details>
+
+<details>
+<summary><h3>Codex CLI</h3></summary>
 
 `~/.codex/config.toml`:
 ```toml
@@ -321,7 +322,10 @@ model_provider = "proxy_codex"
 
 > 💡 也可以改用环境变量：把 `[model_providers.proxy_codex.http_headers]` 这两行删掉，换成 `env_key = "PROXY_API_KEY"`，然后 `export PROXY_API_KEY=your-api-key && codex`。需要避免密钥落到 config 文件（多人共享 / 开源仓库）时用这个。
 
-### Claude Desktop
+</details>
+
+<details>
+<summary><h3>Claude Desktop</h3></summary>
 
 1. **开启开发者模式**：点击菜单栏 **Help** → **Troubleshooting** → **Enable Developer Mode**。
 2. **配置第三方推理**：点击菜单栏新出现的 **Developer** → **Configure Third-Party Inference...**。
@@ -365,7 +369,10 @@ alias 左边是客户端请求里填写的模型名，右边是真正发给上�
 > 1. **SSH 隧道 (最简单)**：在客户端机器运行 `ssh -L 8080:127.0.0.1:8080 user@192.168.x.x`，然后在 Claude 里填 `http://127.0.0.1:8080`。
 > 2. **反向代理**：使用 Caddy 或 Nginx 配置局域网 HTTPS 证书。
 
-### Codex Desktop (官方应用)
+</details>
+
+<details>
+<summary><h3>Codex Desktop (官方应用)</h3></summary>
 
 官方客户端与 CLI 共用配置文件，修改后需重启客户端生效。
 
@@ -388,7 +395,10 @@ model_provider = "proxy_codex"
 >
 > ⚠️ 如果你是通过"登录 ChatGPT 账号"方式使用的，客户端可能会忽略此配置——只要 `[model_providers.proxy_codex]` 配上、`profiles.default.model_provider = "proxy_codex"`，新会话就会走 proxy；登录会话仍可能直接走官方上游。
 
-### Claude for VSCode / JetBrains
+</details>
+
+<details>
+<summary><h3>Claude for VSCode / JetBrains</h3></summary>
 
 打开 Claude 扩展设置，找到 **API Configuration**：
 - **API Provider**: 选择 Anthropic
@@ -403,7 +413,10 @@ model_provider = "proxy_codex"
 }
 ```
 
-### Cursor
+</details>
+
+<details>
+<summary><h3>Cursor</h3></summary>
 
 1. 打开 Settings → Models
 2. 选择 OpenAI API
@@ -411,7 +424,10 @@ model_provider = "proxy_codex"
 4. 设置 **API Key**: 你的 API Key
 5. 添加模型名 `gpt-5.6-sol`（或其他模型 ID）
 
-### Windsurf
+</details>
+
+<details>
+<summary><h3>Windsurf</h3></summary>
 
 1. 打开 Settings → AI Provider
 2. 选择 **OpenAI Compatible**
@@ -419,7 +435,10 @@ model_provider = "proxy_codex"
 4. **API Key**: 你的 API Key
 5. **Model**: `gpt-5.6-sol`
 
-### Cline (VSCode 扩展)
+</details>
+
+<details>
+<summary><h3>Cline (VSCode 扩展)</h3></summary>
 
 1. 打开 Cline 侧边栏 → 设置齿轮
 2. **API Provider**: 选择 OpenAI Compatible
@@ -427,7 +446,10 @@ model_provider = "proxy_codex"
 4. **API Key**: 你的 API Key
 5. **Model ID**: `gpt-5.6-sol`
 
-### Continue (VSCode 扩展)
+</details>
+
+<details>
+<summary><h3>Continue (VSCode 扩展)</h3></summary>
 
 `~/.continue/config.json`:
 ```json
@@ -442,7 +464,10 @@ model_provider = "proxy_codex"
 }
 ```
 
-### aider
+</details>
+
+<details>
+<summary><h3>aider</h3></summary>
 
 ```bash
 aider --openai-api-base http://localhost:8080/v1 \
@@ -457,7 +482,10 @@ export OPENAI_API_KEY=your-api-key
 aider --model openai/gpt-5.6-sol
 ```
 
-### Cherry Studio
+</details>
+
+<details>
+<summary><h3>Cherry Studio</h3></summary>
 
 1. 设置 → 模型服务 → 添加
 2. **类型**: OpenAI
@@ -465,11 +493,15 @@ aider --model openai/gpt-5.6-sol
 4. **API Key**: 你的 API Key
 5. 添加模型 `gpt-5.6-sol`
 
-### Pi Coding Agent (pi)
+</details>
+
+<details>
+<summary><h3>Pi Coding Agent (pi)</h3></summary>
 
 [Pi Coding Agent](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`) 可通过 `~/.pi/agent/models.json` 配置自定义 Provider 接入 Codex Proxy。
 
-#### 方式一：OpenAI Completions 协议（推荐）
+<details>
+<summary>方式一：OpenAI Completions 协议（推荐）</summary>
 
 编辑 `~/.pi/agent/models.json`：
 ```json
@@ -502,7 +534,10 @@ aider --model openai/gpt-5.6-sol
 
 > 💡 `apiKey` 也可配置为 `"$PROXY_API_KEY"`，并在运行终端中通过 `export PROXY_API_KEY=your-api-key` 注入。
 
-#### 方式二：Anthropic Messages 协议
+</details>
+
+<details>
+<summary>方式二：Anthropic Messages 协议</summary>
 
 ```json
 {
@@ -525,7 +560,10 @@ aider --model openai/gpt-5.6-sol
 }
 ```
 
-#### 方式三：Codex Responses 协议（直通）
+</details>
+
+<details>
+<summary>方式三：Codex Responses 协议（直通）</summary>
 
 ```json
 {
@@ -553,7 +591,12 @@ aider --model openai/gpt-5.6-sol
 pi --provider codex-proxy --model gpt-5.6-sol
 ```
 
-### Ollama 兼容客户端
+</details>
+
+</details>
+
+<details>
+<summary><h3>Ollama 兼容客户端</h3></summary>
 
 在 Dashboard → Settings → **Ollama Bridge** 中启用后，可使用 Ollama 默认地址：
 
@@ -573,7 +616,10 @@ curl http://localhost:11434/api/chat \
 
 > Ollama API 本身没有鉴权。默认仅监听 `127.0.0.1`，不建议暴露到公网或未信任的局域网。
 
-### 通用 OpenAI 兼容客户端
+</details>
+
+<details>
+<summary><h3>通用 OpenAI 兼容客户端</h3></summary>
 
 任何支持自定义 OpenAI API Base 的客户端均可接入：
 
@@ -582,9 +628,6 @@ curl http://localhost:11434/api/chat \
 | Base URL | `http://localhost:8080/v1` |
 | API Key | 控制面板获取 |
 | Model | `gpt-5.6-sol`（或其他模型 ID） |
-
-<details>
-<summary>SDK 代码示例（Python / Node.js）</summary>
 
 **Python**
 ```python
@@ -610,12 +653,8 @@ for await (const chunk of stream) {
 
 </details>
 
-</details>
-
-## ⚙️ 配置说明
-
 <details>
-<summary>点击展开配置项与部署设置</summary>
+<summary><h2>⚙️ 配置说明</h2></summary>
 
 > **重要**：不要直接修改 `config/default.yaml`，该文件会在版本更新时被覆盖。自定义配置请通过 Dashboard 设置面板修改（自动保存到 `data/local.yaml`），或手动创建 `data/local.yaml` 写入需要覆盖的字段。`data/` 目录不受更新影响。
 
@@ -873,10 +912,8 @@ curl -N http://localhost:8080/official-agent/threads/{threadId}/turns \
 
 </details>
 
-## 📡 API 端点
-
 <details>
-<summary>点击展开主要端点列表</summary>
+<summary><h2>📡 API 端点</h2></summary>
 
 **协议端点**
 

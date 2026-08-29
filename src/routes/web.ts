@@ -53,7 +53,7 @@ export function createWebRoutes(
   app.route("/", createHealthRoutes(accountPool));
   app.route("/", createUpdateRoutes());
   app.route("/", createConnectionRoutes(accountPool));
-  app.route("/", createSettingsRoutes());
+  app.route("/", createSettingsRoutes(accountPool));
   app.route("/", createOllamaAdminRoutes());
   app.route("/", createUsageStatsRoutes(accountPool, usageStats));
   app.route("/", createLogRoutes());

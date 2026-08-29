@@ -4,6 +4,7 @@ import { getConfig, getLocalConfigPath, reloadAllConfigs, ROTATION_STRATEGIES } 
 import { logStore } from "../../logs/store.js";
 import { mutateYaml } from "../../utils/yaml-mutate.js";
 import { isLocalhostRequest } from "../../utils/is-localhost.js";
+import type { AccountPool } from "../../auth/account-pool.js";
 import {
   getRoutableCodexHostModelAllowedModels,
   IMAGE_HOST_MODEL_CLIENT_ID,
@@ -47,7 +48,7 @@ function normalizeModelAliases(input: unknown): {
   return { aliases, error: null };
 }
 
-export function createSettingsRoutes(): Hono {
+export function createSettingsRoutes(accountPool?: AccountPool): Hono {
   const app = new Hono();
 
 
@@ -73,6 +74,11 @@ export function createSettingsRoutes(): Hono {
       (data.auth as Record<string, unknown>).rotation_strategy = body.rotation_strategy;
     });
     reloadAllConfigs();
+
+    // Hot-apply the strategy: the pool captures the strategy once at
+    // construction, so without this the change only takes effect after a
+    // restart (the running process would keep the old strategy).
+    accountPool?.setRotationStrategy(body.rotation_strategy as "least_used" | "round_robin" | "sticky");
 
     const updated = getConfig();
     return c.json({

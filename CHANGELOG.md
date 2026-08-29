@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 为 `/v1/responses` 端点添加客户端 WebSocket 支持：接受 `ws://<host>:<port>/v1/responses` 的升级请求并用 Bearer 令牌鉴权，将客户端的 `response.create` 帧代理到现有上游 Codex WebSocket 并把响应事件以 JSON 流式回传；HTTP POST + SSE 仍作为回退保持不变，并在关闭路径中一并关闭该 WS 服务器。（#681）
+
 ### Fixed
 
 - 修复 `/v1/responses` 与 `/v1/responses/compact` 在客户端指定未收录模型时静默回退默认模型、响应 `model` 字段误报为默认模型的问题：与 `/v1/chat/completions` 行为一致，未识别模型返回 `404 model_not_found`；`codex` 哨兵与配置默认模型仍正常回退默认。（`src/routes/responses.ts`、`src/routes/responses-compact.ts`、`src/models/model-store.ts`，关联 issue #660）

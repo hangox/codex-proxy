@@ -14,6 +14,7 @@ import { dashboardAuth } from "./middleware/dashboard-auth.js";
 import { logCapture } from "./middleware/log-capture.js";
 import { cors } from "./middleware/cors.js";
 
+import type { Server } from "http";
 import type { UpstreamAdapter } from "./proxy/upstream-adapter.js";
 import { createAuthRoutes } from "./routes/auth.js";
 import { createAccountRoutes } from "./routes/accounts.js";
@@ -27,6 +28,7 @@ import { ProxyPool } from "./proxy/proxy-pool.js";
 import { setWsPoolConfig, getWsPool } from "./proxy/ws-pool.js";
 import { createProxyRoutes } from "./routes/proxies.js";
 import { createResponsesRoutes } from "./routes/responses.js";
+import { ResponsesWebSocketServer } from "./routes/responses-websocket.js";
 import { createImagesRoutes } from "./routes/images.js";
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker.js";
 import { startProxyUpdateChecker, stopProxyUpdateChecker, setCloseHandler, getDeployMode } from "./self-update.js";
@@ -268,6 +270,16 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     port,
   });
 
+  // Accept client WebSocket upgrades on /v1/responses (issue #681). The socket is
+  // only a transport; each response.create frame is re-dispatched through the same
+  // POST handler. HTTP POST+SSE remains the fallback. Must be closed in shutdown.
+  const responsesWebsocket = new ResponsesWebSocketServer({
+    server: server as Server,
+    app,
+    accountPool,
+    clientKeyPool,
+  });
+
   // `serve()` returns synchronously before `listen()` actually binds.
   // Wait for the listening event (or surface bind errors as a real
   // rejection of startServer) so callers' try/catch can react —
@@ -283,6 +295,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
 
   const close = async (): Promise<void> => {
     await stopOllamaBridge();
+    await responsesWebsocket.close();
     return new Promise((resolve) => {
       server.close(() => {
         stopUpdateChecker();

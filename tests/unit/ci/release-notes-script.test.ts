@@ -6,6 +6,18 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 const ROOT = resolve(__dirname, "..", "..", "..");
 const SCRIPT = resolve(ROOT, ".github", "scripts", "generate-release-notes.sh");
+const RELEASE_NOTES_ENV_KEYS = [
+  "RELEASE_NOTES_BASE_URL",
+  "RELEASE_NOTES_API_KEY",
+  "RELEASE_NOTES_MODEL",
+  "RELEASE_NOTES_REQUEST_TIMEOUT_MS",
+] as const;
+
+function withoutReleaseNotesEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sanitized = { ...env };
+  for (const key of RELEASE_NOTES_ENV_KEYS) delete sanitized[key];
+  return sanitized;
+}
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
@@ -26,6 +38,7 @@ function runNotes(cwd: string, tag: string): string {
   return execFileSync("bash", [SCRIPT, tag], {
     cwd,
     encoding: "utf-8",
+    env: withoutReleaseNotesEnv(process.env),
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
@@ -67,6 +80,19 @@ describe("generate-release-notes.sh", () => {
     expect(workflow).toContain("Fetch dev for stable release notes");
     expect(workflow).toContain("git fetch origin dev:refs/remotes/origin/dev || true");
     expect(workflow).toContain("bash .github/scripts/generate-release-notes.sh \"$TAG\" > /tmp/release-notes.md");
+  });
+
+  it("does not pass release-notes LLM configuration to fallback fixtures", () => {
+    const env = withoutReleaseNotesEnv({
+      PATH: process.env.PATH,
+      RELEASE_NOTES_BASE_URL: "http://example.test/v1",
+      RELEASE_NOTES_API_KEY: "test-key",
+      RELEASE_NOTES_MODEL: "test-model",
+      RELEASE_NOTES_REQUEST_TIMEOUT_MS: "1",
+    });
+
+    expect(env).toMatchObject({ PATH: process.env.PATH });
+    for (const key of RELEASE_NOTES_ENV_KEYS) expect(env[key]).toBeUndefined();
   });
 
 });

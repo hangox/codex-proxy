@@ -90,7 +90,7 @@ describe("root package boundary", () => {
   });
 
   it("keeps codex-proxy npm entrypoints available", () => {
-    expect(requireString(scripts, "test")).toBe("vitest run");
+    expect(requireString(scripts, "test")).toBe("tsx scripts/test/run-vitest.ts");
     expect(requireString(scripts, "test:unit")).toBe("vitest run --include 'tests/unit/**/*.test.ts'");
     expect(requireString(scripts, "test:e2e")).toBe("vitest run --include 'tests/e2e/**/*.test.ts'");
     expect(requireString(scripts, "test:integration")).toBe("vitest run --include 'tests/integration/**/*.test.ts'");

@@ -132,6 +132,7 @@ describe("POST /admin/rotation-settings", () => {
 
   it("accepts request with correct API key in Authorization header", async () => {
     mockConfig.server.proxy_api_key = "adminkey";
+    mockConnInfo.remote.address = "203.0.113.10";
 
     const res = await app.request("/admin/rotation-settings", {
       method: "POST",

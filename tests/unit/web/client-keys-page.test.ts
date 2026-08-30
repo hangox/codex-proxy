@@ -42,8 +42,12 @@ describe("ClientKeysPage Web Component", () => {
       resolve(__dirname, "../../../web/src/App.tsx"),
       "utf-8",
     );
+    const navSource = readFileSync(
+      resolve(__dirname, "../../../web/src/navigation.ts"),
+      "utf-8",
+    );
 
-    expect(appSource).toContain('hash: "#/client-keys"');
+    expect(appSource + navSource).toContain('hash: "#/client-keys"');
     expect(appSource).toContain("<ClientKeysPage");
   });
 });

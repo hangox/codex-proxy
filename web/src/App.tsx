@@ -136,7 +136,7 @@ function Dashboard() {
   const activeTab = TABS.find((t) => t.hash === hash)?.hash ?? "";
 
   const isSidebarLayout = layoutMode === "sidebar";
-  const visibleErrorCount = errorCount.unread > 5 ? errorCount.unread : 0;
+  const visibleErrorCount = errorCount.unread;
 
   return (
     <div class="min-h-screen flex bg-slate-50 dark:bg-bg-dark">

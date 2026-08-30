@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "preact/hooks";
+import { useState, useEffect, useCallback, useMemo, useRef } from "preact/hooks";
 
 export interface CatalogModel {
   id: string;
@@ -89,11 +89,13 @@ export function useStatus(accountCount: number) {
     }
   }, []);
 
+  const isInitialRef = useRef(true);
+
   useEffect(() => {
     let intervalId: ReturnType<typeof setInterval> | null = null;
     const uptimeIntervalId = setInterval(() => {
-      setUptimeSeconds((previous) => previous === null ? null : previous + 1);
-    }, 1000);
+      setUptimeSeconds((previous) => (previous === null ? null : previous + 30));
+    }, 30_000);
 
     async function loadStatus() {
       try {
@@ -112,7 +114,9 @@ export function useStatus(accountCount: number) {
         } else {
           setApiKey("any-string");
         }
-        await fetchModels(true);
+        const isInitial = isInitialRef.current;
+        isInitialRef.current = false;
+        await fetchModels(isInitial);
 
         // Refresh model list every 60s to pick up dynamic backend changes
         intervalId = setInterval(() => { fetchModels(false); }, 60_000);

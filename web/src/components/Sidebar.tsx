@@ -1,7 +1,6 @@
+import { useEffect } from "preact/hooks";
 import { useI18n, useT } from "../../../shared/i18n/context";
-import { NAV_ITEMS } from "../navigation";
-
-type IconName = "home" | "users" | "key" | "api" | "route" | "chart" | "document" | "alert" | "settings";
+import { NAV_ITEMS, type IconName } from "../navigation";
 
 const ICONS: Record<IconName, string> = {
   home: "M3 10.5 12 3l9 7.5M5.25 9v10.5h13.5V9M9 19.5v-6h6v6",
@@ -14,8 +13,6 @@ const ICONS: Record<IconName, string> = {
   alert: "M12 9v3.75m0 3h.008v.008H12V15.75ZM10.29 3.86 2.82 17.11a1.875 1.875 0 0 0 1.63 2.81h15.1a1.875 1.875 0 0 0 1.63-2.81L13.71 3.86a1.95 1.95 0 0 0-3.42 0Z",
   settings: "M9.594 3.94a1.125 1.125 0 0 1 1.11-.94h2.592a1.125 1.125 0 0 1 1.11.94l.213 1.281c.063.374.313.686.645.87l.22.127c.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992v.255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124l-.22.128c-.331.183-.581.495-.644.869l-.213 1.281a1.125 1.125 0 0 1-1.11.941h-2.594a1.125 1.125 0 0 1-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87l-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991v-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124l.22-.128c.332-.183.582-.495.644-.869l.214-1.28ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
 };
-
-const ICON_NAMES: IconName[] = ["home", "users", "key", "api", "route", "chart", "document", "alert", "settings"];
 
 function NavIcon({ name }: { name: IconName }) {
   return (
@@ -50,7 +47,7 @@ function NavigationLinks({ activeHash, unreadErrors = 0, onNavigate }: { activeH
   const t = useT();
   return (
     <>
-      {NAV_ITEMS.map((item, index) => {
+      {NAV_ITEMS.map((item) => {
         const isActive = activeHash === item.hash;
         return (
           <a
@@ -63,7 +60,7 @@ function NavigationLinks({ activeHash, unreadErrors = 0, onNavigate }: { activeH
                 : "text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark/60 hover:text-slate-800 dark:hover:text-text-main"
             }`}
           >
-            <NavIcon name={ICON_NAMES[index]} />
+            <NavIcon name={item.icon} />
             <span class="truncate">{t(item.label)}</span>
             {item.hash === "#/errors" && unreadErrors > 0 && (
               <span class="ml-auto rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold text-white">{unreadErrors > 99 ? "99+" : unreadErrors}</span>
@@ -109,6 +106,16 @@ function SidebarPanel({ activeHash, unreadErrors, uptimeSeconds, onClose }: { ac
 
 export function Sidebar({ activeHash, unreadErrors = 0, uptimeSeconds = null, mobileOpen = false, onMobileClose }: { activeHash: string; unreadErrors?: number; uptimeSeconds?: number | null; mobileOpen?: boolean; onMobileClose?: () => void }) {
   const { t } = useI18n();
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onMobileClose?.();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [mobileOpen, onMobileClose]);
+
   return (
     <>
       <aside class="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-gray-200 bg-white dark:border-border-dark dark:bg-card-dark lg:flex">

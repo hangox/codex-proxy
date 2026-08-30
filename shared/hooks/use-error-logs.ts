@@ -29,6 +29,13 @@ export interface ErrorLogCount {
 }
 
 const POLL_MS = 30_000;
+export const ERROR_LOGS_CHANGED_EVENT = "codex-proxy:error-logs-changed";
+
+function notifyErrorLogsChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(ERROR_LOGS_CHANGED_EVENT));
+  }
+}
 
 type ErrorLogsFetch = (input: string, init: RequestInit) => Promise<Pick<Response, "ok">>;
 
@@ -70,8 +77,10 @@ export function useErrorLogs() {
 
   const markAllSeen = useCallback(async () => {
     try {
-      await fetch("/admin/error-logs/seen", { method: "POST" });
+      const response = await fetch("/admin/error-logs/seen", { method: "POST" });
+      if (!response.ok) return;
       await load();
+      notifyErrorLogsChanged();
     } catch {
       /* swallow */
     }
@@ -85,6 +94,7 @@ export function useErrorLogs() {
         return;
       }
       await load();
+      notifyErrorLogsChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to clear error logs");
     }
@@ -120,8 +130,11 @@ export function useErrorLogsCount() {
 
   useEffect(() => {
     void load();
+    const onLogsChanged = () => { void load(); };
+    window.addEventListener(ERROR_LOGS_CHANGED_EVENT, onLogsChanged);
     timerRef.current = setInterval(() => void load(), POLL_MS);
     return () => {
+      window.removeEventListener(ERROR_LOGS_CHANGED_EVENT, onLogsChanged);
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [load]);

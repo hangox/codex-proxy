@@ -5,6 +5,7 @@ import { AccountImportExport } from "./AccountImportExport";
 import type { AccountExportFormat } from "../../../shared/account-transfer-client";
 import type { Account, ProxyEntry, QuotaWarning } from "../../../shared/types";
 import { derivedStatus } from "../lib/accountStatus";
+import { accountToolbarControlClass } from "../lib/account-toolbar";
 
 const STATUS_FILTER_STORAGE_KEY = "codex-proxy-account-list-status-filter";
 const EXPAND_ALL_STORAGE_KEY = "codex-proxy-account-list-expand-all";
@@ -232,7 +233,7 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
         <button
           onClick={onRefresh}
           disabled={refreshing}
-          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-primary hover:bg-slate-100 dark:hover:bg-border-dark rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class={accountToolbarControlClass}
         >
           <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
@@ -243,7 +244,7 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
         <button
           onClick={runHealthCheck}
           disabled={healthChecking}
-          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          class={accountToolbarControlClass}
         >
           <svg class={`size-3.5 ${healthChecking ? "animate-pulse" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z" />
@@ -258,7 +259,7 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
         {accounts.length > 0 && (
           <button
             onClick={toggleSelectAll}
-            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim hover:text-primary hover:bg-slate-100 dark:hover:bg-border-dark rounded-lg transition-colors"
+            class={accountToolbarControlClass}
           >
             <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               {selectedIds.size === accounts.length ? (
@@ -274,7 +275,7 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter((e.target as HTMLSelectElement).value)}
-          class="px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-text-dim bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-lg cursor-pointer hover:border-primary dark:hover:border-primary transition-colors"
+          class={`${accountToolbarControlClass} cursor-pointer`}
         >
           <option value="all">{t("filterAll")} ({accounts.length})</option>
           {statusCounts.active ? <option value="active">{t("filterActive")} ({statusCounts.active})</option> : null}

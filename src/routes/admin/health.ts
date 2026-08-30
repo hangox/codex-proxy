@@ -24,6 +24,7 @@ export function createHealthRoutes(accountPool: AccountPool): Hono {
         active: poolSummary.active,
         ...capacitySummary,
       },
+      uptime_seconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
     });
   });

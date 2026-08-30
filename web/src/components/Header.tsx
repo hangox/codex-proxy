@@ -39,36 +39,51 @@ interface HeaderProps {
   commit?: string | null;
   hasUpdate?: boolean;
   onLogout?: () => void;
+  showBrand?: boolean;
+  onOpenSidebar?: () => void;
   /** Number of unread errors. When > 0, show a clickable badge that
    *  navigates to the Errors tab. */
   unreadErrors?: number;
 }
 
-export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, hasUpdate, onLogout, unreadErrors }: HeaderProps) {
+export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, hasUpdate, onLogout, unreadErrors, showBrand = true, onOpenSidebar }: HeaderProps) {
   const { lang, toggleLang, t } = useI18n();
   const { isDark, toggle: toggleTheme } = useTheme();
 
   return (
     <header class="sticky top-0 z-50 w-full bg-white dark:bg-card-dark border-b border-gray-200 dark:border-border-dark shadow-sm transition-colors">
-      <div class="px-4 md:px-8 lg:px-40 flex h-14 items-center justify-center">
-        <div class="flex w-full max-w-[960px] items-center justify-between">
+      <div class={`${showBrand ? "px-4 md:px-8 lg:px-40" : "px-4 md:px-8 lg:px-10"} flex h-16 items-center justify-center`}>
+        <div class={`flex w-full ${showBrand ? "max-w-[960px] justify-between" : "max-w-none justify-between lg:justify-end"} items-center gap-4`}>
           {/* Logo & Title */}
-          <div class="flex items-center gap-3">
+          {showBrand ? <div class="flex items-center gap-3">
             <div class="flex items-center justify-center size-8 rounded-full bg-primary-container text-primary border border-primary/20">
               <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
             <h1 class="text-[0.9rem] font-bold tracking-tight">Codex Proxy</h1>
-          </div>
+          </div> : <div class="flex items-center gap-2 lg:hidden">
+            {onOpenSidebar && <button onClick={onOpenSidebar} class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:text-text-dim dark:hover:bg-border-dark" aria-label={t("openSidebar")}>
+              <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>}
+            <div class="flex size-8 items-center justify-center rounded-lg bg-primary-action text-white">
+              <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+                <path d="m12 2.75 7.5 4.3v9.9L12 21.25l-7.5-4.3v-9.9L12 2.75Z" />
+                <path d="m8.5 9.25 3.5 2 3.5-2M8.5 14.75l3.5-2 3.5 2M12 11.25v4" />
+              </svg>
+            </div>
+            <span class="text-sm font-bold tracking-tight">Codex Proxy</span>
+          </div>}
           {/* Actions */}
-          <div class="flex items-center gap-2">
+          <div class="flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
             {/* Unread error badge — appears only when there's something to show. */}
             {unreadErrors !== undefined && unreadErrors > 0 && (
               <a
                 href="#/errors"
                 title={t("errorsBadgeTooltip")}
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-50 border border-red-200 text-red-700 dark:bg-red-900/20 dark:border-red-700/30 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-full bg-red-50 border border-red-200 text-red-700 dark:bg-red-900/20 dark:border-red-700/30 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
               >
                 <span class="relative flex h-2.5 w-2.5">
                   <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />

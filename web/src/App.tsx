@@ -11,6 +11,7 @@ import { PoolOverview } from "./components/PoolOverview";
 import { SettingsTab } from "./components/SettingsTab";
 import { ProxyPool } from "./components/ProxyPool";
 import { Footer } from "./components/Footer";
+import { Sidebar } from "./components/Sidebar";
 import { ApiKeyManager } from "./components/ApiKeyManager";
 import { ProxySettings } from "./pages/ProxySettings";
 import { AccountManagement } from "./pages/AccountManagement";
@@ -26,8 +27,9 @@ import { useUpdateStatus } from "../../shared/hooks/use-update-status";
 import { useI18n, useT } from "../../shared/i18n/context";
 import { useDashboardAuth } from "../../shared/hooks/use-dashboard-auth";
 import { useGeneralSettings } from "../../shared/hooks/use-general-settings";
-import type { TranslationKey } from "../../shared/i18n/translations";
 import { getShowUpdateDialogPreference, shouldAutoOpenUpdateModal } from "./update-modal-policy";
+import { getLayoutMode, saveLayoutMode, type LayoutMode } from "./lib/layout-preferences";
+import { NAV_ITEMS } from "./navigation";
 
 export { shouldAutoOpenUpdateModal };
 
@@ -63,17 +65,7 @@ function useUpdateMessage() {
 
 // ── Tab definitions ─────────────────────────────────────────────────
 
-const TABS: Array<{ hash: string; label: TranslationKey }> = [
-  { hash: "", label: "overview" },
-  { hash: "#/accounts", label: "manageAccounts" },
-  { hash: "#/client-keys", label: "clientKeys" },
-  { hash: "#/api-keys", label: "apiKeys" },
-  { hash: "#/proxies", label: "proxySettings" },
-  { hash: "#/usage-stats", label: "usageStats" },
-  { hash: "#/logs", label: "logs" },
-  { hash: "#/errors", label: "errorsTab" },
-  { hash: "#/settings", label: "settings" },
-];
+const TABS = NAV_ITEMS;
 
 export function TabBar({ activeHash }: { activeHash: string }) {
   const t = useT();
@@ -112,6 +104,13 @@ function Dashboard() {
   const prevUpdateAvailable = useRef(false);
   const hash = useHash();
   const errorCount = useErrorLogsCount();
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => getLayoutMode());
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  const handleLayoutModeChange = (mode: LayoutMode) => {
+    setLayoutMode(mode);
+    saveLayoutMode(mode);
+  };
 
   useEffect(() => {
     if (shouldAutoOpenUpdateModal({
@@ -136,8 +135,13 @@ function Dashboard() {
 
   const activeTab = TABS.find((t) => t.hash === hash)?.hash ?? "";
 
+  const isSidebarLayout = layoutMode === "sidebar";
+  const visibleErrorCount = errorCount.unread;
+
   return (
-    <div class="min-h-screen flex flex-col bg-slate-50 dark:bg-bg-dark">
+    <div class="min-h-screen flex bg-slate-50 dark:bg-bg-dark">
+      {isSidebarLayout && <Sidebar activeHash={activeTab} unreadErrors={visibleErrorCount} uptimeSeconds={status.uptimeSeconds} mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />}
+      <div class={`min-h-screen min-w-0 flex flex-1 flex-col ${isSidebarLayout ? "lg:pl-60" : ""}`}>
       <Header
         onAddAccount={accounts.startAdd}
         onCheckUpdate={update.checkForUpdate}
@@ -149,11 +153,13 @@ function Dashboard() {
         commit={update.status?.proxy.commit ?? null}
         hasUpdate={update.hasUpdate}
         onLogout={onLogout}
-        unreadErrors={errorCount.unread}
+        unreadErrors={visibleErrorCount}
+        showBrand={!isSidebarLayout}
+        onOpenSidebar={isSidebarLayout ? () => setMobileSidebarOpen(true) : undefined}
       />
 
-      <main class="flex-grow px-4 md:px-8 lg:px-40 py-8 flex justify-center">
-        <div class="flex flex-col w-full max-w-[960px]">
+      <main class={`flex-1 px-4 py-6 md:px-8 md:py-8 ${isSidebarLayout ? "lg:px-8 xl:px-10" : "lg:px-40"} flex justify-center`}>
+        <div class={`flex w-full flex-col ${isSidebarLayout ? "max-w-[1320px]" : "max-w-[960px]"}`}>
           <AddAccount
             visible={accounts.addVisible}
             onCancel={accounts.cancelAdd}
@@ -163,7 +169,7 @@ function Dashboard() {
             addError={accounts.addError}
           />
 
-          <TabBar activeHash={activeTab} />
+          {!isSidebarLayout && <TabBar activeHash={activeTab} />}
 
           {activeTab === "" && (
             <div class="flex flex-col gap-6">
@@ -233,6 +239,8 @@ function Dashboard() {
               onEffortChange={status.setSelectedEffort}
               selectedSpeed={status.selectedSpeed}
               onSpeedChange={status.setSelectedSpeed}
+              layoutMode={layoutMode}
+              onLayoutModeChange={handleLayoutModeChange}
             />
           )}
         </div>
@@ -254,6 +262,7 @@ function Dashboard() {
           updateSteps={update.updateSteps}
         />
       )}
+      </div>
     </div>
   );
 }

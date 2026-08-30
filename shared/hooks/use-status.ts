@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "preact/hooks";
+import { useState, useEffect, useCallback, useMemo, useRef } from "preact/hooks";
 
 export interface CatalogModel {
   id: string;
@@ -61,6 +61,7 @@ export function useStatus(accountCount: number) {
   const [modelCatalog, setModelCatalog] = useState<CatalogModel[]>([]);
   const [selectedEffort, setSelectedEffort] = useState("medium");
   const [selectedSpeed, setSelectedSpeed] = useState<string | null>(null);
+  const [uptimeSeconds, setUptimeSeconds] = useState<number | null>(null);
 
   const fetchModels = useCallback(async (isInitial: boolean) => {
     try {
@@ -88,12 +89,24 @@ export function useStatus(accountCount: number) {
     }
   }, []);
 
+  const isInitialRef = useRef(true);
+
   useEffect(() => {
     let intervalId: ReturnType<typeof setInterval> | null = null;
+    const uptimeIntervalId = setInterval(() => {
+      setUptimeSeconds((previous) => (previous === null ? null : previous + 30));
+    }, 30_000);
 
     async function loadStatus() {
       try {
         setBaseUrl(`${window.location.origin}/v1`);
+        const healthResp = await fetch("/health");
+        if (healthResp.ok) {
+          const healthData = await healthResp.json() as { uptime_seconds?: unknown };
+          if (typeof healthData.uptime_seconds === "number" && Number.isFinite(healthData.uptime_seconds)) {
+            setUptimeSeconds(Math.max(0, Math.floor(healthData.uptime_seconds)));
+          }
+        }
         const resp = await fetch("/auth/status");
         if (resp.ok) {
           const data = await resp.json();
@@ -101,7 +114,9 @@ export function useStatus(accountCount: number) {
         } else {
           setApiKey("any-string");
         }
-        await fetchModels(true);
+        const isInitial = isInitialRef.current;
+        isInitialRef.current = false;
+        await fetchModels(isInitial);
 
         // Refresh model list every 60s to pick up dynamic backend changes
         intervalId = setInterval(() => { fetchModels(false); }, 60_000);
@@ -111,7 +126,10 @@ export function useStatus(accountCount: number) {
     }
     loadStatus();
 
-    return () => { if (intervalId) clearInterval(intervalId); };
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      clearInterval(uptimeIntervalId);
+    };
   }, [fetchModels, accountCount]);
 
   // Build model families — group catalog by family, excluding tier variants
@@ -144,6 +162,7 @@ export function useStatus(accountCount: number) {
     setSelectedEffort,
     selectedSpeed,
     setSelectedSpeed,
+    uptimeSeconds,
     modelFamilies,
     modelCatalog,
   };

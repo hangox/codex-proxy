@@ -10,6 +10,7 @@ import { AnthropicSetup } from "./AnthropicSetup";
 import { CodeExamples } from "./CodeExamples";
 import { TestConnection } from "./TestConnection";
 import type { ModelFamily } from "../../../shared/hooks/use-status";
+import type { LayoutMode } from "../lib/layout-preferences";
 
 interface SettingsTabProps {
   baseUrl: string;
@@ -22,12 +23,14 @@ interface SettingsTabProps {
   onEffortChange: (effort: string) => void;
   selectedSpeed: string | null;
   onSpeedChange: (speed: string | null) => void;
+  layoutMode: LayoutMode;
+  onLayoutModeChange: (mode: LayoutMode) => void;
 }
 
 export function SettingsTab(props: SettingsTabProps) {
   return (
     <div class="flex flex-col gap-6">
-      <GeneralSettings />
+      <GeneralSettings layoutMode={props.layoutMode} onLayoutModeChange={props.onLayoutModeChange} />
       <ModelAliasSettings />
       <LogsSettings />
       <QuotaSettings />

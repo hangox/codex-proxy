@@ -2,8 +2,14 @@ import { useState, useCallback } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import { useGeneralSettings, type SystemPromptStrategy } from "../../../shared/hooks/use-general-settings";
 import { useSettings } from "../../../shared/hooks/use-settings";
+import { getLayoutMode, saveLayoutMode, type LayoutMode } from "../lib/layout-preferences";
 
-export function GeneralSettings() {
+interface GeneralSettingsProps {
+  layoutMode?: LayoutMode;
+  onLayoutModeChange?: (mode: LayoutMode) => void;
+}
+
+export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSettingsProps = {}) {
   const t = useT();
   const settings = useSettings();
   const gs = useGeneralSettings(settings.apiKey);
@@ -27,6 +33,7 @@ export function GeneralSettings() {
   const [draftAutoUpdate, setDraftAutoUpdate] = useState<boolean | null>(null);
   const [draftAutoDownload, setDraftAutoDownload] = useState<boolean | null>(null);
   const [draftShowUpdateDialog, setDraftShowUpdateDialog] = useState<boolean | null>(null);
+  const [localLayoutMode, setLocalLayoutMode] = useState<LayoutMode>(() => getLayoutMode());
   const [collapsed, setCollapsed] = useState(true);
 
   const currentPort = gs.data?.port ?? 8080;
@@ -70,6 +77,13 @@ export function GeneralSettings() {
   const displayAutoUpdate = draftAutoUpdate ?? currentAutoUpdate;
   const displayAutoDownload = draftAutoDownload ?? currentAutoDownload;
   const displayShowUpdateDialog = draftShowUpdateDialog ?? currentShowUpdateDialog;
+  const displayLayoutMode = layoutMode ?? localLayoutMode;
+
+  const handleLayoutModeChange = (mode: LayoutMode) => {
+    setLocalLayoutMode(mode);
+    saveLayoutMode(mode);
+    onLayoutModeChange?.(mode);
+  };
 
   const isDirty =
     draftPort !== null ||
@@ -233,6 +247,24 @@ export function GeneralSettings() {
 
       {!collapsed && (
         <div class="px-5 pb-5 border-t border-slate-100 dark:border-border-dark pt-4 space-y-4">
+          <div class="rounded-lg border border-primary/15 bg-primary/5 p-3 dark:bg-primary/10">
+            <div class="space-y-1.5">
+              <label for="dashboard-layout" class="text-xs font-semibold text-slate-700 dark:text-text-main">
+                {t("generalSettingsLayout")}
+              </label>
+              <p class="text-xs text-slate-500 dark:text-text-dim">{t("generalSettingsLayoutHint")}</p>
+              <select
+                id="dashboard-layout"
+                class={`${inputCls} max-w-[260px] bg-white dark:bg-bg-dark`}
+                value={displayLayoutMode}
+                onChange={(e) => handleLayoutModeChange((e.target as HTMLSelectElement).value as LayoutMode)}
+              >
+                <option value="sidebar">{t("generalSettingsLayoutSidebar")}</option>
+                <option value="top">{t("generalSettingsLayoutTop")}</option>
+              </select>
+            </div>
+          </div>
+
           {/* Auto Update */}
           <div class="space-y-1">
             <div class="flex items-center gap-2">

@@ -6,20 +6,23 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, readFileSync, rmSync, statSync } from "fs";
-import { resolve } from "path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "fs";
+import { tmpdir } from "os";
+import { join, resolve } from "path";
 import { pathToFileURL } from "url";
 import { execFileSync } from "child_process";
 import { acquireElectronTestLock } from "./test-lock.js";
 
 const PKG_DIR = resolve(import.meta.dirname, "..");
 const DIST = resolve(PKG_DIR, "dist-electron");
+const LOCK_FIXTURE_DIR = mkdtempSync(join(tmpdir(), "electron-build-lock-"));
+const LOCK_FILE = join(LOCK_FIXTURE_DIR, "lock");
 
 describe("electron build (esbuild)", () => {
   let releaseLock: (() => void) | null = null;
 
   beforeAll(async () => {
-    releaseLock = await acquireElectronTestLock();
+    releaseLock = await acquireElectronTestLock(LOCK_FILE);
   }, 180_000);
 
   // Build once for all tests in this suite
@@ -41,6 +44,7 @@ describe("electron build (esbuild)", () => {
       rmSync(DIST, { recursive: true });
     }
     releaseLock?.();
+    rmSync(LOCK_FIXTURE_DIR, { recursive: true, force: true });
   });
 
   it("produces main.cjs (Electron main process)", () => {

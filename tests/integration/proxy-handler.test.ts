@@ -758,14 +758,23 @@ describe("proxy-handler integration", () => {
     mockCreateResponse = () =>
       Promise.reject(new CodexApiError(403, '<!DOCTYPE html><html>cf_chl_managed</html>'));
 
-    const accountPool = createMockAccountPool();
+    const accountPool = createMockAccountPool({
+      acquire: vi.fn()
+        .mockReturnValueOnce({ entryId: "e1", token: "tok1", accountId: "acc1" })
+        .mockReturnValueOnce(null),
+    });
     const fmt = createMockFormatAdapter();
     const { app } = buildTestApp({ accountPool, fmt });
 
     const res = await app.request("/test", { method: "POST" });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(502);
 
     expect(accountPool.markStatus).not.toHaveBeenCalled();
+    expect(accountPool.acquire).toHaveBeenNthCalledWith(2, {
+      model: "codex",
+      excludeIds: ["e1"],
+      preferredEntryId: undefined,
+    });
     expect(accountPool.release).toHaveBeenCalledWith("e1", undefined);
   });
 

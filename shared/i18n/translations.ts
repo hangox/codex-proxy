@@ -2,6 +2,9 @@ export const translations = {
   en: {
     serverOnline: "Server Online",
     sidebarStatusHint: "All proxy services are operating normally.",
+    sidebarUptime: "Uptime",
+    openSidebar: "Open navigation",
+    closeSidebar: "Close navigation",
     addAccount: "Add Account",
     toggleTheme: "Toggle theme",
     connectedAccounts: "Connected Accounts",
@@ -548,6 +551,9 @@ export const translations = {
   zh: {
     serverOnline: "\u670d\u52a1\u8fd0\u884c\u4e2d",
     sidebarStatusHint: "\u6240\u6709\u4ee3\u7406\u670d\u52a1\u6b63\u5e38\u8fd0\u884c\u3002",
+    sidebarUptime: "\u8fd0\u884c\u603b\u65f6\u957f",
+    openSidebar: "\u6253\u5f00\u5bfc\u822a",
+    closeSidebar: "\u5173\u95ed\u5bfc\u822a",
     addAccount: "\u6dfb\u52a0\u8d26\u6237",
     toggleTheme: "\u5207\u6362\u4e3b\u9898",
     connectedAccounts: "\u5df2\u8fde\u63a5\u8d26\u6237",

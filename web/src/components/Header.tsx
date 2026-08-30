@@ -40,19 +40,20 @@ interface HeaderProps {
   hasUpdate?: boolean;
   onLogout?: () => void;
   showBrand?: boolean;
+  onOpenSidebar?: () => void;
   /** Number of unread errors. When > 0, show a clickable badge that
    *  navigates to the Errors tab. */
   unreadErrors?: number;
 }
 
-export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, hasUpdate, onLogout, unreadErrors, showBrand = true }: HeaderProps) {
+export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, hasUpdate, onLogout, unreadErrors, showBrand = true, onOpenSidebar }: HeaderProps) {
   const { lang, toggleLang, t } = useI18n();
   const { isDark, toggle: toggleTheme } = useTheme();
 
   return (
     <header class="sticky top-0 z-50 w-full bg-white dark:bg-card-dark border-b border-gray-200 dark:border-border-dark shadow-sm transition-colors">
       <div class={`${showBrand ? "px-4 md:px-8 lg:px-40" : "px-4 md:px-8 lg:px-10"} flex h-16 items-center justify-center`}>
-        <div class={`flex w-full ${showBrand ? "max-w-[960px]" : "max-w-[1320px]"} items-center justify-between gap-4`}>
+        <div class={`flex w-full ${showBrand ? "max-w-[960px] justify-between" : "max-w-none justify-between lg:justify-end"} items-center gap-4`}>
           {/* Logo & Title */}
           {showBrand ? <div class="flex items-center gap-3">
             <div class="flex items-center justify-center size-8 rounded-full bg-primary-container text-primary border border-primary/20">
@@ -62,6 +63,11 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
             </div>
             <h1 class="text-[0.9rem] font-bold tracking-tight">Codex Proxy</h1>
           </div> : <div class="flex items-center gap-2 lg:hidden">
+            {onOpenSidebar && <button onClick={onOpenSidebar} class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:text-text-dim dark:hover:bg-border-dark" aria-label={t("openSidebar")}>
+              <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>}
             <div class="flex size-8 items-center justify-center rounded-lg bg-primary-action text-white">
               <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
                 <path d="m12 2.75 7.5 4.3v9.9L12 21.25l-7.5-4.3v-9.9L12 2.75Z" />

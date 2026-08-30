@@ -13,7 +13,7 @@ export function Footer({ updateStatus }: FooterProps) {
   const codexVersion = updateStatus?.codex.current_version;
 
   return (
-    <footer class="mt-auto border-t border-gray-200 dark:border-border-dark bg-white dark:bg-card-dark py-5 transition-colors">
+    <footer class="mt-auto shrink-0 border-t border-gray-200 dark:border-border-dark bg-white dark:bg-card-dark py-5 transition-colors">
       <div class="container mx-auto px-4 flex flex-col items-center gap-2">
         {/* Version info */}
         <div class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[0.75rem] text-slate-400 dark:text-text-dim font-mono">

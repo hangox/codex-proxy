@@ -11,7 +11,7 @@ import { PoolOverview } from "./components/PoolOverview";
 import { SettingsTab } from "./components/SettingsTab";
 import { ProxyPool } from "./components/ProxyPool";
 import { Footer } from "./components/Footer";
-import { MobileNavigation, Sidebar } from "./components/Sidebar";
+import { Sidebar } from "./components/Sidebar";
 import { ApiKeyManager } from "./components/ApiKeyManager";
 import { ProxySettings } from "./pages/ProxySettings";
 import { AccountManagement } from "./pages/AccountManagement";
@@ -105,6 +105,7 @@ function Dashboard() {
   const hash = useHash();
   const errorCount = useErrorLogsCount();
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => getLayoutMode());
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const handleLayoutModeChange = (mode: LayoutMode) => {
     setLayoutMode(mode);
@@ -135,11 +136,12 @@ function Dashboard() {
   const activeTab = TABS.find((t) => t.hash === hash)?.hash ?? "";
 
   const isSidebarLayout = layoutMode === "sidebar";
+  const visibleErrorCount = errorCount.unread > 5 ? errorCount.unread : 0;
 
   return (
-    <div class="min-h-screen bg-slate-50 dark:bg-bg-dark">
-      {isSidebarLayout && <Sidebar activeHash={activeTab} unreadErrors={errorCount.unread} />}
-      <div class={isSidebarLayout ? "min-h-screen lg:pl-60" : "min-h-screen"}>
+    <div class="min-h-screen flex bg-slate-50 dark:bg-bg-dark">
+      {isSidebarLayout && <Sidebar activeHash={activeTab} unreadErrors={visibleErrorCount} uptimeSeconds={status.uptimeSeconds} mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />}
+      <div class={`min-h-screen min-w-0 flex flex-1 flex-col ${isSidebarLayout ? "lg:pl-60" : ""}`}>
       <Header
         onAddAccount={accounts.startAdd}
         onCheckUpdate={update.checkForUpdate}
@@ -151,12 +153,13 @@ function Dashboard() {
         commit={update.status?.proxy.commit ?? null}
         hasUpdate={update.hasUpdate}
         onLogout={onLogout}
-        unreadErrors={errorCount.unread}
+        unreadErrors={visibleErrorCount}
         showBrand={!isSidebarLayout}
+        onOpenSidebar={isSidebarLayout ? () => setMobileSidebarOpen(true) : undefined}
       />
 
-      <main class={`flex-grow px-4 py-6 md:px-8 md:py-8 ${isSidebarLayout ? "lg:px-8 xl:px-10" : "lg:px-40"} flex justify-center`}>
-        <div class={`flex w-full flex-col ${isSidebarLayout ? "max-w-[1320px]" : "max-w-[960px]"}`}>
+      <main class={`flex-1 px-4 py-6 md:px-8 md:py-8 ${isSidebarLayout ? "lg:px-8 xl:px-10" : "lg:px-40"} flex justify-center`}>
+        <div class={`flex w-full flex-col ${isSidebarLayout ? "max-w-[1280px]" : "max-w-[960px]"}`}>
           <AddAccount
             visible={accounts.addVisible}
             onCancel={accounts.cancelAdd}
@@ -166,7 +169,7 @@ function Dashboard() {
             addError={accounts.addError}
           />
 
-          {isSidebarLayout ? <MobileNavigation activeHash={activeTab} unreadErrors={errorCount.unread} /> : <TabBar activeHash={activeTab} />}
+          {!isSidebarLayout && <TabBar activeHash={activeTab} />}
 
           {activeTab === "" && (
             <div class="flex flex-col gap-6">

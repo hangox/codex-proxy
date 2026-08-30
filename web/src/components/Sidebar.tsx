@@ -36,7 +36,17 @@ function BrandMark() {
   );
 }
 
-function NavigationLinks({ activeHash, unreadErrors = 0, mobile = false }: { activeHash: string; unreadErrors?: number; mobile?: boolean }) {
+function formatUptime(seconds: number | null): string {
+  if (seconds === null) return "...";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function NavigationLinks({ activeHash, unreadErrors = 0, onNavigate }: { activeHash: string; unreadErrors?: number; onNavigate?: () => void }) {
   const t = useT();
   return (
     <>
@@ -46,14 +56,15 @@ function NavigationLinks({ activeHash, unreadErrors = 0, mobile = false }: { act
           <a
             key={item.hash}
             href={item.hash || "#/"}
-            class={`${mobile ? "shrink-0 px-3" : "w-full px-4"} flex items-center gap-3 rounded-xl py-2.5 text-sm font-medium transition-colors ${
+            onClick={onNavigate}
+            class={`w-full px-4 flex items-center gap-3 rounded-xl py-2.5 text-sm font-medium transition-colors ${
               isActive
                 ? "bg-primary/15 text-primary shadow-sm"
                 : "text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark/60 hover:text-slate-800 dark:hover:text-text-main"
             }`}
           >
             <NavIcon name={ICON_NAMES[index]} />
-            <span class={mobile ? "whitespace-nowrap" : "truncate"}>{t(item.label)}</span>
+            <span class="truncate">{t(item.label)}</span>
             {item.hash === "#/errors" && unreadErrors > 0 && (
               <span class="ml-auto rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold text-white">{unreadErrors > 99 ? "99+" : unreadErrors}</span>
             )}
@@ -64,35 +75,50 @@ function NavigationLinks({ activeHash, unreadErrors = 0, mobile = false }: { act
   );
 }
 
-export function Sidebar({ activeHash, unreadErrors = 0 }: { activeHash: string; unreadErrors?: number }) {
+function SidebarPanel({ activeHash, unreadErrors, uptimeSeconds, onClose }: { activeHash: string; unreadErrors: number; uptimeSeconds: number | null; onClose?: () => void }) {
   const { t } = useI18n();
   return (
-    <aside class="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-gray-200 bg-white dark:border-border-dark dark:bg-card-dark lg:flex">
+    <>
       <div class="flex h-20 shrink-0 items-center gap-3 border-b border-gray-100 px-7 dark:border-border-dark">
         <BrandMark />
         <div>
           <div class="text-[1.05rem] font-bold tracking-tight text-slate-800 dark:text-text-main">Codex Proxy</div>
           <div class="mt-0.5 text-[0.65rem] font-medium uppercase tracking-[0.16em] text-slate-400 dark:text-text-dim">Dashboard</div>
         </div>
+        {onClose && (
+          <button onClick={onClose} class="ml-auto rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-border-dark dark:hover:text-text-main" aria-label={t("closeSidebar")}>
+            <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        )}
       </div>
       <nav class="flex-1 space-y-1 overflow-y-auto px-4 py-6" aria-label="Primary navigation">
-        <NavigationLinks activeHash={activeHash} unreadErrors={unreadErrors} />
+        <NavigationLinks activeHash={activeHash} unreadErrors={unreadErrors} onNavigate={onClose} />
       </nav>
       <div class="m-4 rounded-xl border border-primary/15 bg-primary/5 p-4 dark:bg-primary/10">
         <div class="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-text-main">
           <span class="relative flex size-2.5"><span class="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-60" /><span class="relative inline-flex size-2.5 rounded-full bg-primary" /></span>
           {t("serverOnline")}
         </div>
+        <p class="mt-2 text-[0.7rem] font-medium text-slate-600 dark:text-text-main">{t("sidebarUptime")}: {formatUptime(uptimeSeconds)}</p>
         <p class="mt-2 text-[0.7rem] leading-5 text-slate-500 dark:text-text-dim">{t("sidebarStatusHint")}</p>
       </div>
-    </aside>
+    </>
   );
 }
 
-export function MobileNavigation({ activeHash, unreadErrors = 0 }: { activeHash: string; unreadErrors?: number }) {
+export function Sidebar({ activeHash, unreadErrors = 0, uptimeSeconds = null, mobileOpen = false, onMobileClose }: { activeHash: string; unreadErrors?: number; uptimeSeconds?: number | null; mobileOpen?: boolean; onMobileClose?: () => void }) {
+  const { t } = useI18n();
   return (
-    <nav class="-mx-4 mb-6 flex gap-1 overflow-x-auto border-b border-gray-200 bg-white px-4 py-2 dark:border-border-dark dark:bg-card-dark lg:hidden" aria-label="Primary navigation">
-      <NavigationLinks activeHash={activeHash} unreadErrors={unreadErrors} mobile />
-    </nav>
+    <>
+      <aside class="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-gray-200 bg-white dark:border-border-dark dark:bg-card-dark lg:flex">
+        <SidebarPanel activeHash={activeHash} unreadErrors={unreadErrors} uptimeSeconds={uptimeSeconds} />
+      </aside>
+      {mobileOpen && <button class="fixed inset-0 z-[55] bg-slate-950/45 lg:hidden" onClick={onMobileClose} aria-label={t("closeSidebar")} />}
+      <aside class={`fixed inset-y-0 left-0 z-[60] flex w-72 flex-col border-r border-gray-200 bg-white shadow-2xl transition-transform duration-200 dark:border-border-dark dark:bg-card-dark lg:hidden ${mobileOpen ? "translate-x-0" : "pointer-events-none -translate-x-full"}`}>
+        <SidebarPanel activeHash={activeHash} unreadErrors={unreadErrors} uptimeSeconds={uptimeSeconds} onClose={onMobileClose} />
+      </aside>
+    </>
   );
 }

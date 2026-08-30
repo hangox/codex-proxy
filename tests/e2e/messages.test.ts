@@ -2359,6 +2359,83 @@ describe("E2E: POST /v1/messages", () => {
     expect(upstreamRequest.prompt_cache_key).toMatch(/^cp_[0-9a-f]{32}$/);
   });
 
+  it("derives a stable cache key from cache_control prefix without a Claude Code session", async () => {
+    const body = (tail: string) => defaultBody({
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "fixed cacheable prefix", cache_control: { type: "ephemeral" } },
+          { type: "text", text: tail },
+        ],
+      }],
+    });
+
+    expect((await messagesRequest(body("tail one"))).status).toBe(200);
+    const firstTransportBody = getLastTransportBody();
+    expect(firstTransportBody).toBeTruthy();
+    const firstKey = (JSON.parse(firstTransportBody!) as { prompt_cache_key?: unknown }).prompt_cache_key;
+
+    expect((await messagesRequest(body("tail two"))).status).toBe(200);
+    const secondTransportBody = getLastTransportBody();
+    expect(secondTransportBody).toBeTruthy();
+    const secondKey = (JSON.parse(secondTransportBody!) as { prompt_cache_key?: unknown }).prompt_cache_key;
+
+    expect(firstKey).toMatch(/^cp_[0-9a-f]{32}$/);
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it("keeps the key stable across rotating billing headers before a cached system block", async () => {
+    const body = (billingHeader: string) => defaultBody({
+      system: [
+        { type: "text", text: billingHeader },
+        { type: "text", text: "fixed system instruction", cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: "same user message" }],
+    });
+
+    expect((await messagesRequest(body("x-anthropic-billing-header: cc_version=2.1.84.a; cch=one;"))).status).toBe(200);
+    const firstBody = JSON.parse(getLastTransportBody()!) as { instructions?: unknown; prompt_cache_key?: unknown };
+
+    expect((await messagesRequest(body("x-anthropic-billing-header: cc_version=2.1.84.b; cch=two;"))).status).toBe(200);
+    const secondBody = JSON.parse(getLastTransportBody()!) as { instructions?: unknown; prompt_cache_key?: unknown };
+
+    expect(secondBody.instructions).toBe(firstBody.instructions);
+    expect(secondBody.prompt_cache_key).toBe(firstBody.prompt_cache_key);
+  });
+
+  it("excludes volatile system text after a cache_control breakpoint from the upstream key", async () => {
+    const body = (stablePrefix: string, volatileSuffix: string) => defaultBody({
+      system: [
+        { type: "text", text: stablePrefix, cache_control: { type: "ephemeral" } },
+        { type: "text", text: volatileSuffix },
+      ],
+      messages: [{ role: "user", content: "same user message" }],
+    });
+
+    expect((await messagesRequest(body("stable system prefix", "volatile A"))).status).toBe(200);
+    const firstBody = JSON.parse(getLastTransportBody()!) as { instructions?: unknown; prompt_cache_key?: unknown };
+
+    expect((await messagesRequest(body("stable system prefix", "volatile B"))).status).toBe(200);
+    const secondBody = JSON.parse(getLastTransportBody()!) as { instructions?: unknown; prompt_cache_key?: unknown };
+
+    expect(secondBody.instructions).not.toBe(firstBody.instructions);
+    expect(secondBody.prompt_cache_key).toBe(firstBody.prompt_cache_key);
+
+    expect((await messagesRequest(body("stable system prefiX", "volatile A"))).status).toBe(200);
+    const changedPrefixBody = JSON.parse(getLastTransportBody()!) as { prompt_cache_key?: unknown };
+    expect(changedPrefixBody.prompt_cache_key).not.toBe(firstBody.prompt_cache_key);
+  });
+
+  it("does not forward a derived cache key without a session or cache_control", async () => {
+    expect((await messagesRequest(defaultBody({
+      messages: [{ role: "user", content: "ordinary request" }],
+    }))).status).toBe(200);
+
+    const transportBody = getLastTransportBody();
+    expect(transportBody).toBeTruthy();
+    expect(JSON.parse(transportBody!) as { prompt_cache_key?: unknown }).not.toHaveProperty("prompt_cache_key");
+  });
+
   // ── Anthropic error format ─────────────────────────────────────
 
   it("upstream 429: Anthropic error envelope", async () => {

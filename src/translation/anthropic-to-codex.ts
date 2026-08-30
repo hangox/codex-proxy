@@ -67,7 +67,7 @@ function extractTextContent(
 
 const BILLING_HEADER_PREFIX = "x-anthropic-billing-header:";
 
-function normalizeSystemInstructionText(text: string): string {
+export function normalizeSystemInstructionText(text: string): string {
   // Strip billing-header lines individually rather than discarding the whole
   // string. Claude Code's custom-model path sends `system` as a single string
   // with the billing header on the first line and the real prompt after a
@@ -78,6 +78,25 @@ function normalizeSystemInstructionText(text: string): string {
     .split("\n")
     .filter((line) => !line.trim().startsWith(BILLING_HEADER_PREFIX));
   return lines.join("\n").trim();
+}
+
+export interface TranslatedSystemInstructionSegment {
+  sourceIndex: number;
+  text: string;
+}
+
+export function translateSystemInstructionSegments(
+  system: AnthropicMessagesRequest["system"],
+): TranslatedSystemInstructionSegment[] {
+  if (!system) return [];
+  if (typeof system === "string") {
+    const text = normalizeSystemInstructionText(system);
+    return text ? [{ sourceIndex: 0, text }] : [];
+  }
+  return system.flatMap((block, sourceIndex) => {
+    const text = normalizeSystemInstructionText(block.text);
+    return text ? [{ sourceIndex, text }] : [];
+  });
 }
 
 /**
@@ -222,17 +241,8 @@ export function translateAnthropicToCodexRequest(
   // Extract the user-supplied system prompt (empty when none provided). The
   // synthetic default below is intentionally kept out of `userInstructions` so
   // it is never treated as real user content by the inline strategy.
-  let userInstructions = "";
-  if (req.system) {
-    if (typeof req.system === "string") {
-      userInstructions = normalizeSystemInstructionText(req.system);
-    } else {
-      userInstructions = req.system
-        .map((b) => normalizeSystemInstructionText(b.text))
-        .filter(Boolean)
-        .join("\n\n");
-    }
-  }
+  const systemInstructionSegments = translateSystemInstructionSegments(req.system);
+  const userInstructions = systemInstructionSegments.map((segment) => segment.text).join("\n\n");
   // Text that goes into the top-level `instructions` field in the default
   // (non-inline) strategy. Falls back to a generic assistant prompt.
   const instructionsText = userInstructions || "You are a helpful assistant.";

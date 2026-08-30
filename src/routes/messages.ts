@@ -26,7 +26,10 @@ import {
 } from "./shared/proxy-handler.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { FormatAdapter } from "./shared/proxy-handler-types.js";
-import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
+import {
+  deriveAnthropicCacheControlKey,
+  extractAnthropicClientConversationId,
+} from "./shared/anthropic-session-id.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 import {
@@ -659,8 +662,11 @@ export function createMessagesRoutes(
     if (!allowUnauthenticated && process.env.CODEX_PROXY_DISABLE_WS !== "1") {
       codexRequest.useWebSocket = true;
     }
-    if (clientConversationId !== null && !codexRequest.prompt_cache_key) {
-      codexRequest.prompt_cache_key = clientConversationId;
+    const cacheControlKey = clientConversationId === null
+      ? deriveAnthropicCacheControlKey(req)
+      : null;
+    if (!codexRequest.prompt_cache_key) {
+      codexRequest.prompt_cache_key = clientConversationId ?? cacheControlKey ?? undefined;
     }
 
     let opaqueRestore = opaqueCompactEnabled && clientConversationId !== null && !allowUnauthenticated
@@ -799,6 +805,7 @@ export function createMessagesRoutes(
       model: displayModel,
       isStreaming: req.stream,
       clientConversationId: clientConversationId ?? undefined,
+      suppressDerivedPromptCacheKey: clientConversationId === null && cacheControlKey === null && !codexRequest.prompt_cache_key,
       ...(opaqueRestore.requiredEntryId ? { requiredAccountEntryId: opaqueRestore.requiredEntryId } : {}),
     };
 

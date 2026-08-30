@@ -67,6 +67,18 @@ describe("proxy request preparation", () => {
     expect(request.codexRequest.turnState).toBeUndefined();
   });
 
+  it("does not forward a derived cache key when the request suppresses it", () => {
+    const request = makeProxyRequest();
+    request.suppressDerivedPromptCacheKey = true;
+
+    applyProxyRequestForwardingDefaults({
+      request,
+      promptCacheKey: "derived-cache-key",
+    });
+
+    expect(request.codexRequest.prompt_cache_key).toBeUndefined();
+  });
+
   it("does not clear an existing turn state when no explicit turn state is available", () => {
     const request = makeProxyRequest();
     request.codexRequest.turnState = "turn-existing";

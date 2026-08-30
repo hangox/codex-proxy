@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Anthropic `/v1/messages` 的 prompt cache key 现在严格遵循最后一个显式 `cache_control` 断点。** 无 Claude session 时，断点后的用户/系统易变内容不再污染上游 key；断点前内容、工具或模型变化仍会重新派生 key。billing header 的轮换值不再导致无意义 cache miss；无 session 且无缓存断点的普通请求不再伪造 upstream cache key（`src/routes/messages.ts`、`src/routes/shared/anthropic-session-id.ts`、`src/translation/anthropic-to-codex.ts`）。
+
 ## [2.0.104] - 2026-08-18
 
 ### Fixed

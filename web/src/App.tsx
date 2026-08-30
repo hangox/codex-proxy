@@ -159,7 +159,7 @@ function Dashboard() {
       />
 
       <main class={`flex-1 px-4 py-6 md:px-8 md:py-8 ${isSidebarLayout ? "lg:px-8 xl:px-10" : "lg:px-40"} flex justify-center`}>
-        <div class={`flex w-full flex-col ${isSidebarLayout ? "max-w-[1280px]" : "max-w-[960px]"}`}>
+        <div class={`flex w-full flex-col ${isSidebarLayout ? "max-w-[1320px]" : "max-w-[960px]"}`}>
           <AddAccount
             visible={accounts.addVisible}
             onCancel={accounts.cancelAdd}

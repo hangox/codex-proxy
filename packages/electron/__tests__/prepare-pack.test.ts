@@ -7,14 +7,17 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
-import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
-import { resolve } from "path";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { tmpdir } from "os";
+import { join, resolve } from "path";
 import { execFileSync } from "child_process";
 import { acquireElectronTestLock } from "./test-lock.js";
 
 const PKG_DIR = resolve(import.meta.dirname, "..");
 const ROOT_DIR = resolve(PKG_DIR, "..", "..");
 const SCRIPT = resolve(PKG_DIR, "electron", "prepare-pack.mjs");
+const LOCK_FIXTURE_DIR = mkdtempSync(join(tmpdir(), "electron-prepare-pack-lock-"));
+const LOCK_FILE = join(LOCK_FIXTURE_DIR, "lock");
 
 // Directories that prepare-pack copies from root into packages/electron/
 const DIRS = ["config", "public", "bin"];
@@ -23,7 +26,7 @@ describe("prepare-pack.mjs", () => {
   let releaseLock: (() => void) | null = null;
 
   beforeAll(async () => {
-    releaseLock = await acquireElectronTestLock();
+    releaseLock = await acquireElectronTestLock(LOCK_FILE);
   }, 180_000);
 
   // Clean up any leftover copies before/after each test
@@ -41,6 +44,7 @@ describe("prepare-pack.mjs", () => {
   afterEach(cleanCopies);
   afterAll(() => {
     releaseLock?.();
+    rmSync(LOCK_FIXTURE_DIR, { recursive: true, force: true });
   });
 
   it("copies root directories into packages/electron/", () => {

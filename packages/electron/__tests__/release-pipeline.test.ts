@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, readFileSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { resolve } from "path";
+import { join, resolve } from "path";
 import { execFileSync, spawn } from "child_process";
 import { createServer } from "net";
 import asar from "@electron/asar";
@@ -21,6 +21,8 @@ const DIST_ELECTRON = resolve(PKG_DIR, "dist-electron");
 const PACKED_APP = resolve(PKG_DIR, "release", "mac-arm64", "Codex Proxy.app");
 const APP_ASAR = resolve(PACKED_APP, "Contents", "Resources", "app.asar");
 const APP_EXECUTABLE = resolve(PACKED_APP, "Contents", "MacOS", "Codex Proxy");
+const LOCK_FIXTURE_DIR = mkdtempSync(join(tmpdir(), "electron-release-pipeline-lock-"));
+const LOCK_FILE = join(LOCK_FIXTURE_DIR, "lock");
 const RUNTIME_PACKAGES = [
   "ws",
   "https-proxy-agent",
@@ -90,7 +92,7 @@ describe("release pipeline", () => {
   let releaseLock: (() => void) | null = null;
 
   beforeAll(async () => {
-    releaseLock = await acquireElectronTestLock();
+    releaseLock = await acquireElectronTestLock(LOCK_FILE);
   }, 180_000);
 
   afterAll(() => {
@@ -103,6 +105,7 @@ describe("release pipeline", () => {
       });
     } catch { /* ignore */ }
     releaseLock?.();
+    rmSync(LOCK_FIXTURE_DIR, { recursive: true, force: true });
   });
 
   it("core build produces web assets", () => {

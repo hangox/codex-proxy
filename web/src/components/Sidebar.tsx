@@ -102,7 +102,6 @@ function SidebarPanel({ activeHash, unreadErrors, uptimeSeconds, onClose }: { ac
           {t("serverOnline")}
         </div>
         <p class="mt-2 text-[0.7rem] font-medium text-slate-600 dark:text-text-main">{t("sidebarUptime")}: {formatUptime(uptimeSeconds)}</p>
-        <p class="mt-2 text-[0.7rem] leading-5 text-slate-500 dark:text-text-dim">{t("sidebarStatusHint")}</p>
       </div>
     </>
   );

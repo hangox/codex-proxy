@@ -22,6 +22,8 @@ export interface ProxyRequest {
   isStreaming: boolean;
   /** Stable client-side conversation/session identifier when the upstream client provides one. */
   clientConversationId?: string;
+  /** Anthropic messages 在没有 session 或显式缓存断点时保留本地 affinity，但不得转发派生的 upstream cache key。 */
+  suppressDerivedPromptCacheKey?: boolean;
   /** Hard account binding for in-memory opaque compact state restoration. */
   requiredAccountEntryId?: string;
   /** Original schema before tuple->object conversion (for response reconversion). */

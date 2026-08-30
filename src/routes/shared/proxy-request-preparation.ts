@@ -24,7 +24,9 @@ export function applyProxyRequestForwardingDefaults(
 ): void {
   const { request, promptCacheKey } = options;
 
-  request.codexRequest.prompt_cache_key = promptCacheKey;
+  if (!request.suppressDerivedPromptCacheKey || request.codexRequest.prompt_cache_key) {
+    request.codexRequest.prompt_cache_key = promptCacheKey;
+  }
 
   if (request.codexRequest.reasoning && !request.codexRequest.include?.length) {
     request.codexRequest.include = ["reasoning.encrypted_content"];

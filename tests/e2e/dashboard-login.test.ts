@@ -43,7 +43,7 @@ import { createDashboardAuthRoutes, _resetRateLimitForTest } from "@src/routes/d
 
 const app = new Hono();
 app.use("*", requestId);
-app.use("*", errorHandler);
+app.onError(errorHandler);
 app.route("/", createDashboardAuthRoutes());
 
 // ── Helpers ──────────────────────────────────────────────────────

@@ -38,7 +38,7 @@ beforeAll(() => {
 
   app = new Hono();
   app.use("*", requestId);
-  app.use("*", errorHandler);
+  app.onError(errorHandler);
   app.route("/", createAccountRoutes(pool, scheduler, cookieJar));
 });
 

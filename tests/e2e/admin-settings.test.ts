@@ -65,7 +65,7 @@ vi.mock("@src/logs/store.js", () => ({
 }));
 
 vi.mock("@hono/node-server/conninfo", () => ({
-  getConnInfo: vi.fn(() => ({ remote: { address: "127.0.0.1" } })),
+  getConnInfo: vi.fn(() => mockConnInfo),
 }));
 
 vi.mock("@src/paths.js", () => ({
@@ -73,20 +73,26 @@ vi.mock("@src/paths.js", () => ({
   getConfigDir: vi.fn(() => "/tmp/codex-e2e-settings/config"),
 }));
 
+// Mutable remote address so auth-gating tests can simulate a non-localhost client.
+const mockConnInfo = { remote: { address: "127.0.0.1" } };
+
 // ── App setup ────────────────────────────────────────────────────
 
 import { Hono } from "hono";
 import { requestId } from "@src/middleware/request-id.js";
 import { errorHandler } from "@src/middleware/error-handler.js";
+import { dashboardAuth } from "@src/middleware/dashboard-auth.js";
 import { createSettingsRoutes } from "@src/routes/admin/settings.js";
 
 const app = new Hono();
 app.use("*", requestId);
-app.use("*", errorHandler);
+app.use("*", dashboardAuth);
+app.onError(errorHandler);
 app.route("/", createSettingsRoutes());
 
 beforeEach(() => {
   mockConfig.server.proxy_api_key = null;
+  mockConnInfo.remote.address = "127.0.0.1";
 });
 
 // ── Rotation settings ─────────────────────────────────────────────
@@ -114,6 +120,7 @@ describe("POST /admin/rotation-settings", () => {
 
   it("returns 401 when API key required but missing from request", async () => {
     mockConfig.server.proxy_api_key = "adminkey";
+    mockConnInfo.remote.address = "203.0.113.10";
 
     const res = await app.request("/admin/rotation-settings", {
       method: "POST",
@@ -173,6 +180,7 @@ describe("POST /admin/settings", () => {
 
   it("returns 401 when changing key without current key in header", async () => {
     mockConfig.server.proxy_api_key = "existing-key";
+    mockConnInfo.remote.address = "203.0.113.10";
 
     const res = await app.request("/admin/settings", {
       method: "POST",
@@ -214,6 +222,7 @@ describe("POST /admin/general-settings", () => {
 
   it("returns 401 when API key required but not provided", async () => {
     mockConfig.server.proxy_api_key = "admin123";
+    mockConnInfo.remote.address = "203.0.113.10";
 
     const res = await app.request("/admin/general-settings", {
       method: "POST",

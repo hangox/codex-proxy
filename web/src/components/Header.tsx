@@ -1,4 +1,5 @@
 import { useI18n } from "../../../shared/i18n/context";
+import { useState } from "preact/hooks";
 import { translations, type TranslationKey } from "../../../shared/i18n/translations";
 import { useTheme } from "../../../shared/theme/context";
 
@@ -49,19 +50,20 @@ interface HeaderProps {
 export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, hasUpdate, onLogout, unreadErrors, showBrand = true, onOpenSidebar }: HeaderProps) {
   const { lang, toggleLang, t } = useI18n();
   const { isDark, toggle: toggleTheme } = useTheme();
+  const [fabOpen, setFabOpen] = useState(false);
 
   return (
     <header class="sticky top-0 z-50 w-full bg-white dark:bg-card-dark border-b border-gray-200 dark:border-border-dark shadow-sm transition-colors">
       <div class={`${showBrand ? "px-4 md:px-8 lg:px-40" : "px-4 md:px-8 lg:px-10"} flex h-16 items-center justify-center`}>
         <div class={`flex w-full ${showBrand ? "max-w-[960px] justify-between" : "max-w-none justify-between lg:justify-end"} items-center gap-4`}>
           {/* Logo & Title */}
-          {showBrand ? <div class="flex items-center gap-3">
+          {showBrand ? <div class="flex min-w-0 items-center gap-3">
             <div class="flex items-center justify-center size-8 rounded-full bg-primary-container text-primary border border-primary/20">
               <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <h1 class="text-[0.9rem] font-bold tracking-tight">Codex Proxy</h1>
+            <h1 class="text-[0.9rem] font-bold tracking-tight whitespace-nowrap overflow-hidden text-ellipsis min-w-0">Codex Proxy</h1>
           </div> : <div class="flex items-center gap-2 lg:hidden">
             {onOpenSidebar && <button onClick={onOpenSidebar} class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:text-text-dim dark:hover:bg-border-dark" aria-label={t("openSidebar")}>
               <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
@@ -148,7 +150,7 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
             {/* Language Toggle */}
             <button
               onClick={toggleLang}
-              class="p-2 rounded-lg text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark transition-colors"
+              class="hidden sm:flex items-center gap-1.5 p-2 rounded-lg text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark transition-colors"
               title={"\u4e2d/EN"}
             >
               <span class="text-xs font-bold inline-flex items-center justify-center w-5">{lang === "en" ? "EN" : "\u4e2d"}</span>
@@ -156,20 +158,71 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
             {/* Theme Toggle */}
             <button
               onClick={toggleTheme}
-              class="p-2 rounded-lg text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark transition-colors"
+              class="hidden sm:flex items-center gap-1.5 p-2 rounded-lg text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark transition-colors"
               title={t("toggleTheme")}
             >
               {isDark ? SVG_SUN : SVG_MOON}
             </button>
             <button
               onClick={onAddAccount}
-              class="flex items-center gap-2 px-4 py-2 bg-primary-action hover:bg-primary-action-hover text-white text-xs font-semibold rounded-lg transition-colors shadow-sm active:scale-95"
+              class="hidden sm:flex items-center gap-2 px-4 py-2 bg-primary-action hover:bg-primary-action-hover text-white text-xs font-semibold rounded-lg transition-colors shadow-sm active:scale-95"
             >
               <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
               </svg>
               <StableText tKey="addAccount">{t("addAccount")}</StableText>
             </button>
+
+            {/* Mobile FAB — language + theme + add account, floating bottom-right */}
+            <div class="relative sm:hidden">
+              <button
+                onClick={() => setFabOpen((v) => !v)}
+                aria-label="更多"
+                aria-expanded={fabOpen}
+                class="fixed right-4 bottom-4 z-50 flex size-14 items-center justify-center rounded-full bg-primary-action text-white shadow-lg hover:bg-primary-action-hover transition-colors"
+              >
+                <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+              </button>
+              {fabOpen && (
+                <>
+                  <div
+                    class="fixed inset-0 z-40 bg-black/20"
+                    onClick={() => setFabOpen(false)}
+                  />
+                  <div class="fixed right-5 bottom-20 z-50 flex w-48 flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-border-dark bg-white dark:bg-card-dark shadow-xl">
+                    <button
+                      onClick={() => { toggleLang(); setFabOpen(false); }}
+                      class="flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-700 dark:text-text-main hover:bg-slate-100 dark:hover:bg-border-dark"
+                    >
+                      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 010 18M12 3a15 15 0 000 18" />
+                      </svg>
+                      <span>{lang === "en" ? "English" : "中文"}</span>
+                    </button>
+                    <button
+                      onClick={() => { toggleTheme(); setFabOpen(false); }}
+                      class="flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-700 dark:text-text-main hover:bg-slate-100 dark:hover:bg-border-dark"
+                    >
+                      {isDark ? SVG_SUN : SVG_MOON}
+                      <span>{isDark ? "浅色模式" : "深色模式"}</span>
+                    </button>
+                    <div class="h-px bg-gray-200 dark:border-border-dark" />
+                    <button
+                      onClick={() => { onAddAccount(); setFabOpen(false); }}
+                      class="flex items-center gap-3 px-4 py-3 text-sm font-semibold text-white bg-primary-action hover:bg-primary-action-hover"
+                    >
+                      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                      </svg>
+                      <span>{t("addAccount")}</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>

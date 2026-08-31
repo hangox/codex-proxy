@@ -29,6 +29,7 @@ import type { FormatAdapter } from "./shared/proxy-handler-types.js";
 import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
+import type { FallbackUpstreamStore } from "../auth/fallback-upstream.js";
 import { validateClientKeyModel } from "./shared/proxy-handler-utils.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { resolveDefaultTools, mergeDefaultTools } from "./shared/default-tools.js";
@@ -137,6 +138,7 @@ export function createMessagesRoutes(
   proxyPool?: ProxyPool,
   upstreamRouter?: UpstreamRouter,
   clientKeyPool?: ClientKeyPool,
+  fallbackUpstream?: FallbackUpstreamStore,
 ): Hono {
   const app = new Hono();
 
@@ -247,7 +249,7 @@ export function createMessagesRoutes(
       return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
     }
 
-    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
+    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool, fallbackUpstream });
   });
 
   return app;

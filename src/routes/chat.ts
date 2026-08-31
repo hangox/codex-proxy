@@ -28,6 +28,7 @@ import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import { summarizeRequestForLog } from "../logs/request-summary.js";
 import { apiKeyAuth } from "../middleware/api-key-auth.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
+import type { FallbackUpstreamStore } from "../auth/fallback-upstream.js";
 import { validateClientKeyModel } from "./shared/proxy-handler-utils.js";
 import { resolveDefaultTools, mergeDefaultTools } from "./shared/default-tools.js";
 
@@ -101,6 +102,7 @@ export function createChatRoutes(
   proxyPool?: ProxyPool,
   upstreamRouter?: UpstreamRouter,
   clientKeyPool?: ClientKeyPool,
+  fallbackUpstream?: FallbackUpstreamStore,
 ): Hono {
   const app = new Hono();
 
@@ -205,10 +207,10 @@ export function createChatRoutes(
 
     const summary = accountPool.getPoolSummary();
     if (summary.active === 0) {
-      return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
+      return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool, fallbackUpstream });
     }
 
-    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool });
+    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt, proxyPool, fallbackUpstream });
   });
 
   return app;

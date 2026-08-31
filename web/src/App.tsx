@@ -167,6 +167,9 @@ function Dashboard() {
             onAddByRefreshToken={accounts.addByRefreshToken}
             addInfo={accounts.addInfo}
             addError={accounts.addError}
+            authUrl={accounts.addAuthUrl}
+            fallbackConfigured={!!accounts.fallbackUpstream}
+            onAddFallbackUpstream={accounts.addFallbackUpstream}
           />
 
           {!isSidebarLayout && <TabBar activeHash={activeTab} />}
@@ -191,6 +194,9 @@ function Dashboard() {
                 onToggleStatus={accounts.toggleStatus}
                 onUpdateLabel={accounts.updateLabel}
                 onUpdateCodexFingerprintMode={accounts.updateCodexFingerprintMode}
+                fallbackUpstream={accounts.fallbackUpstream}
+                onUpdateFallbackUpstream={accounts.updateFallbackUpstream}
+                onDeleteFallbackUpstream={accounts.deleteFallbackUpstream}
               />
               <ProxyPool proxies={proxies} />
             </div>

@@ -70,6 +70,12 @@ export interface Account {
   proxyName?: string;
 }
 
+/** Public view of the single last-resort "upstream apikey" fallback account. */
+export interface FallbackUpstreamPublic {
+  baseUrl: string;
+  apiKeyMasked: string;
+}
+
 export interface ProxyHealthInfo {
   exitIp: string | null;
   latencyMs: number;

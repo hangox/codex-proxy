@@ -4,6 +4,7 @@ import { useAccounts } from "../../../shared/hooks/use-accounts";
 import { AccountTable } from "../components/AccountTable";
 import { AccountBulkActions } from "../components/AccountBulkActions";
 import { AccountImportExport } from "../components/AccountImportExport";
+import { FallbackUpstreamCard } from "../components/FallbackUpstreamCard";
 import type { AssignmentAccount } from "../../../shared/hooks/use-proxy-assignments";
 import type { TranslationKey } from "../../../shared/i18n/translations";
 
@@ -20,7 +21,7 @@ const statusOrder: Array<{ key: string; label: TranslationKey }> = [
 
 export function AccountManagement({ embedded }: { embedded?: boolean } = {}) {
   const t = useT();
-  const { list, loading: listLoading, batchDelete, batchSetStatus, toggleStatus, exportAccounts, importAccounts, persistenceHealth } = useAccounts();
+  const { list, loading: listLoading, batchDelete, batchSetStatus, toggleStatus, exportAccounts, importAccounts, persistenceHealth, fallbackUpstream, updateFallbackUpstream, deleteFallbackUpstream } = useAccounts();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState("all");
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null);
@@ -187,6 +188,15 @@ export function AccountManagement({ embedded }: { embedded?: boolean } = {}) {
         onSetActive={handleSetActive}
         onSetDisabled={handleSetDisabled}
       />
+
+      {/* Last-resort upstream apikey — own full row at the very end */}
+      {fallbackUpstream && (
+        <FallbackUpstreamCard
+          config={fallbackUpstream}
+          onUpdate={updateFallbackUpstream}
+          onDelete={deleteFallbackUpstream}
+        />
+      )}
     </>
   );
 

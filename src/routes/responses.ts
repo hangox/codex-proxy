@@ -25,6 +25,7 @@ import { handleProxyRequest } from "./shared/proxy-handler.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
+import type { FallbackUpstreamStore } from "../auth/fallback-upstream.js";
 import { validateClientKeyModel, recordClientKeyUsage } from "./shared/proxy-handler-utils.js";
 import {
   extractOpenAISubagentFromMetadata,
@@ -105,6 +106,7 @@ export function createResponsesRoutes(
   proxyPool?: ProxyPool,
   upstreamRouter?: UpstreamRouter,
   clientKeyPool?: ClientKeyPool,
+  fallbackUpstream?: FallbackUpstreamStore,
 ): Hono {
   const app = new Hono();
   // Register errorHandler locally so that when testing this router in isolation (e.g. unit tests),
@@ -310,7 +312,7 @@ export function createResponsesRoutes(
       return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt: PASSTHROUGH_FORMAT });
     }
 
-    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
+    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool, fallbackUpstream });
   };
 
   const compactHandler = async (c: Context) => {

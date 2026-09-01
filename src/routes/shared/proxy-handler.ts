@@ -29,6 +29,8 @@ import { handleCodexApiError } from "./proxy-error-handler.js";
 import { handleStreaming } from "./streaming-handler.js";
 import { handleNonStreaming } from "./non-streaming-handler.js";
 import { annotateImageGenOutcome, buildCodexApi } from "./proxy-handler-utils.js";
+import { handleDirectRequest } from "./direct-request-handler.js";
+import { ResponsesUpstream } from "../../proxy/responses-upstream.js";
 import type {
   FormatAdapter,
   HandleProxyRequestOptions,
@@ -64,6 +66,62 @@ import {
   getReasoningReplayCache,
 } from "../../proxy/reasoning-replay-cache.js";
 
+/**
+ * Respond when no OAuth account is available. When a fallback upstream apikey
+ * is configured, route the request through it (Responses API wire) instead of
+ * returning "no account". The fallback is a pure last-resort: it is only
+ * reached after every account is exhausted.
+ */
+async function respondNoAccountOrFallback(
+  options: HandleProxyRequestOptions,
+  req: ProxyRequest,
+  fmt: FormatAdapter,
+): Promise<Response> {
+  const fallback = options.fallbackUpstream?.get();
+  if (fallback) {
+    console.log(
+      `[${fmt.tag}] No available OAuth accounts — routing through fallback upstream apikey (${fallback.baseUrl})`,
+    );
+    return handleDirectRequest({
+      c: options.c,
+      upstream: new ResponsesUpstream("fallback", fallback.apiKey, fallback.baseUrl),
+      req,
+      fmt,
+    });
+  }
+  return respondWithNoAccount({ c: options.c, req, fmt });
+}
+
+/**
+ * Respond with a proxy error, but when a fallback upstream apikey is
+ * configured and the retry path found every OAuth account unusable, route the
+ * request through the fallback as a last resort instead of surfacing the
+ * error. Callers only reach this when `attemptFallback` was set on a retry
+ * decision that found no usable account left.
+ */
+async function respondProxyErrorOrFallback(
+  options: HandleProxyRequestOptions,
+  req: ProxyRequest,
+  fmt: FormatAdapter,
+  status: number,
+  message: string,
+  useFormat429?: boolean,
+): Promise<Response> {
+  const fallback = options.fallbackUpstream?.get();
+  if (fallback) {
+    console.log(
+      `[${fmt.tag}] Retry exhausted — routing through fallback upstream apikey (${fallback.baseUrl})`,
+    );
+    return handleDirectRequest({
+      c: options.c,
+      upstream: new ResponsesUpstream("fallback", fallback.apiKey, fallback.baseUrl),
+      req,
+      fmt,
+    });
+  }
+  return respondWithProxyError({ c: options.c, req, fmt, status, message, useFormat429 });
+}
+
 export async function handleProxyRequest(options: HandleProxyRequestOptions): Promise<Response> {
   const { c, accountPool, cookieJar, req, fmt, proxyPool } = options;
   c.set("logForwarded", true);
@@ -90,7 +148,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   // Single acquire call — preferredEntryId is a hint, not a hard requirement
   let acquired = acquireAccount(accountPool, req.codexRequest.model, undefined, fmt.tag, sessionContext.preferredEntryId ?? undefined);
   if (!acquired) {
-    return respondWithNoAccount({ c, req, fmt });
+    return respondNoAccountOrFallback(options, req, fmt);
   }
 
   // ── Drift-Defense & Verification Loop ──
@@ -99,7 +157,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
   const MAX_VERIFY_ATTEMPTS = 5;
   let verifyAttempts = 0;
   for (;;) {
-    if (!acquired) return respondWithNoAccount({ c, req, fmt });
+    if (!acquired) return respondNoAccountOrFallback(options, req, fmt);
     const entry = accountPool.getEntry(acquired.entryId);
     if (entry?.quotaVerifyRequired) {
       const verifyingEntryId = acquired.entryId;
@@ -124,12 +182,12 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
           verifyAttempts++;
           if (verifyAttempts >= MAX_VERIFY_ATTEMPTS) {
             console.warn(`[${fmt.tag}] ⚠️ Drift-defense hit MAX_VERIFY_ATTEMPTS (${MAX_VERIFY_ATTEMPTS}). Giving up to avoid excess upstream calls.`);
-            return respondWithNoAccount({ c, req, fmt });
+            return respondNoAccountOrFallback(options, req, fmt);
           }
 
           acquired = acquireAccount(accountPool, req.codexRequest.model, verifiedExcludeIds, fmt.tag, sessionContext.preferredEntryId ?? undefined);
           if (!acquired) {
-            return respondWithNoAccount({ c, req, fmt });
+            return respondNoAccountOrFallback(options, req, fmt);
           }
           continue; // Loop back to check the newly acquired account
         }
@@ -143,7 +201,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
     break; // Verified or no verification required, proceed!
   }
 
-  if (!acquired) return respondWithNoAccount({ c, req, fmt });
+  if (!acquired) return respondNoAccountOrFallback(options, req, fmt);
   let { entryId } = acquired;
 
   // ── Session Affinity Fallback Defense (Cascading Ban Prevention) ──
@@ -429,6 +487,14 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
             cookieJar, proxyPool,
           });
           if (errorRetryTransition.action === "respond") {
+            if (errorRetryTransition.attemptFallback) {
+              return respondProxyErrorOrFallback(
+                options, req, fmt,
+                errorRetryTransition.status,
+                errorRetryTransition.message,
+                errorRetryTransition.useFormat429,
+              );
+            }
             return respondWithProxyError({
               c, req, fmt,
               status: errorRetryTransition.status,

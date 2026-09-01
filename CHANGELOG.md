@@ -10,6 +10,7 @@
 
 ### Added
 
+- 新增「后备上游 (API Key)」账户类型：配置一个 baseUrl + apiKey，固定走 Responses 接口，仅在所有账号均不可用时作为最后兜底启用；添加账户弹窗可添加，账户列表末尾独占一行展示，支持卡片上编辑/删除，仅允许配置一个。（`src/auth/fallback-upstream.ts`、`src/routes/accounts.ts`、`src/routes/shared/proxy-handler.ts`、`web/src/components/FallbackUpstreamCard.tsx`、`web/src/components/AddAccount.tsx`）
 - 为 `/v1/responses` 端点添加客户端 WebSocket 支持：接受 `ws://<host>:<port>/v1/responses` 的升级请求并用 Bearer 令牌鉴权，将客户端的 `response.create` 帧代理到现有上游 Codex WebSocket 并把响应事件以 JSON 流式回传；HTTP POST + SSE 仍作为回退保持不变，并在关闭路径中一并关闭该 WS 服务器。（#681）
 - 新增 E2E 测试覆盖账号 CRUD、管理员设置、Dashboard 登录三条关键 HTTP 路径（47 个新用例）：`tests/e2e/accounts.test.ts`（list / add / delete / reset-usage / label / cookies / batch-delete / batch-status / export / quota-warnings）、`tests/e2e/admin-settings.test.ts`（rotation / settings / general / quota 四组 GET+POST）、`tests/e2e/dashboard-login.test.ts`（login / logout / status + 速率限制）。（closes #376 partial）
 - Dashboard 新增侧栏导航布局，并支持在设置中切换回顶部标签栏旧版布局（`web/src/App.tsx`、`web/src/components/Sidebar.tsx`）。
@@ -22,6 +23,7 @@
 
 ### Changed
 
+- 点击「添加账户」不再立即弹出授权网页，改为弹出对话框展示授权 URL，提供「复制」与「打开链接」按钮，由用户自行选择打开时机；下方保留 RT（Refresh Token）输入与导入入口。（`web/src/components/AddAccount.tsx`、`shared/hooks/use-accounts.ts`）
 - Dashboard 日志页面完善深色模式适配，补齐筛选控件、统计卡片、详情抽屉和 JSON 代码块的深色状态；复制 JSON 成功后改为绿色反馈（`web/src/pages/LogsPage.tsx`）。
 - 默认模型与 Claude/Anthropic 推荐档位切换到 GPT-5.6 家族：`config/default.yaml` 默认模型改为 `gpt-5.6-sol`；Dashboard Anthropic Setup 预设与 Claude Code 指南改为 Opus → `gpt-5.6-sol` / Sonnet → `gpt-5.6-terra` / Haiku → `gpt-5.6-luna`；README / API 文档模型表与客户端示例同步更新（`config/default.yaml`、`web/src/components/AnthropicSetup.tsx`、`.github/guides/claude-code-setup.md`、`README.md`、`README_EN.md`、`API.md`、`API_CN.md`）
 - 账号持久化从 `accounts.json` 主存储迁移到 `accounts.sqlite`，启动时自动从旧 JSON 迁移并继续保留 `accounts.json` 镜像用于降级/回滚；批量导入改为持久化批处理，避免每个账号同步重写整份 JSON 导致大批量导入卡死。（#657）

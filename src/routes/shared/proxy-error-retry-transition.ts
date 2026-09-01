@@ -14,6 +14,10 @@ export type ProxyErrorRetryTransitionResult =
       message: string;
       useFormat429?: true;
       modelRetried: boolean;
+      /** Set when the retry decision found no usable account left (all
+       *  exhausted) — the proxy handler may then route through the fallback
+       *  upstream apikey as a last resort. */
+      attemptFallback?: true;
     }
   | {
       action: "retry";
@@ -88,6 +92,7 @@ export function applyProxyErrorRetryTransition(
       status: fallbackRetry.status,
       message: fallbackRetry.message,
       ...(fallbackRetry.useFormat429 ? { useFormat429: true } : {}),
+      attemptFallback: true,
       modelRetried: nextModelRetried,
     };
   }

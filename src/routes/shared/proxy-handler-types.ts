@@ -8,6 +8,7 @@ import type { UpstreamAdapter } from "../../proxy/upstream-adapter.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import type { StreamCloseContextBase } from "../../logs/stream-close-event.js";
 import type { ReasoningReplayItem } from "../../proxy/reasoning-replay-cache.js";
+import type { FallbackUpstreamStore } from "../../auth/fallback-upstream.js";
 
 export interface StreamTranslatorContext extends StreamCloseContextBase {
   /** Request abort signal so format-specific translators can distinguish a
@@ -104,6 +105,8 @@ export interface HandleProxyRequestOptions {
   req: ProxyRequest;
   fmt: FormatAdapter;
   proxyPool?: ProxyPool;
+  /** Optional last-resort upstream apikey used when no account is available. */
+  fallbackUpstream?: FallbackUpstreamStore;
 }
 
 export interface HandleDirectRequestOptions {

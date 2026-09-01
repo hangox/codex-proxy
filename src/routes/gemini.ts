@@ -29,6 +29,7 @@ import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { FormatAdapter, ProxyRequest } from "./shared/proxy-handler-types.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
+import type { FallbackUpstreamStore } from "../auth/fallback-upstream.js";
 import { validateClientKeyModel } from "./shared/proxy-handler-utils.js";
 import { extractProxyApiKey } from "../utils/extract-api-key.js";
 import { resolveDefaultTools, mergeDefaultTools } from "./shared/default-tools.js";
@@ -87,6 +88,7 @@ export function createGeminiRoutes(
   proxyPool?: ProxyPool,
   upstreamRouter?: UpstreamRouter,
   clientKeyPool?: ClientKeyPool,
+  fallbackUpstream?: FallbackUpstreamStore,
 ): Hono {
   const app = new Hono();
 
@@ -120,8 +122,8 @@ export function createGeminiRoutes(
     const routeMatch = upstreamRouter?.resolveMatch(geminiModel);
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
 
-    // Auth check
-    if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+    // Auth check (a configured fallback upstream apikey is a valid last-resort).
+    if (!allowUnauthenticated && !accountPool.isAuthenticated() && !fallbackUpstream?.isConfigured()) {
       c.status(401);
       return c.json(
         makeError(
@@ -183,7 +185,7 @@ export function createGeminiRoutes(
       return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt: GEMINI_FORMAT });
     }
 
-    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: GEMINI_FORMAT, proxyPool });
+    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: GEMINI_FORMAT, proxyPool, fallbackUpstream });
   });
 
   // List available models (Gemini format)

@@ -2,8 +2,9 @@ import { useState, useCallback, useEffect } from "preact/hooks";
 import { useI18n, useT } from "../../../shared/i18n/context";
 import { AccountCard } from "./AccountCard";
 import { AccountImportExport } from "./AccountImportExport";
+import { FallbackUpstreamCard } from "./FallbackUpstreamCard";
 import type { AccountExportFormat } from "../../../shared/account-transfer-client";
-import type { Account, ProxyEntry, QuotaWarning } from "../../../shared/types";
+import type { Account, FallbackUpstreamPublic, ProxyEntry, QuotaWarning } from "../../../shared/types";
 import { derivedStatus } from "../lib/accountStatus";
 import { accountToolbarControlClass } from "../lib/account-toolbar";
 
@@ -24,6 +25,9 @@ interface AccountListProps {
   onToggleStatus?: (id: string, currentStatus: string) => Promise<string | null>;
   onUpdateLabel?: (id: string, label: string | null) => Promise<string | null>;
   onUpdateCodexFingerprintMode?: (id: string, mode: "off" | "session") => Promise<string | null>;
+  fallbackUpstream?: FallbackUpstreamPublic | null;
+  onUpdateFallbackUpstream?: (baseUrl: string, apiKey: string) => Promise<string | null>;
+  onDeleteFallbackUpstream?: () => Promise<string | null>;
 }
 
 const PAGE_SIZE = 10;
@@ -37,7 +41,7 @@ function getBrowserStorage(): Storage | null {
   }
 }
 
-export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing, lastUpdated, proxies, onProxyChange, onExport, onImport, onToggleStatus, onUpdateLabel, onUpdateCodexFingerprintMode }: AccountListProps) {
+export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing, lastUpdated, proxies, onProxyChange, onExport, onImport, onToggleStatus, onUpdateLabel, onUpdateCodexFingerprintMode, fallbackUpstream, onUpdateFallbackUpstream, onDeleteFallbackUpstream }: AccountListProps) {
   const t = useT();
   const { lang } = useI18n();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -401,6 +405,14 @@ export function AccountList({ accounts, loading, onDelete, onRefresh, refreshing
               onRefresh();
             }} onToggleStatus={onToggleStatus} onUpdateLabel={onUpdateLabel} onUpdateCodexFingerprintMode={onUpdateCodexFingerprintMode} />
           ))
+        )}
+        {/* Last-resort upstream apikey — always at the very end, own full row */}
+        {fallbackUpstream && onUpdateFallbackUpstream && onDeleteFallbackUpstream && (
+          <FallbackUpstreamCard
+            config={fallbackUpstream}
+            onUpdate={onUpdateFallbackUpstream}
+            onDelete={onDeleteFallbackUpstream}
+          />
         )}
       </div>
       {/* Show more at bottom when partially expanded */}

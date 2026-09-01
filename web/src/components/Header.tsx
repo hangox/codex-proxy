@@ -1,5 +1,6 @@
+import { useState, useEffect, useRef } from "preact/hooks";
 import { useI18n } from "../../../shared/i18n/context";
-import { translations, type TranslationKey } from "../../../shared/i18n/translations";
+import { translations, type LangCode, type TranslationKey } from "../../../shared/i18n/translations";
 import { useTheme } from "../../../shared/theme/context";
 
 const SVG_MOON = (
@@ -14,8 +15,16 @@ const SVG_SUN = (
   </svg>
 );
 
+const LANG_OPTIONS: { id: LangCode; label: string; short: string }[] = [
+  { id: "en", label: "English", short: "EN" },
+  { id: "zh", label: "简体中文", short: "简" },
+  { id: "zh-TW", label: "繁體中文 (台灣)", short: "繁(台)" },
+  { id: "zh-HK", label: "繁體中文 (香港)", short: "繁(港)" },
+  { id: "ja", label: "日本語", short: "日" },
+];
+
 /**
- * Stable-width text: two invisible references (en + zh) set min-width via grid overlap.
+ * Stable-width text: invisible references for all languages set min-width via grid overlap.
  * The visible text overlays them, so the button never changes width on language switch.
  */
 function StableText({ tKey, children, class: cls }: { tKey: TranslationKey; children: string; class?: string }) {
@@ -23,6 +32,9 @@ function StableText({ tKey, children, class: cls }: { tKey: TranslationKey; chil
     <span class={`inline-grid ${cls ?? ""}`}>
       <span class="invisible col-start-1 row-start-1 whitespace-nowrap">{translations.en[tKey]}</span>
       <span class="invisible col-start-1 row-start-1 whitespace-nowrap">{translations.zh[tKey]}</span>
+      <span class="invisible col-start-1 row-start-1 whitespace-nowrap">{translations["zh-TW"][tKey]}</span>
+      <span class="invisible col-start-1 row-start-1 whitespace-nowrap">{translations["zh-HK"][tKey]}</span>
+      <span class="invisible col-start-1 row-start-1 whitespace-nowrap">{translations.ja[tKey]}</span>
       <span class="col-start-1 row-start-1 whitespace-nowrap">{children}</span>
     </span>
   );
@@ -47,8 +59,21 @@ interface HeaderProps {
 }
 
 export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checking, updateStatusMsg, updateStatusColor, version, commit, hasUpdate, onLogout, unreadErrors, showBrand = true, onOpenSidebar }: HeaderProps) {
-  const { lang, toggleLang, t } = useI18n();
+  const { lang, setLang, t } = useI18n();
   const { isDark, toggle: toggleTheme } = useTheme();
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
+  const langMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!langMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node)) {
+        setLangMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [langMenuOpen]);
 
   return (
     <header class="sticky top-0 z-50 w-full bg-white dark:bg-card-dark border-b border-gray-200 dark:border-border-dark shadow-sm transition-colors">
@@ -145,14 +170,49 @@ export function Header({ onAddAccount, onCheckUpdate, onOpenUpdateModal, checkin
                 <span class="hidden sm:inline"><StableText tKey="dashboardLogout" class="text-xs font-semibold">{t("dashboardLogout")}</StableText></span>
               </button>
             )}
-            {/* Language Toggle */}
-            <button
-              onClick={toggleLang}
-              class="p-2 rounded-lg text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-border-dark transition-colors"
-              title={"\u4e2d/EN"}
-            >
-              <span class="text-xs font-bold inline-flex items-center justify-center w-5">{lang === "en" ? "EN" : "\u4e2d"}</span>
-            </button>
+            {/* Language Selector Dropdown */}
+            <div ref={langMenuRef} class="relative">
+              <button
+                onClick={() => setLangMenuOpen(!langMenuOpen)}
+                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark text-xs font-semibold transition-colors"
+                aria-label="Language Selector"
+                aria-expanded={langMenuOpen}
+              >
+                <svg class="size-3.5 text-slate-500 dark:text-text-dim shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" />
+                </svg>
+                <span>{LANG_OPTIONS.find((o) => o.id === lang)?.label ?? "Language"}</span>
+                <svg class={`size-3 text-slate-400 transition-transform ${langMenuOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+
+              {langMenuOpen && (
+                <div class="absolute right-0 z-50 mt-1.5 w-44 py-1 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-lg animate-in fade-in zoom-in-95 duration-100">
+                  {LANG_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        setLang(opt.id);
+                        setLangMenuOpen(false);
+                      }}
+                      class={`w-full flex items-center justify-between px-3 py-2 text-xs text-left transition-colors ${
+                        lang === opt.id
+                          ? "bg-primary-container text-primary font-bold"
+                          : "text-slate-700 dark:text-text-main hover:bg-slate-50 dark:hover:bg-[#21262d] font-medium"
+                      }`}
+                    >
+                      <span>{opt.label}</span>
+                      {lang === opt.id && (
+                        <svg class="size-3.5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                        </svg>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {/* Theme Toggle */}
             <button
               onClick={toggleTheme}

@@ -10,6 +10,7 @@
 
 ### Added
 
+- 控制台新增日語 (ja)、繁體中文 (台灣, zh-TW)、繁體中文 (香港, zh-HK) 完整語言字典與本地化支援，並將頂部導航列語言切換升級為多語言下拉選擇器（`shared/i18n/`、`web/src/components/Header.tsx`、`shared/utils/format.ts`）。
 - 新增「后备上游 (API Key)」账户类型：配置一个 baseUrl + apiKey，固定走 Responses 接口，仅在所有账号均不可用时作为最后兜底启用；添加账户弹窗可添加，账户列表末尾独占一行展示，支持卡片上编辑/删除，仅允许配置一个。（`src/auth/fallback-upstream.ts`、`src/routes/accounts.ts`、`src/routes/shared/proxy-handler.ts`、`web/src/components/FallbackUpstreamCard.tsx`、`web/src/components/AddAccount.tsx`）
 - 为 `/v1/responses` 端点添加客户端 WebSocket 支持：接受 `ws://<host>:<port>/v1/responses` 的升级请求并用 Bearer 令牌鉴权，将客户端的 `response.create` 帧代理到现有上游 Codex WebSocket 并把响应事件以 JSON 流式回传；HTTP POST + SSE 仍作为回退保持不变，并在关闭路径中一并关闭该 WS 服务器。（#681）
 - 新增 E2E 测试覆盖账号 CRUD、管理员设置、Dashboard 登录三条关键 HTTP 路径（47 个新用例）：`tests/e2e/accounts.test.ts`（list / add / delete / reset-usage / label / cookies / batch-delete / batch-status / export / quota-warnings）、`tests/e2e/admin-settings.test.ts`（rotation / settings / general / quota 四组 GET+POST）、`tests/e2e/dashboard-login.test.ts`（login / logout / status + 速率限制）。（closes #376 partial）

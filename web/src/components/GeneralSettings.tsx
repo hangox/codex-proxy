@@ -33,6 +33,7 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
   const [draftAutoUpdate, setDraftAutoUpdate] = useState<boolean | null>(null);
   const [draftAutoDownload, setDraftAutoDownload] = useState<boolean | null>(null);
   const [draftShowUpdateDialog, setDraftShowUpdateDialog] = useState<boolean | null>(null);
+  const [draftAllowPrerelease, setDraftAllowPrerelease] = useState<boolean | null>(null);
   const [localLayoutMode, setLocalLayoutMode] = useState<LayoutMode>(() => getLayoutMode());
   const [collapsed, setCollapsed] = useState(true);
 
@@ -56,6 +57,7 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
   const currentAutoUpdate = gs.data?.auto_update ?? true;
   const currentAutoDownload = gs.data?.auto_download ?? false;
   const currentShowUpdateDialog = gs.data?.show_update_dialog ?? false;
+  const currentAllowPrerelease = gs.data?.allow_prerelease ?? false;
 
   const displayPort = draftPort ?? String(currentPort);
   const displayProxyUrl = draftProxyUrl ?? currentProxyUrl;
@@ -77,6 +79,7 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
   const displayAutoUpdate = draftAutoUpdate ?? currentAutoUpdate;
   const displayAutoDownload = draftAutoDownload ?? currentAutoDownload;
   const displayShowUpdateDialog = draftShowUpdateDialog ?? currentShowUpdateDialog;
+  const displayAllowPrerelease = draftAllowPrerelease ?? currentAllowPrerelease;
   const displayLayoutMode = layoutMode ?? localLayoutMode;
 
   const handleLayoutModeChange = (mode: LayoutMode) => {
@@ -104,7 +107,8 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
     draftUsageHistoryRetention !== null ||
     draftAutoUpdate !== null ||
     draftAutoDownload !== null ||
-    draftShowUpdateDialog !== null;
+    draftShowUpdateDialog !== null ||
+    draftAllowPrerelease !== null;
 
   const handleSave = useCallback(async () => {
     const patch: Record<string, unknown> = {};
@@ -202,6 +206,10 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
       patch.show_update_dialog = draftShowUpdateDialog;
     }
 
+    if (draftAllowPrerelease !== null) {
+      patch.allow_prerelease = draftAllowPrerelease;
+    }
+
     await gs.save(patch);
     setDraftPort(null);
     setDraftProxyUrl(null);
@@ -222,7 +230,8 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
     setDraftAutoUpdate(null);
     setDraftAutoDownload(null);
     setDraftShowUpdateDialog(null);
-  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftImageHostModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, gs]);
+    setDraftAllowPrerelease(null);
+  }, [draftPort, draftProxyUrl, draftForceHttp11, draftInjectContext, draftSuppressDirectives, draftAllowSystemPromptStrategy, draftSystemPromptStrategy, draftDefaultModel, draftImageHostModel, draftReasoningEffort, draftRefreshEnabled, draftRefreshMargin, draftRefreshConcurrency, draftMaxConcurrent, draftRequestInterval, draftUsageHistoryRetention, draftAutoUpdate, draftAutoDownload, draftShowUpdateDialog, draftAllowPrerelease, gs]);
 
   const inputCls =
     "w-full px-3 py-2 bg-white dark:bg-bg-dark border border-gray-200 dark:border-border-dark rounded-lg text-[0.78rem] font-mono text-slate-700 dark:text-text-main outline-none focus:ring-1 focus:ring-primary";
@@ -307,6 +316,23 @@ export function GeneralSettings({ layoutMode, onLayoutModeChange }: GeneralSetti
               </label>
             </div>
             <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsAutoDownloadHint")}</p>
+          </div>
+
+          {/* Allow Prerelease / Beta */}
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="allow-prerelease"
+                checked={displayAllowPrerelease}
+                onChange={(e) => setDraftAllowPrerelease((e.target as HTMLInputElement).checked)}
+                class="w-4 h-4 rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
+              />
+              <label for="allow-prerelease" class="text-xs font-semibold text-slate-700 dark:text-text-main cursor-pointer">
+                {t("generalSettingsAllowPrerelease")}
+              </label>
+            </div>
+            <p class="text-xs text-slate-400 dark:text-text-dim ml-6">{t("generalSettingsAllowPrereleaseHint")}</p>
           </div>
 
           {/* Update Dialog */}

@@ -6,6 +6,18 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 const ROOT = resolve(__dirname, "..", "..", "..");
 const SCRIPT = resolve(ROOT, ".github", "scripts", "generate-release-notes.sh");
+const RELEASE_NOTES_ENV_KEYS = [
+  "RELEASE_NOTES_BASE_URL",
+  "RELEASE_NOTES_API_KEY",
+  "RELEASE_NOTES_MODEL",
+  "RELEASE_NOTES_REQUEST_TIMEOUT_MS",
+] as const;
+
+function withoutReleaseNotesEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sanitized = { ...env };
+  for (const key of RELEASE_NOTES_ENV_KEYS) delete sanitized[key];
+  return sanitized;
+}
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
@@ -22,10 +34,11 @@ function hasBash(): boolean {
 
 const describeIfBash = hasBash() ? describe : describe.skip;
 
-function runNotes(cwd: string, tag: string): string {
+function runNotes(cwd: string, tag: string, env: NodeJS.ProcessEnv = process.env): string {
   return execFileSync("bash", [SCRIPT, tag], {
     cwd,
     encoding: "utf-8",
+    env: withoutReleaseNotesEnv(env),
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
@@ -56,6 +69,27 @@ function createRepo(): string {
   return cwd;
 }
 
+function createSquashPromotionRepo(): string {
+  const cwd = createRepo();
+  git(cwd, ["checkout", "-b", "dev"]);
+  writeText(cwd, "src/app.txt", "real fix\n");
+  commitAll(cwd, "fix: real user-facing fix (#10)");
+  writeText(cwd, "src/helper.txt", "cleanup\n");
+  commitAll(cwd, "feat: user-visible helper feature (#11)");
+  git(cwd, ["update-ref", "refs/remotes/origin/dev", "dev"]);
+
+  git(cwd, ["checkout", "master"]);
+  git(cwd, ["read-tree", "--reset", "-u", "dev"]);
+  commitAll(cwd, "fix: promote dev release fixes to master");
+  writeText(cwd, "README.md", "synced readme\n");
+  writeText(cwd, "package.json", "{\"version\":\"1.0.1\"}\n");
+  writeText(cwd, "package-lock.json", "{\"version\":\"1.0.1\",\"packages\":{\"\":{\"version\":\"1.0.1\"},\"packages/electron\":{\"version\":\"1.0.1\"}}}\n");
+  writeText(cwd, "packages/electron/package.json", "{\"version\":\"1.0.1\"}\n");
+  commitAll(cwd, "chore: bump version to 1.0.1 [skip ci]");
+  git(cwd, ["tag", "v1.0.1"]);
+  return cwd;
+}
+
 describe("generate-release-notes.sh", () => {
   beforeAll(() => {
     expect(existsSync(SCRIPT), `script missing: ${SCRIPT}`).toBe(true);
@@ -67,6 +101,19 @@ describe("generate-release-notes.sh", () => {
     expect(workflow).toContain("Fetch dev for stable release notes");
     expect(workflow).toContain("git fetch origin dev:refs/remotes/origin/dev || true");
     expect(workflow).toContain("bash .github/scripts/generate-release-notes.sh \"$TAG\" > /tmp/release-notes.md");
+  });
+
+  it("does not pass release-notes LLM configuration to fallback fixtures", () => {
+    const env = withoutReleaseNotesEnv({
+      PATH: process.env.PATH,
+      RELEASE_NOTES_BASE_URL: "http://example.test/v1",
+      RELEASE_NOTES_API_KEY: "test-key",
+      RELEASE_NOTES_MODEL: "test-model",
+      RELEASE_NOTES_REQUEST_TIMEOUT_MS: "1",
+    });
+
+    expect(env).toMatchObject({ PATH: process.env.PATH });
+    for (const key of RELEASE_NOTES_ENV_KEYS) expect(env[key]).toBeUndefined();
   });
 
 });
@@ -91,29 +138,41 @@ describeIfBash("generate-release-notes.sh bash behavior", () => {
   });
 
   it("falls back to dev history when a stable tag only contains a squash promotion", () => {
-    const cwd = createRepo();
-    git(cwd, ["checkout", "-b", "dev"]);
-    writeText(cwd, "src/app.txt", "real fix\n");
-    commitAll(cwd, "fix: real user-facing fix (#10)");
-    writeText(cwd, "src/helper.txt", "cleanup\n");
-    commitAll(cwd, "feat: user-visible helper feature (#11)");
-    git(cwd, ["update-ref", "refs/remotes/origin/dev", "dev"]);
-
-    git(cwd, ["checkout", "master"]);
-    git(cwd, ["read-tree", "--reset", "-u", "dev"]);
-    commitAll(cwd, "fix: promote dev release fixes to master");
-    writeText(cwd, "README.md", "synced readme\n");
-    writeText(cwd, "package.json", "{\"version\":\"1.0.1\"}\n");
-    writeText(cwd, "package-lock.json", "{\"version\":\"1.0.1\",\"packages\":{\"\":{\"version\":\"1.0.1\"},\"packages/electron\":{\"version\":\"1.0.1\"}}}\n");
-    writeText(cwd, "packages/electron/package.json", "{\"version\":\"1.0.1\"}\n");
-    commitAll(cwd, "chore: bump version to 1.0.1 [skip ci]");
-    git(cwd, ["tag", "v1.0.1"]);
+    const cwd = createSquashPromotionRepo();
 
     const notes = runNotes(cwd, "v1.0.1");
 
     expect(notes).toContain("real user-facing fix (#10)");
     expect(notes).toContain("user-visible helper feature (#11)");
     expect(notes).not.toContain("promote dev release fixes");
+  });
+
+  it("keeps the squash-promotion fallback local when ambient LLM configuration is present", () => {
+    const cwd = createSquashPromotionRepo();
+    const shimDir = join(cwd, "node-shim");
+    const leakedConfigFile = join(cwd, "release-notes-config-leaked");
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(
+      join(shimDir, "node"),
+      "#!/bin/sh\nif [ -n \"${RELEASE_NOTES_BASE_URL:-}\" ] || [ -n \"${RELEASE_NOTES_API_KEY:-}\" ] || [ -n \"${RELEASE_NOTES_MODEL:-}\" ] || [ -n \"${RELEASE_NOTES_REQUEST_TIMEOUT_MS:-}\" ]; then\n  touch \"$RELEASE_NOTES_ENV_LEAK_FILE\"\n  exit 91\nfi\nexec \"$REAL_NODE\" \"$@\"\n",
+      { mode: 0o755 },
+    );
+
+    const notes = runNotes(cwd, "v1.0.1", {
+      ...process.env,
+      PATH: `${shimDir}:${process.env.PATH}`,
+      REAL_NODE: process.execPath,
+      RELEASE_NOTES_ENV_LEAK_FILE: leakedConfigFile,
+      RELEASE_NOTES_BASE_URL: "http://127.0.0.1:9/v1",
+      RELEASE_NOTES_API_KEY: "test-key",
+      RELEASE_NOTES_MODEL: "test-model",
+      RELEASE_NOTES_REQUEST_TIMEOUT_MS: "3000",
+    });
+
+    expect(existsSync(leakedConfigFile)).toBe(false);
+    expect(notes).toContain("### Fixes");
+    expect(notes).toContain("real user-facing fix (#10)");
+    expect(notes).toContain("user-visible helper feature (#11)");
   });
 
   it("uses topological sorting (git describe) rather than semver sorting to avoid pulling in old history from unrelated higher-version tags", () => {

@@ -14,10 +14,12 @@ export function createUpdateRoutes(): Hono {
     const cached = getCachedProxyUpdateResult();
     const config = getConfig();
     const showUpdateDialog = config.update?.show_update_dialog ?? false;
+    const allowPrerelease = config.update?.allow_prerelease ?? false;
 
     return c.json({
       settings: {
         show_update_dialog: showUpdateDialog,
+        allow_prerelease: allowPrerelease,
       },
       proxy: {
         version: proxyInfo.version,

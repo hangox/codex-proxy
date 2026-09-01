@@ -25,6 +25,7 @@ import { handleProxyRequest } from "./shared/proxy-handler.js";
 import { handleDirectRequest } from "./shared/direct-request-handler.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
 import type { ClientKeyPool } from "../auth/client-key-pool.js";
+import type { FallbackUpstreamStore } from "../auth/fallback-upstream.js";
 import { validateClientKeyModel, recordClientKeyUsage } from "./shared/proxy-handler-utils.js";
 import {
   extractOpenAISubagentFromMetadata,
@@ -67,8 +68,8 @@ function firstHeaderOrMetadata(
 
 // ── Auth check ────────────────────────────────────────────────────
 
-function checkAuth(c: Context, accountPool: AccountPool, allowUnauthenticated: boolean): Response | null {
-  if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+function checkAuth(c: Context, accountPool: AccountPool, allowUnauthenticated: boolean, fallbackConfigured?: boolean): Response | null {
+  if (!allowUnauthenticated && !accountPool.isAuthenticated() && !fallbackConfigured) {
     c.status(401);
     return c.json({
       type: "error",
@@ -105,6 +106,7 @@ export function createResponsesRoutes(
   proxyPool?: ProxyPool,
   upstreamRouter?: UpstreamRouter,
   clientKeyPool?: ClientKeyPool,
+  fallbackUpstream?: FallbackUpstreamStore,
 ): Hono {
   const app = new Hono();
   // Register errorHandler locally so that when testing this router in isolation (e.g. unit tests),
@@ -152,7 +154,9 @@ export function createResponsesRoutes(
     }
 
     const allowUnauthenticated = routeMatch.kind === "api-key" || routeMatch.kind === "adapter";
-    const authErr = checkAuth(c, accountPool, allowUnauthenticated);
+    // A configured fallback upstream apikey also satisfies the guard, since the
+    // proxy handler will route through it as a last-resort.
+    const authErr = checkAuth(c, accountPool, allowUnauthenticated, fallbackUpstream?.isConfigured());
     if (authErr) return authErr;
 
     const config = getConfig();
@@ -310,7 +314,7 @@ export function createResponsesRoutes(
       return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt: PASSTHROUGH_FORMAT });
     }
 
-    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool });
+    return handleProxyRequest({ c, accountPool, cookieJar, req: proxyReq, fmt: PASSTHROUGH_FORMAT, proxyPool, fallbackUpstream });
   };
 
   const compactHandler = async (c: Context) => {

@@ -21,6 +21,7 @@ import type { ImportEntry } from "../services/account-import.js";
 import { discoverCodexAccountIdentity } from "../services/account-identity-resolver.js";
 import { AccountQueryService } from "../services/account-query.js";
 import { AccountMutationService } from "../services/account-mutation.js";
+import { FallbackUpstreamStore } from "../auth/fallback-upstream.js";
 import { getProxyUrl as getRuntimeProxyUrl } from "../tls/proxy.js";
 import {
   buildAccountExportPayload,
@@ -38,7 +39,7 @@ const HealthCheckSchema = z.object({
 const BatchStatusSchema = z.object({ ids: z.array(z.string()).min(1), status: z.enum(["active", "disabled"]) });
 const LabelSchema = z.object({ label: z.string().max(64).nullable() });
 const CodexFingerprintSchema = z.object({ mode: z.enum(["off", "session"]) });
-export function createAccountRoutes(pool: AccountPool, scheduler: RefreshScheduler, cookieJar?: CookieJar, proxyPool?: ProxyPool): Hono {
+export function createAccountRoutes(pool: AccountPool, scheduler: RefreshScheduler, cookieJar?: CookieJar, proxyPool?: ProxyPool, fallbackUpstream?: FallbackUpstreamStore): Hono {
   const app = new Hono();
   const importSvc = new AccountImportService(pool, scheduler, {
     validateToken: validateManualToken,
@@ -186,7 +187,56 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
     return c.json({
       accounts,
       persistence_health: pool.getPersistenceHealth(),
+      fallback_upstream: fallbackUpstream?.getPublic() ?? null,
     });
+  });
+
+  // ── Fallback upstream apikey (single, last-resort) ─────────────
+
+  const FallbackUpstreamSchema = z.object({
+    baseUrl: z.string().trim().min(1, "baseUrl is required"),
+    apiKey: z.string().trim().min(1, "apiKey is required"),
+  });
+
+  // Update requires a (possibly unchanged) baseUrl — store.update() cannot
+  // update the apiKey alone — and an empty apiKey means "keep the existing key".
+  const FallbackUpstreamUpdateSchema = z.object({
+    baseUrl: z.string().trim().min(1, "baseUrl is required"),
+    apiKey: z.string().trim().optional(),
+  });
+
+  app.get("/auth/fallback-upstream", (c) => {
+    return c.json({
+      configured: fallbackUpstream?.isConfigured() ?? false,
+      config: fallbackUpstream?.getPublic() ?? null,
+    });
+  });
+
+  app.post("/auth/fallback-upstream", async (c) => {
+    if (!fallbackUpstream) { c.status(500); return c.json({ error: "Fallback upstream store not initialized" }); }
+    const body = await c.req.json().catch(() => null);
+    const parsed = FallbackUpstreamSchema.safeParse(body);
+    if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
+    const result = fallbackUpstream.set(parsed.data.baseUrl, parsed.data.apiKey);
+    if (!result.ok) { c.status(409); return c.json({ error: result.error }); }
+    return c.json({ success: true, config: fallbackUpstream.getPublic() });
+  });
+
+  app.put("/auth/fallback-upstream", async (c) => {
+    if (!fallbackUpstream) { c.status(500); return c.json({ error: "Fallback upstream store not initialized" }); }
+    const body = await c.req.json().catch(() => null);
+    const parsed = FallbackUpstreamUpdateSchema.safeParse(body);
+    if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
+    const result = fallbackUpstream.update(parsed.data.baseUrl, parsed.data.apiKey ?? "");
+    if (!result.ok) { c.status(404); return c.json({ error: result.error }); }
+    return c.json({ success: true, config: fallbackUpstream.getPublic() });
+  });
+
+  app.delete("/auth/fallback-upstream", (c) => {
+    if (!fallbackUpstream) { c.status(500); return c.json({ error: "Fallback upstream store not initialized" }); }
+    if (!fallbackUpstream.isConfigured()) { c.status(404); return c.json({ error: "Fallback upstream not configured" }); }
+    fallbackUpstream.clear();
+    return c.json({ success: true });
   });
 
   app.post("/auth/accounts", async (c) => {

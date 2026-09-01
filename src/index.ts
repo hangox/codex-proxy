@@ -47,6 +47,7 @@ import { AnthropicUpstream } from "./proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "./proxy/gemini-upstream.js";
 import { ApiKeyPool } from "./auth/api-key-pool.js";
 import { ClientKeyPool } from "./auth/client-key-pool.js";
+import { FallbackUpstreamStore } from "./auth/fallback-upstream.js";
 import { createApiKeyRoutes } from "./routes/api-keys.js";
 import { ApiKeyModelCache } from "./auth/api-key-model-cache.js";
 import { createEmbeddingsRoutes } from "./routes/embeddings.js";
@@ -180,13 +181,17 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   // Create a single model cache instance shared across all routes.
   const apiKeyModelCache = new ApiKeyModelCache();
 
+  // Last-resort upstream apikey (single, Responses API wire). Used only when
+  // every OAuth account is unavailable.
+  const fallbackUpstreamStore = new FallbackUpstreamStore();
+
   // Mount routes
   const authRoutes = createAuthRoutes(accountPool, refreshScheduler);
-  const accountRoutes = createAccountRoutes(accountPool, refreshScheduler, cookieJar, proxyPool);
-  const chatRoutes = createChatRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool);
-  const messagesRoutes = createMessagesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool);
-  const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool);
-  const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool);
+  const accountRoutes = createAccountRoutes(accountPool, refreshScheduler, cookieJar, proxyPool, fallbackUpstreamStore);
+  const chatRoutes = createChatRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool, fallbackUpstreamStore);
+  const messagesRoutes = createMessagesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool, fallbackUpstreamStore);
+  const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool, fallbackUpstreamStore);
+  const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool, fallbackUpstreamStore);
   const imagesRoutes = createImagesRoutes(accountPool, cookieJar, proxyPool, clientKeyPool);
   const apiKeyRoutes = createApiKeyRoutes(apiKeyPool, apiKeyModelCache);
   const embeddingsRoutes = createEmbeddingsRoutes(accountPool, apiKeyPool, clientKeyPool);

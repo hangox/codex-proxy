@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
-import type { Account } from "../types";
+import type { Account, FallbackUpstreamPublic } from "../types";
 import {
   accountExportDownloadName,
   buildAccountExportUrl,
@@ -21,6 +21,8 @@ export function useAccounts() {
   const [addVisible, setAddVisible] = useState(false);
   const [addInfo, setAddInfo] = useState("");
   const [addError, setAddError] = useState("");
+  const [addAuthUrl, setAddAuthUrl] = useState("");
+  const [fallbackUpstream, setFallbackUpstream] = useState<FallbackUpstreamPublic | null>(null);
   const [persistenceHealth, setPersistenceHealth] = useState<PersistenceHealth>({ ok: true });
   const addCleanupRef = useRef<(() => void) | null>(null);
 
@@ -30,6 +32,11 @@ export function useAccounts() {
       const resp = await fetch("/auth/accounts?quota=true");
       const data = await resp.json();
       setList(data.accounts || []);
+      if (data.fallback_upstream && typeof data.fallback_upstream === "object") {
+        setFallbackUpstream(data.fallback_upstream as FallbackUpstreamPublic);
+      } else {
+        setFallbackUpstream(null);
+      }
       if (data.persistence_health && typeof data.persistence_health === "object") {
         setPersistenceHealth(data.persistence_health as PersistenceHealth);
       }
@@ -68,13 +75,17 @@ export function useAccounts() {
   const startAdd = useCallback(async () => {
     setAddInfo("");
     setAddError("");
+    setAddAuthUrl("");
     try {
       const resp = await fetch("/auth/login-start", { method: "POST" });
       const data = await resp.json();
       if (!resp.ok || !data.authUrl) {
         throw new Error(data.error || "failedStartLogin");
       }
-      window.open(data.authUrl, "oauth_add", "width=600,height=700,scrollbars=yes");
+      // Show the dialog with the auth URL first — the user decides when to
+      // open it (via the "Open URL" button), instead of popping a window
+      // immediately.
+      setAddAuthUrl(data.authUrl);
       setAddVisible(true);
 
       // Poll for new account + focus/visibility detection
@@ -131,6 +142,7 @@ export function useAccounts() {
     setAddVisible(false);
     setAddInfo("");
     setAddError("");
+    setAddAuthUrl("");
   }, []);
 
   const submitRelay = useCallback(
@@ -188,6 +200,64 @@ export function useAccounts() {
       return msg;
     }
   }, [loadAccounts]);
+
+  // ── Fallback upstream apikey (single, last-resort) ──────────────
+
+  const refreshFallbackUpstream = useCallback(async () => {
+    try {
+      const resp = await fetch("/auth/fallback-upstream");
+      const data = await resp.json();
+      setFallbackUpstream(data.config ?? null);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const addFallbackUpstream = useCallback(async (baseUrl: string, apiKey: string): Promise<string | null> => {
+    try {
+      const resp = await fetch("/auth/fallback-upstream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl, apiKey }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return data.error || "Failed to add fallback upstream";
+      setFallbackUpstream(data.config ?? null);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }, []);
+
+  const updateFallbackUpstream = useCallback(async (baseUrl: string, apiKey: string): Promise<string | null> => {
+    try {
+      const resp = await fetch("/auth/fallback-upstream", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl, apiKey }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return data.error || "Failed to update fallback upstream";
+      setFallbackUpstream(data.config ?? null);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }, []);
+
+  const deleteFallbackUpstream = useCallback(async (): Promise<string | null> => {
+    try {
+      const resp = await fetch("/auth/fallback-upstream", { method: "DELETE" });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        return data.error || "Failed to delete fallback upstream";
+      }
+      setFallbackUpstream(null);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }, []);
 
   const deleteAccount = useCallback(
     async (id: string) => {
@@ -337,6 +407,12 @@ export function useAccounts() {
     addVisible,
     addInfo,
     addError,
+    addAuthUrl,
+    fallbackUpstream,
+    refreshFallbackUpstream,
+    addFallbackUpstream,
+    updateFallbackUpstream,
+    deleteFallbackUpstream,
     persistenceHealth,
     refresh: loadAccounts,
     patchLocal,

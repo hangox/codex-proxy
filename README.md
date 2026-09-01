@@ -19,11 +19,14 @@
     <a href="#-可用模型">可用模型</a> &bull;
     <a href="#-客户端接入">客户端接入</a> &bull;
     <a href="#-配置说明">配置说明</a> &bull;
+    <a href="./API_CN.md">API 文档</a> &bull;
     <a href="#-贡献致谢">贡献致谢</a>
   </p>
 
   <p>
     <strong>简体中文</strong> |
+    <a href="./README_TW.md">繁體中文 (台灣)</a> |
+    <a href="./README_HK.md">繁體中文 (香港)</a> |
     <a href="./README_EN.md">English</a> |
     <a href="./README_JA.md">日本語</a>
   </p>
@@ -153,6 +156,7 @@ curl http://localhost:8080/v1/chat/completions \
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）和 Gemini `responseMimeType`
 - **Function Calling** — 原生 `function_call` / `tool_calls` 支持（所有协议）
 - **第三方 API Keys** — 支持 OpenAI / Anthropic / Gemini / OpenRouter / 自定义 OpenAI-compatible Provider，并按模型路由直通上游。
+- 📖 完整接口定义与协议说明请查阅 **[API 文档](./API_CN.md)**。
 
 ### 🔐 账号管理与智能轮换
 - **OAuth PKCE 登录** — 浏览器一键授权，无需手动复制 Token
@@ -268,7 +272,7 @@ curl -N http://localhost:8080/v1/responses \
   }'
 ```
 
-常用参数：`size`（可请求 1024×1024 / 1024×1536 / 1536×1024 / 2048×2048 / 2048×3072 / 3072×2048 / 3840×2160 / `auto`）、`output_format`（`png` / `jpeg` / `webp`）、`output_compression`（jpeg / webp 可调）、`background`（`auto` / `opaque`）、`moderation`（`auto` / `low`）、`partial_images`（0–3）。一次只能出 1 张图（`n` 固定为 1）；`model` 字段不管传什么都会被上游改写为图像工具的实际模型（当前响应回显为 `gpt-image-2-codex`）。详见 [API.md](./API.md#image_generation-tool)。
+常用参数：`size`（可请求 1024×1024 / 1024×1536 / 1536×1024 / 2048×2048 / 2048×3072 / 3072×2048 / 3840×2160 / `auto`）、`output_format`（`png` / `jpeg` / `webp`）、`output_compression`（jpeg / webp 可调）、`background`（`auto` / `opaque`）、`moderation`（`auto` / `low`）、`partial_images`（0–3）。一次只能出 1 张图（`n` 固定为 1）；`model` 字段不管传什么都会被上游改写为图像工具的实际模型（当前响应回显为 `gpt-image-2-codex`）。详见 [API_CN.md](./API_CN.md#image_generation-工具)。
 
 > **`size` 不是固定像素保证。** Proxy 会保留并发送客户端填写的值，但当前上游会把 `2048x2048`、`2K`、`4K` 等请求归一化为 `size: "auto"`，再自行决定实际尺寸。2026-08-10 的真实请求中，`size: "2048x2048"` 的工具配置回显为 `auto`，最终 `image_generation_call.size` 和 PNG 像素均为 `1254x1254`。因此不能依靠该字段获得原生、精确的 2K/4K 输出；请以结果 item 的 `size` 或解码后图片像素为准。若业务必须拿到精确 `2048x2048` 文件，需要在生成后使用插值或 AI 超分辨率进行后处理。
 

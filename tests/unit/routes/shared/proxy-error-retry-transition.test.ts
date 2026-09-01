@@ -183,6 +183,7 @@ describe("applyProxyErrorRetryTransition", () => {
       status: 429,
       message: "All accounts exhausted (1 rate-limited, 1 expired). rate limited",
       useFormat429: true,
+      attemptFallback: true,
       modelRetried: false,
     });
     expect(accountPool.release).not.toHaveBeenCalled();
@@ -246,6 +247,7 @@ describe("applyProxyErrorRetryTransition", () => {
       action: "respond",
       status: 503,
       message: "No accounts available. The server is overloaded",
+      attemptFallback: true,
       modelRetried: false,
     });
     expect(accountPool.release).toHaveBeenCalledWith("entry-1", undefined);

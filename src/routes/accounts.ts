@@ -198,6 +198,13 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
     apiKey: z.string().trim().min(1, "apiKey is required"),
   });
 
+  // Update requires a (possibly unchanged) baseUrl — store.update() cannot
+  // update the apiKey alone — and an empty apiKey means "keep the existing key".
+  const FallbackUpstreamUpdateSchema = z.object({
+    baseUrl: z.string().trim().min(1, "baseUrl is required"),
+    apiKey: z.string().trim().optional(),
+  });
+
   app.get("/auth/fallback-upstream", (c) => {
     return c.json({
       configured: fallbackUpstream?.isConfigured() ?? false,
@@ -218,10 +225,9 @@ export function createAccountRoutes(pool: AccountPool, scheduler: RefreshSchedul
   app.put("/auth/fallback-upstream", async (c) => {
     if (!fallbackUpstream) { c.status(500); return c.json({ error: "Fallback upstream store not initialized" }); }
     const body = await c.req.json().catch(() => null);
-    const parsed = FallbackUpstreamSchema.partial().safeParse(body);
+    const parsed = FallbackUpstreamUpdateSchema.safeParse(body);
     if (!parsed.success) { c.status(400); return c.json({ error: "Invalid request", details: parsed.error.issues }); }
-    if (!parsed.data.baseUrl && !parsed.data.apiKey) { c.status(400); return c.json({ error: "Nothing to update" }); }
-    const result = fallbackUpstream.update(parsed.data.baseUrl ?? "", parsed.data.apiKey ?? "");
+    const result = fallbackUpstream.update(parsed.data.baseUrl, parsed.data.apiKey ?? "");
     if (!result.ok) { c.status(404); return c.json({ error: result.error }); }
     return c.json({ success: true, config: fallbackUpstream.getPublic() });
   });

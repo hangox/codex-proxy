@@ -68,8 +68,8 @@ function firstHeaderOrMetadata(
 
 // ── Auth check ────────────────────────────────────────────────────
 
-function checkAuth(c: Context, accountPool: AccountPool, allowUnauthenticated: boolean): Response | null {
-  if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+function checkAuth(c: Context, accountPool: AccountPool, allowUnauthenticated: boolean, fallbackConfigured?: boolean): Response | null {
+  if (!allowUnauthenticated && !accountPool.isAuthenticated() && !fallbackConfigured) {
     c.status(401);
     return c.json({
       type: "error",
@@ -154,7 +154,9 @@ export function createResponsesRoutes(
     }
 
     const allowUnauthenticated = routeMatch.kind === "api-key" || routeMatch.kind === "adapter";
-    const authErr = checkAuth(c, accountPool, allowUnauthenticated);
+    // A configured fallback upstream apikey also satisfies the guard, since the
+    // proxy handler will route through it as a last-resort.
+    const authErr = checkAuth(c, accountPool, allowUnauthenticated, fallbackUpstream?.isConfigured());
     if (authErr) return authErr;
 
     const config = getConfig();

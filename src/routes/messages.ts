@@ -184,8 +184,8 @@ export function createMessagesRoutes(
     const routeMatch = upstreamRouter?.resolveMatch(req.model);
     const allowUnauthenticated = routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter";
 
-    // Auth check
-    if (!allowUnauthenticated && !accountPool.isAuthenticated()) {
+    // Auth check (a configured fallback upstream apikey is a valid last-resort).
+    if (!allowUnauthenticated && !accountPool.isAuthenticated() && !fallbackUpstream?.isConfigured()) {
       c.status(401);
       return c.json(
         makeError("authentication_error", "Not authenticated. Please login first at /"),

@@ -192,8 +192,9 @@ export function createChatRoutes(
       return handleDirectRequest({ c, upstream: routeMatch.adapter, req: directReq, fmt });
     }
 
-    // Auth check for Codex route only
-    if (!accountPool.isAuthenticated()) {
+    // Auth check for Codex route only (a configured fallback upstream apikey
+    // acts as a last-resort, so it also satisfies the guard).
+    if (!accountPool.isAuthenticated() && !fallbackUpstream?.isConfigured()) {
       c.status(401);
       return c.json({
         error: {

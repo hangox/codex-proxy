@@ -92,6 +92,36 @@ async function respondNoAccountOrFallback(
   return respondWithNoAccount({ c: options.c, req, fmt });
 }
 
+/**
+ * Respond with a proxy error, but when a fallback upstream apikey is
+ * configured and the retry path found every OAuth account unusable, route the
+ * request through the fallback as a last resort instead of surfacing the
+ * error. Callers only reach this when `attemptFallback` was set on a retry
+ * decision that found no usable account left.
+ */
+async function respondProxyErrorOrFallback(
+  options: HandleProxyRequestOptions,
+  req: ProxyRequest,
+  fmt: FormatAdapter,
+  status: number,
+  message: string,
+  useFormat429?: boolean,
+): Promise<Response> {
+  const fallback = options.fallbackUpstream?.get();
+  if (fallback) {
+    console.log(
+      `[${fmt.tag}] Retry exhausted — routing through fallback upstream apikey (${fallback.baseUrl})`,
+    );
+    return handleDirectRequest({
+      c: options.c,
+      upstream: new ResponsesUpstream("fallback", fallback.apiKey, fallback.baseUrl),
+      req,
+      fmt,
+    });
+  }
+  return respondWithProxyError({ c: options.c, req, fmt, status, message, useFormat429 });
+}
+
 export async function handleProxyRequest(options: HandleProxyRequestOptions): Promise<Response> {
   const { c, accountPool, cookieJar, req, fmt, proxyPool } = options;
   c.set("logForwarded", true);
@@ -457,6 +487,14 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
             cookieJar, proxyPool,
           });
           if (errorRetryTransition.action === "respond") {
+            if (errorRetryTransition.attemptFallback) {
+              return respondProxyErrorOrFallback(
+                options, req, fmt,
+                errorRetryTransition.status,
+                errorRetryTransition.message,
+                errorRetryTransition.useFormat429,
+              );
+            }
             return respondWithProxyError({
               c, req, fmt,
               status: errorRetryTransition.status,

@@ -19,11 +19,14 @@
     <a href="#-available-models">Models</a> &bull;
     <a href="#-client-setup">Client Setup</a> &bull;
     <a href="#-configuration">Configuration</a> &bull;
+    <a href="./API.md">API Reference</a> &bull;
     <a href="#-acknowledgements">Acknowledgements</a>
   </p>
 
   <p>
     <a href="./README.md">简体中文</a> |
+    <a href="./README_TW.md">繁體中文 (台灣)</a> |
+    <a href="./README_HK.md">繁體中文 (香港)</a> |
     <strong>English</strong> |
     <a href="./README_JA.md">日本語</a>
   </p>
@@ -119,6 +122,7 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - **Structured Outputs** — `response_format` (`json_object` / `json_schema`) and Gemini `responseMimeType`
 - **Function Calling** — native `function_call` / `tool_calls` across all protocols
 - **Third-party API keys** — supports OpenAI / Anthropic / Gemini / OpenRouter / custom OpenAI-compatible providers, routed by model.
+- 📖 For complete endpoint definitions and protocol specifications, see **[API Reference](./API.md)**.
 
 ### 2. 🔐 Account Management & Smart Rotation
 - **OAuth PKCE login** — one-click browser auth

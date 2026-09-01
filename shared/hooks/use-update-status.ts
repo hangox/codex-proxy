@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 export interface UpdateStatus {
   settings: {
     show_update_dialog: boolean;
+    allow_prerelease?: boolean;
   };
   proxy: {
     version: string;

@@ -11,7 +11,11 @@ const _existsSync = vi.fn(() => true);
 const _readFileSync = vi.fn(() => JSON.stringify({ version: "1.0.0" }));
 const _execFileSync = vi.fn((): string => "");
 const _execFileAsync = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+const _mockConfig = {
+  update: { auto_update: true, auto_download: false, show_update_dialog: false, allow_prerelease: false },
+};
 
+vi.mock("@src/config.js", () => ({ getConfig: vi.fn(() => _mockConfig) }));
 vi.mock("@src/paths.js", () => ({ isEmbedded: _isEmbedded, getRootDir: () => "/mock" }));
 vi.mock("fs", () => ({ existsSync: _existsSync, readFileSync: _readFileSync, openSync: vi.fn(() => 99) }));
 vi.mock("child_process", () => ({
@@ -371,6 +375,78 @@ describe("self-update", () => {
       const result = await checkProxySelfUpdate();
       expect(result.updateAvailable).toBe(false);
       expect(result.release).toBeNull();
+
+      vi.unstubAllGlobals();
+    });
+  });
+
+  // ── checkProxySelfUpdate (electron mode) ──────────────────────────
+
+  describe("checkProxySelfUpdate (electron mode)", () => {
+    beforeEach(() => {
+      _isEmbedded.mockReturnValue(true);
+      _mockConfig.update.allow_prerelease = false;
+    });
+
+    it("checks latest stable release when allow_prerelease is false", async () => {
+      _readFileSync.mockReturnValue(JSON.stringify({ version: "1.0.0" }));
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          tag_name: "v1.1.0",
+          body: "Stable release",
+          html_url: "https://github.com/repo/releases/v1.1.0",
+          published_at: "2026-03-01T00:00:00Z",
+        }),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const { checkProxySelfUpdate } = await importFresh();
+      const result = await checkProxySelfUpdate();
+      expect(result.updateAvailable).toBe(true);
+      expect(result.release?.version).toBe("1.1.0");
+      expect(result.mode).toBe("electron");
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/releases/latest"),
+        expect.any(Object),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it("checks all releases including beta when allow_prerelease is true", async () => {
+      _readFileSync.mockReturnValue(JSON.stringify({ version: "1.0.0" }));
+      _mockConfig.update.allow_prerelease = true;
+
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([
+          {
+            tag_name: "v1.2.0-beta.1",
+            body: "Beta release",
+            html_url: "https://github.com/repo/releases/v1.2.0-beta.1",
+            published_at: "2026-03-02T00:00:00Z",
+            draft: false,
+          },
+          {
+            tag_name: "v1.1.0",
+            body: "Stable release",
+            html_url: "https://github.com/repo/releases/v1.1.0",
+            published_at: "2026-03-01T00:00:00Z",
+            draft: false,
+          },
+        ]),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const { checkProxySelfUpdate } = await importFresh();
+      const result = await checkProxySelfUpdate();
+      expect(result.updateAvailable).toBe(true);
+      expect(result.release?.version).toBe("1.2.0-beta.1");
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringMatching(/\/releases$/),
+        expect.any(Object),
+      );
 
       vi.unstubAllGlobals();
     });

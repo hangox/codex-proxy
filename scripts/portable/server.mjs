@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,8 @@ const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(APP_DIR, "..");
 const WEBVIEW2_RUNTIME_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
 const WEBVIEW2_INSTALL_HELP_URL = "https://developer.microsoft.com/microsoft-edge/webview2/";
+const WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/?linkid=2124703";
+const WEBVIEW2_BOOTSTRAPPER_NAME = "MicrosoftEdgeWebView2Setup.exe";
 const PROMPT_TIMEOUT_MS = 15_000;
 const ELECTRON_USER_DATA_SCOPE = ["@codex-proxy", "electron"];
 
@@ -169,7 +171,61 @@ function askYesNoWithTimeout(question, timeoutMs = PROMPT_TIMEOUT_MS) {
 function resolveWebView2Bootstrapper() {
   const configured = process.env.CODEX_PROXY_WEBVIEW2_BOOTSTRAPPER;
   if (configured) return resolve(PACKAGE_ROOT, configured);
-  return join(PACKAGE_ROOT, "tools", "MicrosoftEdgeWebView2Setup.exe");
+  return join(PACKAGE_ROOT, "tools", WEBVIEW2_BOOTSTRAPPER_NAME);
+}
+
+function bootstrapperCachePath() {
+  return join(tmpdir(), "codex-proxy", "webview2", WEBVIEW2_BOOTSTRAPPER_NAME);
+}
+
+async function downloadWebView2Bootstrapper(destination) {
+  const response = await fetch(WEBVIEW2_BOOTSTRAPPER_URL, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!response.ok) throw new Error(`Bootstrapper download failed: HTTP ${response.status}`);
+  const content = Buffer.from(await response.arrayBuffer());
+  if (content.length < 1024 || content.subarray(0, 2).toString("ascii") !== "MZ") {
+    throw new Error("Downloaded WebView2 Bootstrapper is not a Windows executable");
+  }
+  mkdirSync(dirname(destination), { recursive: true });
+  const temporary = `${destination}.part-${process.pid}`;
+  rmSync(temporary, { force: true });
+  writeFileSync(temporary, content);
+  renameSync(temporary, destination);
+  return destination;
+}
+
+function verifyBootstrapperSignature(installer) {
+  // The fwlink serves the latest bootstrapper, so there is no stable SHA-256
+  // to pin; mirror the release workflow's Authenticode check instead.
+  const script = [
+    "$s = Get-AuthenticodeSignature -LiteralPath $env:CODEX_PROXY_BOOTSTRAPPER_PATH",
+    "if ($s.Status -ne 'Valid') { exit 1 }",
+    "if ($s.SignerCertificate.Subject -notmatch 'Microsoft') { exit 1 }",
+  ].join("\n");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8",
+    timeout: 60_000,
+    env: { ...process.env, CODEX_PROXY_BOOTSTRAPPER_PATH: installer },
+    windowsHide: true,
+  });
+  return !result.error && result.status === 0;
+}
+
+async function ensureDownloadedWebView2Bootstrapper() {
+  const cache = bootstrapperCachePath();
+  if (existsSync(cache)) {
+    if (verifyBootstrapperSignature(cache)) return cache;
+    rmSync(cache, { force: true });
+  }
+  console.log(`[Portable] Downloading the WebView2 installer from ${WEBVIEW2_BOOTSTRAPPER_URL}`);
+  await downloadWebView2Bootstrapper(cache);
+  if (!verifyBootstrapperSignature(cache)) {
+    rmSync(cache, { force: true });
+    throw new Error("The downloaded WebView2 installer failed the Authenticode signature check");
+  }
+  return cache;
 }
 
 function runWebView2Installer(installer) {
@@ -309,8 +365,8 @@ async function start() {
       const installer = resolveWebView2Bootstrapper();
       const installerAvailable = existsSync(installer);
       const question = installerAvailable
-        ? "WebView2 Runtime is not installed. Run the packaged online installer now? (15 seconds)"
-        : "WebView2 Runtime is not installed. Open the official installation page now? (15 seconds)";
+        ? "WebView2 Runtime is not installed. Run the local WebView2 installer now? (15 seconds)"
+        : "WebView2 Runtime is not installed. Download and run the official installer (~2 MB) now? (15 seconds)";
       if (await askYesNoWithTimeout(question)) {
         if (installerAvailable) {
           console.log(`[Portable] Running WebView2 Bootstrapper: ${installer}`);
@@ -319,8 +375,18 @@ async function start() {
             throw new Error("WebView2 Runtime installation did not complete. Use --mode=browser or install it manually.");
           }
         } else {
-          openExternal(WEBVIEW2_INSTALL_HELP_URL);
-          throw new Error("WebView2 Runtime is required for --mode=webview2; installation guidance was opened.");
+          try {
+            const downloaded = await ensureDownloadedWebView2Bootstrapper();
+            console.log(`[Portable] Running WebView2 Bootstrapper: ${downloaded}`);
+            const exitCode = await runWebView2Installer(downloaded);
+            if (exitCode !== 0 || !(await waitForWebView2Runtime())) {
+              throw new Error("WebView2 Runtime installation did not complete. Use --mode=browser or install it manually.");
+            }
+          } catch (error) {
+            console.error(`[Portable] Could not install WebView2 automatically: ${error instanceof Error ? error.message : String(error)}`);
+            openExternal(WEBVIEW2_INSTALL_HELP_URL);
+            throw new Error("WebView2 Runtime is required for --mode=webview2; installation guidance was opened.");
+          }
         }
       } else {
         throw new Error("WebView2 Runtime is required for --mode=webview2; use --mode=browser instead.");

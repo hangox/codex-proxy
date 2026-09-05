@@ -391,21 +391,7 @@ jobs:
           node scripts/portable/build-webview2-host.mjs --arch x86 --out "$hostDir\win-x86\webview2-host.exe"
           node scripts/portable/build-webview2-host.mjs --arch x64 --out "$hostDir\win-x64\webview2-host.exe"
 
-      - name: Download Evergreen WebView2 Bootstrapper
-        shell: pwsh
-        run: |
-          $path = Join-Path $env:RUNNER_TEMP "codex-proxy-webview2\MicrosoftEdgeWebView2Setup.exe"
-          node scripts/portable/download-webview2-bootstrapper.mjs --out $path
-
-      - name: Verify Evergreen WebView2 Bootstrapper signature
-        shell: pwsh
-        run: |
-          $path = Join-Path $env:RUNNER_TEMP "codex-proxy-webview2\MicrosoftEdgeWebView2Setup.exe"
-          $signature = Get-AuthenticodeSignature -LiteralPath $path
-          if ($signature.Status -ne "Valid") { throw "Invalid WebView2 Bootstrapper signature: $($signature.Status)" }
-          if ($signature.SignerCertificate.Subject -notmatch "Microsoft") { throw "Unexpected WebView2 Bootstrapper signer: $($signature.SignerCertificate.Subject)" }
-
-      - name: Build Lite tar.xz
+      - name: Build Lite zip
         env:
           MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
           PORTABLE_REQUIRE_WINDOWS_EXE: "1"
@@ -414,13 +400,12 @@ jobs:
           $hostDir = Join-Path $env:RUNNER_TEMP "codex-proxy-webview2"
           node scripts/portable/build-portable.mjs --version $version `
             --webview2-host-x86 "$hostDir\win-x86\webview2-host.exe" `
-            --webview2-host-x64 "$hostDir\win-x64\webview2-host.exe" `
-            --webview2-bootstrapper "$hostDir\MicrosoftEdgeWebView2Setup.exe"
+            --webview2-host-x64 "$hostDir\win-x64\webview2-host.exe"
 
       - name: Smoke test Lite archive
         shell: pwsh
         run: |
-          $archive = (Get-ChildItem portable-release\*.tar.xz | Select-Object -First 1).FullName
+          $archive = (Get-ChildItem portable-release\*.zip | Select-Object -First 1).FullName
           node scripts/portable/test-portable.mjs --archive $archive --require-windows-exe --require-webview2 --require-linux-x64-musl --test-native-launcher
 
       - name: Upload Lite artifact
@@ -429,7 +414,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ inputs.tag || github.ref_name }}"
-          gh release upload "$TAG" portable-release/*.tar.xz --clobber
+          gh release upload "$TAG" portable-release/*.zip --clobber
 
   # Merge the two architecture-specific mac manifests after both mac builds
   # have completed. This job is tiny and removes the old full x64 serial build.

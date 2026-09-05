@@ -9,7 +9,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { basename, delimiter, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -90,14 +89,21 @@ function canonicalPath(path) {
 
 function extractArchive(archive, destination) {
   const python = findPython();
-  if (!python) throw new Error("Python 3 is required by the portable archive test to read tar.xz metadata");
+  if (!python) throw new Error("Python 3 is required by the portable archive test to read zip metadata");
   const script = [
-    "import json, sys, tarfile",
+    "import json, os, stat, sys, zipfile",
     "archive, destination = sys.argv[1:3]",
-    "with tarfile.open(archive, 'r:xz') as source:",
-    "    members = source.getmembers()",
+    "with zipfile.ZipFile(archive) as source:",
+    "    infos = source.infolist()",
     "    source.extractall(destination)",
-    "print(json.dumps([{'name': m.name, 'mode': m.mode, 'size': m.size, 'isfile': m.isfile()} for m in members]))",
+    "# Python's zipfile does not restore permission bits on extraction, while",
+    "# real tools (Explorer, Info-ZIP, macOS Archive Utility) do. Restore the",
+    "# launcher bit so the runtime smoke tests behave like a real extraction;",
+    "# the archive-mode assertion below remains the actual contract check.",
+    "launcher = os.path.join(destination, 'codex-proxy.sh')",
+    "if os.path.exists(launcher):",
+    "    os.chmod(launcher, os.stat(launcher).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)",
+    "print(json.dumps([{'name': m.filename, 'mode': (m.external_attr >> 16) & 0o7777, 'size': m.file_size, 'isfile': not m.is_dir()} for m in infos]))",
   ].join("\n");
   const result = runSync(python, ["-c", script, archive, destination], { timeout: 30_000 });
   if (result.error || result.status !== 0) {
@@ -182,7 +188,7 @@ function archiveContract(entries, extract, options) {
   const manifest = JSON.parse(readFileSync(join(extract, "app", "manifest.json"), "utf8"));
   assert(manifest.name === "codex-proxy-lite", "Lite manifest has an unexpected name: " + manifest.name);
   assert(typeof manifest.version === "string" && manifest.version.length > 0, "Lite manifest has no version");
-  const versionMatch = /^codex-proxy-(.+)-no-node-lite-all-platforms\.tar\.xz$/i.exec(basename(options.archive));
+  const versionMatch = /^codex-proxy-(.+)-no-node-lite-all-platforms\.zip$/i.exec(basename(options.archive));
   if (versionMatch) {
     assert(manifest.version === versionMatch[1],
       "Lite manifest version " + manifest.version + " does not match archive version " + versionMatch[1]);
@@ -263,17 +269,12 @@ function archiveContract(entries, extract, options) {
     assert(hostFiles.includes("hosts/webview2/win-x86/webview2-host.exe"), "x86 WebView2 host is missing");
     assert(hostFiles.includes("hosts/webview2/win-x64/webview2-host.exe"), "x64 WebView2 host is missing");
   }
-  const bootstrapper = "tools/MicrosoftEdgeWebView2Setup.exe";
-  const bootstrapperHash = bootstrapper + ".sha256";
-  if (names.has(bootstrapper)) {
-    assert(names.has(bootstrapperHash), "WebView2 Bootstrapper hash sidecar is missing");
-    const actualHash = createHash("sha256").update(readFileSync(join(extract, bootstrapper))).digest("hex");
-    const sidecar = readFileSync(join(extract, bootstrapperHash), "utf8").trim();
-    assert(new RegExp("^" + actualHash + "\\s+MicrosoftEdgeWebView2Setup\\.exe$").test(sidecar),
-      "WebView2 Bootstrapper SHA-256 sidecar does not match the packaged installer");
-  } else {
-    assert(!names.has(bootstrapperHash), "WebView2 Bootstrapper hash sidecar exists without the installer");
-  }
+  // The installer is downloaded on demand at runtime, so the archive must
+  // never carry the ~2 MB Evergreen Bootstrapper or its hash sidecar.
+  assert(!names.has("tools/MicrosoftEdgeWebView2Setup.exe"),
+    "Lite archive must not bundle the WebView2 Bootstrapper installer");
+  assert(!names.has("tools/MicrosoftEdgeWebView2Setup.exe.sha256"),
+    "Lite archive must not bundle a WebView2 Bootstrapper hash sidecar");
   return { files, nativeFiles, hostFiles };
 }
 

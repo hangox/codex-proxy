@@ -93,7 +93,7 @@ Node.js をすでにインストールしている場合や、サーバー・WSL
 ダッシュボードを使用しますが、Node.js は同梱しないため、配布ファイルが小さく、実行環境を
 自分で管理できます。Electron 版のインストーラーは変更されません。
 
-Releases から `codex-proxy-<version>-no-node-lite-all-platforms.tar.xz` をダウンロードして
+Releases から `codex-proxy-<version>-no-node-lite-all-platforms.zip` をダウンロードして
 展開し、パッケージのルートで実行します。
 
 ```bash
@@ -105,6 +105,9 @@ Releases から `codex-proxy-<version>-no-node-lite-all-platforms.tar.xz` をダ
 Node.js 20 以降が必要です。Windows では WebView2 を優先して使用し、利用できない場合は
 システムブラウザーで実際のサーバー URL を開きます。`--mode=server` はサーバーのみ、
 `--mode=browser` はブラウザー、`--mode=webview2` は WebView2 を明示的に指定します。
+WebView2 ランタイムが欠けている状態で `--mode=webview2` を指定すると、まず確認を求め、
+同意後に Microsoft の公式オンラインインストーラー（約 2MB、署名検証済み）を自動的に
+ダウンロードして実行します。タイムアウトや拒否の場合は終了します。
 `--portable`（`-p`）を指定すると設定とデータをパッケージ内に保存できます。
 
 Linux x64 版には glibc 用と musl 用の TLS native addon が含まれているため、一般的な Linux

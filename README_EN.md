@@ -69,7 +69,7 @@ Open the app, log in with your ChatGPT account. Dashboard at `http://localhost:8
 
 ### No-Node Lite (Browser/Server, for advanced users)
 
-If you already have Node.js installed, or need to run Codex Proxy on a server, WSL, or another machine without a desktop, use the optional No-Node Lite distribution. It uses the same backend and dashboard as the Electron app but does not bundle Node.js, so the archive is smaller and the runtime remains under your control. The Electron installers above are unchanged. Download `codex-proxy-<version>-no-node-lite-all-platforms.tar.xz`, extract it, and run the platform entry point from the package root:
+If you already have Node.js installed, or need to run Codex Proxy on a server, WSL, or another machine without a desktop, use the optional No-Node Lite distribution. It uses the same backend and dashboard as the Electron app but does not bundle Node.js, so the archive is smaller and the runtime remains under your control. The Electron installers above are unchanged. Download `codex-proxy-<version>-no-node-lite-all-platforms.zip`, extract it, and run the platform entry point from the package root:
 
 ```bash
 # Windows: double-click codex-proxy.exe; codex-proxy.cmd is always included as a script fallback
@@ -77,7 +77,7 @@ If you already have Node.js installed, or need to run Codex Proxy on a server, W
 ./codex-proxy.sh
 ```
 
-Node.js 20 or newer is required. By default the Windows launcher checks for the packaged WebView2 host and an installed WebView2 Runtime. If WebView2 is unavailable, it starts the local server and opens the actual bound server URL in the system browser. Use `--mode=server` to start only the server, `--mode=browser` to force the browser, or `--mode=webview2` to require WebView2. The URL is derived from the bound port rather than hard-coded. Windows portable releases provide x86/x64 WebView2 hosts. If Node.js cannot be started, the launchers show installation guidance instead of downloading or bundling Node.js.
+Node.js 20 or newer is required. By default the Windows launcher checks for the packaged WebView2 host and an installed WebView2 Runtime. If WebView2 is unavailable, it starts the local server and opens the actual bound server URL in the system browser. Use `--mode=server` to start only the server, `--mode=browser` to force the browser, or `--mode=webview2` to require WebView2. When the WebView2 Runtime is missing, `--mode=webview2` asks first and then downloads and runs Microsoft's official online installer (~2 MB, Authenticode-verified); a timeout or refusal exits. The URL is derived from the bound port rather than hard-coded. Windows portable releases provide x86/x64 WebView2 hosts. If Node.js cannot be started, the launchers show installation guidance instead of downloading or bundling Node.js.
 
 Like the Electron app, Lite uses the normal per-user data directory by default. Pass `--portable` (or `-p`) to keep data under the extracted package directory instead. `--host`, `--port`, `--webview2-host`, and `--node-path` also have the short forms `-H`, `-P`, `-w`, and `-n`. The Lite update action opens the latest Releases page rather than replacing the running package automatically. On macOS/Linux and in Git Bash, the shell launcher defaults to browser mode; use `--mode=auto` only when you want environment-based selection.
 

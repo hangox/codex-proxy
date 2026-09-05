@@ -92,7 +92,7 @@
 可以使用 No-Node Lite。它使用與 Electron 版相同的後端與控制面板，但不內建 Node.js，
 因此套件更小，也方便您自行管理執行環境；上方的 Electron 安裝套件不受影響。
 
-請從 Releases 下載 `codex-proxy-<version>-no-node-lite-all-platforms.tar.xz`，解壓縮後在套件根目錄執行：
+請從 Releases 下載 `codex-proxy-<version>-no-node-lite-all-platforms.zip`，解壓縮後在套件根目錄執行：
 
 ```bash
 # Windows：雙擊 codex-proxy.exe
@@ -102,7 +102,9 @@
 
 此版本需要 Node.js 20 或更新版本。Windows 會優先使用 WebView2；如果無法使用，則啟動服務並
 以系統瀏覽器開啟實際的服務網址。`--mode=server` 只啟動服務，`--mode=browser` 強制使用瀏覽器，
-`--mode=webview2` 強制使用 WebView2。指定 `--portable`（`-p`）可將設定與資料保存於套件目錄內。
+`--mode=webview2` 強制使用 WebView2。缺少 WebView2 執行階段而顯式指定 `--mode=webview2` 時，
+會先詢問，確認後自動下載並執行微軟官方線上安裝器（約 2MB，已驗證微軟簽章），逾時或拒絕則結束。
+指定 `--portable`（`-p`）可將設定與資料保存於套件目錄內。
 
 Linux x64 Lite 同時包含 glibc 與 musl TLS native addon，可用於常見 Linux 發行版及 Alpine Linux；
 目前不包含 Linux ARM 等其他 native 架構。

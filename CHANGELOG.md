@@ -10,6 +10,7 @@
 
 ### Added
 
+- No-Node Lite 在 Windows 缺少 WebView2 运行时且显式指定 `--mode=webview2` 时，新增经用户确认后的按需安装路径：从微软官方端点下载 Evergreen Bootstrapper（约 2MB），校验 Windows 可执行格式与 Authenticode 签名（须为 Microsoft 签发）后以 `/silent /install` 静默安装，下载器缓存于系统临时目录并复用；下载或校验失败时回退为打开官方安装页，仍支持 `CODEX_PROXY_WEBVIEW2_BOOTSTRAPPER` 指定本地安装器。（`scripts/portable/server.mjs`）
 - 新增 Linux x64 musl TLS native addon 构建与验证流程，并将 `codex-tls.linux-x64-musl.node` 接入 No-Node Lite 的构建和发布包，使 Lite 可在 Alpine 等 musl Linux 环境中使用。（`native/package.json`、`scripts/native/`、`scripts/portable/`、`.github/workflows/native-musl-ci.yml`）
 - 新增可选 No-Node Lite Browser/Server 发行版：保留现有 Electron 安装包不变，额外提供 `codex-proxy-<版本>-no-node-lite-all-platforms.tar.xz`，包含后端、前端资源、各平台 native addon 和启动器，支持无图形界面的 server 模式以及浏览器模式；Windows 通过 MSYS2 MinGW 构建 x86/x64 WebView2 host，并可选携带 Evergreen Bootstrapper。（`scripts/portable/`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`）
 - 支持 OpenAI GPT-6 Astra 系列（`gpt-6-astra`、`gpt-6-astra-aeon` 及别名 `gpt-6`）与 GPT-Reserve（`gpt-reserve`）：内置静态模型元数据与推理级别定义（`/v1/models/catalog` 可见），`gpt-6` 别名解析到 `gpt-6-astra`，可路由性已由 #776 的名称形态放行覆盖；同步适配 1,050,000 上下文窗口、Ollama 桥接架构系列识别与官方定价估算（`src/models/model-store.ts`、`src/ollama/bridge.ts`、`config/model-pricing.yaml`、`README.md`）。
@@ -31,7 +32,12 @@
 
 ### Changed
 
+- No-Node Lite 制品格式从 tar.xz 改为 zip：Python zipfile deflate -9 极限压缩、条目确定性排序，`codex-proxy.sh` 以 0755 权限位写入；产物更名为 `codex-proxy-<版本>-no-node-lite-all-platforms.zip`，打包现依赖 Python 3。（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`、`README.md` 及各语言版本）
 - 官方模型识别改为按名称形态前缀放行（`gpt*` / `codex*` / `oN*`），不再要求模型已收录于本地 catalog：当后端/账号尚未下发的新官方模型（如 `gpt-6-astra`）被客户端请求时，不再返回 `404 model_not_found` 或静默回退默认模型，而是按原名透传交由上游裁决；`resolveModelId` 对官方形态模型原样解析、不回退默认。边界保持不变：非官方形态的未知模型仍 `404`，裸 `codex` 哨兵仍解析为默认模型（`src/models/model-store.ts`）。
+
+### Removed
+
+- No-Node Lite 包内不再携带 Evergreen Bootstrapper（`tools/MicrosoftEdgeWebView2Setup.exe`，约 2MB）：WebView2 安装改为运行时按需下载（见 Added）；删除 `scripts/portable/download-webview2-bootstrapper.mjs` 与 `npm run download:webview2-bootstrapper`，CI 不再下载、签名校验或打包该安装器。（`scripts/portable/`、`package.json`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`）
 
 ### Fixed
 

@@ -38,7 +38,8 @@ describe("No-Node Lite distribution contract", () => {
     expect(source).toContain("F3017226-FE2A-4295-8BDF-00C3A9A7E4C5");
     expect(source).toContain("MicrosoftEdgeWebView2Setup.exe");
     expect(source).toContain("falling back to the default browser");
-    expect(source).toContain("Run the packaged online installer now?");
+    expect(source).toContain("Run the local WebView2 installer now?");
+    expect(source).toContain("Download and run the official installer (~2 MB) now?");
   });
 
   it("resolves the POSIX launcher directory before starting Node", () => {
@@ -92,22 +93,24 @@ describe("No-Node Lite distribution contract", () => {
     expect(nativeSource).toContain("TRAY_ACTIVATE_INSTANCE");
   });
 
-  it("packages only runtime native files and creates a tar.xz archive", () => {
+  it("packages only runtime native files and creates a zip archive", () => {
     const source = read("build-portable.mjs");
     expect(source).toContain('name === "index.js"');
     expect(source).toContain('name.endsWith(".node")');
     expect(source).toContain('"type":"commonjs"');
     expect(source).not.toContain('copyDirectory(resolve(ROOT, "native")');
-    expect(source).toContain('"tar"');
-    expect(source).toContain('"-cf"');
-    expect(source).toContain("lzma.FORMAT_XZ");
+    expect(source).toContain("zipfile.ZipFile");
+    expect(source).toContain("compresslevel=9");
+    expect(source).toContain("0o755 << 16");
     expect(source).toContain('"--version"');
     expect(source).toContain("PORTABLE_VERSION");
     expect(source).toContain("WebView2 host is not included");
     expect(source).toContain("--webview2-host-x86");
     expect(source).toContain("--webview2-host-x64");
-    expect(source).toContain("--webview2-bootstrapper");
-    expect(source).toContain("${target}.sha256");
+    expect(source).not.toContain("--webview2-bootstrapper");
+    expect(source).toContain("no-node-lite-all-platforms.zip");
+    expect(source).not.toContain(".tar.xz");
+    expect(source).not.toContain("MicrosoftEdgeWebView2Setup");
     expect(source).toContain("PORTABLE_MSYS2_ROOT");
     expect(source).toContain("mingw32");
     expect(source).toContain("-static-libgcc");
@@ -119,16 +122,14 @@ describe("No-Node Lite distribution contract", () => {
     expect(source).toContain("-lshell32");
     expect(source).toContain('join(stage, "codex-proxy.cmd")');
     expect(source).toContain("always included");
-    expect(source).toContain("createRawTar");
-    expect(source).toContain("normalizeTarModes");
-    expect(source).toContain("python-tarfile");
-    expect(source).toContain("0000755");
+    expect(source).toContain("createZip");
+    expect(source).toContain("python-zipfile");
   });
 
   it("has a real archive-level portable test harness", () => {
     const source = readFileSync(resolve(PORTABLE, "test-portable.mjs"), "utf8");
     expect(source).toContain("--archive");
-    expect(source).toContain("tar.xz");
+    expect(source).toContain("zipfile");
     expect(source).toContain("codex-proxy.sh is not executable");
     expect(source).toContain("CODEX_PROXY_READY=");
     expect(source).toContain("--portable");
@@ -139,7 +140,7 @@ describe("No-Node Lite distribution contract", () => {
     expect(source).toContain("canonicalPath");
     expect(source).toContain("codex-proxy-lite");
     expect(source).toContain("nodeRuntimeEntries");
-    expect(source).toContain('const bootstrapperHash = bootstrapper + ".sha256"');
+    expect(source).toContain("must not bundle the WebView2 Bootstrapper installer");
     expect(source).toContain("0x8664");
     expect(source).toContain("default data mode");
     expect(source).toContain("This package does not include Node.js.");
@@ -207,11 +208,13 @@ describe("No-Node Lite distribution contract", () => {
     expect(source).toContain("stageWebView2HeadersForX86");
   });
 
-  it("downloads and validates the optional Evergreen Bootstrapper", () => {
-    const source = read("download-webview2-bootstrapper.mjs");
+  it("downloads and validates the Evergreen Bootstrapper on demand at runtime", () => {
+    const source = read("server.mjs");
     expect(source).toContain("https://go.microsoft.com/fwlink/?linkid=2124703");
     expect(source).toContain("MZ");
-    expect(source).toContain("sha256");
+    expect(source).toContain("Get-AuthenticodeSignature");
+    expect(source).toContain("SignerCertificate.Subject -notmatch 'Microsoft'");
+    expect(source).toContain("Download and run the official installer (~2 MB) now?");
   });
 
   it("assembles one portable release asset from platform native artifacts", () => {
@@ -225,8 +228,9 @@ describe("No-Node Lite distribution contract", () => {
     expect(workflow).toContain("msys2/setup-msys2@v2");
     expect(workflow).toContain("MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}");
     expect(workflow).not.toContain("ilammy/msvc-dev-cmd");
-    expect(workflow).toContain("Verify Evergreen WebView2 Bootstrapper signature");
-    expect(workflow).toContain("gh release upload \"$TAG\" portable-release/*.tar.xz");
+    expect(workflow).not.toContain("WebView2 Bootstrapper");
+    expect(workflow).not.toContain("download-webview2-bootstrapper");
+    expect(workflow).toContain("gh release upload \"$TAG\" portable-release/*.zip");
   });
 
   it("has an optional manually dispatched Lite CI workflow", () => {
@@ -235,10 +239,11 @@ describe("No-Node Lite distribution contract", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("contents: read");
     expect(workflow).toContain("codex-proxy-lite-${{ github.run_number }}");
-    expect(workflow).toContain("Build Lite tar.xz");
+    expect(workflow).toContain("Build Lite zip");
     expect(workflow).toContain("Build WebView2 hosts");
     expect(workflow).toContain("MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}");
-    expect(workflow).toContain("MicrosoftEdgeWebView2Setup.exe");
+    expect(workflow).not.toContain("MicrosoftEdgeWebView2Setup.exe");
+    expect(workflow).not.toContain("download-webview2-bootstrapper");
     expect(workflow).toContain("test-portable.mjs");
     expect(workflow).toContain("cross-platform");
     expect(workflow).toContain("native-musl:");

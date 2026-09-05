@@ -21,7 +21,6 @@
     "build": "npm run build:web && tsc",
     "build:lite": "npm run build && npm --prefix packages/electron run build && node scripts/portable/build-portable.mjs",
     "build:lite:webview2": "node scripts/portable/build-webview2-host.mjs",
-    "download:webview2-bootstrapper": "node scripts/portable/download-webview2-bootstrapper.mjs",
     "pack:lite": "npm run build:lite",
     "test:lite": "node scripts/portable/test-portable.mjs",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json",

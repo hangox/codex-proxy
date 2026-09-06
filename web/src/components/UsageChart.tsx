@@ -24,21 +24,34 @@ const PADDING = { top: 20, right: 20, bottom: 40, left: 65 };
 
 export function buildSmoothPath(points: Point[]): string {
   if (points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0].x},${points[0].y}`;
 
-  const commands = [`M ${points[0].x},${points[0].y}`];
-  for (let i = 0; i < points.length - 1; i++) {
-    const previous = points[i - 1] ?? points[i];
-    const current = points[i];
-    const next = points[i + 1];
-    const following = points[i + 2] ?? next;
+  // A path must not revisit an x coordinate. This is defensive for callers
+  // that receive duplicate buckets; the history API also de-duplicates them.
+  const uniquePoints = [...points]
+    .sort((a, b) => a.x - b.x)
+    .filter((point, index, sorted) => index === 0 || point.x !== sorted[index - 1].x);
+  if (uniquePoints.length === 1) return `M ${uniquePoints[0].x},${uniquePoints[0].y}`;
+
+  const minY = Math.min(...uniquePoints.map((point) => point.y));
+  const maxY = Math.max(...uniquePoints.map((point) => point.y));
+  const clampY = (y: number) => Math.min(maxY, Math.max(minY, y));
+
+  const commands = [`M ${uniquePoints[0].x},${uniquePoints[0].y}`];
+  for (let i = 0; i < uniquePoints.length - 1; i++) {
+    const previous = uniquePoints[i - 1] ?? uniquePoints[i];
+    const current = uniquePoints[i];
+    const next = uniquePoints[i + 1];
+    const following = uniquePoints[i + 2] ?? next;
+    const segmentWidth = next.x - current.x;
     const control1 = {
-      x: current.x + (next.x - previous.x) / 6,
-      y: current.y + (next.y - previous.y) / 6,
+      // Keep both controls inside this segment so x remains monotonic even
+      // when valid hit-rate points are separated by empty buckets.
+      x: current.x + segmentWidth / 3,
+      y: clampY(current.y + (next.y - previous.y) / 6),
     };
     const control2 = {
-      x: next.x - (following.x - current.x) / 6,
-      y: next.y - (following.y - current.y) / 6,
+      x: next.x - segmentWidth / 3,
+      y: clampY(next.y - (following.y - current.y) / 6),
     };
     commands.push(`C ${control1.x},${control1.y} ${control2.x},${control2.y} ${next.x},${next.y}`);
   }

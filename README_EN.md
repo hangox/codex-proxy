@@ -178,21 +178,21 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 │  POST /gemini/*            (Gemini)                      │
 │       │                                                  │
 │       ▼                                                  │
-│  ┌──────────┐    ┌───────────────┐    ┌──────────────┐   │
-│  │  Routes   │──▶│  Translation  │──▶│    Proxy     │   │
-│  │  (Hono)  │   │ Multi→Codex   │   │ Native TLS   │   │
-│  └──────────┘   └───────────────┘   └──────┬───────┘   │
-│       ▲                                     │           │
-│       │          ┌───────────────┐          │           │
-│       └──────────│  Translation  │◀─────────┘           │
-│                  │ Codex→Multi   │  SSE stream          │
+│  ┌──────────┐   ┌───────────────┐   ┌──────────────┐     │
+│  │  Routes  │──▶│  Translation  │──▶│    Proxy     │     │
+│  │  (Hono)  │   │ Multi→Codex   │   │ Native TLS   │     │
+│  └──────────┘   └───────────────┘   └──────┬───────┘     │
+│       ▲                                    │             │
+│       │          ┌───────────────┐         │             │
+│       └──────────│  Translation  │◀────────┘             │
+│                  │ Codex→Multi   │  SSE stream           │
 │                  └───────────────┘                       │
 │                                                          │
-│  ┌──────────┐  ┌───────────────┐  ┌──────────────────┐  │
-│  │   Auth   │  │  Fingerprint  │  │   Model Store    │  │
-│  │OAuth/API │  │ Rust (rustls) │  │ Static + Dynamic │  │
-│  │ API Keys │  │  Headers/UA   │  │  Plan Routing    │  │
-│  └──────────┘  └───────────────┘  └──────────────────┘  │
+│  ┌──────────┐  ┌───────────────┐  ┌──────────────────┐   │
+│  │   Auth   │  │  Fingerprint  │  │   Model Store    │   │
+│  │OAuth/API │  │ Rust (rustls) │  │ Static + Dynamic │   │
+│  │ API Keys │  │  Headers/UA   │  │  Plan Routing    │   │
+│  └──────────┘  └───────────────┘  └──────────────────┘   │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
                           │

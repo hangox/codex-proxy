@@ -880,10 +880,6 @@ curl -X POST http://localhost:8080/auth/accounts/import \
         <sub>☕ Donate</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="WeChat Group"><br>
-        <sub>💬 WeChat</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram Group"><br>
         <sub>💬 Telegram</sub>
       </td>

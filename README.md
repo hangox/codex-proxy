@@ -39,7 +39,7 @@
 
 | ☕ 赞赏   | 💬 微信群 | 💬 Telegram |
 | ------ | ------ | ----------- |
-| <br /> | <br /> | <br />      |
+| <img src="./.github/assets/donate.png" width="180" alt="微信赞赏码"> | <img src="./.github/assets/wechat.png" width="180" alt="微信交流群"> | <img src="./.github/assets/tgimage.png" width="180" alt="Telegram 群"> |
 
 </div>
 

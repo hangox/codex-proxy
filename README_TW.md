@@ -46,10 +46,6 @@
         <sub>☕ 贊賞</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="微信交流群"><br>
-        <sub>💬 微信群</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram 群"><br>
         <sub>💬 Telegram</sub>
       </td>

@@ -46,10 +46,6 @@
         <sub>☕ 赞赏</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="微信交流群"><br>
-        <sub>💬 微信群</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram 群"><br>
         <sub>💬 Telegram</sub>
       </td>
@@ -1152,7 +1148,7 @@ curl -X POST http://localhost:8080/auth/accounts/import \
 
 ## ☕ 赞赏 & 交流
 
-觉得有帮助？请作者喝杯咖啡，或加入微信交流群获取使用帮助。二维码见 [页面顶部](#)。
+觉得有帮助？请作者喝杯咖啡。二维码见 [页面顶部](#)。
 
 ## 🙏 贡献致谢
 

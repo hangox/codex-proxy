@@ -46,10 +46,6 @@
         <sub>☕ 寄付</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="WeChat コミュニティ"><br>
-        <sub>💬 WeChat グループ</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram コミュニティ"><br>
         <sub>💬 Telegram</sub>
       </td>

@@ -3,6 +3,7 @@ import type { AccountPool } from "../../auth/account-pool.js";
 import { getConfig } from "../../config.js";
 import { getTransport, getTransportInfo } from "../../tls/transport.js";
 import { buildHeaders } from "../../fingerprint/manager.js";
+import { usageUrls } from "../../proxy/codex-usage.js";
 
 export function createConnectionRoutes(accountPool: AccountPool): Hono {
   const app = new Hono();
@@ -78,9 +79,18 @@ export function createConnectionRoutes(accountPool: AccountPool): Hono {
         try {
           const transport = getTransport();
           const config = getConfig();
-          const url = `${config.api.base_url}/codex/usage`;
+          const urls = usageUrls(config.api.base_url);
           const headers = buildHeaders(acquired.token, acquired.accountId);
-          const resp = await transport.get(url, headers, 15);
+          let resp: { status: number; body: string } | undefined;
+          for (const [index, url] of urls.entries()) {
+            try {
+              resp = await transport.get(url, headers, 15);
+              if (resp.status >= 200 && resp.status < 400) break;
+            } catch (err) {
+              if (index === urls.length - 1) throw err;
+            }
+          }
+          if (!resp) throw new Error("No usage endpoint available");
           const latency = Date.now() - upstreamStart;
           if (resp.status >= 200 && resp.status < 400) {
             checks.push({

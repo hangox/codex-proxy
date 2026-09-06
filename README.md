@@ -189,7 +189,9 @@ curl http://localhost:8080/v1/chat/completions \
 
 - **Function Calling** — 原生 `function_call` / `tool_calls` 支持（所有协议）
 
-- **第三方 API Keys** — 支持 OpenAI / Anthropic / Gemini / OpenRouter / 自定义 OpenAI-compatible Provider，并按模型路由直通上游。
+- **WebSocket 接口** — `/v1/responses` 支持客户端 WebSocket 流式直连（Bearer 鉴权），HTTP POST + SSE 作为回退保留
+
+- **第三方 API Keys** — 支持多协议、按模型直通
 
 - 📖 完整接口定义与协议说明请查阅 **[API 文档](./API_CN.md)**。
 
@@ -211,6 +213,10 @@ curl http://localhost:8080/v1/chat/completions \
 
 - **Web 控制面板** — 账号管理、用量统计、批量操作，中英双语；远程访问需 Dashboard 登录门
 
+- **后备上游** — 当所有账号均不可用时，自动启用一个可编辑的兜底 API Key
+
+- **后备状态指示** — 日志与首页明确标注每条请求实际使用的账号，以及进入后备时的状态
+
 ### 🌐 代理池
 
 - **Per-Account 代理路由** — 为不同账号配置不同的上游代理
@@ -223,7 +229,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ### 🛡️ 反检测与协议伪装
 
-- **Rust Native TLS** — 内置 reqwest + rustls native addon，TLS 指纹与真实 Codex 客户端精确一致（依赖版本锁定）
+- **Rust Native TLS** — 内置 reqwest + rustls native addon，TLS 指纹与真实 Codex 客户端精确一致，跨 Windows / macOS / Linux（含 Alpine）
 
 - **客户端 Profile 预设** — 支持 `codex_cli`（默认，官方 CLI 纯净终端头）、`codex_desktop`（Desktop 完整头）、`opencode`、`pi` 与 `custom`，CLI 模式下自动剔除浏览器特定头（`sec-ch-ua` 等）
 

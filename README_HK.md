@@ -46,10 +46,6 @@
         <sub>☕ 讚賞</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="微信交流群"><br>
-        <sub>💬 微信群</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram 群"><br>
         <sub>💬 Telegram</sub>
       </td>
@@ -86,7 +82,31 @@
 </details>
 
 <details>
-<summary><h3>方式二：Docker 部署</h3></summary>
+<summary><h3>方式二：No-Node Lite（瀏覽器／伺服器版，適合進階使用者）</h3></summary>
+
+如果您已安裝 Node.js，或需要在伺服器、WSL 等沒有桌面環境的機器上執行 Codex Proxy，
+可以使用 No-Node Lite。它使用與 Electron 版相同的後端與控制面板，但不內置 Node.js，
+因此套件更小，也方便您自行管理執行環境；上方的 Electron 安裝包不受影響。
+
+請從 Releases 下載 `codex-proxy-<version>-no-node-lite-all-platforms.tar.xz`，解壓後在套件根目錄執行：
+
+```bash
+# Windows：雙擊 codex-proxy.exe
+# macOS/Linux：
+./codex-proxy.sh
+```
+
+此版本需要 Node.js 20 或更新版本。Windows 會優先使用 WebView2；如果無法使用，便啟動服務並
+以系統瀏覽器開啟實際的服務網址。`--mode=server` 只啟動服務，`--mode=browser` 強制使用瀏覽器，
+`--mode=webview2` 強制使用 WebView2。指定 `--portable`（`-p`）可將設定與資料保存於套件目錄內。
+
+Linux x64 Lite 同時包含 glibc 與 musl TLS native addon，可用於常見 Linux 發行版及 Alpine Linux；
+目前不包含 Linux ARM 等其他 native 架構。
+
+</details>
+
+<details>
+<summary><h3>方式三：Docker 部署</h3></summary>
 
 ```bash
 mkdir codex-proxy && cd codex-proxy
@@ -104,7 +124,7 @@ docker compose up -d
 </details>
 
 <details>
-<summary><h3>方式三：源代碼運行</h3></summary>
+<summary><h3>方式四：源代碼運行</h3></summary>
 
 ```bash
 git clone https://github.com/icebear0828/codex-proxy.git
@@ -151,7 +171,8 @@ curl http://localhost:8080/v1/chat/completions \
 - 自動完成 Chat Completions / Anthropic / Gemini ↔ Codex Responses API 雙向協議轉換
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）與 Gemini `responseMimeType`
 - **Function Calling** — 原生 `function_call` / `tool_calls` 支援（所有協議）
-- **第三方 API Keys** — 支援 OpenAI / Anthropic / Gemini / OpenRouter / 自訂 OpenAI 相容 Provider，並依模型路由直通上游。
+- **WebSocket 介面** — `/v1/responses` 支援客戶端 WebSocket 串流直連（Bearer 鑑權），HTTP POST + SSE 作為回退保留
+- **第三方 API Keys** — 支援多協定、按模型直通
 - 📖 完整介面定義與協議說明請查閱 **[API 文檔](./API_HK.md)**。
 
 ### 🔐 帳號管理與智能輪換
@@ -162,7 +183,9 @@ curl http://localhost:8080/v1/chat/completions \
 - **配額採集** — 預設從上游回應標頭與 WebSocket rate limit 事件被動更新帳號額度；手動查詢單帳號額度時會調用 `/backend-api/wham/usage`，並將 `remaining_percent = 100 - used_percent` 寫入快取。
 - **封禁檢測** — 上游 403 自動標記 banned；401 token 吊銷自動過期並切換帳號
 - **API Key Provider 池** — 支援透過 Dashboard 管理第三方 API Key、模型列表、導入導出與啟停狀態。
-- **Web 控制面板** — 帳號管理、用量統計、批量操作，支援繁簡英多語言；遠程訪問需 Dashboard 登入防護
+- **Web 控制面板** — 帳號管理、用量統計、批次操作，支援繁簡英多語言；遠程訪問需 Dashboard 登入防護
+- **備援上游** — 當所有帳號均不可用時，自動啟用一個可編輯的兜底 API Key
+- **備援狀態指示** — 日誌與首頁明確標示每條請求實際使用的帳號，以及進入備援時的狀態
 
 ### 🌐 代理池
 - **個別帳號代理路由** — 為不同帳號配置不同的上游代理
@@ -171,7 +194,7 @@ curl http://localhost:8080/v1/chat/completions \
 - **不可達自動排除** — 代理不可用時自動跳過
 
 ### 🛡️ 反檢測與協議偽裝
-- **Rust Native TLS** — 內置 reqwest + rustls native addon，TLS 指紋與真實 Codex 客戶端精確一致（依賴版本鎖定）
+- **Rust Native TLS** — 內置 reqwest + rustls native addon，TLS 指紋與真實 Codex 客戶端精確一致，跨 Windows / macOS / Linux（含 Alpine）
 - **客戶端 Profile 預設** — 支援 `codex_cli`（預設，官方 CLI 純淨終端標頭）、`codex_desktop`（Desktop 完整標頭）、`opencode`、`pi` 與 `custom`，CLI 模式下自動剔除瀏覽器特有標頭（`sec-ch-ua` 等）
 - **個別帳號 Device ID 隔離** — 為每個帳號獨立衍生並持久化專屬的 `x-codex-installation-id`，徹底杜絕多帳號共享同一設備指紋
 - **完整請求標頭仿真** — `originator`、`User-Agent`、`x-openai-internal-codex-residency`、`x-codex-turn-state`、`x-client-request-id` 等標頭按選定 profile 真實模擬發送

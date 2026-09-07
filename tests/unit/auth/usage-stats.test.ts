@@ -458,6 +458,35 @@ describe("UsageStatsStore", () => {
       expect(raw[0].request_count).toBe(0);
     });
 
+    it("sorts raw history and emits at most one point per timestamp", () => {
+      const now = Date.now();
+      const first = new Date(now - 3600_000).toISOString();
+      const second = new Date(now - 1800_000).toISOString();
+      const snapshots: UsageSnapshot[] = [
+        {
+          timestamp: second,
+          totals: { input_tokens: 300, output_tokens: 30, request_count: 3, active_accounts: 1 },
+        },
+        {
+          timestamp: first,
+          totals: { input_tokens: 100, output_tokens: 10, request_count: 1, active_accounts: 1 },
+        },
+        {
+          timestamp: second,
+          totals: { input_tokens: 200, output_tokens: 20, request_count: 2, active_accounts: 1 },
+        },
+      ];
+
+      persistence = createMockPersistence(snapshots);
+      store = new UsageStatsStore(persistence);
+
+      const raw = store.getHistory("all", "raw");
+      expect(raw).toHaveLength(1);
+      expect(raw[0].timestamp).toBe(second);
+      expect(raw[0].input_tokens).toBe(200);
+      expect(raw[0].request_count).toBe(2);
+    });
+
     it("aggregates into hourly buckets", () => {
       const now = Date.now();
       const hourStart = Math.floor(now / 3600_000) * 3600_000;

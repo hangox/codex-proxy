@@ -34,8 +34,8 @@ export function createUpdateRoutes(): Hono {
         update_in_progress: isProxyUpdateInProgress(),
       },
       codex: {
-        current_version: codexState?.current_version ?? null,
-        current_build: codexState?.current_build ?? null,
+        current_version: codexState?.current_version ?? config.client.app_version ?? null,
+        current_build: codexState?.current_build ?? config.client.build_number ?? null,
         latest_version: codexState?.latest_version ?? null,
         latest_build: codexState?.latest_build ?? null,
         update_available: codexState?.update_available ?? false,
@@ -126,7 +126,9 @@ export function createUpdateRoutes(): Hono {
           ? "Run: docker compose pull && docker compose up -d (or enable Watchtower for automatic updates)"
           : mode === "electron"
             ? "Updates are handled automatically by the desktop app. Check the system tray for update notifications, or restart the app to trigger a check."
-            : "Git is not available in this environment",
+            : mode === "lite"
+              ? "Download the latest No-Node Lite release, replace the extracted package, and restart the launcher."
+              : "Git is not available in this environment",
       });
     }
 

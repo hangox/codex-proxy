@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
@@ -36,6 +37,26 @@ export function createWebRoutes(
     c.header("Cache-Control", "public, max-age=31536000, immutable");
     await next();
   }, serveStatic({ root: publicDir }));
+
+  // Vite copies web/public/ (brand icon + favicon) to the build-output root;
+  // they are not content-hashed, so they do not fall under /assets/*. Serve
+  // them explicitly here, otherwise GET /icon.png (and /favicon.ico) 404s in
+  // production builds — dev works only because the Vite dev server serves
+  // web/public/ directly.
+  // NOTE: use an explicit file handler rather than serveStatic — mounted on an
+  // exact path serveStatic cannot derive the relative file and always 404s.
+  const servePublicFile = (file: string, contentType: string) => (c: Context): Response | Promise<Response> => {
+    const filePath = resolve(publicDir, file);
+    if (!existsSync(filePath)) return c.notFound();
+    const data = readFileSync(filePath);
+    return new Response(data, {
+      status: 200,
+      headers: { "Content-Type": contentType },
+    });
+  };
+
+  app.get("/icon.png", servePublicFile("icon.png", "image/png"));
+  app.get("/favicon.ico", servePublicFile("favicon.ico", "image/x-icon"));
 
   app.get("/", (c) => {
     try {

@@ -156,6 +156,21 @@ describe("UsageStats", () => {
     expect(buildSmoothPath([])).toBe("");
   });
 
+  it("keeps smooth controls within each x segment and y data domain", () => {
+    const path = buildSmoothPath([
+      { x: 0, y: 100 },
+      { x: 1, y: 0 },
+      { x: 100, y: 1 },
+    ]);
+    const coordinates = [...path.matchAll(/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g)];
+    const xs = coordinates.map((match) => Number(match[1]));
+    const ys = coordinates.map((match) => Number(match[2]));
+
+    expect(xs).toEqual([...xs].sort((a, b) => a - b));
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...ys)).toBeLessThanOrEqual(100);
+  });
+
   it("connects hit-rate points across empty buckets", () => {
     const dataWithEmptyBucket: UsageDataPoint[] = [
       windowPoints[0],

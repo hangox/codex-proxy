@@ -347,9 +347,10 @@ export class UsageStatsStore {
     granularity: "raw" | "five_min" | "hourly" | "daily",
   ): UsageDataPoint[] {
     const cutoff = range === "all" ? null : Date.now() - range * 60 * 60 * 1000;
-    const filtered = cutoff === null
-      ? this.snapshots
-      : this.snapshots.filter((s) => new Date(s.timestamp).getTime() >= cutoff);
+    const filtered = (cutoff === null
+      ? [...this.snapshots]
+      : this.snapshots.filter((s) => new Date(s.timestamp).getTime() >= cutoff))
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
     if (filtered.length < 2) return [];
 
@@ -372,7 +373,7 @@ export class UsageStatsStore {
       });
     }
 
-    if (granularity === "raw") return deltas;
+    if (granularity === "raw") return bucketize(deltas, 1);
 
     // Bucket into time intervals
     const bucketMs =

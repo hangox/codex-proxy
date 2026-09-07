@@ -46,10 +46,6 @@
         <sub>☕ 寄付</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="WeChat コミュニティ"><br>
-        <sub>💬 WeChat グループ</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram コミュニティ"><br>
         <sub>💬 Telegram</sub>
       </td>
@@ -86,7 +82,35 @@ ChatGPT アカウント（またはサードパーティ API プロバイダー�
 </details>
 
 <details>
-<summary><h3>方法 2: Docker デプロイ</h3></summary>
+<summary><h3>方法 2: No-Node Lite（ブラウザー/サーバー向け、上級者向け）</h3></summary>
+
+Node.js をすでにインストールしている場合や、サーバー・WSL などデスクトップ環境のない
+マシンで実行したい場合は、No-Node Lite を利用できます。Electron 版と同じバックエンドと
+ダッシュボードを使用しますが、Node.js は同梱しないため、配布ファイルが小さく、実行環境を
+自分で管理できます。Electron 版のインストーラーは変更されません。
+
+Releases から `codex-proxy-<version>-no-node-lite-all-platforms.tar.xz` をダウンロードして
+展開し、パッケージのルートで実行します。
+
+```bash
+# Windows: codex-proxy.exe をダブルクリック
+# macOS/Linux:
+./codex-proxy.sh
+```
+
+Node.js 20 以降が必要です。Windows では WebView2 を優先して使用し、利用できない場合は
+システムブラウザーで実際のサーバー URL を開きます。`--mode=server` はサーバーのみ、
+`--mode=browser` はブラウザー、`--mode=webview2` は WebView2 を明示的に指定します。
+`--portable`（`-p`）を指定すると設定とデータをパッケージ内に保存できます。
+
+Linux x64 版には glibc 用と musl 用の TLS native addon が含まれているため、一般的な Linux
+ディストリビューションと Alpine Linux で使用できます。Linux ARM など他の native アーキテクチャは
+現在含まれていません。
+
+</details>
+
+<details>
+<summary><h3>方法 3: Docker デプロイ</h3></summary>
 
 ```bash
 mkdir codex-proxy && cd codex-proxy
@@ -104,7 +128,7 @@ docker compose up -d
 </details>
 
 <details>
-<summary><h3>方法 3: ソースコードから実行</h3></summary>
+<summary><h3>方法 4: ソースコードから実行</h3></summary>
 
 ```bash
 git clone https://github.com/icebear0828/codex-proxy.git
@@ -151,7 +175,8 @@ AI からストリーミング応答が返ってくれば正常に動作して�
 - Chat Completions / Anthropic / Gemini ↔ Codex Responses API の双方向プロトコル自動変換
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）および Gemini `responseMimeType` をサポート
 - **Function Calling** — 全プロトコルでネイティブな `function_call` / `tool_calls` をサポート
-- **サードパーティ API Key** — OpenAI / Anthropic / Gemini / OpenRouter / カスタム OpenAI 互換プロバイダーをサポートし、モデルごとのアップストリームルーティングに対応
+- **WebSocket インターフェース** — `/v1/responses` でクライアント WebSocket ストリーミング（Bearer 認証）に対応、HTTP POST + SSE はフォールバックとして維持
+- **サードパーティ API Key** — 複数プロトコルをサポートし、モデルごとにルーティング
 - 📖 完全なエンドポイント定義と仕様については **[API リファレンス](./API_JA.md)** を参照してください。
 
 ### 🔐 アカウント管理とスマートローテーション
@@ -163,6 +188,8 @@ AI からストリーミング応答が返ってくれば正常に動作して�
 - **BAN 検知** — アップストリームの 403 応答で自動的に banned とマーク、401 トークン失効時は自動で期限切れ扱いにしてアカウントを切り替え
 - **API Key プロバイダープール** — ダッシュボード上でサードパーティ API Key、モデル一覧、インポート/エクスポート、有効/無効状態を管理
 - **Web コントロールパネル** — アカウント管理、利用統計、一括操作、日英中マルチ言語対応。リモートアクセス用のダッシュボード認証ゲートを搭載
+- **フォールバックアップストリーム** — すべてのアカウントが尽きた場合、編集可能な最終手段の API Key が自動的に使用されます
+- **フォールバック状態インジケーター** — ログとホームで、各リクエストを処理したアカウントとフォールバック発動時を明確に表示
 
 ### 🌐 プロキシプール
 - **アカウント別プロキシルーティング** — アカウントごとに異なるアップストリームプロキシを設定可能
@@ -171,7 +198,7 @@ AI からストリーミング応答が返ってくれば正常に動作して�
 - **到達不能の自動除外** — プロキシが利用不能になった際に自動でローテーションから除外
 
 ### 🛡️ 検出回避とプロトコル偽装
-- **Rust Native TLS** — 内蔵の reqwest + rustls ネイティブアドオンにより、実際の Codex クライアントと完全に一致する TLS フィンガープリント（依存バージョン固定）
+- **Rust Native TLS** — 内蔵の reqwest + rustls ネイティブアドオンにより、実際の Codex クライアントと完全に一致する TLS フィンガープリント。Windows / macOS / Linux（Alpine 含む）で利用可能
 - **クライアント Profile プリセット** — `codex_cli`（デフォルト、公式 CLI クリーンターミナルヘッダー）、`codex_desktop`（Desktop 完全ヘッダー）、`opencode`、`pi`、`custom` をサポート。CLI モードではブラウザ固有ヘッダー（`sec-ch-ua` 等）を自動除去
 - **アカウント別 Device ID 隔離** — アカウントごとに固有の `x-codex-installation-id` を個別に導出・永続化し、複数アカウント間での同一デバイス指紋共有を徹底防止
 - **完全なリクエストヘッダーシミュレーション** — 選択されたプロファイルに応じて `originator`、`User-Agent`、`x-openai-internal-codex-residency`、`x-codex-turn-state`、`x-client-request-id` などを忠実に再現して送信

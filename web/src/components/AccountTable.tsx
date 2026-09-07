@@ -230,7 +230,7 @@ export function AccountTable({
                     class="rounded border-gray-300 dark:border-border-dark text-primary focus:ring-primary cursor-pointer"
                   />
                 </label>
-                <span class="flex-1 min-w-0 text-sm font-medium truncate text-slate-700 dark:text-text-main">
+                <span class="flex-1 min-w-0 text-sm font-medium truncate text-slate-700 dark:text-text-main allow-select">
                   {acct.label ? `${acct.label} (${acct.email})` : acct.email}
                 </span>
                 <span class="w-20 hidden sm:flex justify-center">

@@ -143,6 +143,16 @@ describe("root package boundary", () => {
     // It must still create and push the release tag.
     expect(workflow).toContain('git tag -a "$NEW_TAG"');
     expect(workflow).toContain('git push origin "$NEW_TAG"');
+    expect(workflow.match(/sync-changelog-series\.mjs --check --series "\$SERIES"/g)).toHaveLength(2);
+  });
+
+  it("syncs unreleased changelog entries on dev before a stable bump can run", () => {
+    const workflow = readFileSync(resolve(ROOT, ".github/workflows/sync-changelog-series.yml"), "utf-8");
+
+    expect(workflow).toContain("branches: [dev]");
+    expect(workflow).toContain("ref: dev");
+    expect(workflow).toContain("node .github/scripts/sync-changelog-series.mjs");
+    expect(workflow).toContain("git push origin HEAD:dev");
   });
 
   it("keeps release-note workflow fixes from triggering app releases", () => {

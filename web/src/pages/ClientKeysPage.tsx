@@ -361,7 +361,7 @@ export const ClientKeysPage: FunctionalComponent<ClientKeysPageProps> = ({
                           </div>
                         )}
                       </td>
-                      <td class="py-3.5 px-4 font-mono text-slate-600 dark:text-text-dim">
+                      <td class="py-3.5 px-4 font-mono text-slate-600 dark:text-text-dim allow-select">
                         {k.key_masked}
                       </td>
                       <td class="py-3.5 px-4">

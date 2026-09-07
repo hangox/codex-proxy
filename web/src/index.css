@@ -128,3 +128,41 @@ pre::-webkit-scrollbar-thumb:hover { background: #8b949e; }
 .electron-mac header > div > div {
   padding-left: 72px;
 }
+
+/* ── UI chrome: prevent accidental text selection & element dragging ── */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Keep native selection only where it is genuinely useful. */
+input,
+textarea,
+select,
+[contenteditable="true"],
+pre,
+code,
+kbd,
+samp,
+.selectable,
+.allow-select {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Images and inline icons should never be dragged around. */
+img,
+svg,
+picture {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* Interactive controls should never be dragged like a floating ghost. */
+button,
+[role="button"],
+a,
+summary,
+label {
+  -webkit-user-drag: none;
+}

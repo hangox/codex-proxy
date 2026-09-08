@@ -123,7 +123,7 @@ export function AccountManagement({ embedded }: { embedded?: boolean } = {}) {
       )}
 
       {/* Import/Export toolbar (always shown) */}
-      <div class="flex items-center justify-end mb-3">
+      <div class="flex items-center gap-1.5 justify-end mb-3">
         <AccountImportExport
           onExport={exportAccounts}
           onImport={importAccounts}

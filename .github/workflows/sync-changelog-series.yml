@@ -1,0 +1,42 @@
+name: Sync changelog release series
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-changelog-series
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Move unreleased entries into the active release series
+        run: node .github/scripts/sync-changelog-series.mjs
+
+      - name: Commit synchronized changelog
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md is already synchronized"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: sync changelog release series [skip ci]"
+          git push origin HEAD:dev

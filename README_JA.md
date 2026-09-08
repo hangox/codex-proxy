@@ -46,10 +46,6 @@
         <sub>☕ 寄付</sub>
       </td>
       <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="WeChat コミュニティ"><br>
-        <sub>💬 WeChat グループ</sub>
-      </td>
-      <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram コミュニティ"><br>
         <sub>💬 Telegram</sub>
       </td>
@@ -182,7 +178,8 @@ AI からストリーミング応答が返ってくれば正常に動作して�
 - Chat Completions / Anthropic / Gemini ↔ Codex Responses API の双方向プロトコル自動変換
 - **Structured Outputs** — `response_format`（`json_object` / `json_schema`）および Gemini `responseMimeType` をサポート
 - **Function Calling** — 全プロトコルでネイティブな `function_call` / `tool_calls` をサポート
-- **サードパーティ API Key** — OpenAI / Anthropic / Gemini / OpenRouter / カスタム OpenAI 互換プロバイダーをサポートし、モデルごとのアップストリームルーティングに対応
+- **WebSocket インターフェース** — `/v1/responses` でクライアント WebSocket ストリーミング（Bearer 認証）に対応、HTTP POST + SSE はフォールバックとして維持
+- **サードパーティ API Key** — 複数プロトコルをサポートし、モデルごとにルーティング
 - 📖 完全なエンドポイント定義と仕様については **[API リファレンス](./API_JA.md)** を参照してください。
 
 ### 🔐 アカウント管理とスマートローテーション
@@ -194,6 +191,8 @@ AI からストリーミング応答が返ってくれば正常に動作して�
 - **BAN 検知** — アップストリームの 403 応答で自動的に banned とマーク、401 トークン失効時は自動で期限切れ扱いにしてアカウントを切り替え
 - **API Key プロバイダープール** — ダッシュボード上でサードパーティ API Key、モデル一覧、インポート/エクスポート、有効/無効状態を管理
 - **Web コントロールパネル** — アカウント管理、利用統計、一括操作、日英中マルチ言語対応。リモートアクセス用のダッシュボード認証ゲートを搭載
+- **フォールバックアップストリーム** — すべてのアカウントが尽きた場合、編集可能な最終手段の API Key が自動的に使用されます
+- **フォールバック状態インジケーター** — ログとホームで、各リクエストを処理したアカウントとフォールバック発動時を明確に表示
 
 ### 🌐 プロキシプール
 - **アカウント別プロキシルーティング** — アカウントごとに異なるアップストリームプロキシを設定可能
@@ -202,7 +201,7 @@ AI からストリーミング応答が返ってくれば正常に動作して�
 - **到達不能の自動除外** — プロキシが利用不能になった際に自動でローテーションから除外
 
 ### 🛡️ 検出回避とプロトコル偽装
-- **Rust Native TLS** — 内蔵の reqwest + rustls ネイティブアドオンにより、実際の Codex クライアントと完全に一致する TLS フィンガープリント（依存バージョン固定）
+- **Rust Native TLS** — 内蔵の reqwest + rustls ネイティブアドオンにより、実際の Codex クライアントと完全に一致する TLS フィンガープリント。Windows / macOS / Linux（Alpine 含む）で利用可能
 - **クライアント Profile プリセット** — `codex_cli`（デフォルト、公式 CLI クリーンターミナルヘッダー）、`codex_desktop`（Desktop 完全ヘッダー）、`opencode`、`pi`、`custom` をサポート。CLI モードではブラウザ固有ヘッダー（`sec-ch-ua` 等）を自動除去
 - **アカウント別 Device ID 隔離** — アカウントごとに固有の `x-codex-installation-id` を個別に導出・永続化し、複数アカウント間での同一デバイス指紋共有を徹底防止
 - **完全なリクエストヘッダーシミュレーション** — 選択されたプロファイルに応じて `originator`、`User-Agent`、`x-openai-internal-codex-residency`、`x-codex-turn-state`、`x-client-request-id` などを忠実に再現して送信

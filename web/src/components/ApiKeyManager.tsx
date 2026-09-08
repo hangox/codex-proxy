@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
 import { useT } from "../../../shared/i18n/context";
 import type { ApiKeyCapability, ApiKeyProvider, ApiKeyWire, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
+import { accountToolbarIconClass } from "../lib/account-toolbar";
 
 /** Providers whose upstream wire protocol is selectable. */
 const WIRE_SELECTABLE_PROVIDERS: ReadonlySet<ApiKeyProvider> = new Set(["openai", "openrouter", "custom"]);
@@ -504,7 +505,7 @@ export function ApiKeyManager() {
           <button
             onClick={() => fileRef.current?.click()}
             title={t("importApiKeys")}
-            class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
+            class={accountToolbarIconClass}
           >
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12M12 16.5V3" />
@@ -513,7 +514,7 @@ export function ApiKeyManager() {
           <button
             onClick={() => setShowForm(!showForm)}
             title={t("addApiKey")}
-            class="p-1.5 text-slate-400 dark:text-text-dim hover:text-primary transition-colors rounded-md hover:bg-primary/10"
+            class={accountToolbarIconClass}
           >
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />

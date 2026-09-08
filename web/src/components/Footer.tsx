@@ -17,7 +17,7 @@ export function Footer({ updateStatus }: FooterProps) {
       <div class="container mx-auto px-4 flex flex-col items-center gap-2">
         {/* Version info */}
         <div class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[0.75rem] text-slate-400 dark:text-text-dim font-mono">
-          <span>Proxy v{proxyVersion}{proxyCommit ? ` (${proxyCommit})` : ""}</span>
+          <span>Codex Proxy v{proxyVersion}{proxyCommit ? ` (${proxyCommit})` : ""}</span>
           <span class="text-slate-300 dark:text-border-dark">&middot;</span>
           <span>Codex Desktop {codexVersion ? `v${codexVersion}` : "—"}</span>
         </div>

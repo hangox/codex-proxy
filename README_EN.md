@@ -137,7 +137,8 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - Automatic bidirectional translation between all protocols and Codex Responses API
 - **Structured Outputs** — `response_format` (`json_object` / `json_schema`) and Gemini `responseMimeType`
 - **Function Calling** — native `function_call` / `tool_calls` across all protocols
-- **Third-party API keys** — supports OpenAI / Anthropic / Gemini / OpenRouter / custom OpenAI-compatible providers, routed by model.
+- **WebSocket interface** — `/v1/responses` supports client WebSocket streaming (Bearer auth), with HTTP POST + SSE kept as fallback
+- **Third-party API keys** — supports multiple protocols, routed by model
 - 📖 For complete endpoint definitions and protocol specifications, see **[API Reference](./API.md)**.
 
 ### 2. 🔐 Account Management & Smart Rotation
@@ -149,6 +150,8 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - **Ban detection** — upstream 403 auto-marks banned; 401 token invalidation auto-expires and switches account
 - **API key provider pool** — manage third-party API keys, model lists, import/export, and enable/disable state from the dashboard.
 - **Web dashboard** — account management, usage stats, batch operations; dashboard login gate for remote access
+- **Fallback upstream** — when every account is exhausted, an editable last-resort API Key is used automatically
+- **Fallback status indicator** — logs and the home page clearly show which account served each request, and when fallback kicked in
 
 ### 3. 🌐 Proxy Pool
 - **Per-account proxy routing** — different upstream proxies per account
@@ -157,7 +160,7 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 - **Auto-mark unreachable** — unreachable proxies excluded from rotation
 
 ### 4. 🛡️ Anti-Detection & Protocol Impersonation
-- **Rust Native TLS** — built-in reqwest + rustls native addon, TLS fingerprint matches real Codex clients exactly (pinned dependency versions)
+- **Rust Native TLS** — built-in reqwest + rustls native addon, TLS fingerprint matches real Codex clients exactly, across Windows / macOS / Linux (incl. Alpine)
 - **Client Profile Presets** — support for `codex_cli` (default, official CLI clean terminal headers), `codex_desktop` (Desktop complete headers), `opencode`, `pi`, and `custom`; CLI mode cleanly strips browser-specific headers (`sec-ch-ua`, etc.)
 - **Per-Account Device ID Isolation** — independently derives and persists unique `x-codex-installation-id` for each account to prevent device correlation
 - **Full Request Header Emulation** — `originator`, `User-Agent`, `x-openai-internal-codex-residency`, `x-codex-turn-state`, `x-client-request-id` headers accurately sent per selected profile
@@ -178,21 +181,21 @@ If you see streaming AI text, the setup is working. If you get 401, double-check
 │  POST /gemini/*            (Gemini)                      │
 │       │                                                  │
 │       ▼                                                  │
-│  ┌──────────┐    ┌───────────────┐    ┌──────────────┐   │
-│  │  Routes   │──▶│  Translation  │──▶│    Proxy     │   │
-│  │  (Hono)  │   │ Multi→Codex   │   │ Native TLS   │   │
-│  └──────────┘   └───────────────┘   └──────┬───────┘   │
-│       ▲                                     │           │
-│       │          ┌───────────────┐          │           │
-│       └──────────│  Translation  │◀─────────┘           │
-│                  │ Codex→Multi   │  SSE stream          │
+│  ┌──────────┐   ┌───────────────┐   ┌──────────────┐     │
+│  │  Routes  │──▶│  Translation  │──▶│    Proxy     │     │
+│  │  (Hono)  │   │ Multi→Codex   │   │ Native TLS   │     │
+│  └──────────┘   └───────────────┘   └──────┬───────┘     │
+│       ▲                                    │             │
+│       │          ┌───────────────┐         │             │
+│       └──────────│  Translation  │◀────────┘             │
+│                  │ Codex→Multi   │  SSE stream           │
 │                  └───────────────┘                       │
 │                                                          │
-│  ┌──────────┐  ┌───────────────┐  ┌──────────────────┐  │
-│  │   Auth   │  │  Fingerprint  │  │   Model Store    │  │
-│  │OAuth/API │  │ Rust (rustls) │  │ Static + Dynamic │  │
-│  │ API Keys │  │  Headers/UA   │  │  Plan Routing    │  │
-│  └──────────┘  └───────────────┘  └──────────────────┘  │
+│  ┌──────────┐  ┌───────────────┐  ┌──────────────────┐   │
+│  │   Auth   │  │  Fingerprint  │  │   Model Store    │   │
+│  │OAuth/API │  │ Rust (rustls) │  │ Static + Dynamic │   │
+│  │ API Keys │  │  Headers/UA   │  │  Plan Routing    │   │
+│  └──────────┘  └───────────────┘  └──────────────────┘   │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
                           │
@@ -878,10 +881,6 @@ curl -X POST http://localhost:8080/auth/accounts/import \
       <td align="center">
         <img src="./.github/assets/donate.png" width="180" alt="WeChat Donate"><br>
         <sub>☕ Donate</sub>
-      </td>
-      <td align="center">
-        <img src="./.github/assets/wechat.png" width="180" alt="WeChat Group"><br>
-        <sub>💬 WeChat</sub>
       </td>
       <td align="center">
         <img src="./.github/assets/tgimage.png" width="180" alt="Telegram Group"><br>

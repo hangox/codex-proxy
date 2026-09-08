@@ -90,7 +90,7 @@
 如果你已经安装 Node.js，或者需要在服务器、WSL 等没有桌面环境的机器上运行
 Codex Proxy，可以选择 No-Node Lite。它使用与 Electron 版相同的后端和控制面板，
 但不内置 Node.js，因此包更小，也方便你自行管理运行时；上面的 Electron 安装包不受影响。
-正式制品使用 `codex-proxy-<版本>-no-node-lite-all-platforms.tar.xz`，解压后在包根目录运行对应入口：
+正式制品使用 `codex-proxy-<版本>-no-node-lite-all-platforms.zip`，解压后在包根目录运行对应入口：
 
 ```bash
 # Windows：双击 codex-proxy.exe（无控制台并驻留托盘）；codex-proxy.cmd 始终作为脚本 fallback 保留
@@ -104,7 +104,9 @@ Codex Proxy，可以选择 No-Node Lite。它使用与 Electron 版相同的后�
 或在 Windows 上使用 `--mode=webview2` 强制使用 WebView2。`--host`、`--port`、
 `--webview2-host`、`--node-path` 的简写分别是 `-H`、`-P`、`-w`、`-n`。
 
-Windows 启动器会优先尝试 WebView2；不可用时回退到系统浏览器。原生
+Windows 启动器会优先尝试 WebView2；不可用时回退到系统浏览器。缺少 WebView2 运行时
+而显式指定 `--mode=webview2` 时，会先询问，确认后自动下载并运行微软官方在线安装器
+（约 2MB，已校验微软签名）安装 WebView2，超时或拒绝则退出。原生
 `codex-proxy.exe` 使用托盘运行，`codex-proxy.cmd` 作为诊断 fallback 保留。
 找不到 Node.js 时会显示安装指引，不会静默下载或捆绑 Node。Lite 的“检查更新”打开最新
 Releases 页面，暂不自动覆盖正在运行的包。

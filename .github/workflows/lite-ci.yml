@@ -167,21 +167,7 @@ jobs:
           node scripts/portable/build-webview2-host.mjs --arch x86 --out "$hostDir\win-x86\webview2-host.exe"
           node scripts/portable/build-webview2-host.mjs --arch x64 --out "$hostDir\win-x64\webview2-host.exe"
 
-      - name: Download Evergreen WebView2 Bootstrapper
-        shell: pwsh
-        run: |
-          $path = Join-Path $env:RUNNER_TEMP "codex-proxy-webview2\MicrosoftEdgeWebView2Setup.exe"
-          node scripts/portable/download-webview2-bootstrapper.mjs --out $path
-
-      - name: Verify Evergreen WebView2 Bootstrapper signature
-        shell: pwsh
-        run: |
-          $path = Join-Path $env:RUNNER_TEMP "codex-proxy-webview2\MicrosoftEdgeWebView2Setup.exe"
-          $signature = Get-AuthenticodeSignature -LiteralPath $path
-          if ($signature.Status -ne "Valid") { throw "Invalid WebView2 Bootstrapper signature: $($signature.Status)" }
-          if ($signature.SignerCertificate.Subject -notmatch "Microsoft") { throw "Unexpected WebView2 Bootstrapper signer: $($signature.SignerCertificate.Subject)" }
-
-      - name: Build Lite tar.xz
+      - name: Build Lite zip
         env:
           MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
           PORTABLE_REQUIRE_WINDOWS_EXE: "1"
@@ -189,20 +175,19 @@ jobs:
           $hostDir = Join-Path $env:RUNNER_TEMP "codex-proxy-webview2"
           node scripts/portable/build-portable.mjs `
             --webview2-host-x86 "$hostDir\win-x86\webview2-host.exe" `
-            --webview2-host-x64 "$hostDir\win-x64\webview2-host.exe" `
-            --webview2-bootstrapper "$hostDir\MicrosoftEdgeWebView2Setup.exe"
+            --webview2-host-x64 "$hostDir\win-x64\webview2-host.exe"
 
       - name: Test generated Windows package
         shell: pwsh
         run: |
-          $archive = (Get-ChildItem portable-release\*.tar.xz | Select-Object -First 1).FullName
+          $archive = (Get-ChildItem portable-release\*.zip | Select-Object -First 1).FullName
           node scripts/portable/test-portable.mjs --archive $archive --require-windows-exe --require-webview2 --require-linux-x64-musl --test-native-launcher
 
       - name: Upload Lite artifact
         uses: actions/upload-artifact@v4
         with:
           name: codex-proxy-lite-${{ github.run_number }}
-          path: portable-release/*.tar.xz
+          path: portable-release/*.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -247,7 +232,7 @@ jobs:
       - name: Test package on ${{ matrix.platform }}
         shell: bash
         run: |
-          archive="$(find portable-release -name '*.tar.xz' -print -quit)"
+          archive="$(find portable-release -name '*.zip' -print -quit)"
           test -n "$archive"
           node scripts/portable/test-portable.mjs --archive "$archive" ${{ matrix.test-args }}
 
@@ -269,15 +254,18 @@ jobs:
       - name: Extract Lite package
         shell: bash
         run: |
-          archive="$(find portable-release -name '*.tar.xz' -print -quit)"
+          archive="$(find portable-release -name '*.zip' -print -quit)"
           test -n "$archive"
           package_dir="$RUNNER_TEMP/codex-proxy-lite-musl"
           mkdir -p "$package_dir"
           python3 - "$archive" "$package_dir" <<'PY'
-          import sys, tarfile
+          import sys, zipfile
 
-          with tarfile.open(sys.argv[1], "r:xz") as archive:
+          with zipfile.ZipFile(sys.argv[1]) as archive:
               archive.extractall(sys.argv[2])
+          import os, stat
+          launcher = os.path.join(sys.argv[2], "codex-proxy.sh")
+          os.chmod(launcher, os.stat(launcher).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
           PY
 
       - name: Load musl addon in Alpine Node

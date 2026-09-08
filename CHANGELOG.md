@@ -8,7 +8,17 @@
 
 ## [Unreleased]
 
-> 暂无已记录的变更。
+### Added
+
+- No-Node Lite 在 Windows 缺少 WebView2 运行时且显式指定 `--mode=webview2` 时，新增经用户确认后的按需安装路径：从微软官方端点下载 Evergreen Bootstrapper（约 2MB），校验 Windows 可执行格式与 Authenticode 签名（须为 Microsoft 签发）后以 `/silent /install` 静默安装，下载器缓存于系统临时目录并复用；下载或校验失败时回退为打开官方安装页，仍支持 `CODEX_PROXY_WEBVIEW2_BOOTSTRAPPER` 指定本地安装器。（`scripts/portable/server.mjs`）
+
+### Changed
+
+- No-Node Lite 制品格式从 tar.xz 改为 zip：Python zipfile deflate -9 极限压缩、条目确定性排序，`codex-proxy.sh` 以 0755 权限位写入；产物更名为 `codex-proxy-<版本>-no-node-lite-all-platforms.zip`，打包现依赖 Python 3。（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`、`README.md` 及各语言版本）
+
+### Removed
+
+- No-Node Lite 包内不再携带 Evergreen Bootstrapper（`tools/MicrosoftEdgeWebView2Setup.exe`，约 2MB）：WebView2 安装改为运行时按需下载（见 Added）；删除 `scripts/portable/download-webview2-bootstrapper.mjs` 与 `npm run download:webview2-bootstrapper`，CI 不再下载、签名校验或打包该安装器。（`scripts/portable/`、`package.json`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`）
 
 ## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
 

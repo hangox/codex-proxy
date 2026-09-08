@@ -8,29 +8,13 @@
 
 ## [Unreleased]
 
-### Added
-
-- No-Node Lite 在 Windows 缺少 WebView2 运行时且显式指定 `--mode=webview2` 时，新增经用户确认后的按需安装路径：从微软官方端点下载 Evergreen Bootstrapper（约 2MB），校验 Windows 可执行格式与 Authenticode 签名（须为 Microsoft 签发）后以 `/silent /install` 静默安装，下载器缓存于系统临时目录并复用；下载或校验失败时回退为打开官方安装页，仍支持 `CODEX_PROXY_WEBVIEW2_BOOTSTRAPPER` 指定本地安装器。（`scripts/portable/server.mjs`）
-
-### Changed
-
-- No-Node Lite 制品格式从 tar.xz 改为 zip：Python zipfile deflate -9 极限压缩、条目确定性排序，`codex-proxy.sh` 以 0755 权限位写入；产物更名为 `codex-proxy-<版本>-no-node-lite-all-platforms.zip`，打包现依赖 Python 3。（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`、`README.md` 及各语言版本）
-
-### Removed
-
-- No-Node Lite 包内不再携带 Evergreen Bootstrapper（`tools/MicrosoftEdgeWebView2Setup.exe`，约 2MB）：WebView2 安装改为运行时按需下载（见 Added）；删除 `scripts/portable/download-webview2-bootstrapper.mjs` 与 `npm run download:webview2-bootstrapper`，CI 不再下载、签名校验或打包该安装器。（`scripts/portable/`、`package.json`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`）
+> 暂无已记录的变更。
 
 ## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
 
-### Changed
-
-- 统一各页面工具栏按钮风格：管理账号（`AccountBulkActions`）、API Keys（`ApiKeyManager`）、代理池（`ProxyPool`）、错误页面（`ErrorsPage`）的顶部与行内按钮全部改用 `accountToolbarControlClass` / `accountToolbarIconClass`，与首页账号列表工具栏保持一致；代理池及错误页面的文字操作按钮改为纯图标按钮（tooltip 保留文字），批量操作栏按钮样式一致化。（`web/src/components/AccountBulkActions.tsx`、`web/src/components/ApiKeyManager.tsx`、`web/src/components/ProxyPool.tsx`、`web/src/pages/AccountManagement.tsx`、`web/src/pages/ErrorsPage.tsx`）
-
-- 官方模型识别改为按名称形态前缀放行（`gpt*` / `codex*` / `oN*`），不再要求模型已收录于本地 catalog：当后端/账号尚未下发的新官方模型（如 `gpt-6-astra`）被客户端请求时，不再返回 `404 model_not_found` 或静默回退默认模型，而是按原名透传交由上游裁决；`resolveModelId` 对官方形态模型原样解析、不回退默认。边界保持不变：非官方形态的未知模型仍 `404`，裸 `codex` 哨兵仍解析为默认模型（`src/models/model-store.ts`）。
-
-- 点击「添加账户」不再立即弹出授权网页，改为弹出对话框展示授权 URL，提供「复制」与「打开链接」按钮，由用户自行选择打开时机；下方保留 RT（Refresh Token）输入与导入入口。（`web/src/components/AddAccount.tsx`、`shared/hooks/use-accounts.ts`）
-
 ### Added
+
+- No-Node Lite 在 Windows 缺少 WebView2 运行时且显式指定 `--mode=webview2` 时，新增经用户确认后的按需安装路径：从微软官方端点下载 Evergreen Bootstrapper（约 2MB），校验 Windows 可执行格式与 Authenticode 签名（须为 Microsoft 签发）后以 `/silent /install` 静默安装，下载器缓存于系统临时目录并复用；下载或校验失败时回退为打开官方安装页，仍支持 `CODEX_PROXY_WEBVIEW2_BOOTSTRAPPER` 指定本地安装器。（`scripts/portable/server.mjs`）
 
 - 新增 Linux x64 musl TLS native addon 构建与验证流程，并将 `codex-tls.linux-x64-musl.node` 接入 No-Node Lite 的构建和发布包，使 Lite 可在 Alpine 等 musl Linux 环境中使用。（`native/package.json`、`scripts/native/`、`scripts/portable/`、`.github/workflows/native-musl-ci.yml`）
 
@@ -53,6 +37,20 @@
 - 控制台新增日語 (ja)、繁體中文 (台灣, zh-TW)、繁體中文 (香港, zh-HK) 完整語言字典與本地化支援，並將頂部導航列語言切換升級為多語言下拉選擇器（`shared/i18n/`、`web/src/components/Header.tsx`、`shared/utils/format.ts`）。
 
 - 新增「后备上游 (API Key)」账户类型：配置一个 baseUrl + apiKey，固定走 Responses 接口，仅在所有账号均不可用时作为最后兜底启用；添加账户弹窗可添加，账户列表末尾独占一行展示，支持卡片上编辑/删除，仅允许配置一个。（`src/auth/fallback-upstream.ts`、`src/routes/accounts.ts`、`src/routes/shared/proxy-handler.ts`、`web/src/components/FallbackUpstreamCard.tsx`、`web/src/components/AddAccount.tsx`）
+
+### Changed
+
+- No-Node Lite 制品格式从 tar.xz 改为 zip：Python zipfile deflate -9 极限压缩、条目确定性排序，`codex-proxy.sh` 以 0755 权限位写入；产物更名为 `codex-proxy-<版本>-no-node-lite-all-platforms.zip`，打包现依赖 Python 3。（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`、`README.md` 及各语言版本）
+
+- 统一各页面工具栏按钮风格：管理账号（`AccountBulkActions`）、API Keys（`ApiKeyManager`）、代理池（`ProxyPool`）、错误页面（`ErrorsPage`）的顶部与行内按钮全部改用 `accountToolbarControlClass` / `accountToolbarIconClass`，与首页账号列表工具栏保持一致；代理池及错误页面的文字操作按钮改为纯图标按钮（tooltip 保留文字），批量操作栏按钮样式一致化。（`web/src/components/AccountBulkActions.tsx`、`web/src/components/ApiKeyManager.tsx`、`web/src/components/ProxyPool.tsx`、`web/src/pages/AccountManagement.tsx`、`web/src/pages/ErrorsPage.tsx`）
+
+- 官方模型识别改为按名称形态前缀放行（`gpt*` / `codex*` / `oN*`），不再要求模型已收录于本地 catalog：当后端/账号尚未下发的新官方模型（如 `gpt-6-astra`）被客户端请求时，不再返回 `404 model_not_found` 或静默回退默认模型，而是按原名透传交由上游裁决；`resolveModelId` 对官方形态模型原样解析、不回退默认。边界保持不变：非官方形态的未知模型仍 `404`，裸 `codex` 哨兵仍解析为默认模型（`src/models/model-store.ts`）。
+
+- 点击「添加账户」不再立即弹出授权网页，改为弹出对话框展示授权 URL，提供「复制」与「打开链接」按钮，由用户自行选择打开时机；下方保留 RT（Refresh Token）输入与导入入口。（`web/src/components/AddAccount.tsx`、`shared/hooks/use-accounts.ts`）
+
+### Removed
+
+- No-Node Lite 包内不再携带 Evergreen Bootstrapper（`tools/MicrosoftEdgeWebView2Setup.exe`，约 2MB）：WebView2 安装改为运行时按需下载（见 Added）；删除 `scripts/portable/download-webview2-bootstrapper.mjs` 与 `npm run download:webview2-bootstrapper`，CI 不再下载、签名校验或打包该安装器。（`scripts/portable/`、`package.json`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`）
 
 ### Fixed
 

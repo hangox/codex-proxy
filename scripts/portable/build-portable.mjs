@@ -252,10 +252,13 @@ function createZip(stage, archive) {
   // Python's zipfile is the only cross-platform deflate implementation with an
   // explicit compression level that the Windows/macOS/Linux runners share; the
   // archive test harness already requires Python 3 for metadata checks.
+  // A ZipInfo passed to writestr() ignores the archive-level compression and
+  // compresslevel and uses ZipInfo's own compress_type, which defaults to
+  // ZIP_STORED — set both explicitly on every file entry.
   const pythonScript = [
     "import os, sys, zipfile",
     "stage, output = sys.argv[1:3]",
-    "with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:",
+    "with zipfile.ZipFile(output, 'w') as archive:",
     "    for root, dirs, files in os.walk(stage):",
     "        dirs.sort()",
     "        rel_root = os.path.relpath(root, stage).replace('\\\\', '/')",
@@ -269,10 +272,11 @@ function createZip(stage, archive) {
     "            rel = prefix + name",
     "            mode = 0o755 if (rel == 'codex-proxy.sh' or rel.endswith('/codex-proxy.sh')) else 0o644",
     "            info = zipfile.ZipInfo(rel)",
+    "            info.compress_type = zipfile.ZIP_DEFLATED",
     "            info.create_system = 3",
     "            info.external_attr = mode << 16",
     "            with open(os.path.join(root, name), 'rb') as source:",
-    "                archive.writestr(info, source.read())",
+    "                archive.writestr(info, source.read(), compresslevel=9)",
   ].join("\n");
   for (const python of ["python", "python3"]) {
     if (!commandExists(python)) continue;

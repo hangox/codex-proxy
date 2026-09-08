@@ -54,6 +54,7 @@
 
 ### Fixed
 
+- 修复 No-Node Lite zip 制品全部条目以 STORE（不压缩）模式写入的问题：传给 `writestr()` 的 `ZipInfo` 会忽略归档级压缩配置并默认 `ZIP_STORED`，导致制品体积约为正常 deflate -9 的两倍以上（实测 18.8MB → 3.6MB 量级）；现在为每个文件条目显式设置 `compress_type = ZIP_DEFLATED` 与 `compresslevel=9`，归档级测试新增"文件条目必须为 deflate 且压缩率有效"的防回归断言（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`）。
 - 修复 Dashboard 底栏在更新状态尚未缓存时无法显示 Codex Desktop 版本的问题，并更新 2026 年版权文案。
 
 - 修复速率限制重置卡（Reset Cards）在请求转发后从控制台消失的问题：被动响应头更新 quota 时保留已知的 `reset_credits_available`，并在重置卡查询与消耗逻辑中同步更新账号配额缓存（`src/auth/account-registry.ts`、`src/auth/active-quota-refresher.ts`、`src/routes/accounts.ts`）。

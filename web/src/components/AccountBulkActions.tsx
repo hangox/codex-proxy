@@ -1,5 +1,6 @@
 import { useState, useCallback } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
+import { accountToolbarControlClass } from "../lib/account-toolbar";
 
 interface AccountBulkActionsProps {
   selectedCount: number;
@@ -34,17 +35,17 @@ export function AccountBulkActions({
 
   return (
     <div class="sticky bottom-0 z-40 bg-white dark:bg-card-dark border-t border-gray-200 dark:border-border-dark shadow-lg px-4 py-3">
-      <div class="flex items-center gap-3 flex-wrap">
+      <div class="flex items-center gap-2 flex-wrap">
         <span class="text-sm font-medium text-slate-700 dark:text-text-main shrink-0">
           {selectedCount} {t("accountsCount")} {t("selected")}
         </span>
 
-        <div class="h-4 w-px bg-gray-200 dark:bg-border-dark hidden sm:block" />
+        <div class="h-4 w-px bg-gray-200 dark:bg-border-dark hidden sm:block mx-1" />
 
         <button
           onClick={onSetActive}
           disabled={loading}
-          class="px-3 py-1.5 text-xs font-medium rounded-lg border border-success/30 bg-success-container text-success hover:bg-success-container/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          class={accountToolbarControlClass}
         >
           {t("setActive")}
         </button>
@@ -52,12 +53,12 @@ export function AccountBulkActions({
         <button
           onClick={onSetDisabled}
           disabled={loading}
-          class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700/40 bg-slate-50 dark:bg-slate-800/20 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          class={accountToolbarControlClass}
         >
           {t("setDisabled")}
         </button>
 
-        <div class="h-4 w-px bg-gray-200 dark:bg-border-dark hidden sm:block" />
+        <div class="h-4 w-px bg-gray-200 dark:bg-border-dark hidden sm:block mx-1" />
 
         {confirming ? (
           <div class="flex items-center gap-2">
@@ -71,7 +72,7 @@ export function AccountBulkActions({
             <button
               onClick={cancelConfirm}
               disabled={loading}
-              class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark text-slate-600 dark:text-text-dim hover:bg-slate-50 dark:hover:bg-border-dark/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class={accountToolbarControlClass}
             >
               {t("cancel")}
             </button>
@@ -80,7 +81,7 @@ export function AccountBulkActions({
           <button
             onClick={handleDelete}
             disabled={loading}
-            class="px-3 py-1.5 text-xs font-medium rounded-lg border border-danger/30 bg-danger-container text-danger hover:bg-danger-container/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class={`${accountToolbarControlClass} hover:text-red-500 hover:border-red-300 hover:bg-red-50 dark:hover:bg-red-900/20`}
           >
             {t("batchDelete")}
           </button>

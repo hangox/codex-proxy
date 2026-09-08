@@ -45,6 +45,7 @@ jobs:
               exit 0
             fi
             echo "New series ${SERIES}.x — will start at ${SERIES}.0"
+            node .github/scripts/sync-changelog-series.mjs --check --series "$SERIES"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "new_series=true" >> "$GITHUB_OUTPUT"
             echo "series=$SERIES" >> "$GITHUB_OUTPUT"
@@ -74,6 +75,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          node .github/scripts/sync-changelog-series.mjs --check --series "$SERIES"
 
           echo "Found $NEW_COMMITS new commit(s) since $LAST_TAG"
           echo "skip=false" >> "$GITHUB_OUTPUT"

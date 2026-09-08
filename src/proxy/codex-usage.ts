@@ -12,7 +12,7 @@ import {
   type CodexUsageResponse,
 } from "./codex-types.js";
 
-function usageUrls(baseUrl: string): string[] {
+export function usageUrls(baseUrl: string): string[] {
   const trimmed = baseUrl.replace(/\/+$/, "");
   if (trimmed.includes("/backend-api")) {
     return [`${trimmed}/wham/usage`, `${trimmed}/codex/usage`];

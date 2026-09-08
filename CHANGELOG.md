@@ -8,7 +8,10 @@
 
 ## [Unreleased]
 
-> 暂无已记录的变更。
+### Changed
+
+- 统一各页面工具栏按钮风格：管理账号（`AccountBulkActions`）、API Keys（`ApiKeyManager`）、代理池（`ProxyPool`）、错误页面（`ErrorsPage`）的顶部与行内按钮全部改用 `accountToolbarControlClass` / `accountToolbarIconClass`，与首页账号列表工具栏保持一致；代理池及错误页面的文字操作按钮改为纯图标按钮（tooltip 保留文字），批量操作栏按钮样式一致化。（`web/src/components/AccountBulkActions.tsx`、`web/src/components/ApiKeyManager.tsx`、`web/src/components/ProxyPool.tsx`、`web/src/pages/AccountManagement.tsx`、`web/src/pages/ErrorsPage.tsx`）
+
 
 ## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
 

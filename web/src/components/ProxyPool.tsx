@@ -2,6 +2,7 @@ import { useState, useCallback } from "preact/hooks";
 import { useT } from "../../../shared/i18n/context";
 import type { TranslationKey } from "../../../shared/i18n/translations";
 import type { ProxiesState } from "../../../shared/hooks/use-proxies";
+import { accountToolbarIconClass } from "../lib/account-toolbar";
 
 const PROTOCOLS = ["http", "https", "socks5", "socks5h"] as const;
 
@@ -174,30 +175,42 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
             <>
               <button
                 onClick={handleExport}
-                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+                title={t("proxyExport")}
+                class={accountToolbarIconClass}
               >
-                {t("proxyExport")}
+                <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+                </svg>
               </button>
               <button
                 onClick={handleCheckAll}
                 disabled={checkingAll}
-                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors disabled:opacity-50"
+                title={checkingAll ? "..." : t("checkAllHealth")}
+                class={accountToolbarIconClass}
               >
-                {checkingAll ? "..." : t("checkAllHealth")}
+                <svg class={`size-[18px] ${checkingAll ? "animate-pulse" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                </svg>
               </button>
             </>
           )}
           <button
             onClick={() => setShowImport(!showImport)}
-            class="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-border-dark hover:bg-slate-50 dark:hover:bg-border-dark transition-colors"
+            title={t("proxyImport")}
+            class={accountToolbarIconClass}
           >
-            {t("proxyImport")}
+            <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12M12 16.5V3" />
+            </svg>
           </button>
           <button
             onClick={() => setShowAdd(!showAdd)}
-            class="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary-action text-white hover:bg-primary-action-hover transition-colors"
+            title={t("addProxy")}
+            class={accountToolbarIconClass}
           >
-            {t("addProxy")}
+            <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
           </button>
         </div>
       </div>
@@ -411,29 +424,39 @@ export function ProxyPool({ proxies }: ProxyPoolProps) {
                     <button
                       onClick={() => handleCheck(proxy.id)}
                       disabled={isChecking}
-                      class="px-2 py-1 text-xs rounded-md hover:bg-slate-100 dark:hover:bg-border-dark transition-colors disabled:opacity-50"
+                      class={accountToolbarIconClass}
                       title={t("checkHealth")}
                     >
-                      {isChecking ? "..." : t("checkHealth")}
+                      <svg class={`size-4 ${isChecking ? "animate-pulse" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                      </svg>
                     </button>
                     {proxy.status === "disabled" ? (
                       <button
                         onClick={() => proxies.enableProxy(proxy.id)}
-                        class="px-2 py-1 text-xs rounded-md hover:bg-green-50 dark:hover:bg-green-900/20 text-green-600 transition-colors"
+                        title={t("enableProxy")}
+                        class={accountToolbarIconClass}
                       >
-                        {t("enableProxy")}
+                        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M5.636 5.636a9 9 0 1 0 12.728 12.728 9 9 0 0 0-12.728-12.728Z" />
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 8.25v7.5M13.5 8.25v7.5" />
+                        </svg>
                       </button>
                     ) : (
                       <button
                         onClick={() => proxies.disableProxy(proxy.id)}
-                        class="px-2 py-1 text-xs rounded-md hover:bg-slate-100 dark:hover:bg-border-dark text-slate-500 transition-colors"
+                        title={t("disableProxy")}
+                        class={accountToolbarIconClass}
                       >
-                        {t("disableProxy")}
+                        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M5.636 5.636a9 9 0 1 0 12.728 12.728 9 9 0 0 0-12.728-12.728Z" />
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V8.887c0-.286.307-.466.557-.328l5.603 3.113Z" />
+                        </svg>
                       </button>
                     )}
                     <button
                       onClick={() => handleDelete(proxy.id)}
-                      class="p-1 text-slate-400 dark:text-text-dim hover:text-red-500 transition-colors rounded-md hover:bg-red-50 dark:hover:bg-red-900/20"
+                      class={accountToolbarIconClass}
                       title={t("deleteProxy")}
                     >
                       <svg

@@ -29,12 +29,16 @@ export function createAuthRoutes(
     const authenticated = pool.isAuthenticated();
     const userInfo = pool.getUserInfo();
     const config = getConfig();
-    const proxyApiKey = config.server.proxy_api_key ?? pool.getProxyApiKey();
+    // The static master key (server.proxy_api_key) must stay visible even when
+    // there is no OAuth session, so the dashboard can authenticate admin
+    // operations (e.g. client access keys) against it. Only the per-account key
+    // is OAuth-conditional.
+    const proxyApiKey = config.server.proxy_api_key ?? (authenticated ? pool.getProxyApiKey() : null);
     const summary = pool.getPoolSummary();
     return c.json({
       authenticated,
       user: authenticated ? userInfo : null,
-      proxy_api_key: authenticated ? proxyApiKey : null,
+      proxy_api_key: proxyApiKey,
       pool: summary,
     });
   });

@@ -8,7 +8,9 @@
 
 ## [Unreleased]
 
-> 暂无已记录的变更。
+### Fixed
+
+- **转发工具 schema 前清掉上游正则引擎编译不了的 `pattern`，不再因此被上游拒收整个请求。** 真实复现：Claude Code 2.1.265+ 内置 Artifact 工具的 `field` 参数 pattern 同时含 `\p{Cc}` 这类 Unicode 属性转义和 `(?!__.*__$)` 负向前瞻，`collection` / `doc_id` 参数也各带一条 `(?!`；GPT 系上游用 RE2（从设计上不支持前瞻），多数厂商的 JSON Schema 校验器则把 `\p{...}` 判成 `is not a 'regex'`，于是上游在收到请求那一刻就拒收整个请求——Artifact 是默认自带工具，每一轮正常对话都失败。新增 `sanitizeSchemaPatterns()`：复用既有的 `walkSchema` 递归管线（不另写第二份遍历器），对含 `\p{` / `\P{` / `(?=` / `(?!` / `(?<=` / `(?<!` / `(?>` / `(?(` 的 `pattern` **整键删除**，`patternProperties` 的**键名**是正则、命中同样删掉整个条目；覆盖位置包括 `properties` / `patternProperties` / `$defs` / `definitions` / `items`（对象与 draft-07 数组两种写法）/ `prefixItems` / `oneOf` / `anyOf` / `allOf` / `if`-`then`-`else`-`not`，以及既有遍历器从不进入、但值同样是 schema 的 `additionalProperties` / `unevaluatedProperties` / `unevaluatedItems` / `propertyNames` / `contains` / `dependentSchemas` 条目（这些扩展位置只在清 pattern 时下钻、且下钻时不带 `additionalProperties` 注入，以免改变结构化输出的既有行为）。选择整键删除而非改写：`(?!__.*__$)` 在 RE2 里无法等价表达，而 `pattern` 只是校验约束、不是工具的功能定义，删掉不影响工具可用性；也**不按上游模型区分**（实测 claude-* / qwen3.8 / kimi-k3 本可通过）——清洗发生在路由之前、拿不到最终命中的上游（换号/降级都可能改），模型白名单必然过时，能保留的合法 `pattern` 仍然保留。三条协议的工具参数路径（Anthropic / OpenAI / Gemini）统一经 `normalizeSchema()` 接入。（`src/translation/shared-utils.ts`、`src/translation/tool-format.ts`）
 
 ## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
 

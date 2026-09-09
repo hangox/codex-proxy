@@ -103,7 +103,7 @@ function extractArchive(archive, destination) {
     "launcher = os.path.join(destination, 'codex-proxy.sh')",
     "if os.path.exists(launcher):",
     "    os.chmod(launcher, os.stat(launcher).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)",
-    "print(json.dumps([{'name': m.filename, 'mode': (m.external_attr >> 16) & 0o7777, 'size': m.file_size, 'isfile': not m.is_dir()} for m in infos]))",
+    "print(json.dumps([{'name': m.filename, 'mode': (m.external_attr >> 16) & 0o7777, 'size': m.file_size, 'packed': m.compress_size, 'method': m.compress_type, 'isfile': not m.is_dir()} for m in infos]))",
   ].join("\n");
   const result = runSync(python, ["-c", script, archive, destination], { timeout: 30_000 });
   if (result.error || result.status !== 0) {
@@ -183,6 +183,26 @@ function archiveContract(entries, extract, options) {
   assert(
     (shellEntry.mode & 0o777) === 0o755,
     "codex-proxy.sh must have mode 0755 in the archive (mode " + shellEntry.mode.toString(8) + ")",
+  );
+
+  // Every regular file must actually be deflated. A regression to ZIP_STORED
+  // (method 0) silently doubles the download size; directory entries stay
+  // stored because they hold no data.
+  const storedFiles = [...files.values()].filter((entry) => entry.method !== 8);
+  if (storedFiles.length > 0) {
+    const worst = [...files.values()].reduce((a, b) => (a.size > b.size ? a : b));
+    assert(false,
+      "Portable archive contains non-deflated file entries (method " +
+      storedFiles.map((entry) => entry.method).join(", ") + "); first offender: " +
+      storedFiles[0].name + "; largest entry " + worst.name + " packs " +
+      worst.packed + "/" + worst.size + " bytes");
+  }
+  const deflatedBytes = [...files.values()].reduce((sum, entry) => sum + entry.packed, 0);
+  const rawBytes = [...files.values()].reduce((sum, entry) => sum + entry.size, 0);
+  assert(
+    rawBytes === 0 || deflatedBytes / rawBytes < 0.95,
+    "Portable archive ratio " + (deflatedBytes / rawBytes).toFixed(3) +
+    " looks like an uncompressed archive; deflate -9 must be effective",
   );
 
   const manifest = JSON.parse(readFileSync(join(extract, "app", "manifest.json"), "utf8"));

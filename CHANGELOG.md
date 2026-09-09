@@ -8,7 +8,23 @@
 
 ## [Unreleased]
 
-> 暂无已记录的变更。
+### Added
+
+- API Keys 新增「备忘录」：保存第三方供应商的 API Key / Base URL / 协议 / 能力作为添加模板，模型清单随模板保存并可一键刷新；添加条目时点选备忘录即可预填表单并勾选模型（支持筛选），无需重复输入凭据，条目添加后与备忘录解耦（自持 key 快照，不影响现有路由与轮询）。提供「从现有条目生成备忘录」一键迁移（仅当存在未被覆盖的凭据组合时显示）。（`src/auth/api-key-memo-store.ts`、`src/routes/api-keys.ts`、`web/src/components/ApiKeyManager.tsx`、`shared/hooks/use-api-keys.ts`）
+
+- API Keys 添加面板支持每日后台自动刷新备忘录模型清单（串行、逐备忘录强制直连上游，不同 token 的模型列表差异不会被 URL 级缓存污染），可通过 `api_keys.memo_auto_refresh: false` 关闭。（`src/memo-model-refresher.ts`、`src/config-schema.ts`）
+
+### Changed
+
+- API Keys 第三方供应商模型列表缓存 TTL 从 7 天缩短至 1 小时；`POST /auth/api-keys/models` 新增 `force` 参数强制绕过缓存，响应新增 `fetchedAt` / `fromCache` / `stale` 字段；非强制刷新遇上游故障时降级返回过期缓存（`stale` 标记）而不是直接退回手动输入。（`src/auth/api-key-model-cache.ts`、`src/routes/api-keys.ts`）
+
+- API Keys 添加面板模型清单新增手动「刷新」按钮与模型筛选框，显示模型数量与更新时间；刷新失败时保留当前列表。（`web/src/components/ApiKeyManager.tsx`、`shared/hooks/use-api-keys.ts`）
+
+- API Keys 添加表单「供应商」标签更名为「供应商类型」；添加接口跳过已存在的（模型, key）组合并返回 `duplicates` 计数，同模型不同 key 仍允许添加以支持轮询。（`src/routes/api-keys.ts`、`shared/i18n/translations.ts`）
+
+### Fixed
+
+- 修复第三方供应商模型列表长期不更新导致新模型（如 gpt-6）最长 7 天不可见的问题：原缓存按 URL 共享、TTL 7 天且无任何刷新入口，现默认 1 小时 TTL 并提供手动强制刷新与每日自动刷新。（#802）
 
 ## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
 

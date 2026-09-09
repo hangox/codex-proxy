@@ -31,6 +31,7 @@ import { createResponsesRoutes } from "./routes/responses.js";
 import { ResponsesWebSocketServer } from "./routes/responses-websocket.js";
 import { createImagesRoutes } from "./routes/images.js";
 import { startUpdateChecker, stopUpdateChecker } from "./update-checker.js";
+import { startMemoModelRefresher } from "./memo-model-refresher.js";
 import { startProxyUpdateChecker, stopProxyUpdateChecker, setCloseHandler, getDeployMode } from "./self-update.js";
 import { initProxy } from "./tls/proxy.js";
 import { cleanupStaleLocks } from "./auth/refresh-lock.js";
@@ -50,6 +51,7 @@ import { ClientKeyPool } from "./auth/client-key-pool.js";
 import { FallbackUpstreamStore } from "./auth/fallback-upstream.js";
 import { createApiKeyRoutes } from "./routes/api-keys.js";
 import { ApiKeyModelCache } from "./auth/api-key-model-cache.js";
+import { ApiKeyMemoStore } from "./auth/api-key-memo-store.js";
 import { createEmbeddingsRoutes } from "./routes/embeddings.js";
 import { createRuntimeUpstreamRouter } from "./proxy/upstream-router-bootstrap.js";
 import { startOllamaBridge, stopOllamaBridge } from "./ollama/server.js";
@@ -170,6 +172,16 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const upstreamRouter = createRuntimeUpstreamRouter(adapters, cfg.model_routing, apiKeyPool);
   if (hasApiKeys) console.log(`[Init] API key pool: ${apiKeyPool.getAll().length} key(s) loaded`);
 
+  // Daily memo model-list refresher (opt-out via local.yaml: api_keys.memo_auto_refresh: false)
+  const apiKeyModelCache = new ApiKeyModelCache();
+  const memoStore = new ApiKeyMemoStore();
+  let stopMemoModelRefresher: (() => void) | null = null;
+  if (cfg.api_keys?.memo_auto_refresh !== false) {
+    stopMemoModelRefresher = startMemoModelRefresher(memoStore, apiKeyModelCache);
+    const memoCount = memoStore.list().length;
+    if (memoCount > 0) console.log(`[Init] Memo model refresher: daily cycle for ${memoCount} memo(s)`);
+  }
+
   // Initialize Client Key pool for distribution
   const clientKeyPool = new ClientKeyPool(
     undefined,
@@ -177,9 +189,6 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   );
   const hasClientKeys = clientKeyPool.getAll().length > 0;
   if (hasClientKeys) console.log(`[Init] Client key pool: ${clientKeyPool.getAll().length} key(s) loaded`);
-
-  // Create a single model cache instance shared across all routes.
-  const apiKeyModelCache = new ApiKeyModelCache();
 
   // Last-resort upstream apikey (single, Responses API wire). Used only when
   // every OAuth account is unavailable.
@@ -193,7 +202,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
   const geminiRoutes = createGeminiRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool, fallbackUpstreamStore);
   const responsesRoutes = createResponsesRoutes(accountPool, cookieJar, proxyPool, upstreamRouter, clientKeyPool, fallbackUpstreamStore);
   const imagesRoutes = createImagesRoutes(accountPool, cookieJar, proxyPool, clientKeyPool);
-  const apiKeyRoutes = createApiKeyRoutes(apiKeyPool, apiKeyModelCache);
+  const apiKeyRoutes = createApiKeyRoutes(apiKeyPool, apiKeyModelCache, memoStore);
   const embeddingsRoutes = createEmbeddingsRoutes(accountPool, apiKeyPool, clientKeyPool);
   const proxyRoutes = createProxyRoutes(proxyPool, accountPool);
   const usageStats = new UsageStatsStore();
@@ -304,6 +313,7 @@ export async function startServer(options?: StartOptions): Promise<ServerHandle>
     return new Promise((resolve) => {
       server.close(() => {
         stopUpdateChecker();
+        stopMemoModelRefresher?.();
         stopProxyUpdateChecker();
         stopModelRefresh();
         stopQuotaRefresh();

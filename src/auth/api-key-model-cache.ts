@@ -5,7 +5,7 @@ import { PROVIDER_CATALOG, isBuiltinProvider } from "./api-key-catalog.js";
 import type { ApiKeyWire } from "./api-key-pool.js";
 import type { ApiKeyProvider, BuiltinProvider, CatalogModel, ProviderMeta } from "./api-key-catalog.js";
 
-export const MODEL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — provider model lists change frequently
+export const MODEL_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour — providers add models often; a force refresh is always available
 
 export interface ApiKeyModelCacheEntry {
   url: string;
@@ -27,6 +27,17 @@ export interface FetchProviderModelsInput {
   apiKey: string;
   baseUrl?: string;
   wire?: ApiKeyWire;
+  /** Bypass the TTL cache and always hit the provider. */
+  force?: boolean;
+}
+
+export interface FetchProviderModelsResult {
+  models: CatalogModel[];
+  fetchedAt: string;
+  /** Result came from cache rather than a fresh provider response. */
+  fromCache: boolean;
+  /** Fresh fetch failed; models come from an expired cache entry. */
+  stale: boolean;
 }
 
 interface ModelRequest {
@@ -99,32 +110,40 @@ export class ApiKeyModelCache {
       const meta = PROVIDER_CATALOG[provider];
       catalog[provider] = {
         ...meta,
-        models: this.getCachedModelsByUrlFromCache(cache, BUILTIN_MODEL_URLS[provider]) ?? meta.models,
+        models: this.getFreshEntryFromCache(cache, BUILTIN_MODEL_URLS[provider])?.models ?? meta.models,
       };
     }
     return catalog;
   }
 
   getCachedModelsByUrl(url: string): CatalogModel[] | null {
-    return this.getCachedModelsByUrlFromCache(this.persistence.load(), url);
+    return this.getFreshEntryFromCache(this.persistence.load(), url)?.models ?? null;
   }
 
-  private getCachedModelsByUrlFromCache(cache: ApiKeyModelCacheFile, url: string): CatalogModel[] | null {
+  private getFreshEntryFromCache(cache: ApiKeyModelCacheFile, url: string): ApiKeyModelCacheEntry | null {
     const entry = cache.entries[url];
     if (!entry) return null;
     const fetchedAt = Date.parse(entry.fetchedAt);
     if (!Number.isFinite(fetchedAt)) return null;
     if (this.now().getTime() - fetchedAt >= MODEL_CACHE_TTL_MS) return null;
-    return entry.models;
+    return entry;
   }
 
-  async fetchModels(input: FetchProviderModelsInput): Promise<CatalogModel[]> {
+  private getStaleEntryFromCache(cache: ApiKeyModelCacheFile, url: string): ApiKeyModelCacheEntry | null {
+    const entry = cache.entries[url];
+    if (!entry || !Number.isFinite(Date.parse(entry.fetchedAt))) return null;
+    return entry;
+  }
+
+  async fetchModels(input: FetchProviderModelsInput): Promise<FetchProviderModelsResult> {
     const request = buildModelRequest(input);
-    // Load once — reuse for both cache-hit check and write-back to avoid
+    // Load once — reuse for cache-hit check and write-back to avoid
     // two separate disk reads per request.
     const cache = this.persistence.load();
-    const cached = this.getCachedModelsByUrlFromCache(cache, request.cacheUrl);
-    if (cached) return cached;
+    if (!input.force) {
+      const cached = this.getFreshEntryFromCache(cache, request.cacheUrl);
+      if (cached) return { models: cached.models, fetchedAt: cached.fetchedAt, fromCache: true, stale: false };
+    }
 
     let response: Response;
     try {
@@ -132,6 +151,8 @@ export class ApiKeyModelCache {
         headers: request.headers,
       });
     } catch (err) {
+      const stale = this.getStaleEntryFromCache(cache, request.cacheUrl);
+      if (stale && !input.force) return { models: stale.models, fetchedAt: stale.fetchedAt, fromCache: true, stale: true };
       throw new ProviderModelFetchError("network", `Failed to reach provider: ${err instanceof Error ? err.message : String(err)}`);
     }
 
@@ -139,6 +160,8 @@ export class ApiKeyModelCache {
       throw new ProviderModelFetchError("unauthorized", "Failed to fetch models: unauthorized");
     }
     if (!response.ok) {
+      const stale = this.getStaleEntryFromCache(cache, request.cacheUrl);
+      if (stale && !input.force) return { models: stale.models, fetchedAt: stale.fetchedAt, fromCache: true, stale: true };
       throw new ProviderModelFetchError("provider", "Failed to fetch models from provider");
     }
 
@@ -148,13 +171,14 @@ export class ApiKeyModelCache {
       throw new ProviderModelFetchError("empty", "Provider returned no models");
     }
 
+    const fetchedAt = this.now().toISOString();
     cache.entries[request.cacheUrl] = {
       url: request.cacheUrl,
       models,
-      fetchedAt: this.now().toISOString(),
+      fetchedAt,
     };
     this.persistence.save(cache);
-    return models;
+    return { models, fetchedAt, fromCache: false, stale: false };
   }
 }
 

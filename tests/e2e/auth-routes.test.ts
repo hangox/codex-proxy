@@ -10,6 +10,7 @@ import "@helpers/e2e-setup.js";
 import { createValidJwt, createExpiredJwt } from "@helpers/jwt.js";
 
 import { Hono } from "hono";
+import { getConfig } from "@src/config.js";
 import { requestId } from "@src/middleware/request-id.js";
 import { errorHandler } from "@src/middleware/error-handler.js";
 import { createAuthRoutes } from "@src/routes/auth.js";
@@ -37,6 +38,7 @@ afterAll(() => {
 
 beforeEach(() => {
   pool.clearToken();
+  getConfig().server.proxy_api_key = null;
 });
 
 // ── GET /auth/status ─────────────────────────────────────────────
@@ -88,6 +90,19 @@ describe("GET /auth/status", () => {
     expect(body.pool).toHaveProperty("active");
     expect(body.pool).toHaveProperty("expired");
     expect(body.pool).toHaveProperty("rate_limited");
+  });
+
+  it("exposes the configured master proxy_api_key even without an OAuth session", async () => {
+    getConfig().server.proxy_api_key = "master-secret";
+
+    const res = await app.request("/auth/status");
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      authenticated: boolean;
+      proxy_api_key: string | null;
+    };
+    expect(body.authenticated).toBe(false);
+    expect(body.proxy_api_key).toBe("master-secret");
   });
 });
 

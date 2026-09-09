@@ -29,6 +29,7 @@ import {
   isPromptTooLongLike,
   promptTooLongStatus,
 } from "./prompt-too-long-error.js";
+import { classifyRawUpstreamError } from "./error-classification.js";
 
 export type { WsPoolContext };
 import { parseSSEBlock, parseSSEStream } from "./codex-sse.js";
@@ -650,11 +651,26 @@ export class CodexApi {
       }
       const errorBody = Buffer.concat(chunks).toString("utf-8");
       const promptTooLong = isPromptTooLongLike(errorBody);
-      throw new CodexApiError(
-        promptTooLong ? promptTooLongStatus(transportRes.status) : transportRes.status,
-        promptTooLong ? buildPromptTooLongErrorBody(errorBody) : errorBody,
-        { headers: transportRes.headers },
+      if (promptTooLong) {
+        throw new CodexApiError(
+          promptTooLongStatus(transportRes.status),
+          buildPromptTooLongErrorBody(errorBody),
+          { headers: transportRes.headers },
+        );
+      }
+      // 上游有时把「客户端请求内容确定性有误」（比如工具 JSON Schema 用了
+      // 它的校验器不认的正则语法）报成 5xx——同一个请求重发多少次都是同一
+      // 个结果，不是传输抖动，见 classifyRawUpstreamError 的注释。这里原样
+      // 透传状态码之前先过一遍这层分类，命中时改成 400 + 不可重试，不影响
+      // 真正的传输层 5xx。
+      const { status: reclassifiedStatus, retryable } = classifyRawUpstreamError(
+        transportRes.status,
+        errorBody,
       );
+      throw new CodexApiError(reclassifiedStatus, errorBody, {
+        headers: transportRes.headers,
+        retryable,
+      });
     }
 
     return new Response(transportRes.body, {

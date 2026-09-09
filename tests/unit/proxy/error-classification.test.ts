@@ -1,15 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { CodexApiError } from "@src/proxy/codex-types.js";
 import {
+  classifyRawUpstreamError,
   extractRetryAfterSec,
   isBanError,
   isCfChallengeError,
   isCfPathBlockError,
+  isDeterministicSchemaOrParamErrorBody,
   isQuotaExhaustedError,
   isServerOverloadedError,
   isTokenInvalidError,
   isModelNotSupportedError,
   isUnansweredFunctionCallError,
+  ROTATABLE_WS_ERROR_CODES,
 } from "@src/proxy/error-classification.js";
 
 describe("extractRetryAfterSec", () => {
@@ -201,6 +204,54 @@ describe("isUnansweredFunctionCallError", () => {
   it("returns false for non-CodexApiError", () => {
     expect(isUnansweredFunctionCallError(new Error("No tool output found"))).toBe(false);
     expect(isUnansweredFunctionCallError(null)).toBe(false);
+  });
+});
+
+describe("isDeterministicSchemaOrParamErrorBody", () => {
+  it("matches the real production string (Artifact tool doc_id regex rejected by upstream)", () => {
+    const body = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    expect(isDeterministicSchemaOrParamErrorBody(body)).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isDeterministicSchemaOrParamErrorBody("INVALID SCHEMA FOR FUNCTION 'x'")).toBe(true);
+  });
+
+  it("does not match an unrelated 5xx body (empty / generic gateway text)", () => {
+    expect(isDeterministicSchemaOrParamErrorBody("")).toBe(false);
+    expect(isDeterministicSchemaOrParamErrorBody("Bad Gateway")).toBe(false);
+    expect(isDeterministicSchemaOrParamErrorBody("<html><body>502 Bad Gateway</body></html>")).toBe(false);
+  });
+});
+
+describe("classifyRawUpstreamError", () => {
+  it("reclassifies a schema-error 502 to 400 + retryable: false", () => {
+    const body = "Invalid schema for function 'Artifact': '...' is not a 'regex'.";
+    expect(classifyRawUpstreamError(502, body)).toEqual({ status: 400, retryable: false });
+  });
+
+  it("leaves an ordinary transport 5xx untouched (status kept, retryable left undefined)", () => {
+    expect(classifyRawUpstreamError(502, "Bad Gateway")).toEqual({ status: 502 });
+    expect(classifyRawUpstreamError(503, "")).toEqual({ status: 503 });
+  });
+
+  it("leaves non-5xx statuses untouched even without matching text", () => {
+    expect(classifyRawUpstreamError(401, "Unauthorized")).toEqual({ status: 401 });
+  });
+});
+
+describe("ROTATABLE_WS_ERROR_CODES", () => {
+  it("carries both files' previously-diverged entries after the merge", () => {
+    // ws-transport.ts 独有过的 502 分支
+    expect(ROTATABLE_WS_ERROR_CODES.server_error).toBe(502);
+    expect(ROTATABLE_WS_ERROR_CODES.internal_error).toBe(502);
+    expect(ROTATABLE_WS_ERROR_CODES.internal_server_error).toBe(502);
+    // ws-pool.ts 独有过的 503 分支
+    expect(ROTATABLE_WS_ERROR_CODES.websocket_connection_limit_reached).toBe(503);
+    // 两边共有的分支照常保留
+    expect(ROTATABLE_WS_ERROR_CODES.usage_limit_reached).toBe(429);
+    expect(ROTATABLE_WS_ERROR_CODES.server_is_overloaded).toBe(503);
   });
 });
 

@@ -18,6 +18,7 @@ import { randomUUID } from "crypto";
 import type { UpstreamAdapter } from "./upstream-adapter.js";
 import type { CodexResponsesRequest, CodexSSEEvent } from "./codex-types.js";
 import { CodexApiError } from "./codex-types.js";
+import { classifyRawUpstreamError } from "./error-classification.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { translateCodexToAnthropicRequest } from "../translation/codex-request-to-anthropic.js";
 import { withFetchDispatcher } from "./fetch-dispatcher.js";
@@ -59,7 +60,11 @@ export class AnthropicUpstream implements UpstreamAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-      throw new CodexApiError(response.status, errorText, response.headers);
+      // 同一类「客户端请求内容确定性有误」错误上游偶尔也会报成 5xx，见
+      // classifyRawUpstreamError 的注释——命中时改成 400 + 不可重试，不影响
+      // 真正的传输层 5xx。
+      const { status, retryable } = classifyRawUpstreamError(response.status, errorText);
+      throw new CodexApiError(status, errorText, { headers: response.headers, retryable });
     }
 
     return response;

@@ -107,11 +107,13 @@ jobs:
             exit 0
           fi
 
-          # Tag-only: do NOT commit package.json onto master. The release
-          # version is read from the tag (release.yml extraMetadata.version),
-          # and a version-bump commit on master cannot FF back to an
-          # always-ahead dev — that drift is what kept breaking promote and
-          # made package.json regress on the next dev→master reconcile.
+          # Tag-only on master: the release version is read from the tag
+          # (release.yml extraMetadata.version). We deliberately do NOT commit
+          # package.json onto master — a version-bump commit there would break
+          # the dev→master fast-forward promote precondition (master would get
+          # a commit dev lacks). Instead, the version is written back to dev in
+          # the "Sync version to dev" step below, so dev always stays ahead of
+          # master by that version-sync commit and promote keeps its FF.
           # major.minor (series) is maintained by developers on dev and flows
           # in via promote; patch is owned entirely by the tag. This mirrors
           # bump-electron-beta.yml, which has always been tag-only.
@@ -149,3 +151,46 @@ jobs:
         # tag input → docker-publish builds FROM the tag and also publishes
         # the ghcr.io vX.Y.Z version image (branch pushes are latest-only).
         run: gh workflow run docker-publish.yml --ref master -f tag="$NEW_TAG"
+
+      - name: Sync version to dev (after new stable tag)
+        # Only runs when a new tag was actually created. The version is written
+        # back to dev (not master): master's package.json always flows up from
+        # dev via promote ff, so a direct master commit would break that FF.
+        # Dev stays ahead of master by this version-sync commit instead.
+        if: steps.bump.outputs.new_tag != ''
+        env:
+          NEW_TAG: ${{ steps.bump.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+          NEW_VERSION="${NEW_TAG#v}"
+
+          # checkout by default only carries master history — fetch dev explicitly.
+          git fetch origin dev:refs/remotes/origin/dev
+          git switch --detach origin/dev
+
+          node .github/scripts/sync-package-version.mjs "$NEW_VERSION"
+
+          if git diff --quiet -- package.json package-lock.json; then
+            echo "dev 上 package.json 已是 $NEW_VERSION，无需提交"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore(version): sync package.json version to $NEW_VERSION [skip ci]"
+
+          # Concurrent dev pushes may make this a non-ff push — retry with
+          # rebase. If it still fails, warn only (do not block the release we
+          # already dispatched): the next stable release will re-sync at a
+          # higher patch and self-heal.
+          for i in 1 2 3; do
+            if git push -q origin HEAD:dev; then
+              echo "已把 package.json 同步到 $NEW_VERSION 提交到 dev"
+              exit 0
+            fi
+            echo "dev push 失败 (第 $i/3 次)，fetch+rebase 后重试..."
+            git fetch origin dev:refs/remotes/origin/dev
+            git rebase origin/dev
+          done
+          echo "::warning::3 次尝试后仍无法把版本同步推送到 dev（下次发版会补上）"

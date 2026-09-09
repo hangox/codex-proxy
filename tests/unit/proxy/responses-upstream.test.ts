@@ -125,6 +125,40 @@ describe("ResponsesUpstream", () => {
       .rejects.toBeInstanceOf(CodexApiError);
   });
 
+  it("reclassifies a deterministic tool-schema error reported as 502 to 400 + non-retryable", async () => {
+    const body = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 502 })));
+    const upstream = new ResponsesUpstream("openai", "sk", "https://api.openai.com/v1");
+
+    let caught: unknown;
+    try {
+      await upstream.createResponse(baseRequest(), new AbortController().signal);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CodexApiError);
+    const err = caught as CodexApiError;
+    expect(err.status).toBe(400);
+    expect(err.retryable).toBe(false);
+  });
+
+  it("does not reclassify an ordinary transport 502 (no schema-error text)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("Bad Gateway", { status: 502 })));
+    const upstream = new ResponsesUpstream("openai", "sk", "https://api.openai.com/v1");
+
+    let caught: unknown;
+    try {
+      await upstream.createResponse(baseRequest(), new AbortController().signal);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CodexApiError);
+    const err = caught as CodexApiError;
+    expect(err.status).toBe(502);
+    expect(err.retryable).toBeUndefined();
+  });
+
   it("passes native Responses SSE through as CodexSSEEvent", async () => {
     const sse = [
       'event: response.created',

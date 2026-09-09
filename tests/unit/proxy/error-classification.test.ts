@@ -12,6 +12,7 @@ import {
   isTokenInvalidError,
   isModelNotSupportedError,
   isUnansweredFunctionCallError,
+  ROTATABLE_WS_ERROR_CODES,
 } from "@src/proxy/error-classification.js";
 
 describe("extractRetryAfterSec", () => {
@@ -237,6 +238,20 @@ describe("classifyRawUpstreamError", () => {
 
   it("leaves non-5xx statuses untouched even without matching text", () => {
     expect(classifyRawUpstreamError(401, "Unauthorized")).toEqual({ status: 401 });
+  });
+});
+
+describe("ROTATABLE_WS_ERROR_CODES", () => {
+  it("carries both files' previously-diverged entries after the merge", () => {
+    // ws-transport.ts 独有过的 502 分支
+    expect(ROTATABLE_WS_ERROR_CODES.server_error).toBe(502);
+    expect(ROTATABLE_WS_ERROR_CODES.internal_error).toBe(502);
+    expect(ROTATABLE_WS_ERROR_CODES.internal_server_error).toBe(502);
+    // ws-pool.ts 独有过的 503 分支
+    expect(ROTATABLE_WS_ERROR_CODES.websocket_connection_limit_reached).toBe(503);
+    // 两边共有的分支照常保留
+    expect(ROTATABLE_WS_ERROR_CODES.usage_limit_reached).toBe(429);
+    expect(ROTATABLE_WS_ERROR_CODES.server_is_overloaded).toBe(503);
   });
 });
 

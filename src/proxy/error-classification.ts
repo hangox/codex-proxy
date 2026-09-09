@@ -157,6 +157,61 @@ export function isCfPathBlockError(err: unknown): boolean {
   return err.body.trim().length === 0;
 }
 
+/**
+ * Upstream WS terminal-error `code` → HTTP-equivalent status allowlist.
+ *
+ * Shared by ws-transport.ts（一次性 / 不入池的 WS）和 ws-pool.ts（复用连接
+ * 池的 WS）——两条路径需要对同一批上游 code 是否安全轮换/重试达成一致。
+ * 此前这两个文件各自维护一份，ws-pool.ts 里甚至专门写了注释"Same allowlist
+ * as ws-transport.ts. Duplicated here intentionally"，但两份表实际已经
+ * 各自漂移：ws-transport.ts 独有 `server_error`/`internal_error`/
+ * `internal_server_error`（502）三个分支，ws-pool.ts 独有
+ * `websocket_connection_limit_reached`（503）——不是有意为之的差异，就是
+ * 改一处忘了改另一处。
+ *
+ * 两个文件之间没有真正的循环依赖或运行上下文隔离约束（ws-pool.ts 只是
+ * `import type` 了 ws-transport.ts 的类型，ws-transport.ts 反过来 import
+ * 了 ws-pool.ts 的值——类型导入在编译期会被完全擦除，不构成运行时环，两边
+ * 都能安全依赖这个模块），所以直接抽到这里统一维护，不再要求"改一处记得
+ * 改另一处"。
+ *
+ * Exact-match only: a substring rule like `includes("rate_limit")` would
+ * also match codes such as `soft_rate_limit_warning` and incorrectly
+ * trigger account rotation. Unlisted codes fall through and keep streaming
+ * as SSE — the safer default, and downstream `codexApiErrorFromEvent` still
+ * gets a chance to classify them from the message text.
+ */
+export const ROTATABLE_WS_ERROR_CODES: Readonly<Record<string, number>> = {
+  // 429 — weekly/primary cap
+  usage_limit_reached: 429,
+  rate_limit_exceeded: 429,
+  rate_limit_reached: 429,
+  // 402 — plan/credit exhausted
+  quota_exhausted: 402,
+  payment_required: 402,
+  // 401 — credential rejected upstream
+  unauthorized: 401,
+  token_invalid: 401,
+  token_expired: 401,
+  account_deactivated: 401,
+  // 403 — account banned
+  forbidden: 403,
+  account_banned: 403,
+  banned: 403,
+  // 400 — stale previous_response_id (account doesn't recognise it; let
+  // proxy-handler strip the ID and retry on the same account)
+  previous_response_not_found: 400,
+  context_length_exceeded: 400,
+  // 502 — upstream transient server failures. Retryable through the
+  // existing proxy-handler flow.
+  server_error: 502,
+  internal_error: 502,
+  internal_server_error: 502,
+  // 503 — transient upstream capacity/connection errors
+  server_is_overloaded: 503,
+  websocket_connection_limit_reached: 503,
+};
+
 /** Check if a CodexApiError indicates the model is not supported on the account's plan. */
 export function isModelNotSupportedError(err: CodexLikeError): boolean {
   if (err.status < 400 || err.status >= 500 || err.status === 429) return false;

@@ -22,7 +22,11 @@ import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
 import { CodexApiError, PreviousResponseWebSocketError, type WebSocketFailurePhase } from "./codex-types.js";
 import { resolveEffectiveProxyUrl } from "../tls/proxy.js";
-import { isPreviousResponseNotFoundError } from "./error-classification.js";
+import {
+  classifyRawUpstreamError,
+  isPreviousResponseNotFoundError,
+  ROTATABLE_WS_ERROR_CODES,
+} from "./error-classification.js";
 import {
   DEFAULT_WS_RESPONSE_START_TIMEOUT_MS,
   PersistentWs,
@@ -40,42 +44,12 @@ import {
  * errors, validation errors, etc.) — those keep the SSE pass-through
  * behavior so the client sees the real reason.
  *
- * Why exact-match: a substring rule like `includes("rate_limit")` would
- * also match codes such as `soft_rate_limit_warning` and incorrectly
- * trigger account rotation. We allowlist concrete codes and fall through
- * for everything else (unknown codes stream as SSE — safer default).
+ * The exact-match code table (`ROTATABLE_WS_ERROR_CODES`, shared with
+ * ws-pool.ts) is an intentionally curated allowlist — see its own comment
+ * for why (a substring rule like `includes("rate_limit")` would also match
+ * `soft_rate_limit_warning` and incorrectly trigger account rotation).
  */
-const ROTATABLE_ERROR_CODES: Readonly<Record<string, number>> = {
-  // 429 — weekly/primary cap
-  usage_limit_reached: 429,
-  rate_limit_exceeded: 429,
-  rate_limit_reached: 429,
-  // 402 — plan/credit exhausted
-  quota_exhausted: 402,
-  payment_required: 402,
-  // 401 — credential rejected upstream
-  unauthorized: 401,
-  token_invalid: 401,
-  token_expired: 401,
-  account_deactivated: 401,
-  // 403 — account banned
-  forbidden: 403,
-  account_banned: 403,
-  banned: 403,
-  // 400 — stale previous_response_id (account doesn't recognise it; let
-  // proxy-handler strip the ID and retry on the same account)
-  previous_response_not_found: 400,
-  context_length_exceeded: 400,
-  // 502 — upstream transient server failures. These are retryable through the
-  // existing proxy-handler flow.
-  server_error: 502,
-  internal_error: 502,
-  internal_server_error: 502,
-  // 503 — transient upstream capacity error
-  server_is_overloaded: 503,
-};
-
-function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } | null {
+function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number; retryable?: boolean } | null {
   const type = typeof msg.type === "string" ? msg.type : "";
   if (type !== "error" && type !== "response.failed") return null;
   const errorObj = typeof msg.error === "object" && msg.error !== null
@@ -91,7 +65,7 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } 
   const message = typeof messageRaw === "string" ? messageRaw : JSON.stringify(errorObj);
   const lowerMessage = message.toLowerCase();
 
-  const status = ROTATABLE_ERROR_CODES[lowerCode];
+  const status = ROTATABLE_WS_ERROR_CODES[lowerCode];
   if (status) return { status };
 
   if (lowerMessage.includes("no tool output found for function call")) {
@@ -102,6 +76,19 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number } 
     lowerMessage.includes("server_error") ||
     lowerMessage.includes("internal server error")
   ) {
+    // 这两条文案子串不算罕见，可能会撞上一个「客户端请求内容确定性有误」
+    // 的错误（比如工具 schema 校验失败）——上游报出来的措辞恰好带着
+    // "server_error"/"internal server error" 字样。在提前判成可重试 502
+    // 之前，先过一遍 classifyRawUpstreamError 对同一份文本做兜底分类：
+    // 命中确定性错误特征就按它的结果来（400 + 不可重试），不命中才落回
+    // 原来的 502。不这么做的话，这里会在 earlyDecisionMade 之前就绕开
+    // codexApiErrorFromEvent 那整套防线，复现同一类无限重试卡死——只是
+    // 换了个触发条件（QA 复现过的 invalid_function_parameters 那次就是
+    // 从这条路径漏过去的姊妹场景）。
+    const classification = classifyRawUpstreamError(502, message);
+    if (classification.retryable === false) {
+      return { status: classification.status, retryable: false };
+    }
     return { status: 502 };
   }
 
@@ -580,7 +567,7 @@ async function openOneShotWs(
           if (classified) {
             cleanupTimers();
             earlyDecisionMade = true;
-            reject(new CodexApiError(classified.status, JSON.stringify(msg)));
+            reject(new CodexApiError(classified.status, JSON.stringify(msg), { retryable: classified.retryable }));
             closeWs(1000, "early upstream error", true);
             return;
           }

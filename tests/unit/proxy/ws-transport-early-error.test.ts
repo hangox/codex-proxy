@@ -118,6 +118,11 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
       // The body must contain the upstream `error` block so that
       // `extractRetryAfterSec` can read `resets_in_seconds` for backoff.
       expect(extractRetryAfterSec(apiErr.body)).toBe(60);
+      // 回归防护：ROTATABLE_WS_ERROR_CODES 命中的分支是既有的可重试白名单，
+      // 迁到共享表之后这条分支本身不应该被动——retryable 必须还是
+      // undefined（沿用 withRetry 按状态码判定的老行为），不能被误伤成
+      // 不可重试。
+      expect(apiErr.retryable).toBeUndefined();
     }
   });
 
@@ -209,6 +214,63 @@ describe("createWebSocketResponse — early-stream error rejection", () => {
       const apiErr = err as CodexApiError;
       expect(apiErr.status).toBe(502);
       expect(apiErr.body).toContain("req_123");
+      // 回归防护：普通的 server_error 文案不含确定性 schema 错误特征，
+      // classifyRawUpstreamError 兜底分类不应该介入——沿用老的按状态码
+      // 判定的可重试行为，不能被这次改动误伤成不可重试。
+      expect(apiErr.retryable).toBeUndefined();
+    }
+  });
+
+  it("reclassifies a server_error-worded message that is actually a deterministic schema error to 400 + non-retryable", async () => {
+    // 真实生产/QA 复现场景的姊妹用例：上游把「客户端请求内容确定性有误」的
+    // 错误（工具 schema 校验失败）报出来时，message 文案里恰好带着
+    // "server_error" 字样（这条子串本身不罕见），此前会被这条兜底规则
+    // 直接判成可重试 502，在 earlyDecisionMade 之前就绕开
+    // codexApiErrorFromEvent 那整套防线，复现同一类无限重试卡死。
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: {
+        type: "server_error",
+        code: "invalid_function_parameters",
+        message: "server_error: Invalid schema for function 'Artifact': "
+          + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.",
+      },
+    }));
+
+    try {
+      await promise;
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexApiError);
+      const apiErr = err as CodexApiError;
+      expect(apiErr.status).toBe(400);
+      expect(apiErr.retryable).toBe(false);
+    }
+  });
+
+  it("recognizes websocket_connection_limit_reached early (shared table with ws-pool.ts) as CodexApiError(503)", async () => {
+    // ws-pool.ts 已经识别这个 code 并在早期决定时触发连接淘汰；这里验证共享表
+    // 合并之后 ws-transport.ts（一次性/不入池连接）也能一致识别，不再兜底
+    // 落到默认的 502。
+    const promise = createWebSocketResponse("wss://test/ws", {}, BASE_REQUEST);
+    promise.catch(() => { /* asserted below */ });
+    const ws = await waitForOpen();
+
+    ws.emit("message", JSON.stringify({
+      type: "error",
+      error: { code: "websocket_connection_limit_reached", message: "60 min limit" },
+    }));
+
+    try {
+      await promise;
+      throw new Error("expected rejection");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect((err as CodexApiError).status).toBe(503);
     }
   });
 

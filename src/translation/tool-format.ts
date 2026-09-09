@@ -8,18 +8,41 @@
 import type { ChatCompletionRequest } from "../types/openai.js";
 import type { AnthropicMessagesRequest } from "../types/anthropic.js";
 import type { GeminiGenerateContentRequest } from "../types/gemini.js";
-import { isRecord } from "./shared-utils.js";
+import { isRecord, sanitizeSchemaPatterns } from "./shared-utils.js";
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-/** OpenAI requires `properties` when schema `type` is `"object"`. */
-function normalizeSchema(
+/**
+ * OpenAI requires `properties` when schema `type` is `"object"`.
+ *
+ * 只在缺 `properties` 时补一个空对象，不做任何其他变换。
+ */
+function ensureObjectProperties(
   schema: Record<string, unknown>,
 ): Record<string, unknown> {
   if (schema.type === "object" && !("properties" in schema)) {
     return { ...schema, properties: {} };
   }
   return schema;
+}
+
+/**
+ * 工具参数 schema 的归一化，三条协议（Anthropic / OpenAI / Gemini）的工具
+ * 参数都只经过这里：
+ *
+ * 1. 清掉上游正则引擎编译不了的正则约束（见 `sanitizeSchemaPatterns` 的说明
+ *    ——Claude Code 内置 Artifact 工具的 pattern 会让上游在提交那一刻拒收
+ *    整个请求）；
+ * 2. 补上 OpenAI 要求的 `properties`。
+ *
+ * 刻意**不**注入 `additionalProperties`、也不做 tuple 转换——那是
+ * `prepareSchema()` 的职责，目前只用在结构化输出 schema（`text.format`）上。
+ * 把那些行为顺手带进工具参数路径会改变既有输出。
+ */
+function normalizeSchema(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  return ensureObjectProperties(sanitizeSchemaPatterns(schema));
 }
 
 // ── Codex Responses API tool format ─────────────────────────────

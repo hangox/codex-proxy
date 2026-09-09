@@ -29,37 +29,43 @@ vi.mock("@src/paths.js", () => ({
 const REASONING_EFFORT_RANK: Record<string, number> = {
   none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6, ultra: 7,
 };
-vi.mock("@src/translation/shared-utils.js", () => ({
-  buildInstructions: vi.fn((text: string) => text),
-  isRecord: (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value),
-  budgetToEffort: vi.fn((budget: number | undefined) => {
-    if (!budget || budget <= 0) return undefined;
-    if (budget < 2000) return "low";
-    if (budget < 8000) return "medium";
-    if (budget < 20000) return "high";
-    return "xhigh";
-  }),
-  isRecognizedReasoningEffort: vi.fn((effort: string) => Object.hasOwn(REASONING_EFFORT_RANK, effort)),
-  // ★ 8.16：钳到"最接近"的支持档位，不是永远钳到最高——8.15 那版"永远
-  // 钳到最高"的方向性错误已经修掉，mock 必须跟着换，否则这里的测试会
-  // 继续验证一个已经被证明是错的行为。
-  clampReasoningEffortToModel: vi.fn(
-    (effort: string, modelInfo: { supportedReasoningEfforts?: { reasoningEffort: string }[] } | undefined) => {
-      const supported = (modelInfo?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
-      if (supported.length === 0 || supported.includes(effort)) {
-        return { effort, clamped: false, supported };
-      }
-      const rankOf = (e: string) => REASONING_EFFORT_RANK[e] ?? -1;
-      const requestedRank = rankOf(effort);
-      const nearest = [...supported].sort((a, b) => {
-        const d = Math.abs(rankOf(a) - requestedRank) - Math.abs(rankOf(b) - requestedRank);
-        return d !== 0 ? d : rankOf(a) - rankOf(b);
-      })[0];
-      return { effort: nearest ?? effort, clamped: true, supported };
-    },
-  ),
-}));
+vi.mock("@src/translation/shared-utils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@src/translation/shared-utils.js")>();
+  return {
+    // 只 mock 这个文件里会被断言到的翻译/钳制函数；schema 清洗（上游正则兼容）
+    // 用真实实现，避免 mock 里再维护一份会漂移的规则。
+    sanitizeSchemaPatterns: actual.sanitizeSchemaPatterns,
+    buildInstructions: vi.fn((text: string) => text),
+    isRecord: (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value),
+    budgetToEffort: vi.fn((budget: number | undefined) => {
+      if (!budget || budget <= 0) return undefined;
+      if (budget < 2000) return "low";
+      if (budget < 8000) return "medium";
+      if (budget < 20000) return "high";
+      return "xhigh";
+    }),
+    isRecognizedReasoningEffort: vi.fn((effort: string) => Object.hasOwn(REASONING_EFFORT_RANK, effort)),
+    // ★ 8.16：钳到"最接近"的支持档位，不是永远钳到最高——8.15 那版"永远
+    // 钳到最高"的方向性错误已经修掉，mock 必须跟着换，否则这里的测试会
+    // 继续验证一个已经被证明是错的行为。
+    clampReasoningEffortToModel: vi.fn(
+      (effort: string, modelInfo: { supportedReasoningEfforts?: { reasoningEffort: string }[] } | undefined) => {
+        const supported = (modelInfo?.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort);
+        if (supported.length === 0 || supported.includes(effort)) {
+          return { effort, clamped: false, supported };
+        }
+        const rankOf = (e: string) => REASONING_EFFORT_RANK[e] ?? -1;
+        const requestedRank = rankOf(effort);
+        const nearest = [...supported].sort((a, b) => {
+          const d = Math.abs(rankOf(a) - requestedRank) - Math.abs(rankOf(b) - requestedRank);
+          return d !== 0 ? d : rankOf(a) - rankOf(b);
+        })[0];
+        return { effort: nearest ?? effort, clamped: true, supported };
+      },
+    ),
+  };
+});
 
 vi.mock("@src/translation/tool-format.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@src/translation/tool-format.js")>();

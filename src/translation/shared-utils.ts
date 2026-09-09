@@ -458,43 +458,46 @@ function walkSchema(
   }
 
   // 下钻既有遍历器从不进入、但值同样是 schema 的位置（见
-  // EXTENDED_SCHEMA_KEYWORDS）。带 STRIP_PATTERNS_ONLY 递归：这些位置此前从不被
-  // 注入 additionalProperties，现在也不注入。
+  // EXTENDED_SCHEMA_KEYWORDS）。只清 pattern、不注入，所以必须和上面的删除一
+  // 样包在 `stripUnsupportedPatterns` 守卫里——否则 injectAdditionalProperties()
+  // 的"只注入"窄契约会被打破（它会顺带删掉这些位置的 pattern）。
   //
   // 位置放在主遍历**之后**是有意的：`seen` 是按引用去重的，若同一个节点对象被
   // 正常位置和扩展位置共用（生产路径的 schema 都来自 JSON.parse，树形、不可能
   // 共用，只有内存里手搓 schema 时才可能），先被访问的那一次决定用哪套开关。
   // 放后面 → 正常位置那次先拿到完整开关（注入行为与既有实现一致），扩展位置那
   // 次因 `seen` 命中而跳过；放前面则相反，会让该节点在 prepareSchema 下丢掉注入。
-  for (const key of EXTENDED_SCHEMA_KEYWORDS) {
-    const value = node[key];
-    if (isRecord(value)) {
-      node[key] = walkSchema(value, seen, STRIP_PATTERNS_ONLY);
-    } else if (Array.isArray(value)) {
-      node[key] = value.map((entry) =>
-        isRecord(entry) ? walkSchema(entry, seen, STRIP_PATTERNS_ONLY) : entry,
-      );
-    }
-  }
-  // dependentSchemas: { <名称>: <schema> } —— 值是 schema，不是"一个 schema
-  // 节点"，所以按条目逐个下钻而不是整块当 schema 走。
-  if (isRecord(node.dependentSchemas)) {
-    const dependentSchemas = node.dependentSchemas as Record<string, unknown>;
-    for (const key of Object.keys(dependentSchemas)) {
-      if (isRecord(dependentSchemas[key])) {
-        dependentSchemas[key] = walkSchema(
-          dependentSchemas[key] as Record<string, unknown>,
-          seen,
-          STRIP_PATTERNS_ONLY,
+  if (options.stripUnsupportedPatterns) {
+    for (const key of EXTENDED_SCHEMA_KEYWORDS) {
+      const value = node[key];
+      if (isRecord(value)) {
+        node[key] = walkSchema(value, seen, STRIP_PATTERNS_ONLY);
+      } else if (Array.isArray(value)) {
+        node[key] = value.map((entry) =>
+          isRecord(entry) ? walkSchema(entry, seen, STRIP_PATTERNS_ONLY) : entry,
         );
       }
     }
-  }
-  // draft-07 的元组写法 items: [schema, ...] —— 主遍历只处理 items 的对象形式。
-  if (Array.isArray(node.items)) {
-    node.items = node.items.map((entry) =>
-      isRecord(entry) ? walkSchema(entry, seen, STRIP_PATTERNS_ONLY) : entry,
-    );
+    // dependentSchemas: { <名称>: <schema> } —— 值是 schema，不是"一个 schema
+    // 节点"，所以按条目逐个下钻而不是整块当 schema 走。
+    if (isRecord(node.dependentSchemas)) {
+      const dependentSchemas = node.dependentSchemas as Record<string, unknown>;
+      for (const key of Object.keys(dependentSchemas)) {
+        if (isRecord(dependentSchemas[key])) {
+          dependentSchemas[key] = walkSchema(
+            dependentSchemas[key] as Record<string, unknown>,
+            seen,
+            STRIP_PATTERNS_ONLY,
+          );
+        }
+      }
+    }
+    // draft-07 的元组写法 items: [schema, ...] —— 主遍历只处理 items 的对象形式。
+    if (Array.isArray(node.items)) {
+      node.items = node.items.map((entry) =>
+        isRecord(entry) ? walkSchema(entry, seen, STRIP_PATTERNS_ONLY) : entry,
+      );
+    }
   }
 
   return node;

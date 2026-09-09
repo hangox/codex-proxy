@@ -319,6 +319,24 @@ describe("扩展位置：既有遍历器从不进入、但值同样是 schema �
     expect(collectPatterns(prepared.schema)).toEqual([]);
     expect(prepared.schema.additionalProperties).not.toHaveProperty("additionalProperties");
   });
+
+  it("同一节点被正常位置与扩展位置共用时，注入行为与既有实现一致", () => {
+    // 生产路径的 schema 都来自 JSON.parse（树形、不共用引用），这里防的是
+    // 内存里手搓 schema 复用节点的情况：扩展下钻必须排在主遍历之后，否则该节点
+    // 会先被 STRIP_PATTERNS_ONLY 访问、因 seen 命中而在正常位置跳过注入。
+    const shared = {
+      type: "object",
+      properties: { z: { type: "string", pattern: ARTIFACT_FIELD_PATTERN } },
+    };
+    const prepared = prepareSchema({
+      type: "object",
+      properties: { y: shared },
+      additionalProperties: shared,
+    });
+    const y = (prepared.schema.properties as Record<string, Record<string, unknown>>).y;
+    expect(y.additionalProperties).toBe(false);
+    expect(collectPatterns(prepared.schema)).toEqual([]);
+  });
 });
 
 describe("patternProperties 的键名本身就是正则", () => {

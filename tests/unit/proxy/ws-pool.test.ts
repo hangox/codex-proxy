@@ -401,6 +401,55 @@ describe("PersistentWs", () => {
     expect(onDead).toHaveBeenCalled();
   });
 
+  it("recognizes server_error/internal_error/internal_server_error early (shared table with ws-transport.ts) without evicting", async () => {
+    // ws-transport.ts 已经识别这三个 code 并归类 502；这里验证共享表合并
+    // 之后 ws-pool.ts（复用连接池）也能一致识别，不再兜底落到 SSE 透传后
+    // 由下游 codexApiErrorFromEvent 才分类。这三个 code 不在
+    // websocket_connection_limit_reached 那条"淘汰连接"分支里，池化连接
+    // 应该照常复用，不触发淘汰——跟既有的 server_is_overloaded 早期分类
+    // 行为一致（见上面 "classifies server_is_overloaded as a transient 503
+    // without evicting the pooled WS"）。
+    const { ws, persistent, onDead } = newPersistentWs();
+    persistent.tryAcquire();
+    const promise = persistent.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: true,
+    });
+    await nextTick();
+    ws.pushMessage({
+      type: "error",
+      error: { code: "server_error", message: "Upstream had a bad day" },
+    });
+    const err = await promise.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(CodexApiError);
+    expect((err as CodexApiError).status).toBe(502);
+    expect(persistent.isAlive()).toBe(true);
+    expect(onDead).not.toHaveBeenCalled();
+  });
+
+  it("regression: usage_limit_reached (existing rotatable code) is unaffected by the shared-table refactor", async () => {
+    // 把 ROTATABLE_ERROR_CODES 换成从 error-classification.ts 引用共享表
+    // 之后，既有的可重试白名单分支必须原样保留——本该触发账号轮换的错误
+    // 不能被这次改动误伤。
+    const { ws, persistent, onDead } = newPersistentWs();
+    persistent.tryAcquire();
+    const promise = persistent.send({
+      request: { type: "response.create", model: "m", instructions: "", input: [] },
+      signal: undefined,
+      onRateLimits: undefined,
+      reused: true,
+    });
+    await nextTick();
+    ws.pushMessage({ type: "error", error: { code: "usage_limit_reached", message: "limit" } });
+    const err = await promise.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(CodexApiError);
+    expect((err as CodexApiError).status).toBe(429);
+    expect(persistent.isAlive()).toBe(true);
+    expect(onDead).not.toHaveBeenCalled();
+  });
+
   it("AbortSignal abort during in-flight rejects + evicts (cannot poison the next reuser)", async () => {
     const { persistent, onDead } = newPersistentWs();
     persistent.tryAcquire();

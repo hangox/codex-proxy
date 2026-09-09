@@ -50,6 +50,7 @@
 import type { ParsedRateLimit } from "./rate-limit-headers.js";
 import { parseRateLimitsEvent } from "./rate-limit-headers.js";
 import { CodexApiError } from "./codex-types.js";
+import { ROTATABLE_WS_ERROR_CODES } from "./error-classification.js";
 import type { WsCreateRequest } from "./ws-transport.js";
 import { randomUUID } from "crypto";
 
@@ -107,26 +108,10 @@ export interface WsLike {
 
 const WS_OPEN = 1;
 
-// Same allowlist as ws-transport.ts. Duplicated here intentionally so the
-// pool module doesn't depend on the transport's internals (and vice versa).
-const ROTATABLE_ERROR_CODES: Readonly<Record<string, number>> = {
-  usage_limit_reached: 429,
-  rate_limit_exceeded: 429,
-  rate_limit_reached: 429,
-  quota_exhausted: 402,
-  payment_required: 402,
-  unauthorized: 401,
-  token_invalid: 401,
-  token_expired: 401,
-  account_deactivated: 401,
-  forbidden: 403,
-  account_banned: 403,
-  banned: 403,
-  previous_response_not_found: 400,
-  context_length_exceeded: 400,
-  websocket_connection_limit_reached: 503,
-  server_is_overloaded: 503,
-};
+// 曾经是"跟 ws-transport.ts 相同的表，特意在这里再拷贝一份"，但两份表已经
+// 各自漂移过（见 ROTATABLE_WS_ERROR_CODES 的注释）。两个文件之间没有真正的
+// 循环依赖或运行上下文隔离约束，已经改成从 error-classification.ts 引用
+// 同一份定义，不用再记着"改一处也要改另一处"。
 
 function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number; code: string } | null {
   const type = typeof msg.type === "string" ? msg.type : "";
@@ -140,7 +125,7 @@ function classifyWsErrorEvent(msg: Record<string, unknown>): { status: number; c
     (typeof errorObj.type === "string" ? errorObj.type : null) ??
     "";
   const lower = codeRaw.toLowerCase();
-  const status = ROTATABLE_ERROR_CODES[lower];
+  const status = ROTATABLE_WS_ERROR_CODES[lower];
   return status ? { status, code: lower } : null;
 }
 

@@ -224,9 +224,11 @@ export function isModelNotSupportedError(err: CodexLikeError): boolean {
 /**
  * Detects deterministic "bad request content" errors that upstream reports
  * at the HTTP layer as a 5xx instead of a 4xx — currently, a tool's JSON
- * Schema using a regex construct (e.g. Unicode property escapes in the
- * built-in Artifact tool's `doc_id` pattern) that upstream's schema
- * validator doesn't accept:
+ * Schema using a regex construct that upstream's schema validator doesn't
+ * accept. In the built-in Artifact tool the `field` parameter's pattern
+ * carries both `\p{Cc}`-style Unicode property escapes and a
+ * `(?!__.*__$)` negative lookahead, while `collection` / `doc_id` each
+ * carry a `(?!` lookahead:
  *   Invalid schema for function 'Artifact': '...' is not a 'regex'.
  * Replaying the exact same request produces the exact same error every
  * time — it's a request-content error, not upstream capacity/availability.

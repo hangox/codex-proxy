@@ -36,15 +36,18 @@ const ARTIFACT_FIELD_PATTERN = String.raw`^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}
 const ARTIFACT_DOC_ID_PATTERN = String.raw`^(?!\.\.?(?:/|$))[A-Za-z0-9_\-.~:@+]{1,200}$`;
 const ARTIFACT_COLLECTION_PATTERN = String.raw`^(?!\.\.?(?:/|$))[A-Za-z0-9_\-.~:@+]{1,200}(?:/(?!\.\.?(?:/|$))[A-Za-z0-9_\-.~:@+]{1,200}){0,14}$`;
 
-/** 上游引擎完全能编译的合法正则，用来验证"无条件删除"的策略。 */
+/** 上游引擎完全能编译的合法正则，用来验证"只删编译不了的"策略。 */
 const SAFE_PATTERN = "^[a-z0-9_-]+$";
 
+/** 工具级 description 是摘录改写（二进制里是按能力拼装的），不是原文。 */
 const ARTIFACT_DESCRIPTION =
   "Create, update, read, and query Artifacts (self-contained HTML pages and their declared data).";
 
 /**
- * Artifact 工具 `input_schema` 中涉及正则的那几个参数（原文照抄，含
- * description / maxLength / enum 等非正则字段，用来验证"只删 pattern"）。
+ * Artifact 工具 `input_schema` 中涉及正则的那几个参数——`pattern` 与
+ * `description` 均按 2.1.266 二进制原文照抄，另保留 maxLength / enum 等非正则
+ * 字段，用来验证"只删 pattern"。整体结构是简化复刻（真实的 Artifact schema
+ * 参数更多、条件拼装）。
  */
 function artifactInputSchema(): Record<string, unknown> {
   return {
@@ -59,19 +62,19 @@ function artifactInputSchema(): Record<string, unknown> {
         maxLength: 1000,
         pattern: ARTIFACT_COLLECTION_PATTERN,
         description:
-          'Database collection path: an odd number (1-15) of "/"-separated segments.',
+          'Database collection path: an odd number (1-15) of "/"-separated segments (letters, digits, _ - . ~ : @ + per segment). Paths alternate collection/document, so "boards/b1/columns" is a collection and, with `doc_id` "c2", names the document "boards/b1/columns/c2". Per-user data: "data/users/<id>" (3 segments) is the collection holding that user\'s documents, "data/users/<id>/decks" is one document in it, and "data/users/<id>/decks/cards" a collection under that; "me" as the <id> means the current user. Required for read_db and write_db.',
       },
       doc_id: {
         type: "string",
         pattern: ARTIFACT_DOC_ID_PATTERN,
         description:
-          "Document id (one path segment). Required for db_op 'get', 'set', 'update', 'str_replace' and 'delete'.",
+          "Document id (one path segment). Required for db_op 'get', 'set', 'update', 'str_replace' and 'delete'; not accepted with 'list' or 'query'.",
       },
       field: {
         type: "string",
         pattern: ARTIFACT_FIELD_PATTERN,
         description:
-          "write_db with db_op 'str_replace' only: the top-level string field of the document to edit.",
+          'write_db with db_op \'str_replace\' only: the top-level string field of the document to edit (one plain key, e.g. "html").',
       },
       query: {
         type: "object",
@@ -128,7 +131,7 @@ describe("Artifact 工具真实 schema（Anthropic 路径端到端）", () => {
       description: ARTIFACT_DESCRIPTION,
       strict: false,
     });
-    // 深度相等即"其余部分完全不变"（type/description/required/嵌套结构/enum/maxLength）
+    // 深度相等即"其余部分的值完全不变"（清洗只做 delete、不重排键序）
     expect(tools[0].parameters).toEqual(expected);
     expect(collectPatterns(tools[0].parameters)).toEqual([]);
     expect(JSON.stringify(tools[0].parameters)).not.toContain("(?!");
@@ -239,6 +242,82 @@ describe("递归遍历：嵌套位置的问题 pattern 都会被清掉", () => {
     expect(Object.keys(result.$defs as Record<string, unknown>)).toEqual(["Def"]);
     expect(Object.keys(result.definitions as Record<string, unknown>)).toEqual(["Legacy"]);
     expect(props.choice.anyOf).toEqual([{ type: "string" }, { type: "number" }]);
+  });
+});
+
+describe("扩展位置：既有遍历器从不进入、但值同样是 schema 的关键字", () => {
+  function schemaWithBadPatternsInExtendedPositions(): Record<string, unknown> {
+    return {
+      type: "object",
+      properties: {
+        map: {
+          type: "object",
+          additionalProperties: { type: "string", pattern: ARTIFACT_FIELD_PATTERN },
+        },
+        names: {
+          type: "object",
+          propertyNames: { type: "string", pattern: ARTIFACT_FIELD_PATTERN },
+        },
+        list: {
+          type: "array",
+          contains: { type: "string", pattern: ARTIFACT_FIELD_PATTERN },
+        },
+        unevaluated: {
+          type: "object",
+          unevaluatedProperties: { type: "string", pattern: ARTIFACT_FIELD_PATTERN },
+          unevaluatedItems: { type: "string", pattern: ARTIFACT_FIELD_PATTERN },
+        },
+        deps: {
+          type: "object",
+          dependentSchemas: { foo: { type: "string", pattern: ARTIFACT_FIELD_PATTERN } },
+        },
+        tuple: {
+          type: "array",
+          items: [{ type: "string", pattern: ARTIFACT_FIELD_PATTERN }, { type: "number" }],
+        },
+      },
+    };
+  }
+
+  it("additionalProperties / propertyNames / contains / unevaluated* / dependentSchemas / items 数组形式都被清到", () => {
+    const result = sanitizeSchemaPatterns(schemaWithBadPatternsInExtendedPositions());
+    expect(collectPatterns(result)).toEqual([]);
+    // 结构保留：只删 pattern，节点本身还在
+    const props = result.properties as Record<string, Record<string, unknown>>;
+    expect(props.map.additionalProperties).toEqual({ type: "string" });
+    expect(props.names.propertyNames).toEqual({ type: "string" });
+    expect(props.list.contains).toEqual({ type: "string" });
+    expect(props.tuple.items).toEqual([{ type: "string" }, { type: "number" }]);
+    expect((props.deps.dependentSchemas as Record<string, unknown>).foo).toEqual({
+      type: "string",
+    });
+  });
+
+  it("下钻这些位置时只清 pattern，不注入 additionalProperties", () => {
+    const result = sanitizeSchemaPatterns({
+      type: "object",
+      additionalProperties: {
+        type: "object",
+        properties: { inner: { type: "string", pattern: ARTIFACT_FIELD_PATTERN } },
+      },
+    });
+    const ap = result.additionalProperties as Record<string, unknown>;
+    expect(ap).not.toHaveProperty("additionalProperties");
+    expect((ap.properties as Record<string, Record<string, unknown>>).inner).toEqual({
+      type: "string",
+    });
+  });
+
+  it("prepareSchema 走扩展位置时同样只清 pattern（结构化输出的既有注入行为不变）", () => {
+    const prepared = prepareSchema({
+      type: "object",
+      additionalProperties: {
+        type: "object",
+        properties: { a: { type: "string", pattern: ARTIFACT_FIELD_PATTERN } },
+      },
+    });
+    expect(collectPatterns(prepared.schema)).toEqual([]);
+    expect(prepared.schema.additionalProperties).not.toHaveProperty("additionalProperties");
   });
 });
 

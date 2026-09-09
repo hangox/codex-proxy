@@ -293,6 +293,14 @@ describe("扩展位置：既有遍历器从不进入、但值同样是 schema �
     });
   });
 
+  it("injectAdditionalProperties 在全部扩展位置都保留 pattern（窄契约 + 下钻守卫）", () => {
+    const result = injectAdditionalProperties(schemaWithBadPatternsInExtendedPositions());
+    // 7 处扩展位置各一个坏 pattern，一个都不该被这个函数删掉
+    expect(collectPatterns(result)).toHaveLength(7);
+    // 同时正常位置照常注入
+    expect(result.additionalProperties).toBe(false);
+  });
+
   it("下钻这些位置时只清 pattern，不注入 additionalProperties", () => {
     const result = sanitizeSchemaPatterns({
       type: "object",
@@ -377,13 +385,20 @@ describe("各条路径的接入", () => {
     expect(prepared.schema.additionalProperties).toBe(false);
   });
 
-  it("injectAdditionalProperties 保持窄契约：只注入，不清 pattern", () => {
+  it("injectAdditionalProperties 保持窄契约：只注入，不清 pattern（含扩展位置）", () => {
     const result = injectAdditionalProperties({
       type: "object",
       properties: { a: { type: "string", pattern: ARTIFACT_FIELD_PATTERN } },
+      // 扩展位置同样必须保留——扩展下钻若漏在 stripUnsupportedPatterns 守卫
+      // 之外，"只注入"的契约就会被打破（rev 抓到的 major）。
+      propertyNames: { type: "string", pattern: ARTIFACT_FIELD_PATTERN },
     });
     expect(result.additionalProperties).toBe(false);
-    expect(collectPatterns(result)).toEqual([ARTIFACT_FIELD_PATTERN]);
+    expect(collectPatterns(result)).toEqual([
+      ARTIFACT_FIELD_PATTERN,
+      ARTIFACT_FIELD_PATTERN,
+    ]);
+    expect(result.propertyNames).toEqual({ type: "string", pattern: ARTIFACT_FIELD_PATTERN });
   });
 
   it("三条协议的工具参数路径都清洗", () => {

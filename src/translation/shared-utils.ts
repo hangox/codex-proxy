@@ -245,7 +245,18 @@ const UNSUPPORTED_UPSTREAM_REGEX_TOKENS = [
   "(?(", // 条件组
 ] as const;
 
-/** 该正则是否含上游引擎编译不了的构造（见上方常量说明）。 */
+/**
+ * 该正则是否含上游引擎编译不了的构造（见上方常量说明）。
+ *
+ * ★ 这是**粗粒度的裸子串判据**，不是完整的 RE2 兼容性检查，两个方向的误差都
+ * 接受：
+ * - 误判（会丢合法约束）：`(?!` / `\p{` 出现在字符类里也算命中，例如
+ *   `^[(?!]+$` 会被整键删掉。代价只是少一个校验约束，不会让请求失败。
+ * - 漏判（会放过去）：`(?<name>...)` / `(?P<name>...)` 具名分组、反向引用
+ *   `\1` 等不在表里。它们没有出现在实测拒收样本中，且裸 `\1` 在字符类里
+ *   是合法八进制转义、加进去会引入误判，所以刻意不收。
+ * 真出现新的拒收样本时按证据补表，不要凭"RE2 不支持什么"的清单往前猜。
+ */
 export function isUnsupportedUpstreamPattern(pattern: string): boolean {
   return UNSUPPORTED_UPSTREAM_REGEX_TOKENS.some((token) => pattern.includes(token));
 }
@@ -261,6 +272,25 @@ interface WalkSchemaOptions {
   /** 移除上游正则引擎编译不了的 `pattern` / `patternProperties` 键。 */
   stripUnsupportedPatterns: boolean;
 }
+
+/**
+ * 只在清 pattern 时下钻的扩展位置——这些关键字的值同样是 schema（或 schema
+ * 数组），但既有遍历器从不进入它们。不能把下钻加进通用遍历：那会连带让注入
+ * `additionalProperties` 的路径也走进这些位置，改变结构化输出的既有行为。
+ */
+const EXTENDED_SCHEMA_KEYWORDS = [
+  "additionalProperties", // map 值 schema，MCP 手写 schema 常见
+  "unevaluatedProperties",
+  "unevaluatedItems",
+  "propertyNames",
+  "contains",
+] as const;
+
+/** 下钻扩展位置时用的开关：只清洗，绝不注入。 */
+const STRIP_PATTERNS_ONLY: WalkSchemaOptions = {
+  injectAdditionalProperties: false,
+  stripUnsupportedPatterns: true,
+};
 
 /**
  * Recursively inject `additionalProperties: false` into every object-type node
@@ -285,6 +315,14 @@ export function injectAdditionalProperties(
  * 供 Anthropic `/v1/messages` 路径使用：该路径此前只有 `normalizeSchema` 的浅
  * 处理，既不注入 `additionalProperties` 也不做 tuple 转换，接清洗时不能顺手把
  * 那些行为一并带过去（会改变既有输出）。
+ *
+ * 覆盖位置（`pattern` 在任意一处命中都会被整键删除）：`properties` /
+ * `patternProperties`（值 + 键名）/ `$defs` / `definitions` / `items`（对象形式
+ * 与 draft-07 数组形式）/ `prefixItems` / `oneOf` / `anyOf` / `allOf` /
+ * `if` / `then` / `else` / `not` / `additionalProperties` /
+ * `unevaluatedProperties` / `unevaluatedItems` / `propertyNames` / `contains` /
+ * `dependentSchemas` 的条目。不在这个列表里的关键字（如 `dependencies`、
+ * `contentSchema`、`$dynamicRef` 指向的定义）不做保证。
  */
 export function sanitizeSchemaPatterns(
   schema: Record<string, unknown>,
@@ -347,6 +385,39 @@ function walkSchema(
       for (const key of Object.keys(node.patternProperties)) {
         if (isUnsupportedUpstreamPattern(key)) delete node.patternProperties[key];
       }
+    }
+    // 下钻既有遍历器从不进入、但值同样是 schema 的位置（见
+    // EXTENDED_SCHEMA_KEYWORDS）。带 STRIP_PATTERNS_ONLY 递归：这些位置此前
+    // 从不被注入 additionalProperties，现在也不注入。
+    for (const key of EXTENDED_SCHEMA_KEYWORDS) {
+      const value = node[key];
+      if (isRecord(value)) {
+        node[key] = walkSchema(value, seen, STRIP_PATTERNS_ONLY);
+      } else if (Array.isArray(value)) {
+        node[key] = value.map((entry) =>
+          isRecord(entry) ? walkSchema(entry, seen, STRIP_PATTERNS_ONLY) : entry,
+        );
+      }
+    }
+    // dependentSchemas: { <名称>: <schema> } —— 值是 schema，不是"一个 schema
+    // 节点"，所以按条目逐个下钻而不是整块当 schema 走。
+    if (isRecord(node.dependentSchemas)) {
+      const dependentSchemas = node.dependentSchemas as Record<string, unknown>;
+      for (const key of Object.keys(dependentSchemas)) {
+        if (isRecord(dependentSchemas[key])) {
+          dependentSchemas[key] = walkSchema(
+            dependentSchemas[key] as Record<string, unknown>,
+            seen,
+            STRIP_PATTERNS_ONLY,
+          );
+        }
+      }
+    }
+    // draft-07 的元组写法 items: [schema, ...] —— 主遍历只处理 items 的对象形式。
+    if (Array.isArray(node.items)) {
+      node.items = node.items.map((entry) =>
+        isRecord(entry) ? walkSchema(entry, seen, STRIP_PATTERNS_ONLY) : entry,
+      );
     }
   }
 

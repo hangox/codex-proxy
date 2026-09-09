@@ -11,6 +11,7 @@
 ### Fixed
 
 - **Anthropic `/v1/messages` 的 prompt cache key 现在严格遵循最后一个显式 `cache_control` 断点。** 无 Claude session 时，断点后的用户/系统易变内容不再污染上游 key；断点前内容、工具或模型变化仍会重新派生 key。billing header 的轮换值不再导致无意义 cache miss；无 session 且无缓存断点的普通请求不再伪造 upstream cache key（`src/routes/messages.ts`、`src/routes/shared/anthropic-session-id.ts`、`src/translation/anthropic-to-codex.ts`）。
+- **确定性的工具 schema 校验错误不再被当成可重试的 5xx 无限退避，导致交互式会话卡死。** 真实复现：Claude Code 内置 Artifact 工具的 `doc_id` 字段 pattern 用了 Unicode 属性转义正则，上游判定为非法 regex，报 `Invalid schema for function 'Artifact': ... is not a 'regex'.`，HTTP 层却是 502——这类错误重放多少次都是同一个结果，不是传输抖动，但 502 落在 `withRetry` 的可重试区间，Claude Code 客户端自己的退避重试也是如此，于是交互式会话被无限重试拖死。新增共享分类 `classifyRawUpstreamError`（`src/proxy/error-classification.ts`），命中这类文本特征时把状态码改写成 400 并标记 `retryable: false`，不影响真正的传输层 5xx；已接入 `codex-api.ts`（ChatGPT/Codex 后端，本次实测命中的真实路径）以及 `anthropic-upstream.ts`、`gemini-upstream.ts`、`openai-upstream.ts`、`responses-upstream.ts` 这 4 处此前各自重复的原始 HTTP 错误透传点。
 
 ## [2.0.104] - 2026-08-18
 

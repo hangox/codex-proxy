@@ -379,6 +379,96 @@ describe("CodexApi.createResponse", () => {
     expect(err.headers?.get("cf-mitigated")).toBe("challenge");
   });
 
+  it("reclassifies the real Artifact-tool schema-rejection 502 to 400 + non-retryable", async () => {
+    // 真实生产复现：Claude Code 默认内置的 Artifact 工具 schema 里 doc_id 字段
+    // 用了 Unicode 属性转义正则，上游把它判定为非法 regex，返回 502。同一个
+    // schema 重发多少次都是这个结果——必须变成 400 + retryable:false，否则
+    // Claude Code 客户端自己的退避重试会把交互式会话彻底卡死。
+    const errorBody = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    const mockTransport = makeMockTransport({
+      post: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          status: 502,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(errorBody));
+              controller.close();
+            },
+          }),
+          headers: new Headers(),
+          setCookieHeaders: [],
+        } satisfies TlsTransportResponse),
+      ),
+    });
+    vi.mocked(getTransport).mockReturnValue(mockTransport);
+
+    const api = new CodexApi("test-token", null);
+    const request = {
+      model: "gpt-5.4",
+      instructions: "test",
+      input: [{ role: "user" as const, content: "Hi" }],
+      stream: true as const,
+      store: false as const,
+    };
+
+    let caught: unknown;
+    try {
+      await api.createResponse(request);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CodexApiError);
+    const err = caught as CodexApiError;
+    expect(err.status).toBe(400);
+    expect(err.retryable).toBe(false);
+    expect(err.body).toBe(errorBody);
+  });
+
+  it("leaves an ordinary transport 502 (no schema-error text) as a normal retryable 5xx", async () => {
+    // 防误伤：网关层真实的传输抖动（比如空 body 或纯 HTML 的 Bad Gateway 页面）
+    // 不含 schema 校验特征词，不能被这次改动误伤成不可重试——原有按状态码
+    // 判定的重试行为必须原样保留。
+    const errorBody = "<html><body>502 Bad Gateway</body></html>";
+    const mockTransport = makeMockTransport({
+      post: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          status: 502,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(errorBody));
+              controller.close();
+            },
+          }),
+          headers: new Headers(),
+          setCookieHeaders: [],
+        } satisfies TlsTransportResponse),
+      ),
+    });
+    vi.mocked(getTransport).mockReturnValue(mockTransport);
+
+    const api = new CodexApi("test-token", null);
+    const request = {
+      model: "gpt-5.4",
+      instructions: "test",
+      input: [{ role: "user" as const, content: "Hi" }],
+      stream: true as const,
+      store: false as const,
+    };
+
+    let caught: unknown;
+    try {
+      await api.createResponse(request);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CodexApiError);
+    const err = caught as CodexApiError;
+    expect(err.status).toBe(502);
+    expect(err.retryable).toBeUndefined();
+    expect(err.body).toBe(errorBody);
+  });
+
   it("truncates error body exceeding 1MB", async () => {
     const largeBody = "x".repeat(2 * 1024 * 1024); // 2MB
     const mockTransport = makeMockTransport({

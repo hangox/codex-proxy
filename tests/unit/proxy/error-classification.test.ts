@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { CodexApiError } from "@src/proxy/codex-types.js";
 import {
+  classifyRawUpstreamError,
   extractRetryAfterSec,
   isBanError,
   isCfChallengeError,
   isCfPathBlockError,
+  isDeterministicSchemaOrParamErrorBody,
   isQuotaExhaustedError,
   isServerOverloadedError,
   isTokenInvalidError,
@@ -201,6 +203,40 @@ describe("isUnansweredFunctionCallError", () => {
   it("returns false for non-CodexApiError", () => {
     expect(isUnansweredFunctionCallError(new Error("No tool output found"))).toBe(false);
     expect(isUnansweredFunctionCallError(null)).toBe(false);
+  });
+});
+
+describe("isDeterministicSchemaOrParamErrorBody", () => {
+  it("matches the real production string (Artifact tool doc_id regex rejected by upstream)", () => {
+    const body = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    expect(isDeterministicSchemaOrParamErrorBody(body)).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isDeterministicSchemaOrParamErrorBody("INVALID SCHEMA FOR FUNCTION 'x'")).toBe(true);
+  });
+
+  it("does not match an unrelated 5xx body (empty / generic gateway text)", () => {
+    expect(isDeterministicSchemaOrParamErrorBody("")).toBe(false);
+    expect(isDeterministicSchemaOrParamErrorBody("Bad Gateway")).toBe(false);
+    expect(isDeterministicSchemaOrParamErrorBody("<html><body>502 Bad Gateway</body></html>")).toBe(false);
+  });
+});
+
+describe("classifyRawUpstreamError", () => {
+  it("reclassifies a schema-error 502 to 400 + retryable: false", () => {
+    const body = "Invalid schema for function 'Artifact': '...' is not a 'regex'.";
+    expect(classifyRawUpstreamError(502, body)).toEqual({ status: 400, retryable: false });
+  });
+
+  it("leaves an ordinary transport 5xx untouched (status kept, retryable left undefined)", () => {
+    expect(classifyRawUpstreamError(502, "Bad Gateway")).toEqual({ status: 502 });
+    expect(classifyRawUpstreamError(503, "")).toEqual({ status: 503 });
+  });
+
+  it("leaves non-5xx statuses untouched even without matching text", () => {
+    expect(classifyRawUpstreamError(401, "Unauthorized")).toEqual({ status: 401 });
   });
 });
 

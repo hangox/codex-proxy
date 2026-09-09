@@ -297,6 +297,84 @@ describe("CodexApi.createResponse", () => {
     }
   });
 
+  it("reclassifies the real Artifact-tool schema-rejection 502 to 400", async () => {
+    const errorBody = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    const mockTransport = makeMockTransport({
+      post: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          status: 502,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(errorBody));
+              controller.close();
+            },
+          }),
+          headers: new Headers(),
+          setCookieHeaders: [],
+        } satisfies TlsTransportResponse),
+      ),
+    });
+    vi.mocked(getTransport).mockReturnValue(mockTransport);
+
+    const api = new CodexApi("test-token", null);
+    const request = {
+      model: "gpt-5.4",
+      instructions: "test",
+      input: [{ role: "user" as const, content: "Hi" }],
+      stream: true as const,
+      store: false as const,
+    };
+
+    try {
+      await api.createResponse(request);
+      throw new Error("expected createResponse to throw");
+    } catch (e) {
+      const err = e as CodexApiError;
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect(err.status).toBe(400);
+      expect(err.body).toBe(errorBody);
+    }
+  });
+
+  it("leaves an ordinary transport 502 alone (no schema-error text)", async () => {
+    const errorBody = "Bad Gateway";
+    const mockTransport = makeMockTransport({
+      post: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          status: 502,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(errorBody));
+              controller.close();
+            },
+          }),
+          headers: new Headers(),
+          setCookieHeaders: [],
+        } satisfies TlsTransportResponse),
+      ),
+    });
+    vi.mocked(getTransport).mockReturnValue(mockTransport);
+
+    const api = new CodexApi("test-token", null);
+    const request = {
+      model: "gpt-5.4",
+      instructions: "test",
+      input: [{ role: "user" as const, content: "Hi" }],
+      stream: true as const,
+      store: false as const,
+    };
+
+    try {
+      await api.createResponse(request);
+      throw new Error("expected createResponse to throw");
+    } catch (e) {
+      const err = e as CodexApiError;
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect(err.status).toBe(502);
+    }
+  });
+
   it("preserves response headers on non-2xx CodexApiError", async () => {
     const errorBody = "";
     const responseHeaders = new Headers({ "cf-mitigated": "challenge" });
@@ -440,5 +518,81 @@ describe("CodexApi.getModels", () => {
     expect(result![0]).toMatchObject({ slug: "gpt-5.4" });
     expect(result![1]).toMatchObject({ slug: "gpt-5.3-codex" });
     expect(result![2]).toMatchObject({ slug: "gpt-5.2" });
+  });
+});
+
+describe("CodexApi.createCompactResponse", () => {
+  // /responses/compact forwards the client's body.tools verbatim, so the same
+  // deterministic-schema-error reclassification applies here as on the main
+  // request path.
+  function makeMockTransport(overrides: Partial<TlsTransport> = {}): TlsTransport {
+    return {
+      post: vi.fn(),
+      get: vi.fn(),
+      simplePost: vi.fn(),
+      isImpersonate: vi.fn(() => false),
+      ...overrides,
+    } as unknown as TlsTransport;
+  }
+
+  function mockErrorTransport(status: number, errorBody: string): void {
+    vi.mocked(getTransport).mockReturnValue(makeMockTransport({
+      post: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          status,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(errorBody));
+              controller.close();
+            },
+          }),
+          headers: new Headers(),
+          setCookieHeaders: [],
+        } satisfies TlsTransportResponse),
+      ),
+    }));
+  }
+
+  it("reclassifies a deterministic tool-schema error reported as 502 to 400", async () => {
+    const errorBody = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    mockErrorTransport(502, errorBody);
+
+    const api = new CodexApi("test-token", null);
+    const request = {
+      model: "gpt-5.4",
+      instructions: "test",
+      input: [{ role: "user" as const, content: "Hi" }],
+      tools: [{ type: "function", name: "Artifact" }],
+    };
+
+    try {
+      await api.createCompactResponse(request);
+      throw new Error("expected createCompactResponse to throw");
+    } catch (e) {
+      const err = e as CodexApiError;
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect(err.status).toBe(400);
+    }
+  });
+
+  it("leaves an ordinary transport 502 alone (no schema-error text)", async () => {
+    mockErrorTransport(502, "Bad Gateway");
+
+    const api = new CodexApi("test-token", null);
+    const request = {
+      model: "gpt-5.4",
+      instructions: "test",
+      input: [{ role: "user" as const, content: "Hi" }],
+    };
+
+    try {
+      await api.createCompactResponse(request);
+      throw new Error("expected createCompactResponse to throw");
+    } catch (e) {
+      const err = e as CodexApiError;
+      expect(err).toBeInstanceOf(CodexApiError);
+      expect(err.status).toBe(502);
+    }
   });
 });

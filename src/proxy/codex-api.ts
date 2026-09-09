@@ -29,6 +29,7 @@ import {
 
 export type { WsPoolContext };
 import { parseSSEBlock, parseSSEStream } from "./codex-sse.js";
+import { classifyRawUpstreamError } from "./error-classification.js";
 import { fetchUsage, fetchResetCredits, consumeResetCredit } from "./codex-usage.js";
 import { fetchModels, probeEndpoint as probeEndpointFn } from "./codex-models.js";
 import type { CookieJar } from "./cookie-jar.js";
@@ -449,7 +450,15 @@ export class CodexApi {
         }
       }
       const errorBody = Buffer.concat(chunks).toString("utf-8");
-      throw new CodexApiError(transportRes.status, errorBody, transportRes.headers);
+      // 上游有时把「客户端请求内容确定性有误」（比如工具 JSON Schema 用了它的
+      // 校验器不认的正则语法）报成 5xx——同一个请求重发多少次都是同一个结果，
+      // 不是传输抖动，见 classifyRawUpstreamError 的注释。命中时按 400 上报，
+      // 不再落进 withRetry 的可重试 5xx 区间。
+      throw new CodexApiError(
+        classifyRawUpstreamError(transportRes.status, errorBody),
+        errorBody,
+        transportRes.headers,
+      );
     }
 
     return new Response(transportRes.body, {
@@ -503,7 +512,13 @@ export class CodexApi {
     const responseBody = Buffer.concat(chunks).toString("utf-8");
 
     if (transportRes.status < 200 || transportRes.status >= 300) {
-      throw new CodexApiError(transportRes.status, responseBody, transportRes.headers);
+      // /responses/compact 会把客户端的 body.tools 原样带上去，所以确定性
+      // schema 错误同样会从这里漏成可重试 5xx，见 classifyRawUpstreamError。
+      throw new CodexApiError(
+        classifyRawUpstreamError(transportRes.status, responseBody),
+        responseBody,
+        transportRes.headers,
+      );
     }
 
     try {

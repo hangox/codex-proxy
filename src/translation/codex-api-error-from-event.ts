@@ -4,6 +4,7 @@ import {
   isPromptTooLongLike,
   promptTooLongStatus,
 } from "../proxy/prompt-too-long-error.js";
+import { classifyRawUpstreamError } from "../proxy/error-classification.js";
 
 /**
  * Convert an upstream `error` / `response.failed` SSE event into a CodexApiError
@@ -16,13 +17,25 @@ export function codexApiErrorFromEvent(
 ): CodexApiError {
   const raw = JSON.stringify({ error: { code: err.code, message: err.message } });
   const promptTooLong = isPromptTooLongLike(raw);
-  const status = promptTooLong ? promptTooLongStatus(statusForCode(err.code)) : statusForCode(err.code);
-  const body = promptTooLong
-    ? buildPromptTooLongErrorBody(raw)
-    : JSON.stringify({
-        error: { type: err.code, code: err.code, message: err.message },
-      });
-  return new CodexApiError(status, body);
+  if (promptTooLong) {
+    return new CodexApiError(
+      promptTooLongStatus(statusForCode(err.code)),
+      buildPromptTooLongErrorBody(raw),
+    );
+  }
+  const body = JSON.stringify({
+    error: { type: err.code, code: err.code, message: err.message },
+  });
+  // 这条 SSE/WS 事件路径上，上游有时用一个这里没有归类过的 code 报出「客户端
+  // 请求内容确定性有误」的错误——实测过 `invalid_function_parameters`（工具
+  // JSON Schema 用了上游校验器不认的正则语法），statusForCode 对未知 code
+  // 兜底 502，而 502 落在 withRetry 的可重试区间、也会被 Claude Code 客户端
+  // 自己的退避重试放大。复用 classifyRawUpstreamError 对拼好的错误 body 文本
+  // 做一次兜底分类——它是 codex-api.ts 等原始 HTTP 错误路径已经在用的同一份
+  // 判据，两条路径（事件 code 路径 vs. 原始 HTTP body 路径）统一到一起，不再
+  // 各自维护一份、互相漏覆盖对方命中的形态。
+  const { status, retryable } = classifyRawUpstreamError(statusForCode(err.code), body);
+  return new CodexApiError(status, body, { retryable });
 }
 
 function statusForCode(code: string): number {

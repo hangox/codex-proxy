@@ -54,6 +54,7 @@
 
 ### Fixed
 
+- 修复 Docker 镜像版本号显示错误（容器内始终回退到过期的 `package.json` 版本而非实际发布版本，#794）：#673 重构 `docker-publish.yml` 时移除了产生 `outputs.version` 的步骤，而 #677 引入的 `--build-arg PROXY_VERSION` 仍引用该输出，导致注入值为空。恢复 "Resolve image tags" 步骤的 `version` 输出（tag 构建取 tag 本身，分支构建取 `package.json` 与最新 stable tag 的较大者），并在 checkout 中启用 `fetch-tags` 以保证分支构建能读到历史 tag；新增 workflow 输出引用完整性测试防止同类回归。（`.github/workflows/docker-publish.yml`、`tests/unit/ci/workflow-outputs.test.ts`）
 - 修复 No-Node Lite zip 制品全部条目以 STORE（不压缩）模式写入的问题：传给 `writestr()` 的 `ZipInfo` 会忽略归档级压缩配置并默认 `ZIP_STORED`，导致制品体积约为正常 deflate -9 的两倍以上（实测 18.8MB → 3.6MB 量级）；现在为每个文件条目显式设置 `compress_type = ZIP_DEFLATED` 与 `compresslevel=9`，归档级测试新增"文件条目必须为 deflate 且压缩率有效"的防回归断言（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`）。
 - 修复 Dashboard 底栏在更新状态尚未缓存时无法显示 Codex Desktop 版本的问题，并更新 2026 年版权文案。
 

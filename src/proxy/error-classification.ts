@@ -171,3 +171,51 @@ export function isModelNotSupportedError(err: CodexLikeError): boolean {
   return lower.includes("not supported") || lower.includes("not_supported")
     || lower.includes("not available") || lower.includes("not_available");
 }
+
+/**
+ * Detects deterministic "bad request content" errors that upstream reports
+ * at the HTTP layer as a 5xx instead of a 4xx — currently, a tool's JSON
+ * Schema using a regex construct that upstream's schema validator doesn't
+ * accept. In the built-in Artifact tool the `field` parameter's pattern
+ * carries both `\p{Cc}`-style Unicode property escapes and a
+ * `(?!__.*__$)` negative lookahead, while `collection` / `doc_id` each
+ * carry a `(?!` lookahead:
+ *   Invalid schema for function 'Artifact': '...' is not a 'regex'.
+ * Replaying the exact same request produces the exact same error every
+ * time — it's a request-content error, not upstream capacity/availability.
+ * Reported as 502, this used to fall into `withRetry`'s 5xx retry
+ * bucket (and the Claude Code CLI client does the same on its own 502
+ * retries), so a request with an offending tool schema would retry with
+ * exponential backoff and wedge the interactive session — real
+ * reproduction: attempt 7/10 and climbing, same 502 every time.
+ */
+export function isDeterministicSchemaOrParamErrorBody(body: string): boolean {
+  return /invalid schema for function/i.test(body);
+}
+
+/**
+ * Reclassify a raw upstream HTTP error (status + body text) that arrived
+ * without a structured error code — the path in `codex-api.ts`'s
+ * `createResponseViaHttp()`, which only has the bytes upstream sent back.
+ * This mirrors `statusForCode()` in `codex-api-error-from-event.ts`, which
+ * does the same "deterministic client error, not a transient 5xx"
+ * reclassification for the SSE `error` / `response.failed` event path
+ * (which does have a structured `err.code` to key off). The two paths stay
+ * separate functions because they classify different inputs (event code vs.
+ * raw body text), but they should agree on which failures are deterministic.
+ *
+ * Returns the status to actually throw with — 400 in place of whatever 5xx
+ * upstream reported. `withRetry` (see `src/utils/retry.ts`) only retries a
+ * `CodexApiError` whose status is 5xx, so rewriting to 400 is exactly what
+ * takes a deterministic failure out of the retry bucket. Only 5xx statuses
+ * are eligible for the rewrite: a 4xx already carries its own meaning (401
+ * credential, 402 quota, 429 rate limit …) and must not be flattened to 400
+ * just because its body happens to contain the phrase. When nothing
+ * matches, the original status is returned unchanged, so a genuine
+ * transport 5xx keeps its old retry behavior — this function must never
+ * turn a real 5xx into a retry `withRetry` would skip.
+ */
+export function classifyRawUpstreamError(status: number, body: string): number {
+  if (status >= 500 && isDeterministicSchemaOrParamErrorBody(body)) return 400;
+  return status;
+}

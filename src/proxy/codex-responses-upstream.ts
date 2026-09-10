@@ -22,6 +22,7 @@ import {
   nonEmptyString,
 } from "./codex-request-context.js";
 import { buildResponsesUpstreamBody } from "./responses-upstream.js";
+import { classifyRawUpstreamError } from "./error-classification.js";
 import { parseSSEStream } from "./codex-sse.js";
 import {
   CodexApiError,
@@ -191,9 +192,13 @@ export class CodexResponsesUpstream implements UpstreamAdapter {
     }
 
     if (transportResponse.status < 200 || transportResponse.status >= 300) {
+      const errorBody = await readErrorBody(transportResponse.body);
+      // 这条 wire 也会带 tools（buildResponsesUpstreamBody 直接透传 req.tools），
+      // 所以和其余 adapter 一样要过一遍确定性错误分类：命中时按 400 上报，
+      // 不再落进 withRetry 的可重试 5xx 区间。见 classifyRawUpstreamError 的注释。
       throw new CodexApiError(
-        transportResponse.status,
-        await readErrorBody(transportResponse.body),
+        classifyRawUpstreamError(transportResponse.status, errorBody),
+        errorBody,
         transportResponse.headers,
       );
     }

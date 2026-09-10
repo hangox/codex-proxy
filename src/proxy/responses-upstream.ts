@@ -16,6 +16,7 @@
 import type { UpstreamAdapter } from "./upstream-adapter.js";
 import type { CodexResponsesRequest, CodexSSEEvent } from "./codex-types.js";
 import { CodexApiError } from "./codex-types.js";
+import { classifyRawUpstreamError } from "./error-classification.js";
 import { parseSSEStream } from "./codex-sse.js";
 import { withFetchDispatcher } from "./fetch-dispatcher.js";
 
@@ -111,7 +112,13 @@ export class ResponsesUpstream implements UpstreamAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-      throw new CodexApiError(response.status, errorText, response.headers);
+      // 同一类「客户端请求内容确定性有误」错误上游偶尔也会报成 5xx，见
+      // classifyRawUpstreamError 的注释——命中时按 400 上报，不再落进可重试的 5xx 区间。
+      throw new CodexApiError(
+        classifyRawUpstreamError(response.status, errorText),
+        errorText,
+        response.headers,
+      );
     }
 
     return response;

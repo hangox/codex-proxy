@@ -3,7 +3,19 @@ import { ApiKeyPool } from "@src/auth/api-key-pool.js";
 import type { ApiKeyEntry, ApiKeyPersistence } from "@src/auth/api-key-pool.js";
 import { ApiKeyModelCache } from "@src/auth/api-key-model-cache.js";
 import type { ApiKeyModelCacheFile, ApiKeyModelCachePersistence } from "@src/auth/api-key-model-cache.js";
+import { ApiKeyMemoStore } from "@src/auth/api-key-memo-store.js";
+import type { ApiKeyMemoPersistence } from "@src/auth/api-key-memo-store.js";
 import { createApiKeyRoutes } from "@src/routes/api-keys.js";
+
+function createMemoryMemoPersistence(): ApiKeyMemoPersistence {
+  let stored: ReturnType<ApiKeyMemoStore["list"]> = [];
+  return {
+    load: () => ({ memos: stored.map((m) => ({ ...m })) }),
+    save: (memos) => {
+      stored = memos.map((m) => ({ ...m }));
+    },
+  };
+}
 
 function createMemoryPersistence(): ApiKeyPersistence {
   let stored: ApiKeyEntry[] = [];
@@ -43,10 +55,10 @@ describe("api key routes", () => {
     pool = new ApiKeyPool(createMemoryPersistence());
     modelPersistence = createModelPersistence();
     fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "model-a", name: "Model A" }] }));
-    app = createApiKeyRoutes(pool, new ApiKeyModelCache({ persistence: modelPersistence, fetchFn }));
+    app = createApiKeyRoutes(pool, new ApiKeyModelCache({ persistence: modelPersistence, fetchFn }), new ApiKeyMemoStore(createMemoryMemoPersistence()));
   });
 
-  it("returns built-in catalog metadata with cached models", async () => {
+  it("returns built-in catalog metadata without token-scoped cache models", async () => {
     modelPersistence.save({
       entries: {
         "https://api.anthropic.com/v1/models": {
@@ -71,7 +83,8 @@ describe("api key routes", () => {
     };
     expect(body.catalog.anthropic.displayName).toBe("Anthropic");
     expect(body.catalog.anthropic.defaultBaseUrl).toContain("anthropic.com");
-    expect(body.catalog.anthropic.models).toEqual([{ id: "claude-test", displayName: "Claude Test" }]);
+    expect(body.catalog.anthropic.models).not.toEqual([{ id: "claude-test", displayName: "Claude Test" }]);
+    expect(body.catalog.anthropic.models.length).toBeGreaterThan(0);
   });
 
   it("fetches built-in provider models", async () => {
@@ -82,7 +95,7 @@ describe("api key routes", () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ models: [{ id: "model-a", displayName: "Model A" }] });
+    await expect(res.json()).resolves.toMatchObject({ models: [{ id: "model-a", displayName: "Model A" }], fromCache: false, stale: false });
     expect(fetchFn).toHaveBeenCalledWith("https://api.openai.com/v1/models", {
       headers: { Authorization: "Bearer sk-openai", Accept: "application/json" },
     });
@@ -115,9 +128,11 @@ describe("api key routes", () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ models: [{ id: "gemini-test", displayName: "Gemini Test" }] });
+    await expect(res.json()).resolves.toMatchObject({ models: [{ id: "gemini-test", displayName: "Gemini Test" }] });
     expect(String(fetchFn.mock.calls[0][0])).toContain("key=gem-key");
-    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://generativelanguage.googleapis.com/v1beta/models"]);
+    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual([
+      expect.stringMatching(/https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models#provider=gemini&wire=gemini&key=[0-9a-f]{64}/),
+    ]);
   });
 
   it("rejects custom-only wires when fetching built-in provider models", async () => {
@@ -159,7 +174,7 @@ describe("api key routes", () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ models: [{ id: "claude-custom", displayName: "Claude Custom" }] });
+    await expect(res.json()).resolves.toMatchObject({ models: [{ id: "claude-custom", displayName: "Claude Custom" }] });
     expect(fetchFn).toHaveBeenCalledWith("https://anthropic.example.com/v1/models", {
       headers: {
         "x-api-key": "custom-ant",
@@ -184,13 +199,15 @@ describe("api key routes", () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ models: [{ id: "gemini-custom", displayName: "Gemini Custom" }] });
+    await expect(res.json()).resolves.toMatchObject({ models: [{ id: "gemini-custom", displayName: "Gemini Custom" }] });
     expect(String(fetchFn.mock.calls[0][0])).toBe("https://gemini.example.com/v1beta/models?key=custom-gem");
     expect(fetchFn.mock.calls[0][1]).toEqual({ headers: { Accept: "application/json" } });
-    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://gemini.example.com/v1beta/models#wire=gemini"]);
+    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual([
+      expect.stringMatching(/https:\/\/gemini\.example\.com\/v1beta\/models#provider=custom&wire=gemini&key=[0-9a-f]{64}/),
+    ]);
   });
 
-  it("uses URL-keyed cache for repeated model fetches", async () => {
+  it("does not reuse model cache entries for different API keys", async () => {
     const body = JSON.stringify({ provider: "openai", apiKey: "sk-one" });
     const secondBody = JSON.stringify({ provider: "openai", apiKey: "sk-two" });
 
@@ -198,7 +215,7 @@ describe("api key routes", () => {
     const res = await app.request("/auth/api-keys/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: secondBody });
 
     expect(res.status).toBe(200);
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("returns unauthorized errors from upstream", async () => {
@@ -483,5 +500,138 @@ describe("api key routes", () => {
     const body = await res.json();
     expect(body).toEqual({ success: true, deleted: 2 });
     expect(pool.getAll()).toHaveLength(0);
+  });
+
+  // ── Memos ───────────────────────────────────────────────────────
+
+  let memoId: string;
+
+  beforeEach(async () => {
+    const res = await app.request("/auth/api-keys/memos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "custom",
+        apiKey: "sk-memo-key",
+        baseUrl: "https://example.com/v1",
+        wire: "codex-responses",
+        capabilities: ["chat"],
+      }),
+    });
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain("sk-memo-key");
+    expect(body.memo).not.toHaveProperty("apiKey");
+    memoId = body.memo.id;
+  });
+
+  it("lists memos", async () => {
+    const res = await app.request("/auth/api-keys/memos");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.memos).toHaveLength(1);
+    expect(body.memos[0]).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(body)).not.toContain("sk-memo-key");
+  });
+
+  it("clears a memo model snapshot when its key changes", async () => {
+    fetchFn.mockResolvedValueOnce(jsonResponse({ data: [{ id: "gpt-6", name: "GPT 6" }] }));
+    await app.request(`/auth/api-keys/memos/${memoId}/models?force=1`, { method: "POST" });
+
+    const res = await app.request(`/auth/api-keys/memos/${memoId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "sk-updated-key" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.memo).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(body)).not.toContain("sk-updated-key");
+    expect(body.memo.models).toEqual([]);
+    expect(body.memo.modelsFetchedAt).toBeNull();
+  });
+
+  it("adds entries from a memo without sending the key", async () => {
+    const res = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "custom", models: ["gpt-6"], baseUrl: "https://example.com/v1", wire: "codex-responses", memoId }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.added).toBe(1);
+    expect(pool.getAll()[0].apiKey).toBe("sk-memo-key");
+    expect(pool.getAll()[0].label).toBeTruthy();
+  });
+
+  it("skips (model, key) pairs that already exist while allowing other keys", async () => {
+    pool.add({ provider: "custom", model: "gpt-6", apiKey: "sk-memo-key", baseUrl: "https://example.com/v1", wire: "codex-responses" });
+
+    const res = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "custom", models: ["gpt-6", "gpt-5.6"], memoId }),
+    });
+
+    const body = await res.json();
+    expect(body.added).toBe(1);
+    expect(body.duplicates).toBe(1);
+    expect(pool.getAll().map((entry) => entry.model)).toEqual(["gpt-6", "gpt-5.6"]);
+  });
+
+  it("reports 404 for an unknown memoId", async () => {
+    const res = await app.request("/auth/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "custom", models: ["m"], baseUrl: "https://example.com/v1", memoId: "nope" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("refreshes memo models with the stored key and stores the snapshot", async () => {
+    fetchFn.mockResolvedValueOnce(jsonResponse({ data: [{ id: "gpt-6", name: "GPT 6" }] }));
+
+    const res = await app.request(`/auth/api-keys/memos/${memoId}/models?force=1`, { method: "POST" });
+
+    expect(res.status).toBe(200);
+    expect(fetchFn).toHaveBeenCalledWith("https://example.com/v1/models", {
+      headers: { Authorization: "Bearer sk-memo-key", Accept: "application/json" },
+    });
+    const body = await res.json();
+    expect(body.models).toEqual([{ id: "gpt-6", displayName: "GPT 6" }]);
+    expect(body.memo.modelsFetchedAt).toBeTruthy();
+    expect(body.memo).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(body)).not.toContain("sk-memo-key");
+  });
+
+  it("reports coverage and hides the generator when fully covered", async () => {
+    pool.add({ provider: "custom", model: "gpt-6", apiKey: "sk-memo-key", baseUrl: "https://example.com/v1", wire: "codex-responses" });
+
+    const covered = await (await app.request("/auth/api-keys/memos/coverage")).json();
+    expect(covered.canGenerate).toBe(false);
+
+    pool.add({ provider: "custom", model: "other", apiKey: "sk-uncovered", baseUrl: "https://other.com/v1", wire: "chat" });
+    const uncovered = await (await app.request("/auth/api-keys/memos/coverage")).json();
+    expect(uncovered.canGenerate).toBe(true);
+    expect(uncovered.uncovered).toBe(1);
+
+    const genResponse = await app.request("/auth/api-keys/memos/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const gen = await genResponse.json();
+    expect(gen.created).toBe(1);
+    expect(JSON.stringify(gen)).not.toContain("sk-memo-key");
+    expect(JSON.stringify(gen)).not.toContain("sk-uncovered");
+    expect(gen.memos.every((memo: Record<string, unknown>) => !Object.hasOwn(memo, "apiKey"))).toBe(true);
+    const after = await (await app.request("/auth/api-keys/memos/coverage")).json();
+    expect(after.canGenerate).toBe(false);
+  });
+
+  it("deletes a memo without touching pool entries", async () => {
+    pool.add({ provider: "custom", model: "gpt-6", apiKey: "sk-memo-key", baseUrl: "https://example.com/v1", wire: "codex-responses" });
+
+    const res = await app.request(`/auth/api-keys/memos/${memoId}`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    expect((await (await app.request("/auth/api-keys/memos")).json()).memos).toHaveLength(0);
+    expect(pool.getAll()).toHaveLength(1);
   });
 });

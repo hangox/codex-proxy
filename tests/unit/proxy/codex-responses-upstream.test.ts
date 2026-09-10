@@ -253,4 +253,71 @@ describe("CodexResponsesUpstream", () => {
     )).rejects.toThrow("Unsupported Codex auxiliary endpoint");
     expect(postMock).not.toHaveBeenCalled();
   });
+
+  // This wire forwards `req.tools` verbatim (buildResponsesUpstreamBody), so a
+  // deterministic tool-schema rejection must be reclassified here too — it is
+  // the one adapter that reaches upstream through getTransport() rather than
+  // global fetch, and it was missed by the initial round of wiring.
+  it("reclassifies a deterministic tool-schema error reported as 502 to 400", async () => {
+    const errorBody = "Invalid schema for function 'Artifact': "
+      + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+    postMock.mockResolvedValue({
+      status: 502,
+      headers: new Headers(),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(errorBody));
+          controller.close();
+        },
+      }),
+      setCookieHeaders: [],
+    });
+    const upstream = new CodexResponsesUpstream(
+      "sk-vendor",
+      "https://provider.example.com/v1",
+      "entry-1",
+    );
+    const request: CodexResponsesRequest = {
+      model: "custom:gpt-5.6-sol",
+      instructions: "Be concise",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+      store: false,
+      tools: [{ type: "function", name: "Artifact", parameters: { type: "object" } }],
+    };
+
+    await expect(
+      upstream.createResponse(request, new AbortController().signal),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("leaves an ordinary transport 502 alone (no schema-error text)", async () => {
+    postMock.mockResolvedValue({
+      status: 502,
+      headers: new Headers(),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("Bad Gateway"));
+          controller.close();
+        },
+      }),
+      setCookieHeaders: [],
+    });
+    const upstream = new CodexResponsesUpstream(
+      "sk-vendor",
+      "https://provider.example.com/v1",
+      "entry-1",
+    );
+    const request: CodexResponsesRequest = {
+      model: "custom:gpt-5.6-sol",
+      instructions: "Be concise",
+      input: [{ role: "user", content: "hello" }],
+      stream: true,
+      store: false,
+    };
+
+    await expect(
+      upstream.createResponse(request, new AbortController().signal),
+    ).rejects.toMatchObject({ status: 502 });
+  });
 });

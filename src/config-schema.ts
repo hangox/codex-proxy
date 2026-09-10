@@ -145,6 +145,10 @@ export const ConfigSchema = z.object({
     })).default([]),
     cors_allow_null_origin: z.boolean().default(false),
   }),
+  api_keys: z.object({
+    /** Daily background refresh of API key memo model lists. */
+    memo_auto_refresh: z.boolean().default(true),
+  }).default({}),
   logs: z.object({
     enabled: z.boolean().default(false),
     capacity: z.number().int().min(1).default(2000),

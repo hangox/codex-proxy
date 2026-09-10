@@ -90,8 +90,8 @@
 
 ```bash
 mkdir codex-proxy && cd codex-proxy
-curl -O https://raw.githubusercontent.com/icebear0828/codex-proxy/master/docker-compose.yml
-curl -O https://raw.githubusercontent.com/icebear0828/codex-proxy/master/.env.example
+curl -O https://raw.githubusercontent.com/hangox/codex-proxy/master/docker-compose.yml
+curl -O https://raw.githubusercontent.com/hangox/codex-proxy/master/.env.example
 cp .env.example .env
 docker compose up -d
 # 打开 http://localhost:8080 登录
@@ -100,6 +100,8 @@ docker compose up -d
 > 账号数据保存在 `data/` 文件夹，重启不丢失。其他容器连本服务用宿主机 IP（如 `192.168.x.x:8080`），不要用 `localhost`。
 
 取消 `docker-compose.yml` 中 Watchtower 的注释即可自动更新。若要在 Docker 中启用 Ollama 兼容桥接，请参考下方 [Ollama Bridge 配置](#ollama-bridge-配置)。
+
+> **内存设置**：`docker-compose.yml` 默认带了 `mem_limit: 768m` 和 `NODE_OPTIONS=--max-old-space-size=512`。不设这两个参数时，Node/V8 会按**宿主机全部内存**（而不是这个容器实际该用多少）估算堆上限，在内存有限的机器上（尤其是和其他服务共享的 VPS）可能导致内存使用一路涨上去、GC 收得太晚，严重时能把整台宿主机拖垮。请按你机器的实际内存调整这两个值——`mem_limit` 留够给其他服务的余量，`--max-old-space-size` 要明显小于 `mem_limit`（Node 进程的 RSS 不止是 V8 堆）。
 
 ### 方式三：源码运行
 

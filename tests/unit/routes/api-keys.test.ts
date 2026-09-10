@@ -58,7 +58,7 @@ describe("api key routes", () => {
     app = createApiKeyRoutes(pool, new ApiKeyModelCache({ persistence: modelPersistence, fetchFn }), new ApiKeyMemoStore(createMemoryMemoPersistence()));
   });
 
-  it("returns built-in catalog metadata with cached models", async () => {
+  it("returns built-in catalog metadata without token-scoped cache models", async () => {
     modelPersistence.save({
       entries: {
         "https://api.anthropic.com/v1/models": {
@@ -83,7 +83,8 @@ describe("api key routes", () => {
     };
     expect(body.catalog.anthropic.displayName).toBe("Anthropic");
     expect(body.catalog.anthropic.defaultBaseUrl).toContain("anthropic.com");
-    expect(body.catalog.anthropic.models).toEqual([{ id: "claude-test", displayName: "Claude Test" }]);
+    expect(body.catalog.anthropic.models).not.toEqual([{ id: "claude-test", displayName: "Claude Test" }]);
+    expect(body.catalog.anthropic.models.length).toBeGreaterThan(0);
   });
 
   it("fetches built-in provider models", async () => {
@@ -129,7 +130,9 @@ describe("api key routes", () => {
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ models: [{ id: "gemini-test", displayName: "Gemini Test" }] });
     expect(String(fetchFn.mock.calls[0][0])).toContain("key=gem-key");
-    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://generativelanguage.googleapis.com/v1beta/models"]);
+    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual([
+      expect.stringMatching(/https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models#provider=gemini&wire=gemini&key=[0-9a-f]{64}/),
+    ]);
   });
 
   it("rejects custom-only wires when fetching built-in provider models", async () => {
@@ -199,10 +202,12 @@ describe("api key routes", () => {
     await expect(res.json()).resolves.toMatchObject({ models: [{ id: "gemini-custom", displayName: "Gemini Custom" }] });
     expect(String(fetchFn.mock.calls[0][0])).toBe("https://gemini.example.com/v1beta/models?key=custom-gem");
     expect(fetchFn.mock.calls[0][1]).toEqual({ headers: { Accept: "application/json" } });
-    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual(["https://gemini.example.com/v1beta/models#wire=gemini"]);
+    expect(Object.keys(modelPersistence.snapshot().entries)).toEqual([
+      expect.stringMatching(/https:\/\/gemini\.example\.com\/v1beta\/models#provider=custom&wire=gemini&key=[0-9a-f]{64}/),
+    ]);
   });
 
-  it("uses URL-keyed cache for repeated model fetches", async () => {
+  it("does not reuse model cache entries for different API keys", async () => {
     const body = JSON.stringify({ provider: "openai", apiKey: "sk-one" });
     const secondBody = JSON.stringify({ provider: "openai", apiKey: "sk-two" });
 
@@ -210,7 +215,7 @@ describe("api key routes", () => {
     const res = await app.request("/auth/api-keys/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: secondBody });
 
     expect(res.status).toBe(200);
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("returns unauthorized errors from upstream", async () => {
@@ -513,7 +518,10 @@ describe("api key routes", () => {
         capabilities: ["chat"],
       }),
     });
-    memoId = ((await res.json()).memo).id;
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain("sk-memo-key");
+    expect(body.memo).not.toHaveProperty("apiKey");
+    memoId = body.memo.id;
   });
 
   it("lists memos", async () => {
@@ -521,7 +529,26 @@ describe("api key routes", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.memos).toHaveLength(1);
-    expect(body.memos[0].apiKey).toBe("sk-memo-key");
+    expect(body.memos[0]).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(body)).not.toContain("sk-memo-key");
+  });
+
+  it("clears a memo model snapshot when its key changes", async () => {
+    fetchFn.mockResolvedValueOnce(jsonResponse({ data: [{ id: "gpt-6", name: "GPT 6" }] }));
+    await app.request(`/auth/api-keys/memos/${memoId}/models?force=1`, { method: "POST" });
+
+    const res = await app.request(`/auth/api-keys/memos/${memoId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "sk-updated-key" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.memo).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(body)).not.toContain("sk-updated-key");
+    expect(body.memo.models).toEqual([]);
+    expect(body.memo.modelsFetchedAt).toBeNull();
   });
 
   it("adds entries from a memo without sending the key", async () => {
@@ -574,6 +601,8 @@ describe("api key routes", () => {
     const body = await res.json();
     expect(body.models).toEqual([{ id: "gpt-6", displayName: "GPT 6" }]);
     expect(body.memo.modelsFetchedAt).toBeTruthy();
+    expect(body.memo).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(body)).not.toContain("sk-memo-key");
   });
 
   it("reports coverage and hides the generator when fully covered", async () => {
@@ -587,8 +616,12 @@ describe("api key routes", () => {
     expect(uncovered.canGenerate).toBe(true);
     expect(uncovered.uncovered).toBe(1);
 
-    const gen = await (await app.request("/auth/api-keys/memos/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+    const genResponse = await app.request("/auth/api-keys/memos/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const gen = await genResponse.json();
     expect(gen.created).toBe(1);
+    expect(JSON.stringify(gen)).not.toContain("sk-memo-key");
+    expect(JSON.stringify(gen)).not.toContain("sk-uncovered");
+    expect(gen.memos.every((memo: Record<string, unknown>) => !Object.hasOwn(memo, "apiKey"))).toBe(true);
     const after = await (await app.request("/auth/api-keys/memos/coverage")).json();
     expect(after.canGenerate).toBe(false);
   });

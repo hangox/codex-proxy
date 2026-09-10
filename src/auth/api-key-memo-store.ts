@@ -117,7 +117,11 @@ export class ApiKeyMemoStore {
     const memo = this.memos.find((m) => m.id === id);
     if (!memo) return undefined;
     if (input.name !== undefined) memo.name = input.name.trim() || memo.name;
-    if (input.apiKey !== undefined && input.apiKey.trim()) memo.apiKey = input.apiKey.trim();
+    if (input.apiKey !== undefined && input.apiKey.trim() && input.apiKey.trim() !== memo.apiKey) {
+      memo.apiKey = input.apiKey.trim();
+      memo.models = [];
+      memo.modelsFetchedAt = null;
+    }
     this.persist();
     return { ...memo };
   }

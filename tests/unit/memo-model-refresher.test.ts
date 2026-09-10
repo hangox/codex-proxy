@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiKeyMemoStore } from "@src/auth/api-key-memo-store.js";
 import type { ApiKeyMemoPersistence } from "@src/auth/api-key-memo-store.js";
 import { ApiKeyModelCache } from "@src/auth/api-key-model-cache.js";
-import { refreshAllMemoModels } from "@src/memo-model-refresher.js";
+import { refreshAllMemoModels, startMemoModelRefresher } from "@src/memo-model-refresher.js";
 
 function createMemoryMemoPersistence(): ApiKeyMemoPersistence {
   let stored: ReturnType<ApiKeyMemoStore["list"]> = [];
@@ -74,5 +74,22 @@ describe("refreshAllMemoModels", () => {
     const cache = new ApiKeyModelCache({ fetchFn: vi.fn() });
     const result = await refreshAllMemoModels(store, cache);
     expect(result).toEqual({ refreshed: 0, failed: 0 });
+  });
+
+  it("schedules another refresh after each daily cycle", async () => {
+    const store = new ApiKeyMemoStore(createMemoryMemoPersistence());
+    store.create({ provider: "custom", baseUrl: "https://daily.example.com/v1", wire: "chat", apiKey: "daily-key" });
+    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "daily-model" }] }));
+    const cache = new ApiKeyModelCache({ fetchFn });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const stop = startMemoModelRefresher(store, cache);
+
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+
+    stop();
+    logSpy.mockRestore();
   });
 });

@@ -103,6 +103,7 @@ const MemoGenerateSchema = z.object({
 });
 
 type MemoRouteInput = z.infer<typeof MemoCreateSchema>;
+type PublicApiKeyMemo = Omit<ApiKeyMemo, "apiKey">;
 
 type ApiKeyBindingInput = z.infer<typeof ApiKeyBindingSchema>;
 
@@ -118,6 +119,11 @@ function isProviderWireAllowed(provider: Provider, wire: z.infer<typeof WireSche
 function normalizeMemoCapabilities(capabilities: ApiKeyCapability[] | undefined): ApiKeyCapability[] {
   const deduped = [...new Set(capabilities ?? [])];
   return deduped.length > 0 ? deduped : ["chat"];
+}
+
+function toPublicMemo(memo: ApiKeyMemo): PublicApiKeyMemo {
+  const { apiKey: _apiKey, ...publicMemo } = memo;
+  return publicMemo;
 }
 
 function toMemoRouteInput(memo: ApiKeyMemo): MemoRouteInput {
@@ -306,7 +312,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool, modelCache = new ApiKeyMode
   // ── Memos (add-key templates; never affect routing) ───────────
 
   app.get("/auth/api-keys/memos", (c) => {
-    return c.json({ memos: memoStore.list() });
+    return c.json({ memos: memoStore.list().map(toPublicMemo) });
   });
 
   app.post("/auth/api-keys/memos", async (c) => {
@@ -321,7 +327,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool, modelCache = new ApiKeyMode
       apiKey: input.apiKey,
       capabilities: input.capabilities,
     });
-    return c.json({ memo, masked: maskKey(memo.apiKey) });
+    return c.json({ memo: toPublicMemo(memo), masked: maskKey(memo.apiKey) });
   });
 
   app.patch("/auth/api-keys/memos/:id", async (c) => {
@@ -329,7 +335,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool, modelCache = new ApiKeyMode
     if (!parsed.ok) return parsed.response;
     const memo = memoStore.update(c.req.param("id"), parsed.data);
     if (!memo) { c.status(404); return c.json({ error: "Memo not found" }); }
-    return c.json({ memo });
+    return c.json({ memo: toPublicMemo(memo) });
   });
 
   app.delete("/auth/api-keys/memos/:id", (c) => {
@@ -351,7 +357,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool, modelCache = new ApiKeyMode
         force,
       });
       const updated = memoStore.setModels(memo.id, result.models, result.fetchedAt);
-      return c.json({ models: result.models, fetchedAt: result.fetchedAt, fromCache: result.fromCache, stale: result.stale, memo: updated });
+      return c.json({ models: result.models, fetchedAt: result.fetchedAt, fromCache: result.fromCache, stale: result.stale, memo: updated ? toPublicMemo(updated) : undefined });
     } catch (err) {
       if (err instanceof ProviderModelFetchError && err.kind === "unauthorized") {
         c.status(401);
@@ -388,7 +394,7 @@ export function createApiKeyRoutes(pool: ApiKeyPool, modelCache = new ApiKeyMode
       apiKey: entry.apiKey,
       capabilities: entry.capabilities,
     })));
-    return c.json({ success: true, created: result.created.length, skipped: result.skipped, memos: memoStore.list() });
+    return c.json({ success: true, created: result.created.length, skipped: result.skipped, memos: memoStore.list().map(toPublicMemo) });
   });
 
   // ── Batch delete ──────────────────────────────────────────────

@@ -127,3 +127,177 @@ jobs:
           build-args: PROXY_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ── Lite image ─────────────────────────────────────────────────────
+  # Alpine + the No-Node Lite bundle + prebuilt Linux native addons.
+  # No node_modules, no toolchain, no Rust build: ~60 MB instead of ~450 MB.
+  # Separate tags (:latest-lite / :sha-*-lite / version-lite) so the full
+  # image remains the default.
+  publish-lite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve image tags
+        id: version
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          if [ -n "$TAG_INPUT" ] && ! [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "::error::invalid tag input"
+            exit 1
+          fi
+
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+
+          PUSH_LATEST=true
+          if [ -n "$TAG_INPUT" ]; then
+            git fetch origin master --depth=1 >/dev/null 2>&1 || true
+            MASTER_SHA=$(git rev-parse FETCH_HEAD 2>/dev/null || echo "")
+            if [ "$(git rev-parse HEAD)" != "$MASTER_SHA" ]; then
+              echo "tag $TAG_INPUT is not the master tip, skipping latest-lite"
+              PUSH_LATEST=false
+            fi
+          fi
+
+          {
+            echo "tags<<EOF"
+            if [ "$PUSH_LATEST" = "true" ]; then
+              echo "type=raw,value=latest-lite"
+            fi
+            echo "type=raw,value=sha-${SHORT_SHA}-lite"
+            if [ -n "$TAG_INPUT" ]; then
+              echo "type=raw,value=${TAG_INPUT}-lite"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$TAG_INPUT" ]; then
+            echo "version=${TAG_INPUT#v}" >> "$GITHUB_OUTPUT"
+          else
+            PKG_VERSION=$(node -p "require('./package.json').version")
+            LATEST_STABLE=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 | sed 's/^v//' || echo "0.0.0")
+            FINAL=$(node -e "
+              const cmp = (x, y) => {
+                const pa = x.split('.').map(Number);
+                const pb = y.split('.').map(Number);
+                for (let i = 0; i < 3; i++) {
+                  if (pa[i] !== pb[i]) return pa[i] - pb[i];
+                }
+                return 0;
+              };
+              console.log(cmp('$PKG_VERSION', '$LATEST_STABLE') >= 0 ? '$PKG_VERSION' : '$LATEST_STABLE');
+            ")
+            echo "version=$FINAL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build core and Lite server bundle
+        run: |
+          npm ci
+          cd web && npm ci && cd ..
+          npm run build:web
+          npm --prefix packages/electron run build
+
+      - name: Stage the Lite package tree
+        run: |
+          node scripts/portable/build-portable.mjs \
+            --version "${{ steps.version.outputs.version }}" \
+            --out "$RUNNER_TEMP/lite"
+          mkdir -p "$RUNNER_TEMP/lite-pkg"
+          python3 - "$RUNNER_TEMP"/lite/*.zip "$RUNNER_TEMP/lite-pkg" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              archive.extractall(sys.argv[2])
+          PY
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build native addons for Linux
+        run: |
+          # gnu feeds the glibc host smoke test below, musl is the only addon
+          # the Alpine image ships; a plain checkout builds neither.
+          cd native && npm ci && npm run build
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          npm run build:linux-x64-musl
+          test -f codex-tls.linux-x64-gnu.node
+          test -f codex-tls.linux-x64-musl.node
+
+      - name: Stage the lite Docker context
+        run: |
+          node scripts/docker/stage-lite.mjs \
+            --out "$RUNNER_TEMP/docker-lite-stage" \
+            --package "$RUNNER_TEMP/lite-pkg" \
+            --native native
+
+      - name: Smoke test the staged bundle
+        run: |
+          # The runner is glibc, but the staged tree only carries the musl
+          # addon destined for the image. Lend it the gnu addon for this host
+          # test only, then drop it so it never reaches the build context.
+          STAGE="$RUNNER_TEMP/docker-lite-stage"
+          cp native/codex-tls.linux-x64-gnu.node "$STAGE/native/"
+          cleanup() { rm -f "$STAGE/native/codex-tls.linux-x64-gnu.node"; }
+          trap cleanup EXIT
+          # The server must start with only the staged files: no node_modules,
+          # sqlite via the node:sqlite builtin.
+          cd "$STAGE"
+          node app/server.mjs --portable --mode=server --port 18080 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl --noproxy '*' --fail --silent http://127.0.0.1:18080/health >/dev/null; then
+              echo "health check passed"
+              kill $SERVER_PID
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy"
+          kill $SERVER_PID || true
+          exit 1
+
+      - name: Assert only the musl addon reaches the image context
+        run: |
+          test ! -e "$RUNNER_TEMP/docker-lite-stage/native/codex-tls.linux-x64-gnu.node"
+          ls -1 "$RUNNER_TEMP/docker-lite-stage/native/"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: ${{ steps.version.outputs.tags }}
+
+      - name: Copy Dockerfile.lite into the staged context
+        run: cp Dockerfile.lite "$RUNNER_TEMP/docker-lite-stage/Dockerfile"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ runner.temp }}/docker-lite-stage
+          file: ${{ runner.temp }}/docker-lite-stage/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: PROXY_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=lite
+          cache-to: type=gha,mode=max,scope=lite

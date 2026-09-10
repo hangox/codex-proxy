@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { CodexApiError } from "@src/proxy/codex-types.js";
 import {
+  classifyRawUpstreamError,
   extractRetryAfterSec,
   isBanError,
   isCfChallengeError,
@@ -11,6 +12,7 @@ import {
   isTokenInvalidError,
   isModelNotSupportedError,
   isUnansweredFunctionCallError,
+  isDeterministicSchemaOrParamErrorBody,
 } from "@src/proxy/error-classification.js";
 
 describe("extractRetryAfterSec", () => {
@@ -245,5 +247,36 @@ describe("isCfPathBlockError", () => {
   it("returns false for non-CodexApiError", () => {
     expect(isCfPathBlockError(new Error("404"))).toBe(false);
     expect(isCfPathBlockError(null)).toBe(false);
+  });
+});
+
+describe("isDeterministicSchemaOrParamErrorBody / classifyRawUpstreamError", () => {
+  // The exact string upstream returns for Claude Code's built-in Artifact tool
+  // (its `field` pattern uses \p{Cc} Unicode property escapes plus a
+  // `(?!__.*__$)` negative lookahead, neither of which RE2-style validators
+  // accept). Replaying the request can never succeed.
+  const REAL_BODY = "Invalid schema for function 'Artifact': "
+    + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+
+  it("matches the real production string", () => {
+    expect(isDeterministicSchemaOrParamErrorBody(REAL_BODY)).toBe(true);
+  });
+
+  it("reclassifies a schema-error 502 to 400", () => {
+    expect(classifyRawUpstreamError(502, REAL_BODY)).toBe(400);
+    expect(classifyRawUpstreamError(500, REAL_BODY)).toBe(400);
+  });
+
+  it("leaves a genuine transport 5xx untouched (never turns a real 5xx into a skipped retry)", () => {
+    expect(classifyRawUpstreamError(502, "Bad Gateway")).toBe(502);
+    expect(classifyRawUpstreamError(500, "internal server error")).toBe(500);
+    expect(classifyRawUpstreamError(503, JSON.stringify({
+      error: { code: "server_is_overloaded" },
+    }))).toBe(503);
+  });
+
+  it("leaves non-5xx statuses untouched", () => {
+    expect(classifyRawUpstreamError(429, REAL_BODY)).toBe(429);
+    expect(classifyRawUpstreamError(400, "bad request")).toBe(400);
   });
 });

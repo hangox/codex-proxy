@@ -15,7 +15,9 @@ import { AnthropicUpstream } from "@src/proxy/anthropic-upstream.js";
 import { GeminiUpstream } from "@src/proxy/gemini-upstream.js";
 import { CodexResponsesUpstream } from "@src/proxy/codex-responses-upstream.js";
 import type { ApiKeyEntry, ApiKeyProvider, ApiKeyWire } from "@src/auth/api-key-pool.js";
+import { CodexApiError } from "@src/proxy/codex-types.js";
 import type { CodexResponsesRequest } from "@src/proxy/codex-types.js";
+import type { UpstreamAdapter } from "@src/proxy/upstream-adapter.js";
 
 function entry(
   provider: ApiKeyProvider,
@@ -131,4 +133,58 @@ describe("createAdapterForEntry — wire routing", () => {
       },
     });
   });
+});
+
+// ── shared deterministic-schema-error reclassification ────────────
+//
+// AnthropicUpstream / GeminiUpstream / OpenAIUpstream all share the exact
+// same "wrap non-2xx into CodexApiError" snippet copy-pasted from codex-api.ts
+// (the primary Codex/ChatGPT backend path, where this reclassification was
+// first added to fix a real production hang — see error-classification.ts).
+// These three run through classifyRawUpstreamError() too, so a deterministic
+// schema/param error that upstream reports as a 5xx must not be retried
+// endlessly on these routes either.
+const SCHEMA_ERROR_BODY = "Invalid schema for function 'Artifact': "
+  + "'^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$' is not a 'regex'.";
+
+describe("non-Codex upstream adapters — deterministic schema-error reclassification", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const cases: Array<{ name: string; make: () => UpstreamAdapter }> = [
+    { name: "AnthropicUpstream", make: () => new AnthropicUpstream("sk-ant") },
+    { name: "GeminiUpstream", make: () => new GeminiUpstream("gem-key") },
+    { name: "OpenAIUpstream", make: () => new OpenAIUpstream("openai", "sk") },
+  ];
+
+  for (const { name, make } of cases) {
+    it(`${name} reclassifies a schema-error 502 to 400`, async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(SCHEMA_ERROR_BODY, { status: 502 })));
+      const upstream = make();
+
+      let caught: unknown;
+      try {
+        await upstream.createResponse(codexRequest("m"), new AbortController().signal);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(CodexApiError);
+      expect((caught as CodexApiError).status).toBe(400);
+    });
+
+    it(`${name} leaves an ordinary transport 502 alone`, async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("Bad Gateway", { status: 502 })));
+      const upstream = make();
+
+      let caught: unknown;
+      try {
+        await upstream.createResponse(codexRequest("m"), new AbortController().signal);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(CodexApiError);
+      expect((caught as CodexApiError).status).toBe(502);
+    });
+  }
 });

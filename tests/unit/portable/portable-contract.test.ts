@@ -101,6 +101,7 @@ describe("No-Node Lite distribution contract", () => {
     expect(source).not.toContain('copyDirectory(resolve(ROOT, "native")');
     expect(source).toContain("zipfile.ZipFile");
     expect(source).toContain("compresslevel=9");
+    expect(source).toContain("info.compress_type = zipfile.ZIP_DEFLATED");
     expect(source).toContain("0o755 << 16");
     expect(source).toContain('"--version"');
     expect(source).toContain("PORTABLE_VERSION");
@@ -130,6 +131,7 @@ describe("No-Node Lite distribution contract", () => {
     const source = readFileSync(resolve(PORTABLE, "test-portable.mjs"), "utf8");
     expect(source).toContain("--archive");
     expect(source).toContain("zipfile");
+    expect(source).toContain("non-deflated file entries");
     expect(source).toContain("codex-proxy.sh is not executable");
     expect(source).toContain("CODEX_PROXY_READY=");
     expect(source).toContain("--portable");

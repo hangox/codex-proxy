@@ -21,6 +21,18 @@ function createOnAdd() {
   }) => ({ ok: true }));
 }
 
+const noopAsync = async () => {};
+const defaultMemoProps = {
+  memos: [],
+  memoCoverage: null,
+  createMemo: vi.fn(async () => ({ ok: true as const })),
+  deleteMemo: async () => {},
+  fetchMemoModels: vi.fn(async () => ({ ok: true as const, models: [] })),
+  generateMemos: async () => ({ created: 0, skipped: 0 }),
+  loadMemoCoverage: async () => {},
+  loadMemos: async () => {},
+};
+
 function createFetchProviderModels(models: CatalogModel[] = []) {
   return vi.fn(async (_input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire }) => ({
     ok: true as const,
@@ -45,6 +57,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -78,6 +91,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -103,6 +117,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -118,6 +133,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -126,7 +142,43 @@ describe("AddKeyForm", () => {
     fireEvent.blur(screen.getByPlaceholderText("sk-..."));
 
     await waitFor(() => expect(screen.getByText("GPT Test")).toBeTruthy());
-    expect(fetchProviderModels).toHaveBeenCalledWith({ provider: "openai", apiKey: "sk-test", baseUrl: undefined, wire: undefined });
+    expect(fetchProviderModels).toHaveBeenCalledWith({ provider: "openai", apiKey: "sk-test", baseUrl: undefined, wire: undefined, force: false });
+  });
+
+  it("filters fetched models and force-refreshes through the refresh button", async () => {
+    const onAdd = createOnAdd();
+    const fetchProviderModels = createFetchProviderModels([
+      { id: "gpt-test", displayName: "GPT Test" },
+      { id: "gpt-6", displayName: "GPT 6" },
+    ]);
+
+    render(
+      <AddKeyForm
+        onAdd={onAdd}
+        catalog={defaultCatalog}
+        fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "openai" } });
+    fireEvent.input(screen.getByPlaceholderText("sk-..."), { target: { value: "sk-test" } });
+    fireEvent.blur(screen.getByPlaceholderText("sk-..."));
+    await waitFor(() => expect(screen.getByText("GPT Test")).toBeTruthy());
+
+    fireEvent.input(screen.getByPlaceholderText("Filter models..."), { target: { value: "gpt-6" } });
+    expect(screen.queryByText("GPT Test")).toBeNull();
+    expect(screen.getByText("GPT 6")).toBeTruthy();
+    fireEvent.input(screen.getByPlaceholderText("Filter models..."), { target: { value: "" } });
+
+    fireEvent.click(screen.getByTitle("Re-fetch the model list from the provider"));
+    await waitFor(() => expect(fetchProviderModels).toHaveBeenLastCalledWith({
+      provider: "openai",
+      apiKey: "sk-test",
+      baseUrl: undefined,
+      wire: undefined,
+      force: true,
+    }));
   });
 
   it("submits a selected dynamically fetched built-in model", async () => {
@@ -138,6 +190,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -160,6 +213,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -180,6 +234,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -194,6 +249,7 @@ describe("AddKeyForm", () => {
       apiKey: "custom-key",
       baseUrl: "https://api.example.com/v1",
       wire: "chat",
+      force: false,
     });
   });
 
@@ -206,6 +262,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -229,6 +286,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -258,6 +316,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -287,6 +346,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -302,6 +362,7 @@ describe("AddKeyForm", () => {
       apiKey: "custom-gem",
       baseUrl: "https://gemini.example.com/v1beta",
       wire: "gemini",
+      force: false,
     });
   });
 
@@ -314,6 +375,7 @@ describe("AddKeyForm", () => {
         onAdd={onAdd}
         catalog={defaultCatalog}
         fetchProviderModels={fetchProviderModels}
+        {...defaultMemoProps}
       />,
     );
 
@@ -341,11 +403,12 @@ describe("AddKeyForm", () => {
           onAdd={onAdd}
           catalog={defaultCatalog}
           fetchProviderModels={fetchProviderModels}
+          {...defaultMemoProps}
         />
       </I18nProvider>,
     );
 
-    expect(screen.getByText("供应商")).toBeTruthy();
+    expect(screen.getByText("供应商类型")).toBeTruthy();
     expect(screen.getByText("模型")).toBeTruthy();
     expect(screen.getByText("支持能力")).toBeTruthy();
     expect(screen.getByText("添加 Key")).toBeTruthy();

@@ -119,6 +119,23 @@ Linux x64 Lite 同时包含 glibc 和 musl 两种 TLS native addon，可用于�
 <details>
 <summary><h3>方式三：Docker 部署</h3></summary>
 
+最简单的方式，一条命令即可启动：
+
+```bash
+docker run -d --name codex-proxy --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -v codex-proxy-data:/app/data \
+  -v codex-proxy-config:/app/config \
+  ghcr.io/icebear0828/codex-proxy:latest-lite
+# 打开 http://localhost:8080 登录
+```
+
+> 该镜像基于 Alpine Linux + Node.js，只包含应用本体、前端页面和运行必需的原生组件，编译工具链、依赖缓存等仅构建时使用的内容均已移除；**功能完整**，Web 面板、账号管理、Ollama 桥接等都可正常使用，目前提供 linux/amd64。压缩后拉取约 57MB（另一版本基于 Debian，约 722MB），空闲内存约 40MB。首次启动会自动在 `codex-proxy-config` 卷中生成默认配置，账号数据保存在 `codex-proxy-data` 卷，更新镜像不丢失。需要让局域网其他设备访问时，把端口参数改成 `-p 8080:8080`。
+
+已经在用 `docker-compose.yml`（默认 `:latest` 基于 Debian，含编译工具链，便于在容器内调试或从源码构建）的用户无需迁移：两个镜像的目录布局与 `./data`、`./config` 卷完全一致，把 compose 里的 `image` 换成 `ghcr.io/icebear0828/codex-proxy:latest-lite` 即可。
+
+需要配置环境变量、自动更新等更多选项时，使用 compose 方式：
+
 ```bash
 mkdir codex-proxy && cd codex-proxy
 curl -O https://raw.githubusercontent.com/icebear0828/codex-proxy/master/docker-compose.yml

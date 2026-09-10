@@ -14,6 +14,7 @@
 
 ### Added
 
+- 新增基于 Alpine 的 Docker 镜像变体 `ghcr.io/icebear0828/codex-proxy:latest-lite`（及 `:sha-*-lite`、`<版本>-lite` tag；标签名 lite 仅为内部变体标识）：**功能与现有 Debian 镜像完全一致**，镜像只包含应用本体与运行时必需内容——`node:22-alpine` 基底、esbuild 单文件 bundle、前端资源、仅 Linux musl TLS addon（不含 gnu/Windows/macOS 文件、node_modules 与构建工具链），压缩拉取体积约为 Debian 镜像的 1/12.6（GHCR manifest 实测 57.2MB vs 722MB）；sqlite 使用 Node 22 内置 `node:sqlite`（node:20 alpine 未内置），健康检查用 Node fetch（无 curl）；与 Debian 镜像保持相同的 `/app` 目录布局、`./data`/`./config` 卷契约及空 config 卷自动播种（entrypoint 从 `/defaults` 拷贝），stock `docker-compose.yml` 仅替换 image tag 即可互换；发布流水线在 glibc runner 上借 gnu addon 完成冒烟测试后将其移出镜像构建上下文。（`Dockerfile.lite`、`scripts/docker/stage-lite.mjs`、`.github/workflows/docker-publish.yml`）
 - No-Node Lite 在 Windows 缺少 WebView2 运行时且显式指定 `--mode=webview2` 时，新增经用户确认后的按需安装路径：从微软官方端点下载 Evergreen Bootstrapper（约 2MB），校验 Windows 可执行格式与 Authenticode 签名（须为 Microsoft 签发）后以 `/silent /install` 静默安装，下载器缓存于系统临时目录并复用；下载或校验失败时回退为打开官方安装页，仍支持 `CODEX_PROXY_WEBVIEW2_BOOTSTRAPPER` 指定本地安装器。（`scripts/portable/server.mjs`）
 
 - 新增 Linux x64 musl TLS native addon 构建与验证流程，并将 `codex-tls.linux-x64-musl.node` 接入 No-Node Lite 的构建和发布包，使 Lite 可在 Alpine 等 musl Linux 环境中使用。（`native/package.json`、`scripts/native/`、`scripts/portable/`、`.github/workflows/native-musl-ci.yml`）

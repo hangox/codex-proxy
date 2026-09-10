@@ -85,6 +85,23 @@ Linux x64 Lite includes both glibc and musl TLS native addons, so it can be used
 
 ### Docker
 
+The simplest way — one command:
+
+```bash
+docker run -d --name codex-proxy --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -v codex-proxy-data:/app/data \
+  -v codex-proxy-config:/app/config \
+  ghcr.io/icebear0828/codex-proxy:latest-lite
+# Open http://localhost:8080 to log in
+```
+
+> This image is based on Alpine Linux + Node.js and contains only the application itself, the web UI and the native components needed at runtime — build toolchains, dependency caches and other build-time-only content are removed. **It is feature-complete**: the web dashboard, account management, the Ollama bridge and everything else work the same. Currently linux/amd64. It pulls ~57 MB compressed (the alternative Debian-based image is ~722 MB) and idles at ~40 MB RAM. On first start it seeds default config into the `codex-proxy-config` volume; your accounts live in the `codex-proxy-data` volume and survive image updates. To allow LAN access, use `-p 8080:8080`.
+
+Already using `docker-compose.yml` (which defaults to the Debian-based `:latest` image, with the toolchain handy for in-container debugging or building from source)? No migration needed — the two images share the same layout and `./data` / `./config` volumes; just change `image` to `ghcr.io/icebear0828/codex-proxy:latest-lite`.
+
+For environment variables, auto-updates and more options, use the compose setup:
+
 ```bash
 mkdir codex-proxy && cd codex-proxy
 curl -O https://raw.githubusercontent.com/icebear0828/codex-proxy/master/docker-compose.yml

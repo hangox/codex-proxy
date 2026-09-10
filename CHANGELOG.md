@@ -8,12 +8,28 @@
 
 ## [Unreleased]
 
+> 暂无已记录的变更。
+
+## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
+
 ### Fixed
 
 - **确定性的工具 schema 校验错误不再被当成可重试的 5xx。** 真实复现：Claude Code 内置 Artifact 工具的 JSON Schema 用了上游校验器不认的正则语法，上游报 `Invalid schema for function 'Artifact': ... is not a 'regex'.`；这类错误重放多少次都是同一个结果，不是传输抖动，但上游把它报成 5xx，而 `withRetry` 只按 `status >= 500` 判定可重试（Claude Code 客户端自己的 502 退避重试同理），于是交互式会话被无限重试拖住、用户拿不到任何回答。新增 `isDeterministicSchemaOrParamErrorBody()` / `classifyRawUpstreamError()`（`src/proxy/error-classification.ts`）：命中这类文本特征时把 5xx 改写成 400，`withRetry` 因此不再重试；只对 5xx 生效，不影响真正的传输层 5xx，也不把 4xx（401/402/429…）的既有语义压平成 400。接入点：原始 HTTP 错误路径（`codex-api.ts` 的 `createResponseViaHttp` / `createCompactResponse`、`anthropic-upstream.ts`、`gemini-upstream.ts`、`openai-upstream.ts`、`responses-upstream.ts`、`codex-responses-upstream.ts`）与 SSE/WS 事件错误路径（`codex-api-error-from-event.ts` 的 `codexApiErrorFromEvent`）共用同一份判据，不再各自维护。
 - **转发工具 schema 前清掉上游正则引擎编译不了的 `pattern`，不再因此被上游拒收整个请求。** 真实复现：Claude Code 2.1.265+ 内置 Artifact 工具的 `field` 参数 pattern 同时含 `\p{Cc}` 这类 Unicode 属性转义和 `(?!__.*__$)` 负向前瞻，`collection` / `doc_id` 参数也各带一条 `(?!`；GPT 系上游用 RE2（从设计上不支持前瞻），多数厂商的 JSON Schema 校验器则把 `\p{...}` 判成 `is not a 'regex'`，于是上游在收到请求那一刻就拒收整个请求——Artifact 是默认自带工具，每一轮正常对话都失败。新增 `sanitizeSchemaPatterns()`：复用既有的 `walkSchema` 递归管线（不另写第二份遍历器），对含 `\p{` / `\P{` / `(?=` / `(?!` / `(?<=` / `(?<!` / `(?>` / `(?(` 的 `pattern` **整键删除**，`patternProperties` 的**键名**是正则、命中同样删掉整个条目；覆盖位置包括 `properties` / `patternProperties` / `$defs` / `definitions` / `items`（对象与 draft-07 数组两种写法）/ `prefixItems` / `oneOf` / `anyOf` / `allOf` / `if`-`then`-`else`-`not`，以及既有遍历器从不进入、但值同样是 schema 的 `additionalProperties` / `unevaluatedProperties` / `unevaluatedItems` / `propertyNames` / `contains` / `dependentSchemas` 条目（这些扩展位置只在清 pattern 时下钻、且下钻时不带 `additionalProperties` 注入，以免改变结构化输出的既有行为）。选择整键删除而非改写：`(?!__.*__$)` 在 RE2 里无法等价表达，而 `pattern` 只是校验约束、不是工具的功能定义，删掉不影响工具可用性；也**不按上游模型区分**（实测 claude-* / qwen3.8 / kimi-k3 本可通过）——清洗发生在路由之前、拿不到最终命中的上游（换号/降级都可能改），模型白名单必然过时，能保留的合法 `pattern` 仍然保留。三条协议的工具参数路径（Anthropic / OpenAI / Gemini）统一经 `normalizeSchema()` 接入。（`src/translation/shared-utils.ts`、`src/translation/tool-format.ts`）
 
-## [v2.1.x](https://github.com/icebear0828/codex-proxy/releases?q=2.1) - 2026-09-01 至 2026-09-07
+- 修复 Docker 镜像版本号显示错误（容器内始终回退到过期的 `package.json` 版本而非实际发布版本，#794）：#673 重构 `docker-publish.yml` 时移除了产生 `outputs.version` 的步骤，而 #677 引入的 `--build-arg PROXY_VERSION` 仍引用该输出，导致注入值为空。恢复 "Resolve image tags" 步骤的 `version` 输出（tag 构建取 tag 本身，分支构建取 `package.json` 与最新 stable tag 的较大者），并在 checkout 中启用 `fetch-tags` 以保证分支构建能读到历史 tag；新增 workflow 输出引用完整性测试防止同类回归。（`.github/workflows/docker-publish.yml`、`tests/unit/ci/workflow-outputs.test.ts`）
+- 修复 No-Node Lite zip 制品全部条目以 STORE（不压缩）模式写入的问题：传给 `writestr()` 的 `ZipInfo` 会忽略归档级压缩配置并默认 `ZIP_STORED`，导致制品体积约为正常 deflate -9 的两倍以上（实测 18.8MB → 3.6MB 量级）；现在为每个文件条目显式设置 `compress_type = ZIP_DEFLATED` 与 `compresslevel=9`，归档级测试新增"文件条目必须为 deflate 且压缩率有效"的防回归断言（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`）。
+- 修复 Dashboard 底栏在更新状态尚未缓存时无法显示 Codex Desktop 版本的问题，并更新 2026 年版权文案。
+
+- 修复速率限制重置卡（Reset Cards）在请求转发后从控制台消失的问题：被动响应头更新 quota 时保留已知的 `reset_credits_available`，并在重置卡查询与消耗逻辑中同步更新账号配额缓存（`src/auth/account-registry.ts`、`src/auth/active-quota-refresher.ts`、`src/routes/accounts.ts`）。
+
+- 修复 Dashboard 顶部导航栏与侧栏「Codex Proxy」左侧品牌图标错误的问题：将手绘六边形 SVG 替换为官方 Logo 图片（`web/public/icon.png`），与桌面端 / Web 应用图标保持一致。（`web/src/components/Header.tsx`、`web/src/components/Sidebar.tsx`）
+
+- 修复上一条改动后在桌面 / 生产构建中品牌图标与 favicon 仍显示裂图的问题：后端 Web 路由对非哈希资源改为显式读文件返回（此前挂载在精确路径上的 `serveStatic` 无法推导相对路径，`/icon.png`、`/favicon.ico` 始终 404）。（`src/routes/web.ts`）
+
+- 修复并统一桌面端与 Web 端应用图标与 Logo：生成包含 Windows 完整多分辨率的 `icon.ico`、Web `favicon.ico` / `icon.png`，Electron 主进程窗口配置中注入应用图标并移除 `electron-builder` 的 `signAndEditExecutable: false` 以确保可执行文件与任务栏/桌面快捷方式正确嵌入图标；统一 Dashboard 顶部导航栏 Logo 为品牌立方体图标。（`packages/electron/`、`web/`、`scripts/build/generate-ico.ps1`）
+
+- 移除 Dashboard 顶部导航栏与侧栏重复展示的「服务运行中」状态徽标（`web/src/components/Header.tsx`）。
 
 ### Added
 
@@ -55,22 +71,6 @@
 ### Removed
 
 - No-Node Lite 包内不再携带 Evergreen Bootstrapper（`tools/MicrosoftEdgeWebView2Setup.exe`，约 2MB）：WebView2 安装改为运行时按需下载（见 Added）；删除 `scripts/portable/download-webview2-bootstrapper.mjs` 与 `npm run download:webview2-bootstrapper`，CI 不再下载、签名校验或打包该安装器。（`scripts/portable/`、`package.json`、`.github/workflows/lite-ci.yml`、`.github/workflows/release.yml`）
-
-### Fixed
-
-- 修复 Docker 镜像版本号显示错误（容器内始终回退到过期的 `package.json` 版本而非实际发布版本，#794）：#673 重构 `docker-publish.yml` 时移除了产生 `outputs.version` 的步骤，而 #677 引入的 `--build-arg PROXY_VERSION` 仍引用该输出，导致注入值为空。恢复 "Resolve image tags" 步骤的 `version` 输出（tag 构建取 tag 本身，分支构建取 `package.json` 与最新 stable tag 的较大者），并在 checkout 中启用 `fetch-tags` 以保证分支构建能读到历史 tag；新增 workflow 输出引用完整性测试防止同类回归。（`.github/workflows/docker-publish.yml`、`tests/unit/ci/workflow-outputs.test.ts`）
-- 修复 No-Node Lite zip 制品全部条目以 STORE（不压缩）模式写入的问题：传给 `writestr()` 的 `ZipInfo` 会忽略归档级压缩配置并默认 `ZIP_STORED`，导致制品体积约为正常 deflate -9 的两倍以上（实测 18.8MB → 3.6MB 量级）；现在为每个文件条目显式设置 `compress_type = ZIP_DEFLATED` 与 `compresslevel=9`，归档级测试新增"文件条目必须为 deflate 且压缩率有效"的防回归断言（`scripts/portable/build-portable.mjs`、`scripts/portable/test-portable.mjs`）。
-- 修复 Dashboard 底栏在更新状态尚未缓存时无法显示 Codex Desktop 版本的问题，并更新 2026 年版权文案。
-
-- 修复速率限制重置卡（Reset Cards）在请求转发后从控制台消失的问题：被动响应头更新 quota 时保留已知的 `reset_credits_available`，并在重置卡查询与消耗逻辑中同步更新账号配额缓存（`src/auth/account-registry.ts`、`src/auth/active-quota-refresher.ts`、`src/routes/accounts.ts`）。
-
-- 修复 Dashboard 顶部导航栏与侧栏「Codex Proxy」左侧品牌图标错误的问题：将手绘六边形 SVG 替换为官方 Logo 图片（`web/public/icon.png`），与桌面端 / Web 应用图标保持一致。（`web/src/components/Header.tsx`、`web/src/components/Sidebar.tsx`）
-
-- 修复上一条改动后在桌面 / 生产构建中品牌图标与 favicon 仍显示裂图的问题：后端 Web 路由对非哈希资源改为显式读文件返回（此前挂载在精确路径上的 `serveStatic` 无法推导相对路径，`/icon.png`、`/favicon.ico` 始终 404）。（`src/routes/web.ts`）
-
-- 修复并统一桌面端与 Web 端应用图标与 Logo：生成包含 Windows 完整多分辨率的 `icon.ico`、Web `favicon.ico` / `icon.png`，Electron 主进程窗口配置中注入应用图标并移除 `electron-builder` 的 `signAndEditExecutable: false` 以确保可执行文件与任务栏/桌面快捷方式正确嵌入图标；统一 Dashboard 顶部导航栏 Logo 为品牌立方体图标。（`packages/electron/`、`web/`、`scripts/build/generate-ico.ps1`）
-
-- 移除 Dashboard 顶部导航栏与侧栏重复展示的「服务运行中」状态徽标（`web/src/components/Header.tsx`）。
 
 ## [v2.0.x](https://github.com/icebear0828/codex-proxy/releases?q=2.0) - 2026-03-25 至 2026-08-31
 

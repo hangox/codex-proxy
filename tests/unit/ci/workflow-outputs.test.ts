@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = resolve(__dirname, "..", "..", "..");
 const WORKFLOW_DIR = resolve(ROOT, ".github", "workflows");
+const LITE_DOCKERFILE = resolve(ROOT, "Dockerfile.lite");
 
 type OutputRef = { stepId: string; output: string };
 type Step = { id?: string; run?: string; uses?: string; with?: Record<string, unknown> };
@@ -111,5 +112,32 @@ describe("workflow output references are satisfied", () => {
       (s) => s.uses === "actions/checkout@v4",
     );
     expect(checkout!.with?.["fetch-tags"]).toBe(true);
+  });
+
+  it("docker-publish-lite shares the resolved version across the manifest and image", () => {
+    const workflow = loadWorkflow("docker-publish.yml");
+    const job = workflow.jobs["publish-lite"];
+    const versionStep = job.steps.find((s) => s.id === "version");
+    expect(versionStep).toBeDefined();
+    expect(versionStep!.run).toContain('echo "version=${TAG_INPUT#v}"');
+    expect(versionStep!.run).toContain('echo "version=$FINAL"');
+    expect(versionStep!.run).toContain("LATEST_STABLE=");
+    expect(versionStep!.run).toContain("git tag --sort=-v:refname");
+
+    const checkout = job.steps.find((s) => s.uses === "actions/checkout@v4");
+    expect(checkout!.with?.["fetch-tags"]).toBe(true);
+    expect(checkout!.with?.["fetch-depth"]).toBe(0);
+
+    const stageStep = job.steps.find((s) => s.id === undefined && s.run?.includes("build-portable.mjs"));
+    expect(stageStep?.run).toContain('--version "${{ steps.version.outputs.version }}"');
+
+    const buildStep = job.steps.find(
+      (s) => s.uses === "docker/build-push-action@v6",
+    );
+    expect(buildStep!.with?.["build-args"]).toContain("PROXY_VERSION=${{ steps.version.outputs.version }}");
+
+    const dockerfile = readFileSync(LITE_DOCKERFILE, "utf8");
+    expect(dockerfile).toContain("ARG PROXY_VERSION=unknown");
+    expect(dockerfile).toContain("PROXY_VERSION=${PROXY_VERSION}");
   });
 });

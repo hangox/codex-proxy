@@ -67,14 +67,16 @@ Open the app, log in with your ChatGPT account. Dashboard at `http://localhost:8
 
 ```bash
 mkdir codex-proxy && cd codex-proxy
-curl -O https://raw.githubusercontent.com/icebear0828/codex-proxy/master/docker-compose.yml
-curl -O https://raw.githubusercontent.com/icebear0828/codex-proxy/master/.env.example
+curl -O https://raw.githubusercontent.com/hangox/codex-proxy/master/docker-compose.yml
+curl -O https://raw.githubusercontent.com/hangox/codex-proxy/master/.env.example
 cp .env.example .env
 docker compose up -d
 # Open http://localhost:8080 to log in
 ```
 
 > Data persists in `data/`. Cross-container access: use host LAN IP (e.g. `192.168.x.x:8080`), not `localhost`. Uncomment Watchtower in `docker-compose.yml` for auto-updates. To enable the Ollama-compatible bridge in Docker, see [Ollama Bridge configuration](#ollama-bridge-configuration).
+
+> **Memory settings**: `docker-compose.yml` ships with `mem_limit: 768m` and `NODE_OPTIONS=--max-old-space-size=512` by default. Without these, Node/V8 sizes its default heap off the *host's* total memory rather than what this container should actually use — on a memory-constrained or shared host that can let RSS climb unchecked (GC stays too lenient) and, in the worst case, take the whole host down. Tune both to your machine: leave `mem_limit` enough headroom for everything else running there, and keep `--max-old-space-size` comfortably below `mem_limit` (the process's RSS is more than just the V8 heap).
 
 ### From Source
 

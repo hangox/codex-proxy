@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
 import { dirname, resolve } from "path";
 import { getDataDir } from "../paths.js";
 import { PROVIDER_CATALOG, isBuiltinProvider } from "./api-key-catalog.js";
@@ -41,7 +42,7 @@ export interface FetchProviderModelsResult {
 }
 
 interface ModelRequest {
-  cacheUrl: string;
+  cacheKey: string;
   requestUrl: string;
   headers: Record<string, string>;
 }
@@ -103,21 +104,17 @@ export class ApiKeyModelCache {
   }
 
   getCatalogWithCachedModels(): Record<BuiltinProvider, ProviderMeta> {
-    // Load persistence once to avoid N disk reads for N providers.
-    const cache = this.persistence.load();
+    // Token-isolated entries cannot safely hydrate an anonymous catalog response.
+    // The keyed fetch endpoint returns the token-specific model list directly.
     const catalog = {} as Record<BuiltinProvider, ProviderMeta>;
     for (const provider of Object.keys(PROVIDER_CATALOG) as BuiltinProvider[]) {
       const meta = PROVIDER_CATALOG[provider];
       catalog[provider] = {
         ...meta,
-        models: this.getFreshEntryFromCache(cache, BUILTIN_MODEL_URLS[provider])?.models ?? meta.models,
+        models: meta.models,
       };
     }
     return catalog;
-  }
-
-  getCachedModelsByUrl(url: string): CatalogModel[] | null {
-    return this.getFreshEntryFromCache(this.persistence.load(), url)?.models ?? null;
   }
 
   private getFreshEntryFromCache(cache: ApiKeyModelCacheFile, url: string): ApiKeyModelCacheEntry | null {
@@ -141,7 +138,7 @@ export class ApiKeyModelCache {
     // two separate disk reads per request.
     const cache = this.persistence.load();
     if (!input.force) {
-      const cached = this.getFreshEntryFromCache(cache, request.cacheUrl);
+      const cached = this.getFreshEntryFromCache(cache, request.cacheKey);
       if (cached) return { models: cached.models, fetchedAt: cached.fetchedAt, fromCache: true, stale: false };
     }
 
@@ -151,7 +148,7 @@ export class ApiKeyModelCache {
         headers: request.headers,
       });
     } catch (err) {
-      const stale = this.getStaleEntryFromCache(cache, request.cacheUrl);
+      const stale = this.getStaleEntryFromCache(cache, request.cacheKey);
       if (stale && !input.force) return { models: stale.models, fetchedAt: stale.fetchedAt, fromCache: true, stale: true };
       throw new ProviderModelFetchError("network", `Failed to reach provider: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -160,7 +157,7 @@ export class ApiKeyModelCache {
       throw new ProviderModelFetchError("unauthorized", "Failed to fetch models: unauthorized");
     }
     if (!response.ok) {
-      const stale = this.getStaleEntryFromCache(cache, request.cacheUrl);
+      const stale = this.getStaleEntryFromCache(cache, request.cacheKey);
       if (stale && !input.force) return { models: stale.models, fetchedAt: stale.fetchedAt, fromCache: true, stale: true };
       throw new ProviderModelFetchError("provider", "Failed to fetch models from provider");
     }
@@ -172,8 +169,8 @@ export class ApiKeyModelCache {
     }
 
     const fetchedAt = this.now().toISOString();
-    cache.entries[request.cacheUrl] = {
-      url: request.cacheUrl,
+    cache.entries[request.cacheKey] = {
+      url: request.cacheKey,
       models,
       fetchedAt,
     };
@@ -197,6 +194,11 @@ function parseCacheFile(value: unknown): ApiKeyModelCacheFile {
   return { entries };
 }
 
+function buildCacheKey(modelUrl: string, provider: ApiKeyProvider, wire: ApiKeyWire, apiKey: string): string {
+  const keyDigest = createHash("sha256").update(apiKey).digest("hex");
+  return `${modelUrl}#provider=${provider}&wire=${wire}&key=${keyDigest}`;
+}
+
 function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
   const apiKey = input.apiKey.trim();
   if (input.provider === "custom") {
@@ -204,11 +206,11 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
     if (!baseUrl) throw new ProviderModelFetchError("provider", "baseUrl is required for custom providers");
     const modelUrl = `${normalizeBaseUrl(baseUrl)}/models`;
     const effectiveWire = getEffectiveModelWire(input);
-    const cacheUrl = `${modelUrl}#wire=${effectiveWire}`;
+    const cacheKey = buildCacheKey(modelUrl, input.provider, effectiveWire, apiKey);
 
     if (effectiveWire === "anthropic") {
       return {
-        cacheUrl,
+        cacheKey,
         requestUrl: modelUrl,
         headers: anthropicHeaders(apiKey),
       };
@@ -218,14 +220,14 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
       const requestUrl = new URL(modelUrl);
       requestUrl.searchParams.set("key", apiKey);
       return {
-        cacheUrl,
+        cacheKey,
         requestUrl: requestUrl.toString(),
         headers: { Accept: "application/json" },
       };
     }
 
     return {
-      cacheUrl,
+      cacheKey,
       requestUrl: modelUrl,
       headers: bearerHeaders(apiKey),
     };
@@ -235,27 +237,29 @@ function buildModelRequest(input: FetchProviderModelsInput): ModelRequest {
     throw new ProviderModelFetchError("provider", "Unsupported provider");
   }
 
-  const cacheUrl = BUILTIN_MODEL_URLS[input.provider];
+  const modelUrl = BUILTIN_MODEL_URLS[input.provider];
+  const effectiveWire = getEffectiveModelWire(input);
+  const cacheKey = buildCacheKey(modelUrl, input.provider, effectiveWire, apiKey);
   if (input.provider === "anthropic") {
     return {
-      cacheUrl,
-      requestUrl: cacheUrl,
+      cacheKey,
+      requestUrl: modelUrl,
       headers: anthropicHeaders(apiKey),
     };
   }
   if (input.provider === "gemini") {
-    const requestUrl = new URL(cacheUrl);
+    const requestUrl = new URL(modelUrl);
     requestUrl.searchParams.set("key", apiKey);
     return {
-      cacheUrl,
+      cacheKey,
       requestUrl: requestUrl.toString(),
       headers: { Accept: "application/json" },
     };
   }
 
   return {
-    cacheUrl,
-    requestUrl: cacheUrl,
+    cacheKey,
+    requestUrl: modelUrl,
     headers: bearerHeaders(apiKey),
   };
 }

@@ -46,7 +46,6 @@ export interface ApiKeyMemo {
   provider: ApiKeyProvider;
   baseUrl: string;
   wire: ApiKeyWire;
-  apiKey: string; // masked
   capabilities: ApiKeyCapability[];
   models: CatalogModel[];
   modelsFetchedAt: string | null;

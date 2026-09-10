@@ -26,98 +26,92 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("ApiKeyModelCache", () => {
-  it("caches fetched models by URL and reuses them for a different API key", async () => {
+  it("isolates cached models by API key and force-refreshes the matching entry", async () => {
     const persistence = createMemoryPersistence();
-    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "gpt-test", name: "GPT Test" }] }));
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "gpt-one", name: "GPT One" }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "gpt-two", name: "GPT Two" }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "gpt-one-fresh", name: "GPT One Fresh" }] }));
     const cache = new ApiKeyModelCache({
       persistence,
       fetchFn,
       now: () => new Date("2026-01-01T00:00:00Z"),
     });
 
-    const first = await cache.fetchModels({ provider: "openai", apiKey: "sk-one" });
-    const second = await cache.fetchModels({ provider: "openai", apiKey: "sk-two" });
+    const first = await cache.fetchModels({ provider: "openai", apiKey: "key-one" });
+    const second = await cache.fetchModels({ provider: "openai", apiKey: "key-two" });
+    const forced = await cache.fetchModels({ provider: "openai", apiKey: "key-one", force: true });
+    const secondCached = await cache.fetchModels({ provider: "openai", apiKey: "key-two" });
 
-    expect(first.models).toEqual([{ id: "gpt-test", displayName: "GPT Test" }]);
+    expect(first.models).toEqual([{ id: "gpt-one", displayName: "GPT One" }]);
     expect(first).toMatchObject({ fromCache: false, stale: false });
     expect(first.fetchedAt).toBe("2026-01-01T00:00:00.000Z");
-    expect(second).toMatchObject({ models: first.models, fromCache: true, stale: false, fetchedAt: first.fetchedAt });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(persistence.snapshot())).not.toContain("sk-one");
+    expect(second).toMatchObject({ models: [{ id: "gpt-two", displayName: "GPT Two" }], fromCache: false, stale: false });
+    expect(forced).toMatchObject({ models: [{ id: "gpt-one-fresh", displayName: "GPT One Fresh" }], fromCache: false, stale: false });
+    expect(secondCached).toMatchObject({ models: second.models, fromCache: true, stale: false });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    const snapshot = persistence.snapshot();
+    expect(Object.keys(snapshot.entries)).toHaveLength(2);
+    expect(Object.keys(snapshot.entries).every((key) => /#provider=openai&wire=chat&key=[0-9a-f]{64}$/.test(key))).toBe(true);
+    expect(JSON.stringify(snapshot)).not.toContain("key-one");
+    expect(JSON.stringify(snapshot)).not.toContain("key-two");
   });
 
   it("forces a fresh fetch even when a non-expired cache entry exists", async () => {
-    const persistence = createMemoryPersistence({
-      entries: {
-        "https://api.openai.com/v1/models": {
-          url: "https://api.openai.com/v1/models",
-          fetchedAt: "2026-01-01T00:00:00.000Z",
-          models: [{ id: "cached", displayName: "Cached" }],
-        },
-      },
-    });
-    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "fresh" }] }));
+    const persistence = createMemoryPersistence();
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "cached" }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "fresh" }] }));
     const cache = new ApiKeyModelCache({
       persistence,
       fetchFn,
       now: () => new Date("2026-01-01T00:30:00Z"),
     });
 
-    const cached = await cache.fetchModels({ provider: "openai", apiKey: "sk" });
-    const forced = await cache.fetchModels({ provider: "openai", apiKey: "sk", force: true });
+    await cache.fetchModels({ provider: "openai", apiKey: "key" });
+    const cached = await cache.fetchModels({ provider: "openai", apiKey: "key" });
+    const forced = await cache.fetchModels({ provider: "openai", apiKey: "key", force: true });
 
-    expect(cached).toMatchObject({ fromCache: true, models: [{ id: "cached", displayName: "Cached" }] });
+    expect(cached).toMatchObject({ fromCache: true, models: [{ id: "cached", displayName: "cached" }] });
     expect(forced).toMatchObject({ fromCache: false, models: [{ id: "fresh", displayName: "fresh" }] });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to a stale cache entry when a refresh fails, and force surfaces the error", async () => {
-    const fetchedAt = new Date(new Date("2026-01-01T00:00:00Z").getTime() - MODEL_CACHE_TTL_MS - 1).toISOString();
-    const persistence = createMemoryPersistence({
-      entries: {
-        "https://api.openai.com/v1/models": {
-          url: "https://api.openai.com/v1/models",
-          fetchedAt,
-          models: [{ id: "stale", displayName: "Stale" }],
-        },
-      },
-    });
-    const fetchFn = vi.fn(async () => { throw new Error("ECONNRESET"); });
+    let now = new Date(new Date("2026-01-01T00:00:00Z").getTime() - MODEL_CACHE_TTL_MS - 1);
+    const persistence = createMemoryPersistence();
+    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "stale" }] }));
     const cache = new ApiKeyModelCache({
       persistence,
       fetchFn,
-      now: () => new Date("2026-01-01T00:00:00Z"),
+      now: () => now,
     });
 
-    const result = await cache.fetchModels({ provider: "openai", apiKey: "sk" });
-    expect(result).toMatchObject({ models: [{ id: "stale", displayName: "Stale" }], fromCache: true, stale: true });
-    await expect(cache.fetchModels({ provider: "openai", apiKey: "sk", force: true }))
+    await cache.fetchModels({ provider: "openai", apiKey: "key" });
+    now = new Date("2026-01-01T00:00:00Z");
+    fetchFn.mockRejectedValueOnce(new Error("ECONNRESET"));
+    const result = await cache.fetchModels({ provider: "openai", apiKey: "key" });
+    expect(result).toMatchObject({ models: [{ id: "stale", displayName: "stale" }], fromCache: true, stale: true });
+    fetchFn.mockRejectedValueOnce(new Error("ECONNRESET"));
+    await expect(cache.fetchModels({ provider: "openai", apiKey: "key", force: true }))
       .rejects.toMatchObject({ kind: "network" });
   });
 
   it("expires cache entries after the TTL", async () => {
-    const fetchedAt = new Date(new Date("2026-01-01T00:00:00Z").getTime() - MODEL_CACHE_TTL_MS - 1).toISOString();
-    const persistence = createMemoryPersistence({
-      entries: {
-        "https://api.openai.com/v1/models": {
-          url: "https://api.openai.com/v1/models",
-          fetchedAt,
-          models: [{ id: "stale", displayName: "Stale" }],
-        },
-      },
-    });
-    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "fresh" }] }));
+    let now = new Date(new Date("2026-01-01T00:00:00Z").getTime() - MODEL_CACHE_TTL_MS - 1);
+    const persistence = createMemoryPersistence();
+    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "stale" }] }));
     const cache = new ApiKeyModelCache({
       persistence,
       fetchFn,
-      now: () => new Date("2026-01-01T00:00:00Z"),
+      now: () => now,
     });
 
-    await expect(cache.fetchModels({ provider: "openai", apiKey: "sk" })).resolves.toMatchObject({
-      models: [{ id: "fresh", displayName: "fresh" }],
-      fromCache: false,
-    });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    await cache.fetchModels({ provider: "openai", apiKey: "key" });
+    now = new Date("2026-01-01T00:00:00Z");
+    fetchFn.mockResolvedValueOnce(jsonResponse({ data: [{ id: "fresh" }] }));
+    await expect(cache.fetchModels({ provider: "openai", apiKey: "key" })).resolves.toMatchObject({ models: [{ id: "fresh", displayName: "fresh" }], fromCache: false });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("includes original error message for network failures", async () => {
@@ -137,7 +131,9 @@ describe("ApiKeyModelCache", () => {
 
     const requestedUrl = String(fetchFn.mock.calls[0][0]);
     expect(requestedUrl).toContain("key=gem-key");
-    expect(Object.keys(persistence.snapshot().entries)).toEqual(["https://generativelanguage.googleapis.com/v1beta/models"]);
+    expect(Object.keys(persistence.snapshot().entries)).toEqual([
+      expect.stringMatching(/https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models#provider=gemini&wire=gemini&key=[0-9a-f]{64}/),
+    ]);
     expect(JSON.stringify(persistence.snapshot())).not.toContain("gem-key");
   });
 
@@ -156,16 +152,23 @@ describe("ApiKeyModelCache", () => {
     });
   });
 
-  it("builds custom provider cache keys from normalized model URLs and wire", async () => {
+  it("builds custom provider cache keys from normalized model URLs, wire, and key digest", async () => {
     const persistence = createMemoryPersistence();
-    const fetchFn = vi.fn(async () => jsonResponse({ data: [{ id: "custom-model" }] }));
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "custom-one" }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: "custom-two" }] }));
     const cache = new ApiKeyModelCache({ persistence, fetchFn });
 
     await cache.fetchModels({ provider: "custom", apiKey: "custom-key", baseUrl: "https://example.com/v1/" });
     await cache.fetchModels({ provider: "custom", apiKey: "another-key", baseUrl: "https://example.com/v1" });
 
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(Object.keys(persistence.snapshot().entries)).toEqual(["https://example.com/v1/models#wire=chat"]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(Object.keys(persistence.snapshot().entries)).toEqual([
+      expect.stringMatching(/https:\/\/example\.com\/v1\/models#provider=custom&wire=chat&key=[0-9a-f]{64}/),
+      expect.stringMatching(/https:\/\/example\.com\/v1\/models#provider=custom&wire=chat&key=[0-9a-f]{64}/),
+    ]);
+    expect(JSON.stringify(persistence.snapshot())).not.toContain("custom-key");
+    expect(JSON.stringify(persistence.snapshot())).not.toContain("another-key");
   });
 
   it("does not reuse custom model cache entries across different wires", async () => {
@@ -183,13 +186,12 @@ describe("ApiKeyModelCache", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(chatModels.models).toEqual([{ id: "chat-model", displayName: "Chat Model" }]);
     expect(geminiModels.models).toEqual([{ id: "gemini-model", displayName: "Gemini Model" }]);
-    expect(Object.keys(persistence.snapshot().entries).sort()).toEqual([
-      "https://example.com/v1/models#wire=chat",
-      "https://example.com/v1/models#wire=gemini",
-    ]);
+    expect(Object.keys(persistence.snapshot().entries).every((key) => /https:\/\/example\.com\/v1\/models#provider=custom&wire=(chat|gemini)&key=[0-9a-f]{64}/.test(key))).toBe(true);
+    expect(Object.keys(persistence.snapshot().entries).some((key) => key.includes("wire=chat"))).toBe(true);
+    expect(Object.keys(persistence.snapshot().entries).some((key) => key.includes("wire=gemini"))).toBe(true);
   });
 
-  it("returns cached models in the built-in catalog", () => {
+  it("does not use token-scoped entries in the anonymous built-in catalog", () => {
     const persistence = createMemoryPersistence({
       entries: {
         "https://api.anthropic.com/v1/models": {
@@ -206,9 +208,7 @@ describe("ApiKeyModelCache", () => {
 
     const catalog = cache.getCatalogWithCachedModels();
 
-    // Cached models override the static fallback for anthropic.
-    expect(catalog.anthropic.models).toEqual([{ id: "claude-test", displayName: "Claude Test" }]);
-    // openai has no cached entry — falls back to static defaults (non-empty).
+    expect(catalog.anthropic.models).not.toEqual([{ id: "claude-test", displayName: "Claude Test" }]);
     expect(catalog.openai.models.length).toBeGreaterThan(0);
     expect(catalog.openai.models[0]).toHaveProperty("id");
   });

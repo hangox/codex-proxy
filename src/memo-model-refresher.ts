@@ -14,9 +14,6 @@ import type { ApiKeyMemoStore } from "./auth/api-key-memo-store.js";
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const PER_MEMO_DELAY_MS = 3 * 1000;
 
-let timer: ReturnType<typeof setTimeout> | null = null;
-let running = false;
-
 export function refreshAllMemoModels(
   memoStore: ApiKeyMemoStore,
   modelCache: ApiKeyModelCache,
@@ -54,6 +51,18 @@ export function refreshAllMemoModels(
 
 /** Start the daily memo model refresher. Returns stop(). */
 export function startMemoModelRefresher(memoStore: ApiKeyMemoStore, modelCache: ApiKeyModelCache): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+  let stopped = false;
+
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      void runCycle();
+    }, REFRESH_INTERVAL_MS);
+    timer.unref?.();
+  };
+
   async function runCycle(): Promise<void> {
     if (running) return;
     running = true;
@@ -62,15 +71,14 @@ export function startMemoModelRefresher(memoStore: ApiKeyMemoStore, modelCache: 
       console.log(`[MemoRefresher] Cycle done: ${result.refreshed} refreshed, ${result.failed} failed`);
     } finally {
       running = false;
+      schedule();
     }
   }
 
-  timer = setTimeout(() => {
-    void runCycle();
-  }, REFRESH_INTERVAL_MS);
-  timer.unref?.();
+  schedule();
 
   return () => {
+    stopped = true;
     if (timer) {
       clearTimeout(timer);
       timer = null;

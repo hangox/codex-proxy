@@ -67,11 +67,15 @@ describe("ApiKeyMemoStore", () => {
     expect(store.isCovered({ ...sample, wire: "chat" as const })).toBe(false);
   });
 
-  it("updates name and key without touching the signature identity", () => {
+  it("updates the key and clears the old model snapshot", () => {
     const memo = store.create(sample);
+    store.setModels(memo.id, [{ id: "gpt-6", displayName: "GPT 6" }], "2026-09-09T00:00:00Z");
     const updated = store.update(memo.id, { apiKey: "sk-new", name: "  " });
+    expect(updated?.id).toBe(memo.id);
     expect(updated?.apiKey).toBe("sk-new");
     expect(updated?.name).toBe("My Relay");
+    expect(updated?.models).toEqual([]);
+    expect(updated?.modelsFetchedAt).toBeNull();
   });
 
   it("setModels stores the fetched snapshot", () => {

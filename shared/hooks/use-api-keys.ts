@@ -39,9 +39,26 @@ export interface FetchProviderModelsInput {
 
 export type Catalog = Record<string, ProviderMeta>;
 
+/** Memo — a saved add-key template; entries copied from it are independent. */
+export interface ApiKeyMemo {
+  id: string;
+  name: string;
+  provider: ApiKeyProvider;
+  baseUrl: string;
+  wire: ApiKeyWire;
+  capabilities: ApiKeyCapability[];
+  models: CatalogModel[];
+  modelsFetchedAt: string | null;
+  createdAt: string;
+}
+
+export type MemoCoverage = { uncovered: number; canGenerate: boolean };
+
 export function useApiKeys() {
   const [keys, setKeys] = useState<ApiKeyEntry[]>([]);
   const [catalog, setCatalog] = useState<Catalog>({});
+  const [memos, setMemos] = useState<ApiKeyMemo[]>([]);
+  const [memoCoverage, setMemoCoverage] = useState<MemoCoverage | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadKeys = useCallback(async () => {
@@ -71,6 +88,26 @@ export function useApiKeys() {
     loadCatalog();
   }, [loadKeys, loadCatalog]);
 
+  const loadMemos = useCallback(async () => {
+    try {
+      const resp = await fetch("/auth/api-keys/memos");
+      const data = await resp.json();
+      setMemos(Array.isArray(data.memos) ? data.memos : []);
+    } catch {
+      setMemos([]);
+    }
+  }, []);
+
+  const loadMemoCoverage = useCallback(async () => {
+    try {
+      const resp = await fetch("/auth/api-keys/memos/coverage");
+      const data = await resp.json();
+      setMemoCoverage({ uncovered: data.uncovered ?? 0, canGenerate: Boolean(data.canGenerate) });
+    } catch {
+      setMemoCoverage(null);
+    }
+  }, []);
+
   const addKey = useCallback(async (input: {
     provider: ApiKeyProvider;
     models: string[];
@@ -79,12 +116,17 @@ export function useApiKeys() {
     label?: string | null;
     capabilities?: ApiKeyCapability[];
     wire?: ApiKeyWire;
+    memoId?: string;
   }): Promise<{ ok: boolean; error?: string }> => {
     try {
       const resp = await fetch("/auth/api-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          ...input,
+          // Memo-sourced adds may omit the key; the server resolves it.
+          apiKey: input.apiKey || undefined,
+        }),
       });
       const data = await resp.json();
       if (!resp.ok) return { ok: false, error: data.error || "Failed" };
@@ -137,7 +179,10 @@ export function useApiKeys() {
     return { added: data.added || 0, failed: data.failed || 0, errors: data.errors || [] };
   }, [loadKeys]);
 
-  const fetchProviderModels = useCallback(async (input: FetchProviderModelsInput): Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }> => {
+  const fetchProviderModels = useCallback(async (input: FetchProviderModelsInput & { force?: boolean }): Promise<
+    { ok: true; models: CatalogModel[]; fetchedAt?: string; fromCache?: boolean; stale?: boolean }
+    | { ok: false; error: string }
+  > => {
     try {
       const resp = await fetch("/auth/api-keys/models", {
         method: "POST",
@@ -147,12 +192,19 @@ export function useApiKeys() {
           apiKey: input.apiKey.trim(),
           baseUrl: input.baseUrl?.trim(),
           wire: input.wire,
+          force: input.force ?? false,
         }),
       });
       const data = await resp.json();
       if (!resp.ok) return { ok: false, error: data.error || "Failed to fetch models" };
       const models = Array.isArray(data.models) ? data.models : [];
-      return { ok: true, models };
+      return {
+        ok: true,
+        models,
+        fetchedAt: typeof data.fetchedAt === "string" ? data.fetchedAt : undefined,
+        fromCache: Boolean(data.fromCache),
+        stale: Boolean(data.stale),
+      };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : "Network error" };
     }
@@ -173,10 +225,77 @@ export function useApiKeys() {
     URL.revokeObjectURL(url);
   }, []);
 
+  const createMemo = useCallback(async (input: {
+    name?: string;
+    provider: ApiKeyProvider;
+    apiKey: string;
+    baseUrl?: string;
+    wire?: ApiKeyWire;
+    capabilities?: ApiKeyCapability[];
+  }): Promise<{ ok: boolean; memo?: ApiKeyMemo; error?: string }> => {
+    try {
+      const resp = await fetch("/auth/api-keys/memos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to save memo" };
+      await Promise.all([loadMemos(), loadMemoCoverage()]);
+      return { ok: true, memo: data.memo };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, [loadMemos, loadMemoCoverage]);
+
+  const deleteMemo = useCallback(async (id: string) => {
+    try {
+      await fetch(`/auth/api-keys/memos/${id}`, { method: "DELETE" });
+      await Promise.all([loadMemos(), loadMemoCoverage()]);
+    } catch { /* ignore */ }
+  }, [loadMemos, loadMemoCoverage]);
+
+  const fetchMemoModels = useCallback(async (id: string, force = false): Promise<
+    { ok: true; models: CatalogModel[]; fetchedAt?: string; stale?: boolean; memo?: ApiKeyMemo } | { ok: false; error: string }
+  > => {
+    try {
+      const resp = await fetch(`/auth/api-keys/memos/${id}/models${force ? "?force=1" : ""}`, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) return { ok: false, error: data.error || "Failed to fetch models" };
+      if (data.memo) {
+        const updated = data.memo as ApiKeyMemo;
+        setMemos((prev) => prev.map((memo) => (memo.id === updated.id ? updated : memo)));
+      }
+      const models = Array.isArray(data.models) ? data.models : [];
+      return { ok: true, models, fetchedAt: data.fetchedAt, stale: Boolean(data.stale), memo: data.memo };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, []);
+
+  const generateMemos = useCallback(async (): Promise<{ created: number; skipped: number }> => {
+    try {
+      const resp = await fetch("/auth/api-keys/memos/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await resp.json();
+      await Promise.all([loadMemos(), loadMemoCoverage()]);
+      return { created: data.created ?? 0, skipped: data.skipped ?? 0 };
+    } catch {
+      return { created: 0, skipped: 0 };
+    }
+  }, [loadMemos, loadMemoCoverage]);
+
   return {
     keys,
     catalog,
+    memos,
+    memoCoverage,
     loading,
+    loadMemos,
+    loadMemoCoverage,
     addKey,
     deleteKey,
     toggleStatus,
@@ -184,6 +303,10 @@ export function useApiKeys() {
     importKeys,
     exportKeys,
     fetchProviderModels,
+    createMemo,
+    deleteMemo,
+    fetchMemoModels,
+    generateMemos,
     refresh: loadKeys,
   };
 }

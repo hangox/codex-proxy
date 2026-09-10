@@ -316,7 +316,7 @@ function normalizeWire(value: unknown): ApiKeyWire {
   return isApiKeyWire(value) ? value : "chat";
 }
 
-function normalizeWireForProvider(provider: ApiKeyProvider, value: unknown): ApiKeyWire {
+export function normalizeWireForProvider(provider: ApiKeyProvider, value: unknown): ApiKeyWire {
   const wire = normalizeWire(value);
   if (provider === "custom") return wire;
   if (provider === "openai" || provider === "openrouter") {

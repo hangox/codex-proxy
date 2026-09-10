@@ -1,7 +1,7 @@
-import { useState, useCallback, useMemo, useRef } from "preact/hooks";
+import { useState, useCallback, useEffect, useMemo, useRef } from "preact/hooks";
 import { useApiKeys } from "../../../shared/hooks/use-api-keys";
 import { useT } from "../../../shared/i18n/context";
-import type { ApiKeyCapability, ApiKeyProvider, ApiKeyWire, ApiKeyEntry, CatalogModel } from "../../../shared/hooks/use-api-keys";
+import type { ApiKeyCapability, ApiKeyProvider, ApiKeyWire, ApiKeyEntry, ApiKeyMemo, CatalogModel } from "../../../shared/hooks/use-api-keys";
 import { accountToolbarIconClass } from "../lib/account-toolbar";
 
 /** Providers whose upstream wire protocol is selectable. */
@@ -24,25 +24,27 @@ function normalizeCustomModelInput(value: string): string[] {
     .filter(Boolean);
 }
 
-function renderModelChecklist(models: CatalogModel[], selectedModelSet: Set<string>, onToggle: (modelId: string) => void) {
+function renderModelChecklist(models: CatalogModel[], selectedModelSet: Set<string>, onToggle: (modelId: string) => void, emptyHint?: string) {
   return (
     <div class="max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark p-2 flex flex-col gap-1">
-      {models.map((model) => (
-        <label key={model.id} class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/70 dark:hover:bg-card-dark/70 text-sm text-slate-800 dark:text-text-main">
-          <input
-            type="checkbox"
-            checked={selectedModelSet.has(model.id)}
-            onChange={() => onToggle(model.id)}
-          />
-          <span>{model.displayName}</span>
-          <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto">{model.id}</span>
-        </label>
-      ))}
+      {models.length === 0 && emptyHint
+        ? <div class="px-2 py-2 text-sm text-slate-400 dark:text-text-dim">{emptyHint}</div>
+        : models.map((model) => (
+          <label key={model.id} class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/70 dark:hover:bg-card-dark/70 text-sm text-slate-800 dark:text-text-main">
+            <input
+              type="checkbox"
+              checked={selectedModelSet.has(model.id)}
+              onChange={() => onToggle(model.id)}
+            />
+            <span>{model.displayName}</span>
+            <span class="text-xs font-mono text-slate-400 dark:text-text-dim ml-auto">{model.id}</span>
+          </label>
+        ))}
     </div>
   );
 }
 
-function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
+function AddKeyForm({ onAdd, catalog, fetchProviderModels, memos, memoCoverage, createMemo, deleteMemo, fetchMemoModels, generateMemos, loadMemoCoverage, loadMemos }: {
   onAdd: (input: {
     provider: ApiKeyProvider;
     models: string[];
@@ -51,9 +53,21 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     label?: string;
     capabilities?: ApiKeyCapability[];
     wire?: ApiKeyWire;
+    memoId?: string;
   }) => Promise<{ ok: boolean; error?: string }>;
   catalog: Record<string, { displayName: string; defaultBaseUrl: string; models: Array<{ id: string; displayName: string }> }>;
-  fetchProviderModels: (input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire }) => Promise<{ ok: true; models: CatalogModel[] } | { ok: false; error: string }>;
+  fetchProviderModels: (input: { provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire; force?: boolean }) => Promise<
+    { ok: true; models: CatalogModel[]; fetchedAt?: string; fromCache?: boolean; stale?: boolean }
+    | { ok: false; error: string }
+  >;
+  memos: ApiKeyMemo[];
+  memoCoverage: { uncovered: number; canGenerate: boolean } | null;
+  createMemo: (input: { name?: string; provider: ApiKeyProvider; apiKey: string; baseUrl?: string; wire?: ApiKeyWire; capabilities?: ApiKeyCapability[] }) => Promise<{ ok: boolean; memo?: ApiKeyMemo; error?: string }>;
+  deleteMemo: (id: string) => Promise<void>;
+  fetchMemoModels: (id: string, force?: boolean) => Promise<{ ok: true; models: CatalogModel[]; fetchedAt?: string; stale?: boolean; memo?: ApiKeyMemo } | { ok: false; error: string }>;
+  generateMemos: () => Promise<{ created: number; skipped: number }>;
+  loadMemoCoverage: () => Promise<void>;
+  loadMemos: () => Promise<void>;
 }) {
   const t = useT();
   const [provider, setProvider] = useState<ApiKeyProvider>("anthropic");
@@ -67,10 +81,30 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
   const [providerModels, setProviderModels] = useState<CatalogModel[]>([]);
   const [modelStatus, setModelStatus] = useState<ProviderModelStatus>("idle");
   const [modelMessage, setModelMessage] = useState(t("providerModelsHint"));
+  const [modelFilter, setModelFilter] = useState("");
+  const [modelsFetchedAt, setModelsFetchedAt] = useState<string | null>(null);
+  const [modelsStale, setModelsStale] = useState(false);
+  const [modelFetchError, setModelFetchError] = useState("");
+  const [activeMemoId, setActiveMemoId] = useState<string | null>(null);
+  const [saveAsMemo, setSaveAsMemo] = useState(true);
+  const [memoBusy, setMemoBusy] = useState<string | null>(null);
+  const [memoNotice, setMemoNotice] = useState("");
+  const [memoFilter, setMemoFilter] = useState("");
+  const [memosExpanded, setMemosExpanded] = useState(false);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
   const latestModelRequestRef = useRef(0);
   const latestResolvedSignatureRef = useRef("");
+
+  const activeMemo = useMemo(() => memos.find((memo) => memo.id === activeMemoId) ?? null, [memos, activeMemoId]);
+  const filteredMemos = useMemo(() => {
+    const query = memoFilter.trim().toLowerCase();
+    if (!query) return memos;
+    return memos.filter((memo) =>
+      memo.name.toLowerCase().includes(query)
+      || memo.baseUrl.toLowerCase().includes(query)
+      || memo.provider.toLowerCase().includes(query));
+  }, [memos, memoFilter]);
 
   const wireOptions = useMemo<Array<{ value: ApiKeyWire; label: string; description: string }>>(() => [
     {
@@ -108,7 +142,13 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
   const isCustom = provider === "custom";
   const wireSelectable = WIRE_SELECTABLE_PROVIDERS.has(provider);
   const providerCatalog = !isCustom ? catalog[provider]?.models ?? [] : [];
-  const availableModels = providerModels.length > 0 ? providerModels : providerCatalog;
+  const usingLiveModels = providerModels.length > 0;
+  const availableModels = usingLiveModels ? providerModels : providerCatalog;
+  const filteredModels = useMemo(() => {
+    const query = modelFilter.trim().toLowerCase();
+    if (!query) return availableModels;
+    return availableModels.filter((model) => model.id.toLowerCase().includes(query) || model.displayName.toLowerCase().includes(query));
+  }, [availableModels, modelFilter]);
   const visibleWireOptions = isCustom
     ? wireOptions
     : wireOptions.filter((option) => option.value === "chat" || option.value === "responses");
@@ -121,6 +161,10 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     setSelectedModels([]);
     setModelStatus(status);
     setModelMessage(message ?? (isCustom ? t("customModelsHint") : t("providerModelsHint")));
+    setModelFilter("");
+    setModelsFetchedAt(null);
+    setModelsStale(false);
+    setModelFetchError("");
   }, [isCustom, t]);
 
   const handleModelToggle = (modelId: string) => {
@@ -135,23 +179,25 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       : [...prev, capability]);
   };
 
-  const triggerProviderModelFetch = useCallback(async () => {
+  const triggerProviderModelFetch = useCallback(async (options: { force?: boolean } = {}) => {
+    const force = options.force ?? false;
     const normalizedApiKey = apiKey.trim();
     const normalizedBaseUrl = baseUrl.trim();
     if (!normalizedApiKey || (isCustom && !normalizedBaseUrl)) {
-      resetProviderModels("idle", isCustom ? t("customModelsHint") : t("providerModelsHint"));
+      if (!force) resetProviderModels("idle", isCustom ? t("customModelsHint") : t("providerModelsHint"));
       return;
     }
 
     const signature = isCustom
       ? `${provider}::${wire}::${normalizedBaseUrl}::${normalizedApiKey}`
       : `${provider}::${normalizedApiKey}`;
-    if (latestResolvedSignatureRef.current === signature && providerModels.length > 0) return;
+    if (!force && latestResolvedSignatureRef.current === signature && providerModels.length > 0) return;
 
     const requestId = latestModelRequestRef.current + 1;
     latestModelRequestRef.current = requestId;
     setModelStatus("loading");
     setModelMessage(t("fetchingModelsHint"));
+    if (force) setModelFetchError("");
     setError("");
 
     const result = await fetchProviderModels({
@@ -159,20 +205,32 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       apiKey: normalizedApiKey,
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
       wire: isCustom ? wire : undefined,
+      force,
     });
 
     if (latestModelRequestRef.current !== requestId) return;
 
     if (!result.ok || result.models.length === 0) {
-      setProviderModels([]);
-      setSelectedModels([]);
-      setModelStatus("fallback");
-      setModelMessage(result.ok ? t("modelsFallbackHint") : t("modelsFallbackHintWithError", { error: result.error }));
+      const message = result.ok ? t("modelsFallbackHint") : t("modelsFallbackHintWithError", { error: result.error });
+      // On a manual refresh keep the previously fetched list instead of dropping it.
+      if (force && providerModels.length > 0) {
+        setModelStatus("loaded");
+        setModelMessage("");
+        setModelFetchError(message);
+      } else {
+        setProviderModels([]);
+        setSelectedModels([]);
+        setModelStatus("fallback");
+        setModelMessage(message);
+      }
       latestResolvedSignatureRef.current = "";
       return;
     }
 
     setProviderModels(result.models);
+    setModelsFetchedAt(result.fetchedAt ?? null);
+    setModelsStale(Boolean(result.stale));
+    setModelFetchError(result.stale ? t("modelsStaleHint") : "");
     setModelStatus("loaded");
     setModelMessage("");
     latestResolvedSignatureRef.current = signature;
@@ -181,6 +239,92 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       return next.length > 0 ? next : [result.models[0].id];
     });
   }, [apiKey, baseUrl, fetchProviderModels, isCustom, provider, providerModels.length, resetProviderModels, t, wire]);
+
+  /** Apply a memo as form defaults; the key shows as "from memo" placeholder. */
+  const applyMemo = useCallback((memo: ApiKeyMemo) => {
+    setActiveMemoId(memo.id);
+    setProvider(memo.provider);
+    setApiKey("");
+    setBaseUrl(memo.provider === "custom" ? memo.baseUrl : "");
+    setLabel(memo.name);
+    setManualModelsInput("");
+    setCapabilities(memo.capabilities.length > 0 ? [...memo.capabilities] : ["chat"]);
+    setWire(memo.wire);
+    setError("");
+    setMemoNotice("");
+    latestResolvedSignatureRef.current = "";
+    if (memo.models.length > 0) {
+      setProviderModels(memo.models);
+      setModelsFetchedAt(memo.modelsFetchedAt);
+      setModelsStale(false);
+      setModelFetchError("");
+      setModelStatus("loaded");
+      setModelMessage("");
+      setSelectedModels([]);
+    } else {
+      resetProviderModels("idle", t("memoModelsEmptyHint"));
+    }
+  }, [resetProviderModels, t]);
+
+  const handleMemoRefreshModels = useCallback(async (memo: ApiKeyMemo) => {
+    setMemoBusy(memo.id);
+    setMemoNotice("");
+    const result = await fetchMemoModels(memo.id, true);
+    setMemoBusy(null);
+    if (!result.ok) {
+      setMemoNotice(t("memoModelsRefreshFailed", { error: result.error }));
+      return;
+    }
+    if (activeMemoId === memo.id) {
+      applyMemo({ ...memo, models: result.models, modelsFetchedAt: result.fetchedAt ?? memo.modelsFetchedAt });
+    }
+  }, [activeMemoId, applyMemo, fetchMemoModels, t]);
+
+  const handleSaveMemoFromForm = useCallback(async () => {
+    const normalizedApiKey = apiKey.trim();
+    const normalizedBaseUrl = isCustom ? baseUrl.trim() : catalog[provider]?.defaultBaseUrl ?? "";
+    if (!normalizedApiKey) {
+      setMemoNotice(t("memoSaveNeedKey"));
+      return;
+    }
+    setMemoBusy("save");
+    const result = await createMemo({
+      name: label.trim() || undefined,
+      provider,
+      apiKey: normalizedApiKey,
+      baseUrl: isCustom ? normalizedBaseUrl : undefined,
+      wire,
+      capabilities,
+    });
+    setMemoBusy(null);
+    if (!result.ok || !result.memo) {
+      setMemoNotice(result.error || t("memoSaveFailed"));
+      return;
+    }
+    setSaveAsMemo(false);
+    setMemoNotice(t("memoSaved"));
+    setActiveMemoId(result.memo.id);
+    if (result.memo.models.length > 0) {
+      setProviderModels(result.memo.models);
+      setModelsFetchedAt(result.memo.modelsFetchedAt);
+      setModelStatus("loaded");
+      setModelMessage("");
+    }
+  }, [apiKey, baseUrl, capabilities, catalog, createMemo, isCustom, label, provider, t, wire]);
+
+  const handleGenerateMemos = useCallback(async () => {
+    setMemoBusy("generate");
+    const result = await generateMemos();
+    setMemoBusy(null);
+    setMemoNotice(result.created > 0
+      ? t("memoGenerated", { count: result.created })
+      : t("memoGenerateNone"));
+  }, [generateMemos, t]);
+
+  useEffect(() => {
+    void loadMemos();
+    void loadMemoCoverage();
+  }, [loadMemos, loadMemoCoverage]);
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault();
@@ -192,12 +336,13 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
     const models = modelStatus === "fallback"
       ? normalizedManualModels
       : [...new Set([...selectedModels, ...normalizedManualModels])];
+    const usingMemoKey = activeMemo && !normalizedApiKey;
 
-    if (models.length === 0 || !normalizedApiKey) {
+    if (models.length === 0 || (!normalizedApiKey && !usingMemoKey)) {
       setError(t("requireModelAndKey"));
       return;
     }
-    if (isCustom && !normalizedBaseUrl) {
+    if (isCustom && !normalizedBaseUrl && !(activeMemo?.baseUrl)) {
       setError(t("requireBaseUrl"));
       return;
     }
@@ -212,14 +357,26 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       : wire === "responses"
         ? "responses"
         : "chat";
+    // Manual key + "save as memo" — persist the template before adding entries.
+    if (!usingMemoKey && saveAsMemo) {
+      await createMemo({
+        name: label.trim() || undefined,
+        provider,
+        apiKey: normalizedApiKey,
+        baseUrl: isCustom ? normalizedBaseUrl : undefined,
+        wire,
+        capabilities,
+      });
+    }
     const result = await onAdd({
       provider,
       models,
-      apiKey: normalizedApiKey,
+      apiKey: normalizedApiKey || (usingMemoKey ? "" : ""),
       baseUrl: isCustom ? normalizedBaseUrl : undefined,
       label: label.trim() || undefined,
       capabilities,
       wire: wireSelectable ? submittedWire : undefined,
+      memoId: usingMemoKey ? activeMemo.id : undefined,
     });
     setAdding(false);
     if (result.ok) {
@@ -230,6 +387,9 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
       setManualModelsInput("");
       setCapabilities(["chat"]);
       setWire("chat");
+      setActiveMemoId(null);
+      setSaveAsMemo(true);
+      setMemoNotice("");
       resetProviderModels();
     } else {
       setError(result.error || t("failedToAddKey"));
@@ -238,9 +398,114 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
 
   return (
     <form onSubmit={handleSubmit} class="flex flex-col gap-3 p-4 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark rounded-xl">
+      {memos.length > 0 && (
+        <div class="group/memos flex flex-col gap-1">
+          <div class="flex items-center gap-2">
+            <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("memoSectionTitle")}</label>
+            <span class="text-[0.65rem] text-slate-400 dark:text-text-dim">{t("memoSectionHint")}</span>
+            <input
+              type="text"
+              value={memoFilter}
+              onInput={(e) => setMemoFilter((e.target as HTMLInputElement).value)}
+              placeholder={t("memoFilterPlaceholder")}
+              class="ml-auto w-32 px-2 py-0.5 text-[0.7rem] rounded-md border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main focus:w-44 transition-all"
+            />
+            <button
+              type="button"
+              title={memosExpanded ? t("memoCollapse") : t("memoExpand")}
+              onClick={() => setMemosExpanded((v) => !v)}
+              class="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-text-main transition-colors"
+            >
+              <svg class={`size-3.5 transition-transform ${memosExpanded ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+          </div>
+          {/* Fixed-height placeholder (~1.5 card rows incl. row gap). The overlay
+              expands over following content instead of pushing it down, so hover
+              never causes layout shift. A bottom fade hints at clipped rows. */}
+          <div class="relative h-[78px]">
+            {memos.length > 3 && (
+              <div
+                class="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-7 bg-gradient-to-t from-white to-transparent dark:from-bg-dark transition-opacity"
+                style={{ opacity: memosExpanded ? 0 : undefined }}
+              />
+            )}
+            {memosExpanded && (
+              <div
+                class="fixed inset-0 z-20"
+                onClick={() => setMemosExpanded(false)}
+              />
+            )}
+            <div
+              class={`absolute inset-x-0 top-0 z-30 rounded-lg transition-shadow ${
+                memosExpanded
+                  ? "max-h-[min(60vh,384px)] overflow-y-auto p-2 -m-2 bg-white dark:bg-card-dark border border-gray-200 dark:border-border-dark shadow-lg"
+                  : "max-h-[78px] overflow-hidden group-hover/memos:max-h-[min(60vh,384px)] group-hover/memos:overflow-y-auto p-2 -m-2 group-hover/memos:bg-white group-hover/memos:dark:bg-card-dark group-hover/memos:border group-hover/memos:border-gray-200 group-hover/memos:dark:border-border-dark group-hover/memos:shadow-lg"
+              } flex flex-wrap gap-2 content-start`}
+            >
+              {filteredMemos.map((memo) => (
+                <div
+                  key={memo.id}
+                  class={`group flex items-center gap-2 pl-2.5 pr-1.5 py-1.5 rounded-lg border text-sm cursor-pointer transition-colors ${
+                    activeMemoId === memo.id
+                      ? "border-primary bg-primary/5 dark:bg-primary/10"
+                      : "border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark hover:border-gray-300"
+                  }`}
+                  onClick={() => applyMemo(memo)}
+                >
+                  <div class="flex flex-col leading-tight min-w-0">
+                    <span class="text-xs font-medium text-slate-800 dark:text-text-main truncate max-w-[180px]">{memo.name}</span>
+                    <span class="text-[0.65rem] text-slate-400 dark:text-text-dim">
+                      {memo.provider}{memo.wire ? ` · ${memo.wire}` : ""} · {memo.models.length > 0 ? t("memoModelCount", { count: memo.models.length }) : t("memoNoModels")}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={memoBusy === memo.id}
+                    title={t("refreshModelsTitle")}
+                    onClick={(e) => { e.stopPropagation(); void handleMemoRefreshModels(memo); }}
+                    class="p-1 text-slate-400 hover:text-primary disabled:opacity-40 transition-colors"
+                  >
+                    <svg class={`size-3.5 ${memoBusy === memo.id ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    title={t("memoDelete")}
+                    onClick={(e) => { e.stopPropagation(); void deleteMemo(memo.id); }}
+                    class="p-1 text-slate-400 hover:text-red-500 transition-colors"
+                  >
+                    <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              {filteredMemos.length === 0 && (
+                <span class="px-2 py-1.5 text-[0.7rem] text-slate-400 dark:text-text-dim">{t("memoFilterNoMatch")}</span>
+              )}
+            </div>
+          </div>
+          <span class="text-[0.65rem] text-slate-400 dark:text-text-dim">{t("memoDecoupledHint")}</span>
+        </div>
+      )}
+      {memoCoverage?.canGenerate && (
+        <button
+          type="button"
+          onClick={() => { void handleGenerateMemos(); }}
+          disabled={memoBusy === "generate"}
+          class="self-start px-2.5 py-1 text-[0.7rem] rounded-md border border-dashed border-gray-300 dark:border-border-dark text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-card-dark disabled:opacity-40 transition-colors"
+        >
+          {memoBusy === "generate" ? t("memoGenerating") : t("memoGenerateBtn", { count: memoCoverage.uncovered })}
+        </button>
+      )}
+      {memoNotice && <p class="text-xs text-slate-500 dark:text-text-dim">{memoNotice}</p>}
+
       <div class="flex flex-wrap gap-3">
         <div class="flex flex-col gap-1 min-w-[140px]">
-          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("providerLabel")}</label>
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("providerTypeLabel")}</label>
           <select
             value={provider}
             onChange={(e) => {
@@ -253,6 +518,7 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
               setManualModelsInput("");
               setCapabilities(["chat"]);
               setWire("chat");
+              setActiveMemoId(null);
               latestResolvedSignatureRef.current = "";
               resetProviderModels("idle", v === "custom" ? t("customModelsHint") : t("providerModelsHint"));
             }}
@@ -272,40 +538,76 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
             onInput={(e) => {
               setApiKey((e.target as HTMLInputElement).value);
               latestResolvedSignatureRef.current = "";
+              if (activeMemo && (e.target as HTMLInputElement).value) setActiveMemoId(null);
               resetProviderModels("idle", isCustom ? t("customModelsHint") : t("providerModelsHint"));
             }}
             onBlur={() => { void triggerProviderModelFetch(); }}
-            placeholder="sk-..."
+            placeholder={activeMemo ? t("memoKeyPlaceholder", { name: activeMemo.name }) : "sk-..."}
             class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
           />
+          {activeMemo && (
+            <label class="flex items-center gap-1.5 text-[0.65rem] text-slate-400 dark:text-text-dim cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveAsMemo}
+                onChange={(e) => setSaveAsMemo((e.target as HTMLInputElement).checked)}
+              />
+              {t("saveAsMemoLabel")}
+            </label>
+          )}
         </div>
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("modelsLabel")}</label>
-        {availableModels.length > 0 && renderModelChecklist(availableModels, selectedModelSet, handleModelToggle)}
+        <div class="flex items-center gap-2">
+          <label class="text-[0.7rem] font-medium text-slate-500 dark:text-text-dim">{t("modelsLabel")}</label>
+          {availableModels.length > 0 && (
+            <button
+              type="button"
+              onClick={() => { void triggerProviderModelFetch({ force: true }); }}
+              disabled={modelStatus === "loading" || !apiKey.trim() || (isCustom && !baseUrl.trim())}
+              title={t("refreshModelsTitle")}
+              class="ml-auto flex items-center gap-1 px-2 py-0.5 text-[0.7rem] rounded-md border border-gray-200 dark:border-border-dark text-slate-500 dark:text-text-dim hover:bg-slate-100 dark:hover:bg-card-dark disabled:opacity-40 transition-colors"
+            >
+              <svg class={`size-3 ${modelStatus === "loading" ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+              {t("refreshModelsBtn")}
+            </button>
+          )}
+        </div>
+        {availableModels.length > 0 && (
+          <input
+            type="text"
+            value={modelFilter}
+            onInput={(e) => setModelFilter((e.target as HTMLInputElement).value)}
+            placeholder={t("modelFilterPlaceholder")}
+            class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+          />
+        )}
+        {availableModels.length > 0 && renderModelChecklist(filteredModels, selectedModelSet, handleModelToggle, t("modelFilterNoMatch"))}
         {availableModels.length === 0 && (
           <div class="px-2.5 py-2 text-sm rounded-lg border border-dashed border-gray-200 dark:border-border-dark text-slate-400 dark:text-text-dim">
             {modelStatus === "loading" ? t("fetchingModelsHint") : modelMessage}
           </div>
         )}
-        {modelStatus === "fallback" && (
-          <input
-            type="text"
-            value={manualModelsInput}
-            onInput={(e) => setManualModelsInput((e.target as HTMLInputElement).value)}
-            placeholder="model-name-1, model-name-2"
-            class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
-          />
-        )}
-        {modelStatus !== "fallback" && (
-          <input
-            type="text"
-            value={manualModelsInput}
-            onInput={(e) => setManualModelsInput((e.target as HTMLInputElement).value)}
-            placeholder="manual-model-1, manual-model-2"
-            class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
-          />
+        <input
+          type="text"
+          value={manualModelsInput}
+          onInput={(e) => setManualModelsInput((e.target as HTMLInputElement).value)}
+          placeholder={modelStatus === "fallback" ? "model-name-1, model-name-2" : "manual-model-1, manual-model-2"}
+          class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-border-dark bg-slate-50 dark:bg-bg-dark text-slate-800 dark:text-text-main"
+        />
+        {availableModels.length > 0 && (
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.65rem] text-slate-400 dark:text-text-dim">
+            <span>{t("modelsCountLabel", { count: availableModels.length, shown: filteredModels.length })}</span>
+            {usingLiveModels && modelsFetchedAt && (
+              <span title={new Date(modelsFetchedAt).toLocaleString()}>
+                · {modelsStale ? t("modelsStaleHint") : t("modelsUpdatedAt", { time: new Date(modelsFetchedAt).toLocaleString() })}
+              </span>
+            )}
+            {modelFetchError && <span class="text-amber-500">· {modelFetchError}</span>}
+          </div>
         )}
       </div>
 
@@ -385,6 +687,17 @@ function AddKeyForm({ onAdd, catalog, fetchProviderModels }: {
         </button>
       </div>
 
+      {!activeMemo && (
+        <label class="flex items-center gap-1.5 text-[0.7rem] text-slate-500 dark:text-text-dim cursor-pointer">
+          <input
+            type="checkbox"
+            checked={saveAsMemo}
+            onChange={(e) => setSaveAsMemo((e.target as HTMLInputElement).checked)}
+          />
+          {t("saveAsMemoLabel")}
+        </label>
+      )}
+
       {error && <p class="text-xs text-red-500">{error}</p>}
     </form>
   );
@@ -461,7 +774,7 @@ function KeyRow({ entry, onDelete, onToggle }: {
 
 export function ApiKeyManager() {
   const t = useT();
-  const { keys, catalog, loading, addKey, deleteKey, toggleStatus, importKeys, fetchProviderModels } = useApiKeys();
+  const { keys, catalog, memos, memoCoverage, loading, addKey, deleteKey, toggleStatus, importKeys, fetchProviderModels, createMemo, deleteMemo, fetchMemoModels, generateMemos, loadMemos, loadMemoCoverage } = useApiKeys();
   const [showForm, setShowForm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -532,6 +845,14 @@ export function ApiKeyManager() {
           }}
           catalog={catalog}
           fetchProviderModels={fetchProviderModels}
+          memos={memos}
+          memoCoverage={memoCoverage}
+          createMemo={createMemo}
+          deleteMemo={deleteMemo}
+          fetchMemoModels={fetchMemoModels}
+          generateMemos={generateMemos}
+          loadMemoCoverage={loadMemoCoverage}
+          loadMemos={loadMemos}
         />
       )}
 

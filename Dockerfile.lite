@@ -19,8 +19,13 @@
 # so this image pins Node 22.
 FROM node:22-alpine
 
+# Proxy version injected at build time via --build-arg PROXY_VERSION=x.y.z
+# Falls back to package.json at runtime if not set.
+ARG PROXY_VERSION=unknown
+
 ENV CODEX_PROXY_HOST=0.0.0.0 \
-    NODE_ENV=production
+    NODE_ENV=production \
+    PROXY_VERSION=${PROXY_VERSION}
 
 WORKDIR /app
 

@@ -6,7 +6,7 @@ const ROOT = resolve(__dirname, "..", "..", "..");
 const WORKFLOW_DIR = resolve(ROOT, ".github", "workflows");
 
 type OutputRef = { stepId: string; output: string };
-type Step = { id?: string; run?: string; with?: Record<string, unknown> };
+type Step = { id?: string; run?: string; uses?: string; with?: Record<string, unknown> };
 
 function loadWorkflow(name: string) {
   const yaml = require("js-yaml") as typeof import("js-yaml");

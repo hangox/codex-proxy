@@ -157,6 +157,34 @@ describe("retryNonStreamingEmptyResponse", () => {
     expect(pool.release).toHaveBeenCalledTimes(1);
   });
 
+  it("stops a controlled run after empty response without acquiring a second account", async () => {
+    const pool = makePool(acquired({ entryId: "entry-2" }));
+    const createResponse = vi.fn<CodexApi["createResponse"]>();
+    const request = makeRequest({ rawUsageToken: "controlled-token" });
+    const result = await retryNonStreamingEmptyResponse({
+      accountPool: pool,
+      currentEntryId: "entry-1",
+      collectErr: new EmptyResponseError("resp-empty", { input_tokens: 7, output_tokens: 0 }),
+      req: request,
+      tag: "OpenAI",
+      attempt: 1,
+      maxRetries: 2,
+      abortSignal: new AbortController().signal,
+      released: new Set<string>(),
+      requestId: "rid-controlled",
+      logWarn: vi.fn(),
+    });
+
+    expect(result).toEqual({
+      action: "respond",
+      status: 502,
+      message: "Controlled raw usage run stopped after an empty response",
+    });
+    expect(pool.acquire).not.toHaveBeenCalled();
+    expect(buildCodexApiMock).not.toHaveBeenCalled();
+    expect(createResponse).not.toHaveBeenCalled();
+  });
+
   it("returns a response plan without rendering when no retry account is available", async () => {
     const pool = makePool(null);
     const request = makeRequest();

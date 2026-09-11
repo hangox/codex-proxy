@@ -208,6 +208,18 @@ describe("AccountPool", () => {
       expect(accounts[0].usage.output_tokens).toBe(150);
     });
 
+    it("records failed-attempt tokens without incrementing request count", () => {
+      pool.addAccount("token-aaa");
+      const acquired = pool.acquire()!;
+      pool.recordUsageTokens(acquired.entryId, { input_tokens: 50, output_tokens: 20, cached_tokens: 30 });
+
+      const accounts = pool.getAccounts();
+      expect(accounts[0].usage.request_count).toBe(0);
+      expect(accounts[0].usage.input_tokens).toBe(50);
+      expect(accounts[0].usage.output_tokens).toBe(20);
+      expect(accounts[0].usage.cached_tokens).toBe(30);
+    });
+
     it("accumulates cached_tokens across releases", () => {
       pool.addAccount("token-aaa");
 

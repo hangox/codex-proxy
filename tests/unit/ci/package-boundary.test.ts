@@ -195,6 +195,7 @@ describe("root package boundary", () => {
     expect(requireStringArray(tsconfig, "include")).toEqual([
       "scripts/build/**/*.d.ts",
       "scripts/build/**/*.ts",
+      "scripts/experiments/**/*.ts",
     ]);
   });
 

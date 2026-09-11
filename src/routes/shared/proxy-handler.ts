@@ -23,6 +23,7 @@
  */
 
 import { CodexApi, CodexApiError, PreviousResponseWebSocketError } from "../../proxy/codex-api.js";
+import { isRawUsageObservationRequestAllowed, stopRawUsageObservation } from "../../proxy/raw-usage-observer.js";
 import { toQuota } from "../../auth/quota-utils.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { handleCodexApiError } from "./proxy-error-handler.js";
@@ -41,6 +42,7 @@ import {
   respondWithProxyError,
 } from "./proxy-error-response.js";
 import { applyProxyErrorRetryTransition } from "./proxy-error-retry-transition.js";
+import type { CodexApiErrorWithUsage } from "../../translation/codex-api-error-from-event.js";
 import {
   markCompactFallbackUpstreamEnd,
   recordCompactFallbackRenderOutcome,
@@ -184,6 +186,16 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       preferredStatus: preferredEntry?.status,
       explicitPrevRespId: sessionContext.explicitPrevRespId,
       tag: fmt.tag,
+    });
+  }
+  if (req.rawUsageToken && !isRawUsageObservationRequestAllowed(req.rawUsageToken, req.rawUsageRunId, requestId)) {
+    releaseAccount(accountPool, entryId, undefined, released);
+    return respondWithProxyError({
+      c,
+      req,
+      fmt,
+      status: 403,
+      message: "Controlled raw usage run token is invalid or expired.",
     });
   }
   let codexApi = buildCodexApi(acquired.token, acquired.accountId, cookieJar, entryId, proxyPool);
@@ -376,6 +388,18 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
       // sendProxyUpstreamAttempt 之外的异常（例如 egress/rate-limit 记录失败）
       // 也要封口，避免把后续本地错误处理时间算进真实上游耗时。
       markCompactFallbackUpstreamEnd(req);
+      if (req.rawUsageToken) {
+        stopRawUsageObservation("terminal_failure");
+        const controlledUsage = (err as CodexApiErrorWithUsage).usage;
+        releaseAccount(accountPool, entryId, annotateImageGenOutcome(controlledUsage, req.expectsImageGen), released);
+        return respondWithProxyError({
+          c,
+          req,
+          fmt,
+          status: 502,
+          message: "Controlled raw usage run stopped after upstream failure.",
+        });
+      }
       invalidateRejectedPreviousResponse({
         err,
         previousResponseId: req.codexRequest.previous_response_id,
@@ -472,7 +496,7 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
             req.requiredAccountEntryId !== undefined,
           );
           if (req.requiredAccountEntryId !== undefined && decision.action === "retry") {
-            releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+            releaseAccount(accountPool, entryId, annotateImageGenOutcome((err as CodexApiErrorWithUsage).usage, req.expectsImageGen), released);
             recordCompactFallbackRenderOutcome(req, false, { httpStatus: decision.status, failureStage: "pre_stream" });
             return respondWithProxyError({
               c,
@@ -488,7 +512,9 @@ export async function handleProxyRequest(options: HandleProxyRequestOptions): Pr
             accountPool, entryId,
             model: req.codexRequest.model,
             triedEntryIds, tag: fmt.tag,
-            decision, released,
+            decision,
+            usage: (err as CodexApiErrorWithUsage).usage,
+            released,
             restoreImplicitResumeRequest: implicitResume.restore,
             modelRetried,
             expectsImageGen: req.expectsImageGen,

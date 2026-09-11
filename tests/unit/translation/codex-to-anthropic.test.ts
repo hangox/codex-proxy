@@ -13,7 +13,7 @@ import {
   multiToolCallStream,
   usageStream,
 } from "@fixtures/sse-streams.js";
-import { createError } from "@helpers/events.js";
+import { createCompleted, createCreated, createError, createTextDelta } from "@helpers/events.js";
 
 let mockEvents: ExtractedEvent[] = [];
 
@@ -150,6 +150,41 @@ describe("streamCodexToAnthropic", () => {
     });
   });
 
+  it("accounts incomplete usage without invoking completion callbacks", async () => {
+    const usages: unknown[] = [];
+    const completedIds: Array<string | undefined> = [];
+    const incompleteUsage = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+    const chunks: string[] = [];
+    mockEvents = [
+      createCreated("resp_incomplete"),
+      createTextDelta("partial"),
+      {
+        raw: { event: "response.incomplete", data: {} },
+        typed: { type: "response.incomplete", response: { id: "resp_incomplete", usage: incompleteUsage } },
+        responseId: "resp_incomplete",
+        usage: incompleteUsage,
+      },
+    ];
+    for await (const chunk of streamCodexToAnthropic(
+      fakeCodexApi,
+      fakeResponse,
+      "gpt-5.4",
+      (usage) => usages.push(usage),
+      undefined,
+      false,
+      undefined,
+      undefined,
+      (id) => completedIds.push(id),
+    )) {
+      chunks.push(chunk);
+    }
+
+    expect(usages).toEqual([incompleteUsage]);
+    expect(completedIds).toEqual([]);
+    const messageDelta = parseSSEEvents(chunks).find((event) => event.event === "message_delta");
+    expect(messageDelta?.data.usage).toEqual({ input_tokens: 20, output_tokens: 20, cache_read_input_tokens: 30 });
+  });
+
   it("throws EmptyResponseError before emitting fallback text for empty stream", async () => {
     await expect(collectStreamOutput(emptyStream()))
       .rejects.toThrow("empty response");
@@ -169,6 +204,73 @@ describe("collectCodexToAnthropicResponse", () => {
     expect(response.content[0].text).toBe("Hello, world!");
     expect(response.stop_reason).toBe("end_turn");
     expect(usage.input_tokens).toBe(10);
+  });
+
+  it("returns raw Codex usage separately from Anthropic client usage", async () => {
+    mockEvents = usageStream();
+    const { response, usage } = await collectCodexToAnthropicResponse(
+      fakeCodexApi, fakeResponse, "gpt-5.4",
+    );
+
+    expect(response.usage).toEqual({
+      input_tokens: 20,
+      output_tokens: 20,
+      cache_read_input_tokens: 30,
+    });
+    expect(usage).toEqual({
+      input_tokens: 50,
+      output_tokens: 20,
+      cached_tokens: 30,
+      reasoning_tokens: 10,
+    });
+  });
+
+  it("uses the first completed usage when a duplicate terminal event arrives", async () => {
+    mockEvents = [
+      ...usageStream(),
+      createCompleted("resp_7", { input_tokens: 90, output_tokens: 40, cached_tokens: 1 }),
+    ];
+    const { response, usage } = await collectCodexToAnthropicResponse(
+      fakeCodexApi, fakeResponse, "gpt-5.4",
+    );
+
+    expect(response.usage.cache_read_input_tokens).toBe(30);
+    expect(response.usage.input_tokens).toBe(20);
+    expect(usage).toMatchObject({ input_tokens: 50, output_tokens: 20, cached_tokens: 30 });
+  });
+
+  it("retains usage from an incomplete terminal without marking success", async () => {
+    const incompleteUsage = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+    mockEvents = [
+      ...simpleTextStream().slice(0, -1),
+      {
+        raw: { event: "response.incomplete", data: {} },
+        typed: { type: "response.incomplete", response: { id: "resp_incomplete", usage: incompleteUsage } },
+        responseId: "resp_incomplete",
+        usage: incompleteUsage,
+      },
+    ];
+    const { response, usage, responseCompleted } = await collectCodexToAnthropicResponse(
+      fakeCodexApi, fakeResponse, "gpt-5.4",
+    );
+
+    expect(responseCompleted).toBe(false);
+    expect(usage).toEqual(incompleteUsage);
+    expect(response.usage).toEqual({ input_tokens: 20, output_tokens: 20, cache_read_input_tokens: 30 });
+  });
+
+  it("keeps internal usage unknown when completed omits the whole usage object", async () => {
+    mockEvents = [
+      ...simpleTextStream().slice(0, -1),
+      createCompleted("resp_without_usage"),
+    ];
+    const { response, usage, responseCompleted } = await collectCodexToAnthropicResponse(
+      fakeCodexApi, fakeResponse, "gpt-5.4",
+    );
+
+    expect(responseCompleted).toBe(true);
+    expect(usage).toBeUndefined();
+    expect(response.usage).toEqual({ input_tokens: 0, output_tokens: 0 });
   });
 
   it("includes thinking block when requested", async () => {
@@ -197,6 +299,24 @@ describe("collectCodexToAnthropicResponse", () => {
       .rejects.toThrow("Codex API error");
   });
 
+  it("preserves usage on a response.failed error", async () => {
+    const failedUsage = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+    mockEvents = [{
+      raw: { event: "response.failed", data: {} },
+      typed: {
+        type: "response.failed",
+        response: { id: "resp_failed", usage: failedUsage },
+        error: { type: "error", code: "server_error", message: "failed after billing" },
+      },
+      responseId: "resp_failed",
+      usage: failedUsage,
+      error: { code: "server_error", message: "failed after billing" },
+    }];
+
+    await expect(collectCodexToAnthropicResponse(fakeCodexApi, fakeResponse, "gpt-5.4"))
+      .rejects.toMatchObject({ usage: failedUsage, responseId: "resp_failed" });
+  });
+
   it("throws EmptyResponseError for empty stream", async () => {
     mockEvents = emptyStream();
     await expect(collectCodexToAnthropicResponse(fakeCodexApi, fakeResponse, "gpt-5.4"))
@@ -223,6 +343,70 @@ describe("streamCodexToAnthropic — usage details", () => {
     const events = parseSSEEvents(chunks);
     const msgDelta = events.find((e) => e.event === "message_delta");
     expect((msgDelta!.data.usage as Record<string, unknown>)).not.toHaveProperty("cache_read_input_tokens");
+  });
+
+  it("passes raw cached_tokens=0 to internal accounting", async () => {
+    const usages: unknown[] = [];
+    mockEvents = [
+      ...simpleTextStream().slice(0, -1),
+      createCompleted("resp_zero", { input_tokens: 50, output_tokens: 20, cached_tokens: 0 }),
+    ];
+    for await (const _chunk of streamCodexToAnthropic(
+      fakeCodexApi,
+      fakeResponse,
+      "gpt-5.4",
+      (usage) => usages.push(usage),
+    )) { /* 消费 */ }
+
+    expect(usages).toEqual([{ input_tokens: 50, output_tokens: 20, cached_tokens: 0 }]);
+  });
+
+  it("does not estimate omitted cached_tokens from affinity", async () => {
+    const usages: unknown[] = [];
+    mockEvents = [
+      ...simpleTextStream().slice(0, -1),
+      createCompleted("resp_unknown", { input_tokens: 50, output_tokens: 20 }),
+    ];
+    const chunks: string[] = [];
+    for await (const chunk of streamCodexToAnthropic(
+      fakeCodexApi,
+      fakeResponse,
+      "gpt-5.4",
+      (usage) => usages.push(usage),
+      undefined,
+      false,
+      { reusedInputTokensUpperBound: 45 },
+    )) {
+      chunks.push(chunk);
+    }
+
+    const messageDelta = parseSSEEvents(chunks).find((event) => event.event === "message_delta");
+    expect(messageDelta?.data.usage).toEqual({ input_tokens: 50, output_tokens: 20 });
+    expect(usages).toEqual([{ input_tokens: 50, output_tokens: 20 }]);
+  });
+
+  it("invokes usage and completion callbacks once for duplicate response.completed", async () => {
+    const usages: unknown[] = [];
+    const completedIds: Array<string | undefined> = [];
+    mockEvents = [
+      ...usageStream(),
+      createCompleted("resp_7", { input_tokens: 90, output_tokens: 40, cached_tokens: 1 }),
+    ];
+    for await (const _chunk of streamCodexToAnthropic(
+      fakeCodexApi,
+      fakeResponse,
+      "gpt-5.4",
+      (usage) => usages.push(usage),
+      undefined,
+      false,
+      undefined,
+      undefined,
+      (id) => completedIds.push(id),
+    )) { /* 消费 */ }
+
+    expect(usages).toHaveLength(1);
+    expect(usages[0]).toMatchObject({ input_tokens: 50, output_tokens: 20, cached_tokens: 30 });
+    expect(completedIds).toEqual(["resp_7"]);
   });
 });
 

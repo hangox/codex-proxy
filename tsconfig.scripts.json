@@ -8,6 +8,7 @@
   },
   "include": [
     "scripts/build/**/*.d.ts",
-    "scripts/build/**/*.ts"
+    "scripts/build/**/*.ts",
+    "scripts/experiments/**/*.ts"
   ]
 }

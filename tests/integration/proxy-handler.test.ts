@@ -212,6 +212,18 @@ describe("proxy-handler integration", () => {
     vi.clearAllMocks();
   });
 
+  it("rejects a controlled request with an invalid observer token before upstream dispatch", async () => {
+    const accountPool = createMockAccountPool();
+    mockCreateResponse = vi.fn(async () => new Response("must not dispatch"));
+    const { app } = buildTestApp({ accountPool, req: { ...createDefaultRequest(), rawUsageToken: "wrong-token", rawUsageRunId: "run-1" } });
+
+    const res = await app.request("/test", { method: "POST" });
+
+    expect(res.status).toBe(403);
+    expect(mockCreateResponse).not.toHaveBeenCalled();
+    expect(accountPool.release).toHaveBeenCalledOnce();
+  });
+
   // 1. No account available — self-heal bucket (★ #81: concurrency
   // saturated / quota window both use noAccountStatus + Retry-After;
   // needs_human is a separate test below since it uses a different status).
@@ -315,6 +327,7 @@ describe("proxy-handler integration", () => {
     });
     const req: ProxyRequest = {
       ...createDefaultRequest(),
+      clientConversationId: "thread-collect",
       codexRequest: {
         ...createDefaultRequest().codexRequest,
         prompt_cache_key: "thread-collect",
@@ -359,6 +372,7 @@ describe("proxy-handler integration", () => {
 
     const req: ProxyRequest = {
       ...createDefaultRequest(),
+      clientConversationId: "thread-large-missing-tools",
       codexRequest: {
         ...createDefaultRequest().codexRequest,
         prompt_cache_key: "thread-large-missing-tools",
@@ -1250,6 +1264,7 @@ describe("proxy-handler integration", () => {
   it("replays full original input after implicit previous-response WebSocket failure", async () => {
     const req: ProxyRequest = {
       ...createDefaultRequest(),
+      clientConversationId: "thread-implicit-ws",
       codexRequest: {
         ...createDefaultRequest().codexRequest,
         prompt_cache_key: "thread-implicit-ws",

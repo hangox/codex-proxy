@@ -6,6 +6,7 @@ import {
 } from "@src/routes/shared/proxy-error-retry-transition.js";
 import type { ErrorAction } from "@src/routes/shared/proxy-error-handler.js";
 import type { AccountPoolSummary } from "@src/routes/shared/proxy-error-response.js";
+import type { UsageInfo } from "@src/translation/codex-event-extractor.js";
 import { describe, expect, it, vi } from "vitest";
 
 type RespondDecision = Extract<ErrorAction, { action: "respond" }>;
@@ -60,6 +61,7 @@ function mockPool(options: {
 } = {}): AccountPool {
   return {
     release: vi.fn(),
+    recordUsageTokens: vi.fn(),
     hasAvailableAccounts: vi.fn(() => options.available ?? true),
     getPoolSummary: vi.fn(() => options.summary ?? summary()),
     acquire: vi.fn(() => options.acquiredAccount ?? acquired()),
@@ -94,6 +96,28 @@ describe("applyProxyErrorRetryTransition", () => {
     expect(accountPool.release).toHaveBeenCalledWith("entry-1", undefined);
     expect(restoreImplicitResumeRequest).not.toHaveBeenCalled();
     expect(accountPool.acquire).not.toHaveBeenCalled();
+  });
+
+  it("releases terminal error usage before retrying without changing affinity", () => {
+    const accountPool = mockPool({ acquiredAccount: acquired({ entryId: "entry-2" }) });
+    const restoreImplicitResumeRequest = vi.fn();
+    const usage: UsageInfo = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+
+    const result = applyProxyErrorRetryTransition({
+      accountPool,
+      entryId: "entry-1",
+      model: "gpt-5.4",
+      triedEntryIds: ["entry-1"],
+      tag: "Test",
+      decision: retryDecision({ releaseBeforeRetry: true }),
+      usage,
+      released: new Set<string>(),
+      restoreImplicitResumeRequest,
+      modelRetried: false,
+    });
+
+    expect(result.action).toBe("retry");
+    expect(accountPool.release).toHaveBeenCalledWith("entry-1", usage);
   });
 
   it("releases model-not-supported accounts before acquiring a fallback and marks the model retried", () => {
@@ -150,12 +174,58 @@ describe("applyProxyErrorRetryTransition", () => {
 
     expect(result.action).toBe("retry");
     expect(accountPool.release).not.toHaveBeenCalled();
+    expect(accountPool.recordUsageTokens).not.toHaveBeenCalled();
     expect(restoreImplicitResumeRequest).toHaveBeenCalledOnce();
     expect(accountPool.acquire).toHaveBeenCalledWith({
       model: "gpt-5.4",
       excludeIds: ["entry-1"],
       preferredEntryId: undefined,
     });
+  });
+
+  it("records token usage without releasing a rate-limited slot", () => {
+    const accountPool = mockPool({ acquiredAccount: acquired({ entryId: "entry-2" }) });
+    const restoreImplicitResumeRequest = vi.fn();
+    const usage: UsageInfo = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+
+    const result = applyProxyErrorRetryTransition({
+      accountPool,
+      entryId: "entry-1",
+      model: "gpt-5.4",
+      triedEntryIds: ["entry-1"],
+      tag: "Test",
+      decision: retryDecision({ status: 429, message: "rate limited", useFormat429: true }),
+      usage,
+      released: new Set<string>(),
+      restoreImplicitResumeRequest,
+      modelRetried: false,
+    });
+
+    expect(result.action).toBe("retry");
+    expect(accountPool.release).not.toHaveBeenCalled();
+    expect(accountPool.recordUsageTokens).toHaveBeenCalledWith("entry-1", usage, false);
+  });
+
+  it("counts token usage and request for a 402 fallback attempt", () => {
+    const accountPool = mockPool({ acquiredAccount: acquired({ entryId: "entry-2" }) });
+    const restoreImplicitResumeRequest = vi.fn();
+    const usage: UsageInfo = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+
+    const result = applyProxyErrorRetryTransition({
+      accountPool,
+      entryId: "entry-1",
+      model: "gpt-5.4",
+      triedEntryIds: ["entry-1"],
+      tag: "Test",
+      decision: retryDecision({ status: 402, message: "quota exhausted" }),
+      usage,
+      released: new Set<string>(),
+      restoreImplicitResumeRequest,
+      modelRetried: false,
+    });
+
+    expect(result.action).toBe("retry");
+    expect(accountPool.recordUsageTokens).toHaveBeenCalledWith("entry-1", usage, true);
   });
 
   it("returns fallback response details without rendering when no retry account remains", () => {

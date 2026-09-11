@@ -169,7 +169,7 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
     expect(response.usage.input_tokens).toBe(3000); // 10000 - 7000
   });
 
-  it("cachedTokens = 0 时：与无缓存情况一致，cache_read 不出现", async () => {
+  it("cachedTokens = 0 时：保留内部显式零，客户端不报 cache_read", async () => {
     const api = makeCodexApiMock();
     const res = makeCodexResponse({
       inputTokens: 5000,
@@ -177,11 +177,12 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
       cachedTokens: 0,
     });
 
-    const { response } = await collectCodexToAnthropicResponse(api, res, "gpt-5.4");
+    const { response, usage } = await collectCodexToAnthropicResponse(api, res, "gpt-5.4");
 
     expect(response.usage).not.toHaveProperty("cache_creation_input_tokens");
     expect(response.usage.input_tokens).toBe(5000);
     expect(response.usage.cache_read_input_tokens).toBeUndefined();
+    expect(usage).toEqual({ input_tokens: 5000, output_tokens: 200, cached_tokens: 0, reasoning_tokens: 0 });
   });
 
   it("大请求场景：70M input，1.18M cached（模拟 04-03 gpt-5.4）", async () => {
@@ -202,7 +203,7 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
     expect(hitRate).toBeCloseTo(0.017, 2); // 约 1.7%，对应实际数据
   });
 
-  it("隐式续链但上游未返回 cached_tokens 时：使用复用上限推导 cache_read", async () => {
+  it("隐式续链但上游明确返回 cached_tokens=0 时：不被复用上限覆盖", async () => {
     const api = makeCodexApiMock();
     const res = makeCodexResponse({
       inputTokens: 15_243,
@@ -210,7 +211,7 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
       cachedTokens: 0,
     });
 
-    const { response } = await collectCodexToAnthropicResponse(
+    const { response, usage } = await collectCodexToAnthropicResponse(
       api,
       res,
       "gpt-5.4-mini",
@@ -218,9 +219,30 @@ describe("非流式响应 collectCodexToAnthropicResponse", () => {
       { reusedInputTokensUpperBound: 15_240 },
     );
 
-    expect(response.usage.cache_read_input_tokens).toBe(15_240);
-    expect(response.usage).not.toHaveProperty("cache_creation_input_tokens");
-    expect(response.usage.input_tokens).toBe(3);
+    expect(response.usage.cache_read_input_tokens).toBeUndefined();
+    expect(response.usage.input_tokens).toBe(15_243);
+    expect(usage.cached_tokens).toBe(0);
+  });
+
+  it("隐式续链且上游省略 cached_tokens 时：客户端和内部统计都保持未知", async () => {
+    const api = makeCodexApiMock();
+    const res = makeCodexResponse({
+      inputTokens: 15_243,
+      outputTokens: 7,
+    });
+
+    const { response, usage } = await collectCodexToAnthropicResponse(
+      api,
+      res,
+      "gpt-5.4-mini",
+      false,
+      { reusedInputTokensUpperBound: 15_240 },
+    );
+
+    expect(response.usage.cache_read_input_tokens).toBeUndefined();
+    expect(response.usage.input_tokens).toBe(15_243);
+    expect(usage).toEqual({ input_tokens: 15_243, output_tokens: 7, reasoning_tokens: 0 });
+    expect(usage).not.toHaveProperty("cached_tokens");
   });
 
   it("工具调用响应会回传 call_id 元数据，供隐式续链接力校验", async () => {
@@ -332,24 +354,55 @@ describe("流式响应 streamCodexToAnthropic", () => {
     expect(hitRate2).toBeGreaterThan(0.8); // 87% 命中率
   });
 
-  it("流式场景下也会为隐式续链补齐 cache_read", async () => {
+  it("流式场景下也不会用隐式续链上限覆盖上游显式零值", async () => {
     const api = makeCodexApiMock();
     const res = makeCodexResponse({
       inputTokens: 15_243,
       outputTokens: 7,
       cachedTokens: 0,
     });
+    const usages: Array<{ input_tokens: number; output_tokens: number; cached_tokens?: number }> = [];
 
     const sseText = await collectSSE(
-      streamCodexToAnthropic(api, res, "gpt-5.4-mini", undefined, undefined, false, {
-        reusedInputTokensUpperBound: 15_240,
-      }),
+      streamCodexToAnthropic(
+        api,
+        res,
+        "gpt-5.4-mini",
+        (usage) => usages.push(usage),
+        undefined,
+        false,
+        { reusedInputTokensUpperBound: 15_240 },
+      ),
     );
-    const usage = getMessageDeltaUsage(sseText);
+    const responseUsage = getMessageDeltaUsage(sseText);
 
-    expect(usage.cache_read_input_tokens).toBe(15_240);
-    expect(usage).not.toHaveProperty("cache_creation_input_tokens");
-    expect(usage.input_tokens).toBe(3);
+    expect(responseUsage.cache_read_input_tokens).toBeUndefined();
+    expect(responseUsage.input_tokens).toBe(15_243);
+    expect(usages).toEqual([{ input_tokens: 15_243, output_tokens: 7, cached_tokens: 0, reasoning_tokens: 0 }]);
+  });
+
+  it("流式场景下上游省略 cached_tokens 时：内部保持未知且客户端不估算", async () => {
+    const api = makeCodexApiMock();
+    const res = makeCodexResponse({ inputTokens: 15_243, outputTokens: 7 });
+    const usages: Array<{ input_tokens: number; output_tokens: number; cached_tokens?: number }> = [];
+
+    const sseText = await collectSSE(
+      streamCodexToAnthropic(
+        api,
+        res,
+        "gpt-5.4-mini",
+        (usage) => usages.push(usage),
+        undefined,
+        false,
+        { reusedInputTokensUpperBound: 15_240 },
+      ),
+    );
+    const responseUsage = getMessageDeltaUsage(sseText);
+
+    expect(responseUsage.cache_read_input_tokens).toBeUndefined();
+    expect(responseUsage.input_tokens).toBe(15_243);
+    expect(usages).toEqual([{ input_tokens: 15_243, output_tokens: 7, reasoning_tokens: 0 }]);
+    expect(usages[0]).not.toHaveProperty("cached_tokens");
   });
 
   it("流式工具调用响应会回传 call_id 元数据", async () => {

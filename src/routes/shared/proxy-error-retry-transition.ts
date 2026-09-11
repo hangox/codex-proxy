@@ -2,6 +2,7 @@ import type { AccountPool } from "../../auth/account-pool.js";
 import type { CodexApi } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
+import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import { releaseAccount } from "./account-acquisition.js";
 import { prepareProxyFallbackAccountRetry } from "./proxy-fallback-account-retry.js";
 import type { ErrorAction } from "./proxy-error-handler.js";
@@ -30,6 +31,7 @@ export interface ApplyProxyErrorRetryTransitionOptions {
   triedEntryIds: string[];
   tag: string;
   decision: ErrorAction;
+  usage?: UsageInfo;
   released: Set<string>;
   restoreImplicitResumeRequest: () => void;
   modelRetried: boolean;
@@ -48,6 +50,7 @@ export function applyProxyErrorRetryTransition(
     triedEntryIds,
     tag,
     decision,
+    usage,
     released,
     restoreImplicitResumeRequest,
     modelRetried,
@@ -57,7 +60,7 @@ export function applyProxyErrorRetryTransition(
   } = options;
 
   if (decision.action === "respond") {
-    releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, expectsImageGen), released);
+    releaseAccount(accountPool, entryId, annotateImageGenOutcome(usage, expectsImageGen), released);
     return {
       action: "respond",
       status: decision.status,
@@ -67,7 +70,11 @@ export function applyProxyErrorRetryTransition(
   }
 
   if (decision.releaseBeforeRetry) {
-    releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, expectsImageGen), released);
+    releaseAccount(accountPool, entryId, annotateImageGenOutcome(usage, expectsImageGen), released);
+  } else if (usage) {
+    // 账户可能在获取 fallback 期间保持锁定；仍需在不释放槽位的前提下
+    // 对这次 attempt 入账一次 token，避免失败 usage 丢失或重复。
+    accountPool.recordUsageTokens(entryId, annotateImageGenOutcome(usage, expectsImageGen)!, decision.status !== 429);
   }
   restoreImplicitResumeRequest();
   const nextModelRetried = decision.markModelRetried ? true : modelRetried;

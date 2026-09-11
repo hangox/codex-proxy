@@ -181,6 +181,7 @@ function createDirectProxyRoutes(pool: AccountPool): Hono {
         codexRequest,
         model: codexRequest.model,
         isStreaming: false,
+        clientConversationId: c.req.header("x-claude-code-session-id"),
       },
       fmt: directProxyFormat,
     });
@@ -212,7 +213,7 @@ describe("Implicit Resume from Derived Key", () => {
     getSessionAffinityMap().dispose();
   });
 
-  it("Test 1 & 2: Chat endpoint uses derived key and triggers implicit resume on multi-turn", async () => {
+  it("无显式 client session 时只复用 prompt cache routing，不隐式续接 previous response", async () => {
     // Turn 1
     const t1Input = [{ role: "user", content: "First message" }];
     const req1 = await chatApp.request("/v1/chat/completions", {
@@ -246,10 +247,10 @@ describe("Implicit Resume from Derived Key", () => {
       }),
     });
     
-    // T2 should have triggered implicit resume
+    // 无可信 client session 时，第二轮仍发送完整输入，不授权隐式 previous_response 链。
     captured = getCapturedCodexRequest();
-    expect(captured.previous_response_id).toBe("resp-1");
-    expect(captured.input).toEqual([{ role: "user", content: "Hello again" }]);
+    expect(captured.previous_response_id).toBeUndefined();
+    expect(captured.input).toEqual(t2Input);
   });
 
   it("Test 1 & 2b: Chat endpoint uses client session via 'user' field if provided", async () => {
@@ -656,14 +657,22 @@ describe("Implicit Resume from Derived Key", () => {
     expect(requests.map((req) => req.previous_response_id)).toEqual([
       undefined,
       undefined,
-      "resp-1",
-      "resp-2",
+      undefined,
+      undefined,
     ]);
     expect(requests.map((req) => req.input)).toEqual([
       [{ role: "user", content: "root A" }],
       [{ role: "user", content: "root B" }],
-      [{ role: "user", content: "A follow-up" }],
-      [{ role: "user", content: "B follow-up" }],
+      [
+        { role: "user", content: "root A" },
+        { role: "assistant", content: "A answer 1" },
+        { role: "user", content: "A follow-up" },
+      ],
+      [
+        { role: "user", content: "root B" },
+        { role: "assistant", content: "B answer 1" },
+        { role: "user", content: "B follow-up" },
+      ],
     ]);
   });
 
@@ -776,22 +785,22 @@ describe("Implicit Resume from Derived Key", () => {
 
     await directProxyApp.request("/direct", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-claude-code-session-id": sessionId },
       body: JSON.stringify(buildRequest("identical-subagents:1", rootInput)),
     });
     await directProxyApp.request("/direct", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-claude-code-session-id": sessionId },
       body: JSON.stringify(buildRequest("identical-subagents:2", rootInput)),
     });
     await directProxyApp.request("/direct", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-claude-code-session-id": sessionId },
       body: JSON.stringify(buildRequest("identical-subagents:1", followUpInput)),
     });
     await directProxyApp.request("/direct", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-claude-code-session-id": sessionId },
       body: JSON.stringify(buildRequest("identical-subagents:2", followUpInput)),
     });
 

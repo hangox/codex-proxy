@@ -1,5 +1,6 @@
 import type { AccountPool } from "../../auth/account-pool.js";
 import { releaseAccount } from "./account-acquisition.js";
+import type { UsageInfo } from "../../translation/codex-event-extractor.js";
 import type { ProxyRequest } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
 import { formatAccount } from "./opaque-compact-audit.js";
@@ -14,6 +15,7 @@ export interface HandleNonStreamingEmptyResponseExhaustedOptions {
   entryId: string;
   /** true 表示本请求受 opaque 隐私合同约束，日志不得含明文账号。 */
   sensitive?: boolean;
+  usage?: UsageInfo;
   req: ProxyRequest;
   tag: string;
   attempt: number;
@@ -29,6 +31,7 @@ export function handleNonStreamingEmptyResponseExhausted(
     accountPool,
     entryId,
     sensitive,
+    usage,
     req,
     tag,
     attempt,
@@ -37,7 +40,7 @@ export function handleNonStreamingEmptyResponseExhausted(
     logWarn = (message) => console.warn(message),
   } = options;
 
-  releaseAccount(accountPool, entryId, annotateImageGenOutcome(undefined, req.expectsImageGen), released);
+  releaseAccount(accountPool, entryId, annotateImageGenOutcome(usage, req.expectsImageGen), released);
   const email = accountPool.getEntry(entryId)?.email ?? "?";
   logWarn(
     `[${tag}] ${formatAccount(entryId, sensitive, email)} | Empty response (attempt ${attempt}/${maxRetries + 1}), all retries exhausted`,

@@ -22,6 +22,9 @@ export interface ProxyRequest {
   isStreaming: boolean;
   /** Stable client-side conversation/session identifier when the upstream client provides one. */
   clientConversationId?: string;
+  /** 仅由受控 raw usage run header 注入；不得进入上游 body 或普通日志。 */
+  rawUsageToken?: string;
+  rawUsageRunId?: string;
   /** Anthropic messages 在没有 session 或显式缓存断点时保留本地 affinity，但不得转发派生的 upstream cache key。 */
   suppressDerivedPromptCacheKey?: boolean;
   /** Hard account binding for in-memory opaque compact state restoration. */
@@ -118,8 +121,11 @@ export interface FormatCollectTranslatorOptions {
 
 export interface FormatCollectTranslatorResult {
   response: unknown;
-  usage: UsageInfo;
+  /** 内部 Codex usage；上游未报告整段 usage 时省略。 */
+  usage?: UsageInfo;
   responseId: string | null;
+  /** 上游未成功发出 response.completed 时为 false。 */
+  responseCompleted?: boolean;
 }
 
 /** Format-specific adapter provided by each route. */

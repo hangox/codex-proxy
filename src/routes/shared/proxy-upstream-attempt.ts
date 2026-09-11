@@ -1,4 +1,5 @@
-import type { WsPoolContext } from "../../proxy/codex-api.js";
+import type { CodexRawUsageContext, WsPoolContext } from "../../proxy/codex-api.js";
+import { isRawUsageObservationTokenActive } from "../../proxy/raw-usage-observer.js";
 import type { CodexResponsesRequest } from "../../proxy/codex-types.js";
 import type { ParsedRateLimit } from "../../proxy/rate-limit-headers.js";
 import { withRetry } from "../../utils/retry.js";
@@ -22,6 +23,7 @@ export interface ProxyUpstreamAttemptApi {
     onRateLimits?: (rateLimits: ParsedRateLimit) => void,
     poolCtx?: WsPoolContext,
   ): Promise<Response>;
+  setRawUsageContext?(context: CodexRawUsageContext): void;
 }
 
 export interface SendProxyUpstreamAttemptOptions {
@@ -72,6 +74,7 @@ export async function sendProxyUpstreamAttempt(
   };
 
   const startMs = nowMs();
+  let attempt = 0;
   // Opaque compact restoration injects sensitive encrypted state into input.
   // Never send that payload to the opt-in debug dump channel.
   if (request.requiredAccountEntryId === undefined) {
@@ -87,6 +90,8 @@ export async function sendProxyUpstreamAttempt(
   }
   const rawResponse = await withRetry(
     async () => {
+      attempt += 1;
+      api.setRawUsageContext?.({ requestId, attempt, observerToken: request.rawUsageToken, observerRunId: request.rawUsageRunId });
       // 只计真正发起普通生成上游请求的区间；withRetry 的本地退避不属于
       // fallback_render 的实际压缩耗时，失败尝试在这里先封口。
       markCompactFallbackUpstreamStart(request);
@@ -97,7 +102,11 @@ export async function sendProxyUpstreamAttempt(
         throw error;
       }
     },
-    { tag, ...retryOptions },
+    {
+      tag,
+      ...retryOptions,
+      ...(isRawUsageObservationTokenActive(request.rawUsageToken) ? { maxRetries: 0 } : {}),
+    },
   );
   recordProxyEgressLog({
     requestId,

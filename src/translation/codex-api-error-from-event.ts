@@ -5,6 +5,12 @@ import {
   promptTooLongStatus,
 } from "../proxy/prompt-too-long-error.js";
 import { classifyRawUpstreamError } from "../proxy/error-classification.js";
+import type { UsageInfo } from "./codex-event-extractor.js";
+
+export type CodexApiErrorWithUsage = CodexApiError & {
+  usage?: UsageInfo;
+  responseId?: string | null;
+};
 
 /**
  * Convert an upstream `error` / `response.failed` SSE event into a CodexApiError
@@ -14,14 +20,21 @@ import { classifyRawUpstreamError } from "../proxy/error-classification.js";
  */
 export function codexApiErrorFromEvent(
   err: { code: string; message: string },
-): CodexApiError {
+  usage?: UsageInfo,
+  responseId?: string | null,
+): CodexApiErrorWithUsage {
+  const attachUsage = (error: CodexApiError): CodexApiErrorWithUsage => Object.assign(
+    error,
+    usage !== undefined ? { usage } : {},
+    responseId !== undefined ? { responseId } : {},
+  );
   const raw = JSON.stringify({ error: { code: err.code, message: err.message } });
   const promptTooLong = isPromptTooLongLike(raw);
   if (promptTooLong) {
-    return new CodexApiError(
+    return attachUsage(new CodexApiError(
       promptTooLongStatus(statusForCode(err.code)),
       buildPromptTooLongErrorBody(raw),
-    );
+    ));
   }
   const body = JSON.stringify({
     error: { type: err.code, code: err.code, message: err.message },
@@ -35,7 +48,7 @@ export function codexApiErrorFromEvent(
   // 判据，两条路径（事件 code 路径 vs. 原始 HTTP body 路径）统一到一起，不再
   // 各自维护一份、互相漏覆盖对方命中的形态。
   const { status, retryable } = classifyRawUpstreamError(statusForCode(err.code), body);
-  return new CodexApiError(status, body, { retryable });
+  return attachUsage(new CodexApiError(status, body, { retryable }));
 }
 
 function statusForCode(code: string): number {

@@ -569,6 +569,26 @@ describe("iterateCodexEvents — unregistered item_id fallback", () => {
     expect(incompleteEvt!.usage!.output_tokens).toBe(30);
   });
 
+  it("extracts usage from response.failed event", async () => {
+    const sse =
+      sseChunk("response.created", { response: { id: "resp_failed" } }) +
+      sseChunk("response.failed", {
+        response: {
+          id: "resp_failed",
+          usage: { input_tokens: 50, output_tokens: 20, input_tokens_details: { cached_tokens: 30 } },
+        },
+        error: { code: "server_error", message: "failed after billing" },
+      });
+
+    const api = new CodexApi("test-token", null);
+    const response = mockResponse(sse);
+    const events: ExtractedEvent[] = [];
+    for await (const evt of iterateCodexEvents(api, response)) events.push(evt);
+
+    const failedEvt = events.find((evt) => evt.error?.code === "server_error");
+    expect(failedEvt?.usage).toEqual({ input_tokens: 50, output_tokens: 20, cached_tokens: 30 });
+  });
+
   it("extracts message text from output_item.done when text deltas are absent", async () => {
     const sse =
       sseChunk("response.created", { response: { id: "resp_done_text" } }) +

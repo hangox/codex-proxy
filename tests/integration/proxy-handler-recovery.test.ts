@@ -160,6 +160,7 @@ describe("proxy-handler recovery & defense", () => {
   it("replays full original input after implicit previous-response WebSocket failure", async () => {
     const req: ProxyRequest = {
       ...createDefaultRequest(),
+      clientConversationId: "recovery-session",
       codexRequest: {
         ...createDefaultRequest().codexRequest,
         prompt_cache_key: "thread-implicit-ws",
@@ -182,7 +183,7 @@ describe("proxy-handler recovery & defense", () => {
     affinityMap.record(
       "resp_implicit_ws",
       "e1",
-      "thread-implicit-ws",
+      "recovery-session",
       "turn-implicit",
       "You are helpful",
       undefined,
@@ -246,6 +247,7 @@ describe("proxy-handler recovery & defense", () => {
   it("retries implicit continuity recovery at most once", async () => {
     const req: ProxyRequest = {
       ...createDefaultRequest(),
+      clientConversationId: "recovery-session",
       codexRequest: {
         ...createDefaultRequest().codexRequest,
         prompt_cache_key: "thread-retry-once",
@@ -265,7 +267,7 @@ describe("proxy-handler recovery & defense", () => {
     getSessionAffinityMap().record(
       "resp_retry_once",
       "e1",
-      "thread-retry-once",
+      "recovery-session",
       undefined,
       "You are helpful",
       undefined,

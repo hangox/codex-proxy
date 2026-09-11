@@ -212,9 +212,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  *  returns the same upstream `usage` object (e.g. the compact JSON response). */
 export interface NormalizedHostModelUsage {
   input_tokens: number;
+  input_tokens_present?: boolean;
   output_tokens: number;
+  output_tokens_present?: boolean;
   cached_tokens?: number;
+  cached_tokens_present?: boolean;
   reasoning_tokens?: number;
+  reasoning_tokens_present?: boolean;
 }
 
 /**
@@ -238,18 +242,24 @@ export interface NormalizedHostModelUsage {
  */
 export function parseNormalizedHostModelUsage(usage: unknown): NormalizedHostModelUsage | undefined {
   if (!isRecord(usage)) return undefined;
+  const inputTokensPresent = typeof usage.input_tokens === "number";
+  const outputTokensPresent = typeof usage.output_tokens === "number";
   const result: NormalizedHostModelUsage = {
-    input_tokens: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
-    output_tokens: typeof usage.output_tokens === "number" ? usage.output_tokens : 0,
+    input_tokens: inputTokensPresent ? usage.input_tokens as number : 0,
+    output_tokens: outputTokensPresent ? usage.output_tokens as number : 0,
   };
+  Object.defineProperties(result, {
+    input_tokens_present: { value: inputTokensPresent, enumerable: false },
+    output_tokens_present: { value: outputTokensPresent, enumerable: false },
+  });
   const inputDetails = isRecord(usage.input_tokens_details) ? usage.input_tokens_details : undefined;
-  if (inputDetails && typeof inputDetails.cached_tokens === "number") {
-    result.cached_tokens = inputDetails.cached_tokens;
-  }
+  const cachedTokensPresent = typeof inputDetails?.cached_tokens === "number";
+  Object.defineProperty(result, "cached_tokens_present", { value: cachedTokensPresent, enumerable: false });
+  if (cachedTokensPresent) result.cached_tokens = inputDetails!.cached_tokens as number;
   const outputDetails = isRecord(usage.output_tokens_details) ? usage.output_tokens_details : undefined;
-  if (outputDetails && typeof outputDetails.reasoning_tokens === "number") {
-    result.reasoning_tokens = outputDetails.reasoning_tokens;
-  }
+  const reasoningTokensPresent = typeof outputDetails?.reasoning_tokens === "number";
+  Object.defineProperty(result, "reasoning_tokens_present", { value: reasoningTokensPresent, enumerable: false });
+  if (reasoningTokensPresent) result.reasoning_tokens = outputDetails!.reasoning_tokens as number;
   return result;
 }
 

@@ -181,7 +181,7 @@ export async function collectNonStreamingResponse(
 export interface ReleaseNonStreamingSuccessAccountOptions {
   accountPool: AccountPool;
   entryId: string;
-  usage: UsageInfo;
+  usage?: UsageInfo;
   expectsImageGen?: boolean;
   released: Set<string>;
 }
@@ -196,6 +196,27 @@ export function releaseNonStreamingSuccessAccount(options: ReleaseNonStreamingSu
   } = options;
 
   clearCfChallengeCooldown(entryId);
+  releaseAccount(accountPool, entryId, annotateImageGenOutcome(usage, expectsImageGen), released);
+}
+
+export interface ReleaseNonStreamingFailureAccountOptions {
+  accountPool: AccountPool;
+  entryId: string;
+  usage?: UsageInfo;
+  expectsImageGen?: boolean;
+  released: Set<string>;
+}
+
+/** 失败终态仍可携带真实 usage；只释放并入账，不清理成功冷却或建立续链。 */
+export function releaseNonStreamingFailureAccount(options: ReleaseNonStreamingFailureAccountOptions): void {
+  const {
+    accountPool,
+    entryId,
+    usage,
+    expectsImageGen,
+    released,
+  } = options;
+
   releaseAccount(accountPool, entryId, annotateImageGenOutcome(usage, expectsImageGen), released);
 }
 

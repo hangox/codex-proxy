@@ -488,6 +488,8 @@ export function createMessagesRoutes(
     // 开关已开但 store 未就绪）此前发生在原来的 requestId 声明之前，落不了
     // 结构化日志。这里只是把已有的"取 c.get 或生成"逻辑挪早，取值方式不变。
     const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+    const rawUsageToken = c.req.header("x-codex-raw-usage-token") ?? undefined;
+    const rawUsageRunId = c.req.header("x-codex-raw-usage-run-id") ?? undefined;
     // ★ #88：跟 requestId 一起提到最早——这个时刻到任意一次
     // recordOpaqueCompactDenial 之间的耗时，就是这次 fail-closed 决策
     // 花了多久（族 A 撞在非 compact 请求上是 400，其余是 409，见 #91——
@@ -805,6 +807,8 @@ export function createMessagesRoutes(
       model: displayModel,
       isStreaming: req.stream,
       clientConversationId: clientConversationId ?? undefined,
+      ...(rawUsageToken ? { rawUsageToken } : {}),
+      ...(rawUsageRunId ? { rawUsageRunId } : {}),
       suppressDerivedPromptCacheKey: clientConversationId === null && cacheControlKey === null && !codexRequest.prompt_cache_key,
       ...(opaqueRestore.requiredEntryId ? { requiredAccountEntryId: opaqueRestore.requiredEntryId } : {}),
     };

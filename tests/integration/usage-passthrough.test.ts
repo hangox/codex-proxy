@@ -119,6 +119,21 @@ describe("usage passthrough", () => {
       expect(response.usage.cache_read_input_tokens).toBe(30);
       expect(response.usage.input_tokens + response.usage.cache_read_input_tokens!).toBe(100);
     });
+
+    it("returns raw Codex totals for internal accounting", async () => {
+      mockEvents = createUsageEvents({ cached_tokens: 30, reasoning_tokens: 20 });
+      const { response, usage } = await collectCodexToAnthropicResponse(
+        fakeCodexApi, fakeResponse, "gpt-5.3-codex",
+      );
+
+      expect(response.usage.input_tokens).toBe(70);
+      expect(usage).toEqual({
+        input_tokens: 100,
+        output_tokens: 50,
+        cached_tokens: 30,
+        reasoning_tokens: 20,
+      });
+    });
   });
 
   describe("Gemini format", () => {

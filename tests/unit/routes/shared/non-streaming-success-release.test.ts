@@ -4,7 +4,10 @@ import {
   getCfChallengeCooldown,
   recordCfChallengeCooldown,
 } from "@src/auth/cf-challenge-cooldown.js";
-import { releaseNonStreamingSuccessAccount } from "@src/routes/shared/non-streaming-helpers.js";
+import {
+  releaseNonStreamingFailureAccount,
+  releaseNonStreamingSuccessAccount,
+} from "@src/routes/shared/non-streaming-helpers.js";
 import type { UsageInfo } from "@src/translation/codex-event-extractor.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,6 +36,22 @@ describe("releaseNonStreamingSuccessAccount", () => {
 
     expect(accountPool.release).toHaveBeenCalledWith("entry-1", usage);
     expect(released.has("entry-1")).toBe(true);
+  });
+
+  it("releases a failed account with real usage without clearing success cooldown", () => {
+    const accountPool = makePool();
+    const usage: UsageInfo = { input_tokens: 50, output_tokens: 20, cached_tokens: 30 };
+    recordCfChallengeCooldown("entry-failed");
+
+    releaseNonStreamingFailureAccount({
+      accountPool,
+      entryId: "entry-failed",
+      usage,
+      released: new Set<string>(),
+    });
+
+    expect(accountPool.release).toHaveBeenCalledWith("entry-failed", usage);
+    expect(getCfChallengeCooldown("entry-failed")).not.toBeNull();
   });
 
   it("annotates successful image generation usage before release", () => {

@@ -9,6 +9,7 @@
 import { getConfig } from "../config.js";
 import { createFsPersistence } from "./account-persistence.js";
 import { AccountRegistry } from "./account-registry.js";
+import type { AccountUsageDelta } from "./account-registry.js";
 import { AccountLifecycle } from "./account-lifecycle.js";
 import type { AccountPersistence, PersistenceLoadHealth } from "./account-persistence.js";
 import type { AccountCapacitySummary } from "./account-lifecycle.js";
@@ -115,6 +116,11 @@ export class AccountPool {
 
   releaseWithoutCounting(entryId: string): void {
     this.lifecycle.releaseWithoutCounting(entryId);
+  }
+
+  /** 只追加失败 attempt 的 token，不释放槽位；countRequest 由状态路径决定。 */
+  recordUsageTokens(entryId: string, usage: AccountUsageDelta, countRequest = false): void {
+    this.registry.recordUsageTokens(entryId, usage, countRequest);
   }
 
   /** Fast check: is there at least one active account not in the exclude list? */

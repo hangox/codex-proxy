@@ -28,7 +28,7 @@ describe("resolvePromptCacheIdentity", () => {
     );
 
     expect(result.promptCacheKey).toBe("explicit-thread");
-    expect(result.conversationId).toBe("explicit-thread");
+    expect(result.conversationId).toBe("claude-session");
   });
 
   it("Claude Code session id 优先于内容 hash，避免同 session 被首条消息拆成多个 key", () => {
@@ -53,6 +53,17 @@ describe("resolvePromptCacheIdentity", () => {
 
     expect(result.promptCacheKey).not.toBe("fallback-thread");
     expect(result.promptCacheKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  it("无可信 session 时 routing key 与 continuation identity 分离", () => {
+    const request = makeCodexRequest({ prompt_cache_key: "shared-cache-key" });
+    const first = resolvePromptCacheIdentity(request, undefined, () => "continuation-a");
+    const second = resolvePromptCacheIdentity(request, undefined, () => "continuation-b");
+
+    expect(first.promptCacheKey).toBe("shared-cache-key");
+    expect(first.conversationId).toBe("continuation-a");
+    expect(second.promptCacheKey).toBe("shared-cache-key");
+    expect(second.conversationId).toBe("continuation-b");
   });
 
   it("空字符串 key/session 被忽略，避免退化成共享空会话", () => {

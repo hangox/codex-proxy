@@ -55,6 +55,16 @@ function resetExpiredQuotaWindow(
   return true;
 }
 
+export interface AccountUsageDelta {
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_tokens?: number;
+  image_input_tokens?: number;
+  image_output_tokens?: number;
+  image_request_attempted?: boolean;
+  image_request_succeeded?: boolean;
+}
+
 export class AccountRegistry {
   private accounts: Map<string, AccountEntry> = new Map();
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -454,20 +464,7 @@ export class AccountRegistry {
   /** Record request usage on release (called by lifecycle). */
   recordUsage(
     entryId: string,
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cached_tokens?: number;
-      image_input_tokens?: number;
-      image_output_tokens?: number;
-      /** True when the request declared `tools: [{type: "image_generation"}]`.
-       *  Used to drive the success/failure split below. */
-      image_request_attempted?: boolean;
-      /** Only meaningful when image_request_attempted=true. True iff upstream
-       *  returned non-zero image output tokens (i.e. an image was actually
-       *  generated, not silently stripped). */
-      image_request_succeeded?: boolean;
-    },
+    usage?: AccountUsageDelta,
   ): void {
     const entry = this.accounts.get(entryId);
     if (!entry) return;
@@ -503,6 +500,29 @@ export class AccountRegistry {
         }
       }
     }
+    this.schedulePersist();
+  }
+
+  /** 只追加某次 attempt 的 token，用于已占用/已计请求槽位的失败重试。 */
+  recordUsageTokens(entryId: string, usage: AccountUsageDelta, countRequest = false): void {
+    const entry = this.accounts.get(entryId);
+    if (!entry) return;
+
+    if (countRequest) {
+      entry.usage.request_count++;
+      entry.usage.last_used = new Date().toISOString();
+      entry.usage.window_request_count = (entry.usage.window_request_count ?? 0) + 1;
+    }
+    entry.usage.input_tokens += usage.input_tokens ?? 0;
+    entry.usage.output_tokens += usage.output_tokens ?? 0;
+    entry.usage.cached_tokens = (entry.usage.cached_tokens ?? 0) + (usage.cached_tokens ?? 0);
+    entry.usage.image_input_tokens = (entry.usage.image_input_tokens ?? 0) + (usage.image_input_tokens ?? 0);
+    entry.usage.image_output_tokens = (entry.usage.image_output_tokens ?? 0) + (usage.image_output_tokens ?? 0);
+    entry.usage.window_input_tokens = (entry.usage.window_input_tokens ?? 0) + (usage.input_tokens ?? 0);
+    entry.usage.window_output_tokens = (entry.usage.window_output_tokens ?? 0) + (usage.output_tokens ?? 0);
+    entry.usage.window_cached_tokens = (entry.usage.window_cached_tokens ?? 0) + (usage.cached_tokens ?? 0);
+    entry.usage.window_image_input_tokens = (entry.usage.window_image_input_tokens ?? 0) + (usage.image_input_tokens ?? 0);
+    entry.usage.window_image_output_tokens = (entry.usage.window_image_output_tokens ?? 0) + (usage.image_output_tokens ?? 0);
     this.schedulePersist();
   }
 

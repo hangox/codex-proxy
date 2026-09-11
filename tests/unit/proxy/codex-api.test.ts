@@ -85,6 +85,122 @@ function compactV2Stream(
 }
 
 describe("CodexApi.parseStream", () => {
+  it("observes one terminal raw usage record with request and attempt context", async () => {
+    const observations: unknown[] = [];
+    const api = new CodexApi(
+      "test-token",
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      undefined,
+      (observation) => observations.push(observation),
+    );
+    api.setRawUsageContext({ requestId: "rid-test", attempt: 2, transport: "websocket" });
+
+    await collectEvents(api, mockResponse(
+      sseChunk("response.created", { response: { id: "resp-observed" } })
+      + sseChunk("response.completed", {
+        response: {
+          id: "resp-observed",
+          usage: { input_tokens: 100, output_tokens: 20, input_tokens_details: { cached_tokens: 80 } },
+        },
+      }),
+    ));
+
+    expect(observations).toEqual([{
+      requestId: "rid-test",
+      attempt: 2,
+      transport: "websocket",
+      responseId: "resp-observed",
+      terminalEvent: "response.completed",
+      usagePresent: true,
+      usage: { input_tokens: 100, output_tokens: 20, cached_tokens: 80 },
+    }]);
+  });
+
+  it("does not expose payload text through the raw usage observer", async () => {
+    const observations: unknown[] = [];
+    const api = new CodexApi("test-token", null, null, null, null, undefined, undefined, (observation) => observations.push(observation));
+    api.setRawUsageContext({ requestId: "rid-http", attempt: 1, transport: "http" });
+
+    await collectEvents(api, mockResponse(
+      sseChunk("response.output_text.delta", { delta: "secret prompt and answer" })
+      + sseChunk("response.completed", {
+        response: {
+          id: "resp-http",
+          usage: { input_tokens: 10, output_tokens: 2 },
+        },
+      }),
+    ));
+
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).not.toHaveProperty("payload");
+    expect(observations[0]).not.toHaveProperty("text");
+  });
+
+  it("emits a missing-usage observation for a terminal without usage", async () => {
+    const observations: unknown[] = [];
+    const api = new CodexApi("test-token", null, null, null, null, undefined, undefined, (observation) => observations.push(observation));
+    api.setRawUsageContext({ requestId: "rid-missing", attempt: 1, transport: "http" });
+
+    await collectEvents(api, mockResponse(
+      sseChunk("response.completed", { response: { id: "resp-missing" } }),
+    ));
+
+    expect(observations).toEqual([{
+      requestId: "rid-missing",
+      attempt: 1,
+      transport: "http",
+      responseId: "resp-missing",
+      terminalEvent: "response.completed",
+      usagePresent: false,
+    }]);
+  });
+
+  it("preserves missing input presence while keeping explicit cached zero observable", async () => {
+    const observations: unknown[] = [];
+    const api = new CodexApi("test-token", null, null, null, null, undefined, undefined, (observation) => observations.push(observation));
+    api.setRawUsageContext({ requestId: "rid-partial", attempt: 1, transport: "http" });
+
+    await collectEvents(api, mockResponse(
+      sseChunk("response.completed", {
+        response: {
+          id: "resp-partial",
+          usage: { output_tokens: 7, input_tokens_details: { cached_tokens: 0 } },
+        },
+      }),
+    ));
+
+    expect(observations).toEqual([expect.objectContaining({
+      usagePresent: true,
+      usage: expect.objectContaining({
+        input_tokens_present: false,
+        output_tokens_present: true,
+        cached_tokens_present: true,
+        cached_tokens: 0,
+      }),
+    })]);
+  });
+
+  it("preserves explicit input zero as present in raw usage", async () => {
+    const observations: unknown[] = [];
+    const api = new CodexApi("test-token", null, null, null, null, undefined, undefined, (observation) => observations.push(observation));
+    await collectEvents(api, mockResponse(
+      sseChunk("response.completed", {
+        response: {
+          id: "resp-zero",
+          usage: { input_tokens: 0, output_tokens: 7, input_tokens_details: { cached_tokens: 0 } },
+        },
+      }),
+    ));
+    expect(observations).toEqual([expect.objectContaining({
+      usagePresent: true,
+      usage: expect.objectContaining({ input_tokens_present: true, input_tokens: 0, cached_tokens_present: true, cached_tokens: 0 }),
+    })]);
+  });
+
   it("parses a complete SSE event in a single chunk", async () => {
     const api = createApi();
     const response = mockResponse(

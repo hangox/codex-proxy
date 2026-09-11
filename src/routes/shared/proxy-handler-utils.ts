@@ -1,4 +1,4 @@
-import { CodexApi } from "../../proxy/codex-api.js";
+import { CodexApi, type CodexRawUsageSink } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import type { UsageInfo } from "../../translation/codex-event-extractor.js";
@@ -36,7 +36,8 @@ export function buildCodexApi(
   cookieJar: CookieJar | undefined,
   entryId: string,
   proxyPool?: ProxyPool,
+  rawUsageSink?: CodexRawUsageSink,
 ): CodexApi {
   const proxyUrl = proxyPool?.resolveProxyUrl(entryId);
-  return new CodexApi(token, accountId, cookieJar, entryId, proxyUrl);
+  return new CodexApi(token, accountId, cookieJar, entryId, proxyUrl, undefined, undefined, rawUsageSink);
 }

@@ -8,6 +8,7 @@ import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import { recordStreamCloseEvent } from "../../logs/stream-close-event.js";
 import { EmptyResponseError, type UsageInfo } from "../../translation/codex-event-extractor.js";
+import { stopRawUsageObservation } from "../../proxy/raw-usage-observer.js";
 import { releaseAccount } from "./account-acquisition.js";
 import type { FormatAdapter, ProxyRequest, UsageHint } from "./proxy-handler-types.js";
 import { annotateImageGenOutcome } from "./proxy-handler-utils.js";
@@ -197,6 +198,14 @@ export function handleStreaming(options: HandleStreamingOptions): Response {
         } catch (err) {
           if (!(err instanceof EmptyResponseError)) {
             throw err;
+          }
+          if (req.rawUsageToken) {
+            stopRawUsageObservation("terminal_failure");
+            await s.write(
+              fmt.formatStreamError?.(502, "Controlled raw usage run stopped after an empty response") ??
+                `data: ${JSON.stringify({ error: { message: "Controlled raw usage run stopped after an empty response", type: "stream_error" } })}\n\n`,
+            );
+            return;
           }
           if (attempt > MAX_EMPTY_RETRIES) {
             const responsePlan = handleNonStreamingEmptyResponseExhausted({

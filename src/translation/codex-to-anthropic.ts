@@ -28,6 +28,10 @@ import { isRecord } from "./shared-utils.js";
 import { codexApiErrorFromEvent } from "./codex-api-error-from-event.js";
 
 interface CacheUsageHint {
+  /**
+   * 仅为兼容现有调用方保留。这是会话亲和性的复用上限，不是上游缓存命中证据，
+   * 绝不能影响 usage 输出。
+   */
   reusedInputTokensUpperBound?: number;
 }
 
@@ -59,19 +63,20 @@ function sanitizeFunctionCallArguments(toolName: string, argumentsJson: string):
 function resolveCacheUsage(
   inputTokens: number,
   cachedTokens: number | undefined,
-  usageHint?: CacheUsageHint,
-): { cacheReadTokens: number; cacheCreationTokens: number } {
-  let cacheReadTokens = cachedTokens ?? 0;
-  if (
-    cacheReadTokens <= 0 &&
-    inputTokens > 0 &&
-    usageHint?.reusedInputTokensUpperBound &&
-    usageHint.reusedInputTokensUpperBound > 0
-  ) {
-    cacheReadTokens = Math.min(usageHint.reusedInputTokensUpperBound, inputTokens);
+): { cacheReadTokens?: number; cacheCreationTokens: number } {
+  // `cached_tokens` 是唯一的权威命中信号。字段省略表示未知，既不是零，
+  // 也不能据此通过会话亲和性推导命中。
+  const totalInputTokens = Math.max(0, inputTokens);
+  if (cachedTokens === undefined) {
+    return { cacheCreationTokens: totalInputTokens };
   }
-  const cacheCreationTokens = inputTokens > 0 ? Math.max(0, inputTokens - cacheReadTokens) : 0;
-  return { cacheReadTokens, cacheCreationTokens };
+
+  // 内部 UsageInfo 保留原始值；只在对外拆分时限幅，避免上游异常值产生负的未缓存输入。
+  const cacheReadTokens = Math.max(0, Math.min(cachedTokens, totalInputTokens));
+  return {
+    cacheReadTokens,
+    cacheCreationTokens: totalInputTokens - cacheReadTokens,
+  };
 }
 
 /** Format an Anthropic SSE event with named event type */
@@ -93,7 +98,7 @@ export async function* streamCodexToAnthropic(
   onUsage?: (usage: UsageInfo) => void,
   onResponseId?: (id: string) => void,
   wantThinking?: boolean,
-  usageHint?: CacheUsageHint,
+  _usageHint?: CacheUsageHint,
   onResponseMetadata?: (metadata: ResponseMetadata) => void,
   onResponseCompleted?: (id?: string) => void,
 ): AsyncGenerator<string> {
@@ -104,6 +109,7 @@ export async function* streamCodexToAnthropic(
   let hasToolCalls = false;
   let hasContent = false;
   let sawTerminalFailure = false;
+  let terminalEventSeen = false;
   let lastResponseId: string | null = null;
   let lastUsage: UsageInfo | undefined;
   let contentIndex = 0;
@@ -183,15 +189,18 @@ export async function* streamCodexToAnthropic(
 
   // 2. Process Codex stream events
   for await (const evt of eventSource) {
+    // 终态事件之后忽略协议违例的重复/尾随事件，确保 usage 与完成回调最多触发一次。
+    if (terminalEventSeen) continue;
     if (evt.responseId) {
       lastResponseId = evt.responseId;
       onResponseId?.(evt.responseId);
     }
     if (evt.usage) lastUsage = evt.usage;
 
-    // Handle upstream error events
+    // 处理上游错误事件。终态错误也可能携带真实 usage，先交给账户统计，再抛出错误。
     if (evt.error) {
-      throw codexApiErrorFromEvent(evt.error);
+      if (evt.usage) onUsage?.({ ...evt.usage });
+      throw codexApiErrorFromEvent(evt.error, evt.usage, lastResponseId);
     }
 
     // Handle reasoning delta → thinking block (only if client wants thinking)
@@ -331,6 +340,7 @@ export async function* streamCodexToAnthropic(
       }
 
       case "response.completed": {
+        terminalEventSeen = true;
         if (evt.textDelta) {
           hasContent = true;
           yield* closeThinkingIfOpen();
@@ -344,14 +354,10 @@ export async function* streamCodexToAnthropic(
         if (evt.usage) {
           inputTokens = evt.usage.input_tokens;
           outputTokens = evt.usage.output_tokens;
-          const adjusted = resolveCacheUsage(inputTokens, evt.usage.cached_tokens, usageHint);
-          cachedTokens = adjusted.cacheReadTokens || undefined;
-          onUsage?.({
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-            cached_tokens: cachedTokens,
-            reasoning_tokens: evt.usage.reasoning_tokens,
-          });
+          // 账户统计保留这份原始 usage。尤其要区分显式 cached_tokens=0 与字段缺失，
+          // 会话亲和性不是缓存命中证据。
+          cachedTokens = evt.usage.cached_tokens;
+          onUsage?.({ ...evt.usage });
         }
         onResponseCompleted?.(evt.responseId);
         break;
@@ -359,7 +365,14 @@ export async function* streamCodexToAnthropic(
 
       case "response.failed":
       case "response.incomplete": {
+        terminalEventSeen = true;
         sawTerminalFailure = true;
+        if (evt.usage) {
+          inputTokens = evt.usage.input_tokens;
+          outputTokens = evt.usage.output_tokens;
+          cachedTokens = evt.usage.cached_tokens;
+          onUsage?.({ ...evt.usage });
+        }
         if (hasContent) {
           console.warn(`[codex-to-anthropic] partial stream terminated responseId=${lastResponseId ?? "?"} usage=${JSON.stringify(lastUsage ?? null)} reasoning=${wantThinking ? "enabled" : "disabled"} terminal=${evt.typed.type}`);
           yield* ensureTextBlock();
@@ -384,14 +397,14 @@ export async function* streamCodexToAnthropic(
   // Codex API: input_tokens = total (cached + uncached), cached_tokens = cached subset
   // Anthropic API: input_tokens = uncached only, cache_read_input_tokens = cached
   // cacheCreationTokens here = inputTokens - cacheReadTokens = uncached portion
-  const { cacheReadTokens, cacheCreationTokens } = resolveCacheUsage(inputTokens, cachedTokens, usageHint);
+  const { cacheReadTokens, cacheCreationTokens } = resolveCacheUsage(inputTokens, cachedTokens);
   yield formatSSE("message_delta", {
     type: "message_delta",
     delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn" },
     usage: {
       input_tokens: cacheCreationTokens,
       output_tokens: outputTokens,
-      ...(cacheReadTokens > 0 ? { cache_read_input_tokens: cacheReadTokens } : {}),
+      ...(cacheReadTokens != null && cacheReadTokens > 0 ? { cache_read_input_tokens: cacheReadTokens } : {}),
     },
   });
 
@@ -410,12 +423,13 @@ export async function collectCodexToAnthropicResponse(
   rawResponse: Response,
   model: string,
   wantThinking?: boolean,
-  usageHint?: CacheUsageHint,
+  _usageHint?: CacheUsageHint,
   onResponseMetadata?: (metadata: ResponseMetadata) => void,
 ): Promise<{
   response: AnthropicMessagesResponse;
-  usage: UsageInfo;
+  usage?: UsageInfo;
   responseId: string | null;
+  responseCompleted: boolean;
 }> {
   const id = `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   let fullText = "";
@@ -424,22 +438,31 @@ export async function collectCodexToAnthropicResponse(
   let outputTokens = 0;
   let cachedTokens: number | undefined;
   let responseId: string | null = null;
+  let terminalUsage: UsageInfo | undefined;
+  let terminalKind: "completed" | "incomplete" | undefined;
+  let terminalEventSeen = false;
   const functionCallIds = new Set<string>();
 
   // Collect tool calls
   const toolUseBlocks: AnthropicContentBlock[] = [];
 
   for await (const evt of iterateCodexEvents(codexApi, rawResponse)) {
+    if (terminalEventSeen) continue;
     if (evt.responseId) responseId = evt.responseId;
     if (evt.error) {
-      throw codexApiErrorFromEvent(evt.error);
+      throw codexApiErrorFromEvent(evt.error, evt.usage, responseId);
     }
     if (evt.textDelta) fullText += evt.textDelta;
     if (evt.reasoningDelta) fullReasoning += evt.reasoningDelta;
-    if (evt.usage) {
-      inputTokens = evt.usage.input_tokens;
-      outputTokens = evt.usage.output_tokens;
-      cachedTokens = evt.usage.cached_tokens;
+    if (evt.typed.type === "response.completed" || evt.typed.type === "response.incomplete") {
+      terminalEventSeen = true;
+      terminalKind = evt.typed.type === "response.completed" ? "completed" : "incomplete";
+      if (evt.usage) {
+        terminalUsage = { ...evt.usage };
+        inputTokens = evt.usage.input_tokens;
+        outputTokens = evt.usage.output_tokens;
+        cachedTokens = evt.usage.cached_tokens;
+      }
     }
     if (evt.functionCallDone) {
       functionCallIds.add(evt.functionCallDone.callId);
@@ -459,7 +482,7 @@ export async function collectCodexToAnthropicResponse(
 
   // Detect empty response (HTTP 200 but no content)
   if (!fullText && toolUseBlocks.length === 0 && outputTokens === 0) {
-    throw new EmptyResponseError(responseId, { input_tokens: inputTokens, output_tokens: outputTokens });
+    throw new EmptyResponseError(responseId, terminalUsage);
   }
 
   const hasToolCalls = toolUseBlocks.length > 0;
@@ -481,12 +504,15 @@ export async function collectCodexToAnthropicResponse(
   }
 
   const { cacheReadTokens: cacheRead, cacheCreationTokens: cacheCreation } =
-    resolveCacheUsage(inputTokens, cachedTokens, usageHint);
-  const usage: AnthropicUsage = {
+    resolveCacheUsage(inputTokens, cachedTokens);
+  const responseUsage: AnthropicUsage = {
     input_tokens: cacheCreation,
     output_tokens: outputTokens,
-    ...(cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
+    ...(cacheRead != null && cacheRead > 0 ? { cache_read_input_tokens: cacheRead } : {}),
   };
+  // collector 返回的 usage 用于内部统计，必须保持 Codex 约定：input_tokens 是总输入，
+  // cached_tokens 是其中原始缓存子集；对外 response 使用上面的 Anthropic 拆分。
+  const usage = terminalUsage;
 
   return {
     response: {
@@ -497,9 +523,10 @@ export async function collectCodexToAnthropicResponse(
       model,
       stop_reason: hasToolCalls ? "tool_use" : "end_turn",
       stop_sequence: null,
-      usage,
+      usage: responseUsage,
     },
     usage,
     responseId,
+    responseCompleted: terminalKind === "completed",
   };
 }

@@ -49,10 +49,14 @@ export function resolvePromptCacheIdentity(
     normalizedClientConversationId ??
     derivedConversationId ??
     generateFallbackId();
+  // 缓存 routing key 不能授权 continuation。没有可信客户端 session 时，
+  // 每次请求使用新的本地 conversationId：完整 input 仍可复用上游 prompt cache，
+  // 但不会把独立请求接到同一个 previous_response_id/tool chain。
+  const conversationId = normalizedClientConversationId ?? generateFallbackId();
 
   return {
     promptCacheKey,
-    conversationId: promptCacheKey,
+    conversationId,
     explicitPromptCacheKey,
     clientConversationId: normalizedClientConversationId,
     derivedConversationId,

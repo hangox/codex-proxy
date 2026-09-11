@@ -4,6 +4,7 @@ import type { CodexApi, WsPoolContext } from "../../proxy/codex-api.js";
 import type { CookieJar } from "../../proxy/cookie-jar.js";
 import type { ProxyPool } from "../../proxy/proxy-pool.js";
 import { EmptyResponseError } from "../../translation/codex-event-extractor.js";
+import { stopRawUsageObservation } from "../../proxy/raw-usage-observer.js";
 import { withRetry } from "../../utils/retry.js";
 import { acquireAccount, releaseAccount } from "./account-acquisition.js";
 import { toErrorStatus } from "./proxy-error-handler.js";
@@ -77,11 +78,22 @@ export async function retryNonStreamingEmptyResponse(
   const sensitive = req.requiredAccountEntryId !== undefined;
   const email = accountPool.getEntry(currentEntryId)?.email ?? "?";
   logWarn(
-    `[${tag}] ${formatAccount(currentEntryId, sensitive, email)} | Empty response (attempt ${attempt}/${maxRetries + 1}), switching account...`,
+    req.rawUsageToken
+      ? `[${tag}] ${formatAccount(currentEntryId, sensitive, email)} | Empty response (attempt ${attempt}/${maxRetries + 1}), controlled run stopping; no account switch.`
+      : `[${tag}] ${formatAccount(currentEntryId, sensitive, email)} | Empty response (attempt ${attempt}/${maxRetries + 1}), switching account...`,
   );
   accountPool.recordEmptyResponse(currentEntryId);
   releaseAccount(accountPool, currentEntryId, annotateImageGenOutcome(collectErr.usage, req.expectsImageGen), released);
   restoreImplicitResumeRequest?.();
+
+  if (req.rawUsageToken) {
+    stopRawUsageObservation("terminal_failure");
+    return {
+      action: "respond",
+      status: 502,
+      message: "Controlled raw usage run stopped after an empty response",
+    };
+  }
 
   if (req.requiredAccountEntryId !== undefined) {
     return {

@@ -17,6 +17,7 @@ import {
   handleNonStreamingCollectFailure,
   rethrowNonStreamingCodexApiErrorDuringCollect,
   releaseNonStreamingSuccessAccount,
+  releaseNonStreamingFailureAccount,
   collectNonStreamingResponse,
 } from "./non-streaming-helpers.js";
 import {
@@ -100,18 +101,34 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
         },
       });
       const { result, responseFunctionCallIds, reasoningReplayItems } = collected;
-      recordNonStreamingSuccessAffinity({
-        affinityMap,
-        responseId: result.responseId,
-        entryId: currentEntryId,
-        conversationId,
-        turnState,
-        instructions: req.codexRequest.instructions ?? undefined,
-        inputTokens: result.usage.input_tokens,
-        responseFunctionCallIds,
-        variantHash,
-        chainAdvanceTicket,
-      });
+      if (result.responseCompleted === false) {
+        if (result.usage) {
+          logNonStreamingUsage({ tag: fmt.tag, entryId: currentEntryId, requestId, usage: result.usage });
+        }
+        releaseNonStreamingFailureAccount({
+          accountPool,
+          entryId: currentEntryId,
+          usage: result.usage,
+          expectsImageGen: req.expectsImageGen,
+          released,
+        });
+        c.status(502);
+        return c.json(fmt.formatError(502, "Codex returned an incomplete response. Please retry."));
+      }
+      if (result.usage) {
+        recordNonStreamingSuccessAffinity({
+          affinityMap,
+          responseId: result.responseId,
+          entryId: currentEntryId,
+          conversationId,
+          turnState,
+          instructions: req.codexRequest.instructions ?? undefined,
+          inputTokens: result.usage.input_tokens,
+          responseFunctionCallIds,
+          variantHash,
+          chainAdvanceTicket,
+        });
+      }
       if (result.responseId && conversationId && variantHash && reasoningReplayItems.length > 0) {
         getReasoningReplayCache().record({
           responseId: result.responseId,
@@ -204,6 +221,7 @@ export async function handleNonStreaming(options: HandleNonStreamingOptions): Pr
           sensitive: req.requiredAccountEntryId !== undefined,
           accountPool,
           entryId: currentEntryId,
+          usage: collectErr.usage,
           req,
           tag: fmt.tag,
           attempt,

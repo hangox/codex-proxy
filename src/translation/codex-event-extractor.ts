@@ -17,9 +17,13 @@ import {
 
 export interface UsageInfo {
   input_tokens: number;
+  input_tokens_present?: boolean;
   output_tokens: number;
+  output_tokens_present?: boolean;
   cached_tokens?: number;
+  cached_tokens_present?: boolean;
   reasoning_tokens?: number;
+  reasoning_tokens_present?: boolean;
   /** Tokens billed by the image_generation tool (gpt-image-2). Separate from host-model usage. */
   image_input_tokens?: number;
   image_output_tokens?: number;
@@ -452,6 +456,7 @@ export async function* iterateCodexEvents(
       case "response.failed":
         extracted.error = { code: typed.error.code, message: typed.error.message };
         if (typed.response.id) extracted.responseId = typed.response.id;
+        if (typed.response.usage) extracted.usage = typed.response.usage;
         break;
     }
 

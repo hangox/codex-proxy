@@ -78,7 +78,7 @@ describe("buildProxySessionContext", () => {
 
     expect(context.explicitPrevRespId).toBe("resp_prev");
     expect(context.promptCacheKey).toBe("explicit-cache");
-    expect(context.effectiveConversationId).toBe("explicit-cache");
+    expect(context.effectiveConversationId).not.toBe("explicit-cache");
     expect(context.explicitConversationId).toBe("conversation-prev");
     expect(context.chainConversationId).toBe("conversation-prev");
     expect(context.implicitPrevRespId).toBeNull();
@@ -101,7 +101,45 @@ describe("buildProxySessionContext", () => {
 
     expect(context.promptCacheKey).not.toBe("");
     expect(context.promptCacheKey).not.toBe(" ");
-    expect(context.effectiveConversationId).toBe(context.promptCacheKey);
+    expect(context.effectiveConversationId).not.toBe(context.promptCacheKey);
+    expect(context.implicitPrevRespId).toBeNull();
+  });
+
+  it("does not connect independent no-session requests through a shared cache key", () => {
+    const affinityMap = makeAffinityMap();
+    const firstRequest = makeProxyRequest({
+      codexRequest: makeCodexRequest({
+        prompt_cache_key: "shared-cache-key",
+        input: [{ role: "user", content: "same first" }],
+      }),
+    });
+    const firstContext = buildProxySessionContext({ request: firstRequest, affinityMap });
+    affinityMap.record(
+      "resp-no-session",
+      "entry-no-session",
+      firstContext.chainConversationId,
+      "turn-no-session",
+      "system",
+      40,
+      [],
+      firstContext.variantHash,
+    );
+
+    const divergentRequest = makeProxyRequest({
+      codexRequest: makeCodexRequest({
+        prompt_cache_key: "shared-cache-key",
+        input: [
+          { role: "user", content: "same first" },
+          { role: "assistant", content: "divergent answer" },
+          { role: "user", content: "continue" },
+        ],
+      }),
+    });
+    const divergentContext = buildProxySessionContext({ request: divergentRequest, affinityMap });
+
+    expect(divergentContext.promptCacheKey).toBe("shared-cache-key");
+    expect(divergentContext.implicitPrevRespId).toBeNull();
+    expect(divergentContext.continuationInputStart).toBe(2);
   });
 
   it("derives an implicit previous response for the matching conversation variant", () => {

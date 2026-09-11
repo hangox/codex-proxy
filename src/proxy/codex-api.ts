@@ -41,6 +41,7 @@ import { codexApiErrorFromEvent } from "../translation/codex-api-error-from-even
 import { fetchUsage } from "./codex-usage.js";
 import { fetchModels, probeEndpoint as probeEndpointFn } from "./codex-models.js";
 import type { CookieJar } from "./cookie-jar.js";
+import { isRawUsageObservationTokenActive, markRawUsageDispatch, recordRawUsageObservation, reserveRawUsageAttempt } from "./raw-usage-observer.js";
 import type { BackendModelEntry } from "../models/model-store.js";
 
 const X_CODEX_TURN_METADATA_HEADER = "x-codex-turn-metadata";
@@ -87,6 +88,35 @@ import {
 
 const REMOTE_COMPACTION_V2_RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
 
+export interface CodexRawUsageContext {
+  requestId?: string;
+  attempt?: number;
+  transport?: "http" | "websocket";
+  observerToken?: string;
+  observerRunId?: string;
+}
+
+export interface CodexRawUsageObservation {
+  requestId?: string;
+  attempt?: number;
+  transport?: "http" | "websocket";
+  responseId: string | null;
+  terminalEvent: "response.completed" | "response.incomplete" | "response.failed";
+  usagePresent: boolean;
+  usage?: {
+    input_tokens: number;
+    input_tokens_present?: boolean;
+    output_tokens: number;
+    output_tokens_present?: boolean;
+    cached_tokens?: number;
+    cached_tokens_present?: boolean;
+    reasoning_tokens?: number;
+    reasoning_tokens_present?: boolean;
+  };
+}
+
+export type CodexRawUsageSink = (observation: CodexRawUsageObservation) => void;
+
 /** 官方客户端每次 compact 请求都会声明的 beta feature 名。 */
 const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
 
@@ -105,6 +135,19 @@ function mergeBetaFeatures(existing: string | undefined, feature: string): strin
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+let rawWireTokenizerPromise: Promise<import("js-tiktoken/lite").Tiktoken> | null = null;
+async function estimateRawWireTokens(body: string): Promise<number> {
+  rawWireTokenizerPromise ??= (async () => {
+    const [{ Tiktoken }, ranksModule] = await Promise.all([
+      import("js-tiktoken/lite"),
+      import("js-tiktoken/ranks/o200k_base"),
+    ]);
+    return new Tiktoken(ranksModule.default);
+  })();
+  const tokenizer = await rawWireTokenizerPromise;
+  return tokenizer.encode(body).length;
 }
 
 function isCompactionItem(value: unknown): value is Extract<CodexInputItem, { type: "compaction" }> {
@@ -279,6 +322,9 @@ export class CodexApi {
   private proxyUrl: string | null | undefined;
   private baseUrl: string | undefined;
   private transport: TlsTransport | undefined;
+  private readonly rawUsageSink: CodexRawUsageSink | undefined;
+  private rawUsageContext: CodexRawUsageContext = {};
+  private rawUsageTicketId: string | undefined;
 
   constructor(
     token: string,
@@ -288,6 +334,7 @@ export class CodexApi {
     proxyUrl?: string | null,
     baseUrl?: string,
     transport?: TlsTransport,
+    rawUsageSink?: CodexRawUsageSink,
   ) {
     this.token = token;
     this.accountId = accountId;
@@ -296,6 +343,26 @@ export class CodexApi {
     this.proxyUrl = proxyUrl;
     this.baseUrl = baseUrl;
     this.transport = transport;
+    this.rawUsageSink = rawUsageSink;
+  }
+
+  /** 测试实例为下一次上游尝试设置 request/attempt 关联；默认生产实例不启用 sink。 */
+  setRawUsageContext(context: CodexRawUsageContext): void {
+    this.rawUsageContext = { ...context };
+  }
+
+  private async reserveControlledWireBudget(body: string): Promise<void> {
+    const token = this.rawUsageContext.observerToken;
+    if (!token) return;
+    if (!isRawUsageObservationTokenActive(token)) {
+      throw new CodexApiError(403, "Controlled raw usage run token is invalid or expired.", { retryable: false });
+    }
+    const tokens = await estimateRawWireTokens(body);
+    const ticketId = reserveRawUsageAttempt(token, tokens);
+    if (!ticketId) {
+      throw new CodexApiError(400, `Controlled raw usage budget exceeded (wire_tokens=${tokens})`, { retryable: false });
+    }
+    this.rawUsageTicketId = ticketId;
   }
 
   private resolveBaseUrl(): string {
@@ -563,7 +630,16 @@ export class CodexApi {
     if (request.include?.length) wsRequest.include = request.include;
     wsRequest.client_metadata = this.buildCodexClientMetadata(request, installationId, identity.windowId);
 
-    return createWebSocketResponse(wsUrl, headers, wsRequest, signal, this.proxyUrl, onRateLimits, poolCtx);
+    this.rawUsageContext = { ...this.rawUsageContext, transport: "websocket" };
+    await this.reserveControlledWireBudget(JSON.stringify(wsRequest));
+    try {
+      const response = await createWebSocketResponse(wsUrl, headers, wsRequest, signal, this.proxyUrl, onRateLimits, poolCtx);
+      if (this.rawUsageTicketId) markRawUsageDispatch(this.rawUsageContext.observerToken, this.rawUsageTicketId, "dispatched");
+      return response;
+    } catch (error) {
+      if (this.rawUsageTicketId) markRawUsageDispatch(this.rawUsageContext.observerToken, this.rawUsageTicketId, "uncertain");
+      throw error;
+    }
   }
 
   /**
@@ -618,11 +694,15 @@ export class CodexApi {
       client_metadata: this.buildCodexClientMetadata(request, installationId, identity.windowId),
     };
     const body = JSON.stringify(bodyWithMetadata);
+    this.rawUsageContext = { ...this.rawUsageContext, transport: "http" };
+    await this.reserveControlledWireBudget(body);
 
     let transportRes;
     try {
       transportRes = await transport.post(url, headers, body, signal, undefined, this.proxyUrl);
+      if (this.rawUsageTicketId) markRawUsageDispatch(this.rawUsageContext.observerToken, this.rawUsageTicketId, "dispatched");
     } catch (err) {
+      if (this.rawUsageTicketId) markRawUsageDispatch(this.rawUsageContext.observerToken, this.rawUsageTicketId, "uncertain");
       const msg = err instanceof Error ? err.message : String(err);
       throw new CodexApiError(0, msg);
     }
@@ -945,7 +1025,37 @@ export class CodexApi {
    * Delegates to the standalone parseSSEStream() function.
    */
   async *parseStream(response: Response): AsyncGenerator<CodexSSEEvent> {
-    yield* parseSSEStream(response);
+    let responseId: string | null = null;
+    let terminalSeen = false;
+    for await (const event of parseSSEStream(response)) {
+      if (isRecord(event.data) && isRecord(event.data.response) && typeof event.data.response.id === "string") {
+        responseId = event.data.response.id;
+      }
+      if (
+        !terminalSeen
+        && (event.event === "response.completed" || event.event === "response.incomplete" || event.event === "response.failed")
+      ) {
+        terminalSeen = true;
+        const responseData = isRecord(event.data) && isRecord(event.data.response) ? event.data.response : undefined;
+        const usage = responseData ? parseNormalizedHostModelUsage(responseData.usage) : undefined;
+        const observation: CodexRawUsageObservation = {
+          requestId: this.rawUsageContext.requestId,
+          attempt: this.rawUsageContext.attempt,
+          transport: this.rawUsageContext.transport,
+          responseId,
+          terminalEvent: event.event,
+          usagePresent: usage !== undefined,
+          ...(usage ? { usage } : {}),
+        };
+        try {
+          if (this.rawUsageSink) this.rawUsageSink(observation);
+          else recordRawUsageObservation(observation, this.rawUsageContext.observerToken, this.rawUsageContext.observerRunId);
+        } catch (error) {
+          console.warn(`[CodexApi] raw usage observer failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      yield event;
+    }
   }
 }
 

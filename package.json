@@ -1,6 +1,6 @@
 {
   "name": "codex-proxy",
-  "version": "2.0.104",
+  "version": "2.0.105",
   "description": "Reverse proxy that exposes Codex Desktop Responses API as OpenAI-compatible /v1/chat/completions",
   "type": "module",
   "workspaces": [
@@ -28,7 +28,8 @@
     "apply-update": "tsx scripts/build/apply-update.ts",
     "apply-update:dry": "tsx scripts/build/apply-update.ts --dry-run",
     "update": "tsx scripts/build/full-update.ts",
-    "opaque:bootstrap-keyring": "tsx scripts/build/opaque-keyring-bootstrap.ts"
+    "opaque:bootstrap-keyring": "tsx scripts/build/opaque-keyring-bootstrap.ts",
+    "experiment:prompt-cache": "tsx scripts/experiments/prompt-cache-driver.ts"
   },
   "dependencies": {
     "@electron/asar": "^3.2.0",
